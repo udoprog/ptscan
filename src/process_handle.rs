@@ -1,35 +1,16 @@
 //! High-level interface to processes.
 
+use crate::{
+    process::Process, system_thread::SystemThread, thread::Thread, utils::AddressRange, ProcessId,
+    VirtualAddress,
+};
 use failure::Error;
-use std::fmt;
-
-use crate::{utils::Hex, process::Process, thread, ProcessId, VirtualAddress};
-
-pub struct AddressRange {
-    pub base: VirtualAddress,
-    pub length: VirtualAddress,
-}
-
-impl fmt::Debug for AddressRange {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt.debug_struct("AddressRange")
-            .field("base", &Hex(self.base))
-            .field("length", &Hex(self.length))
-            .finish()
-    }
-}
-
-impl AddressRange {
-    pub fn contains(&self, value: VirtualAddress) -> bool {
-        self.base <= value && value <= (self.base + self.length)
-    }
-}
+use std::collections::HashMap;
 
 #[derive(Debug)]
 pub struct ModuleInfo {
-    name: String,
-    base_address: VirtualAddress,
-    region_size: VirtualAddress,
+    pub name: String,
+    pub range: AddressRange,
 }
 
 #[derive(Debug)]
@@ -44,11 +25,16 @@ pub struct ProcessHandle {
     pub modules: Vec<ModuleInfo>,
     /// The range at which we have found kernel32.dll (if present).
     kernel32: Option<AddressRange>,
+    /// Threads.
+    pub threads: Vec<ProcessThread>,
 }
 
 impl ProcessHandle {
     /// Open the given process id and create a simplified handle to it.
-    pub fn open(pid: ProcessId) -> Result<ProcessHandle, Error> {
+    pub fn open(
+        pid: ProcessId,
+        threads: &HashMap<ProcessId, Vec<SystemThread>>,
+    ) -> Result<ProcessHandle, Error> {
         use std::ffi::OsStr;
 
         let process = Process::open(pid)?;
@@ -77,31 +63,112 @@ impl ProcessHandle {
 
             modules.push(ModuleInfo {
                 name: module_name.to_string_lossy().to_string(),
-                base_address: info.base_of_dll,
-                region_size: info.size_of_image,
+                range: AddressRange {
+                    base: info.base_of_dll,
+                    length: info.size_of_image,
+                },
             });
         }
 
-        Ok(ProcessHandle {
+        modules.sort_by_key(|m| m.range.base);
+
+        let mut handle = ProcessHandle {
             name,
             process,
             is_64bit,
             modules,
             kernel32,
-        })
+            threads: Vec::new(),
+        };
+
+        let threads = threads.get(&pid).map(|t| t.as_slice()).unwrap_or(&[]);
+
+        for (id, t) in threads.into_iter().enumerate() {
+            let thread = Thread::builder().all_access().build(t.thread_id())?;
+            let stack = handle.thread_stack(&thread)?;
+            let stack_exit = handle.scan_for_exit(stack)?;
+            handle.threads.push(ProcessThread {
+                id,
+                stack,
+                thread,
+                stack_exit,
+            });
+        }
+
+        handle.threads.sort_by_key(|t| t.stack.base);
+        Ok(handle)
+    }
+
+    /// Find the module that the address is contained in.
+    pub fn find_location<'a>(&'a self, address: VirtualAddress) -> Location<'a> {
+        if let Some(module) = self.find_module(address) {
+            return Location::Module(module);
+        }
+
+        // TODO: need exact stack for thread.
+        if let Some(thread) = self.find_thread_by_stack(address) {
+            return Location::Thread(thread);
+        }
+
+        Location::None
+    }
+
+    /// Find if address is contained in a module.
+    pub fn find_module<'a>(&'a self, address: VirtualAddress) -> Option<&'a ModuleInfo> {
+        let module = match self
+            .modules
+            .binary_search_by(|m| m.range.base.cmp(&address))
+        {
+            Ok(exact) => &self.modules[exact],
+            Err(closest) => {
+                if closest > 0 {
+                    &self.modules[closest - 1]
+                } else {
+                    return None;
+                }
+            }
+        };
+
+        if module.range.contains(address) {
+            return Some(module);
+        }
+
+        None
+    }
+
+    /// Find if address is contained in a module.
+    pub fn find_thread_by_stack<'a>(
+        &'a self,
+        address: VirtualAddress,
+    ) -> Option<&'a ProcessThread> {
+        let thread = match self
+            .threads
+            .binary_search_by(|m| m.stack.base.cmp(&address))
+        {
+            Ok(exact) => &self.threads[exact],
+            Err(closest) => {
+                if closest > 0 {
+                    &self.threads[closest - 1]
+                } else {
+                    return None;
+                }
+            }
+        };
+
+        if thread.stack.contains(address) {
+            return Some(thread);
+        }
+
+        None
     }
 
     /// Access the address of the stack for the given thread.
-    pub fn thread_stack(&self, thread: &thread::Thread) -> Result<Option<VirtualAddress>, Error> {
-        let stack = if self.is_64bit {
-            thread.thread_stack(&self.process)?
+    pub fn thread_stack(&self, thread: &Thread) -> Result<AddressRange, Error> {
+        if self.is_64bit {
+            thread.thread_stack(&self.process)
         } else {
-            let ctx = thread.get_context()?;
-            ctx.thread_stack(&self.process)?
-        };
-
-        // TODO: take variable stack sizes into account, don't just use 0x1000.
-        self.scan_for_stack_base(stack, 0x1000)
+            thread.get_context()?.thread_stack(&self.process)
+        }
     }
 
     /// Scan for the base of the stack.
@@ -111,20 +178,15 @@ impl ProcessHandle {
     ///
     /// Ported from:
     /// https://github.com/cheat-engine/cheat-engine/blob/0d9d35183d0dcd9eeed4b4d0004fa3a1981b018a/Cheat%20Engine/CEFuncProc.pas
-    fn scan_for_stack_base(
-        &self,
-        stack: VirtualAddress,
-        depth: usize,
-    ) -> Result<Option<VirtualAddress>, Error> {
+    pub fn scan_for_exit(&self, stack: AddressRange) -> Result<Option<VirtualAddress>, Error> {
         use byteorder::{ByteOrder, LittleEndian};
 
         let ptr_width = if self.is_64bit { 8usize } else { 8usize };
 
-        let base = stack.saturating_sub(depth as VirtualAddress);
-        let mut buf = vec![0u8; depth];
-        let buf = self.process.read_process_memory(base, &mut buf)?;
+        let mut buf = vec![0u8; stack.length as usize];
+        let buf = self.process.read_process_memory(stack.base, &mut buf)?;
 
-        if base % (ptr_width as u64) != 0 {
+        if stack.base % (ptr_width as u64) != 0 {
             failure::bail!("for some reason, the stack is not aligned!");
         }
 
@@ -141,7 +203,7 @@ impl ProcessHandle {
             let ptr = LittleEndian::read_u64(w) as VirtualAddress;
 
             if kernel32.contains(ptr) {
-                return Ok(Some(base + n * ptr_width));
+                return Ok(Some(stack.base + n * ptr_width));
             }
         }
 
@@ -178,10 +240,10 @@ impl ProcessHandle {
                 // TODO: handle when value overlapps memory edges.
                 let buf = match self.process.read_process_memory(r.base, &mut buf) {
                     Ok(buf) => buf,
-                    Err(e) => {
+                    Err(_) => {
                         // eprintln!("ERR: info: {:?}, range: {:?}: {}", info, r, e);
                         return Ok(Vec::new());
-                    },
+                    }
                 };
 
                 let mut results = Vec::new();
@@ -198,6 +260,24 @@ impl ProcessHandle {
 
         Ok(addrs.into_iter().flat_map(|vec| vec).collect())
     }
+}
+
+#[derive(Debug)]
+pub enum Location<'a> {
+    /// Location found in module.
+    Module(&'a ModuleInfo),
+    /// Location found in thread stack.
+    Thread(&'a ProcessThread),
+    /// Location not found.
+    None,
+}
+
+#[derive(Debug)]
+pub struct ProcessThread {
+    pub id: usize,
+    pub stack: AddressRange,
+    pub thread: Thread,
+    pub stack_exit: Option<VirtualAddress>,
 }
 
 pub trait Decode: Sized {

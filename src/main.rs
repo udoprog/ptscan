@@ -1,26 +1,25 @@
 use failure::Error;
-use ptscan::{system_processes, system_threads, ProcessHandle};
-
+use ptscan::{system_processes, system_threads, Location, ProcessHandle};
 use std::collections::HashMap;
 
 fn try_main() -> Result<(), Error> {
-    use ptscan::SystemThread;
-
     let opts = ptscan::opts::opts();
 
-    let mut threads = HashMap::<_, Vec<SystemThread>>::new();
+    let mut threads = HashMap::<_, Vec<_>>::new();
 
-    for thread in system_threads()? {
-        threads.entry(thread.process_id()).or_default().push(thread);
+    for t in system_threads()? {
+        threads.entry(t.process_id()).or_default().push(t);
     }
 
     let buffer_size = 0x100u64;
     let needle = 0xDEADBEEFu32;
 
     for pid in system_processes()? {
-        let handle = match ProcessHandle::open(pid) {
+        let handle = match ProcessHandle::open(pid, &threads) {
             Ok(handle) => handle,
-            Err(_) => continue,
+            Err(_) => {
+                continue;
+            }
         };
 
         if let Some(process) = opts.process.as_ref().map(|n| n.as_str()) {
@@ -34,36 +33,36 @@ fn try_main() -> Result<(), Error> {
             }
         }
 
-        for module in &handle.modules {
-            println!("MODULE: {:?}", module);
+        for t in &handle.threads {
+            println!("{:?}", t);
         }
 
         for location in handle.scan_for_value(buffer_size, needle)? {
-            println!("{:X}", location);
-        }
+            match handle.find_location(location) {
+                Location::Module(module) => {
+                    let offset = location - module.range.base;
+                    println!("{}+{:X}: {:X}", module.name, offset, location);
+                }
+                Location::Thread(thread) => {
+                    let base = thread
+                        .stack_exit
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or(thread.stack.base);
 
-        /*let mut segments = (start..(end / buffer_size))
-        .into_par_iter()
-        .map(|n| {
-            let s = n * buffer_size;
-            let e = u64::min((n + 1) * buffer_size, end);
-            (s, e)
-        })
-        .for_each(|(s, e)| {
-            println!("{:?}", (s, e));
-        });*/
+                    let offset = if location > base {
+                        format!("+{:X}", location - base)
+                    } else {
+                        format!("-{:X}", base - location)
+                    };
 
-        /*for segment in segments {
-            println!("{:?}", segment);
-        }*/
-
-        /*for t in threads.get(&pid).map(|d| d.as_slice()).unwrap_or(&[]) {
-            let thread = Thread::builder().all_access().build(t.thread_id())?;
-
-            if let Some(stack) = handle.thread_stack(&thread)? {
-                println!("THREAD: {:?} (stack: {:X})", thread, stack);
+                    println!("THREADSTACK{}{}: {:X}", thread.id, offset, location);
+                }
+                Location::None => {
+                    println!("{:X}", location);
+                }
             }
-        }*/
+        }
     }
 
     Ok(())

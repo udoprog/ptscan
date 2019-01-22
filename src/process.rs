@@ -4,7 +4,7 @@ use failure::Error;
 
 use crate::{
     module, system_info,
-    utils::{Hex, array, drop_handle},
+    utils::{array, drop_handle, Hex},
     ProcessId, VirtualAddress,
 };
 
@@ -56,6 +56,23 @@ impl Process {
 
         for module in modules {
             out.push(module::Module::new(self, module))
+        }
+
+        Ok(out)
+    }
+
+    /// Read the given structure from the given address.
+    pub fn read<T>(&self, address: VirtualAddress) -> Result<T, Error> {
+        use std::{mem, slice};
+
+        let mut out: T = unsafe { mem::zeroed() };
+
+        let read = self.read_process_memory(address, unsafe {
+            slice::from_raw_parts_mut(&mut out as *mut T as *mut u8, mem::size_of::<T>())
+        })?;
+
+        if read.len() != mem::size_of::<winnt::NT_TIB64>() {
+            failure::bail!("failed to read tib");
         }
 
         Ok(out)

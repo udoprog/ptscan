@@ -1,8 +1,8 @@
-use std::{fmt, ffi::OsString, io};
+use std::{ffi::OsString, fmt, io};
 
 use failure::Error;
 
-use crate::{VirtualAddress, process::MemoryInformation, process_handle::AddressRange};
+use crate::{process::MemoryInformation, VirtualAddress};
 
 use winapi::{
     shared::minwindef::{BOOL, DWORD, LPDWORD, TRUE},
@@ -204,5 +204,26 @@ where
 
             return Some(Ok((*memory_info, range)));
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct AddressRange {
+    pub base: VirtualAddress,
+    pub length: VirtualAddress,
+}
+
+impl fmt::Debug for AddressRange {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_struct("AddressRange")
+            .field("base", &Hex(self.base))
+            .field("length", &Hex(self.length))
+            .finish()
+    }
+}
+
+impl AddressRange {
+    pub fn contains(&self, value: VirtualAddress) -> bool {
+        self.base <= value && value <= (self.base + self.length)
     }
 }

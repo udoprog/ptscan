@@ -16,7 +16,7 @@ pub type VirtualAddress = u64;
 
 pub use self::module::Module;
 pub use self::process::{system_processes, MemoryState, MemoryType, Process};
-pub use self::process_handle::ProcessHandle;
+pub use self::process_handle::{Location, ProcessHandle};
 pub use self::system_thread::{system_threads, SystemThread};
 pub use self::thread::Thread;
 pub use self::utils::IteratorExtension;

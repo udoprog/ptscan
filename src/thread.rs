@@ -2,7 +2,11 @@ use std::{fmt, io};
 
 use failure::Error;
 
-use crate::{process, utils::drop_handle, VirtualAddress};
+use crate::{
+    process,
+    utils::{drop_handle, AddressRange},
+    VirtualAddress,
+};
 
 use winapi::{
     shared::{
@@ -19,6 +23,8 @@ pub struct Thread {
     thread_id: ThreadId,
     handle: winnt::HANDLE,
 }
+
+unsafe impl Sync for Thread {}
 
 impl Thread {
     /// Set up an open thread builder.
@@ -40,7 +46,7 @@ impl Thread {
     }
 
     /// Access the private address range of a thread to decode its stack.
-    pub fn thread_stack(&self, process: &process::Process) -> Result<VirtualAddress, Error> {
+    pub fn thread_stack(&self, process: &process::Process) -> Result<AddressRange, Error> {
         use ntapi::ntpsapi::{
             NtQueryInformationThread, ThreadBasicInformation, THREAD_BASIC_INFORMATION,
         };
@@ -63,10 +69,13 @@ impl Thread {
             failure::bail!("{}: failed to resolve address", status);
         }
 
-        Ok(
-            process.read_u64(thread_info.TebBaseAddress as VirtualAddress + 0x08)?
-                as VirtualAddress,
-        )
+        let tib = process.read::<winnt::NT_TIB64>(thread_info.TebBaseAddress as VirtualAddress)?;
+        let length = (tib.StackBase - tib.StackLimit) as VirtualAddress;
+
+        Ok(AddressRange {
+            base: tib.StackLimit as VirtualAddress,
+            length,
+        })
     }
 
     /// Get the context for a thread.
@@ -108,9 +117,7 @@ pub struct ThreadContext<'a> {
 
 impl ThreadContext<'_> {
     /// Find where the thread stack is located.
-    pub fn thread_stack(&self, process: &process::Process) -> Result<VirtualAddress, Error> {
-        use byteorder::{ByteOrder, LittleEndian};
-
+    pub fn thread_stack(&self, process: &process::Process) -> Result<AddressRange, Error> {
         use std::mem;
         let mut entry: winnt::LDT_ENTRY = unsafe { mem::zeroed() };
 
@@ -124,19 +131,21 @@ impl ThreadContext<'_> {
             )
         };
 
-        let base = unsafe {
+        let address = unsafe {
             let bytes = entry.HighWord.Bytes();
 
             entry.BaseLow as VirtualAddress
                 + ((bytes.BaseMid as VirtualAddress) << 0x10)
                 + ((bytes.BaseHi as VirtualAddress) << 0x18)
-                + 0x4
         };
 
-        let mut out = [0u8; 4];
-        process.read_process_memory(base, &mut out)?;
+        let tib = process.read::<winnt::NT_TIB32>(address)?;
+        let length = (tib.StackBase - tib.StackLimit) as VirtualAddress;
 
-        Ok(LittleEndian::read_u64(&out) as VirtualAddress)
+        Ok(AddressRange {
+            base: tib.StackLimit as VirtualAddress,
+            length,
+        })
     }
 }
 

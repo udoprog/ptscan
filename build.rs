@@ -1,0 +1,39 @@
+use failure::{bail, format_err, Error, ResultExt};
+use std::{env, path::PathBuf, process::Command};
+
+fn main() -> Result<(), Error> {
+    let root = PathBuf::from(
+        env::var("CARGO_MANIFEST_DIR")
+            .with_context(|_| format_err!("missing CARGO_MANIFEST_DIR"))?,
+    );
+
+    let out = PathBuf::from(env::var("OUT_DIR").with_context(|_| format_err!("missing OUT_DIR"))?);
+
+    run("windres", |c| {
+        c.arg(root.join("src").join("main.rc"))
+            .arg("-o")
+            .arg(out.join("main.rc.o"))
+    })?;
+
+    run("ar", |c| {
+        c.arg("crus")
+            .arg(out.join("libmain_rc.a"))
+            .arg(out.join("main.rc.o"))
+    })?;
+
+    println!("cargo:rustc-link-search=native={}", out.display());
+    println!("cargo:rustc-link-lib=static=main_rc");
+    Ok(())
+}
+
+fn run(command: &str, cmd: impl FnOnce(&mut Command) -> &mut Command) -> Result<(), Error> {
+    let status = cmd(&mut Command::new(command))
+        .status()
+        .with_context(|_| format_err!("failed to run: ar"))?;
+
+    if !status.success() {
+        bail!("failed to run: {}: {}", command, status);
+    }
+
+    Ok(())
+}

@@ -138,7 +138,7 @@ impl Buffer {
 
         let buffer = Buffer {
             ptr: data.as_mut_ptr(),
-            len: data.capacity(),
+            len: data.len(),
             cap: data.capacity(),
             borrowed: Cell::new(false),
         };

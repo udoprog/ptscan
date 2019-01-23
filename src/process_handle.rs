@@ -1,11 +1,11 @@
 //! High-level interface to processes.
 
 use crate::{
-    process, scan, system_thread::SystemThread, thread::Thread, utils, Address, AddressRange,
+    process, scanner::Scanner, system_thread::SystemThread, thread::Thread, Address, AddressRange,
     ProcessId, Size, ThreadId,
 };
 use failure::ResultExt;
-use std::{collections::HashMap, convert::TryFrom, fmt};
+use std::{collections::HashMap, convert::TryFrom, fmt, sync::Arc};
 use winapi::shared::winerror;
 
 #[derive(Debug, failure::Fail)]
@@ -81,7 +81,7 @@ impl ProcessHandle {
             if module_name.as_os_str() == OsStr::new("KERNEL32.DLL") {
                 kernel32 = Some(AddressRange {
                     base: info.base_of_dll,
-                    length: info.size_of_image,
+                    size: info.size_of_image,
                 });
             }
 
@@ -89,7 +89,7 @@ impl ProcessHandle {
                 name: module_name.to_string_lossy().to_string(),
                 range: AddressRange {
                     base: info.base_of_dll,
-                    length: info.size_of_image,
+                    size: info.size_of_image,
                 },
             });
         }
@@ -240,7 +240,7 @@ impl ProcessHandle {
             Size::new(4)
         };
 
-        let mut buf = vec![0u8; stack.length.into_usize()?];
+        let mut buf = vec![0u8; stack.size.into_usize()?];
         let buf = self.process.read_process_memory(stack.base, &mut buf)?;
 
         if !stack.base.is_aligned(ptr_width)? {
@@ -269,129 +269,9 @@ impl ProcessHandle {
         Ok(None)
     }
 
-    /// Scan for the given value in memory.
-    ///
-    /// TODO: handle unaligned regions.
-    pub fn scan_for_value(
-        &self,
-        scan_type: scan::Type,
-        predicate: &(dyn scan::Predicate + Sync + Send),
-    ) -> Result<Vec<ScanResult>, failure::Error> {
-        use crate::utils::IteratorExtension;
-        use std::sync::mpsc;
-
-        let size: usize = scan_type.size();
-        let buffer_size = 0x1000;
-
-        let mut results = Vec::new();
-
-        let thread_pool = rayon::ThreadPoolBuilder::new().build()?;
-
-        let buffers = utils::ThreadBuffers::new(buffer_size);
-
-        thread_pool.install(|| {
-            rayon::scope(|s| {
-                let (tx, rx) = mpsc::sync_channel(1024);
-                let mut total = 0;
-                let mut bytes = 0;
-
-                for region in self.process.virtual_memory_regions().only_relevant() {
-                    println!("{:?}", region);
-                    bytes += region
-                        .as_ref()
-                        .map_err(|_| ())
-                        .and_then(|r| r.range.length.into_usize().map_err(|_| ()))
-                        .unwrap_or(0);
-
-                    total += 1;
-                    let tx = tx.clone();
-
-                    let buffers_ref = &buffers;
-
-                    s.spawn(move |_| {
-                        let work = || {
-                            let region = region?;
-                            let range = region.range;
-                            let len = range.length.into_usize()?;
-
-                            let mut start = 0;
-
-                            while start < len {
-                                let len = usize::min(buffer_size, len - start);
-                                let loc = range.base.add(Size::try_from(start)?)?;
-
-                                // length of the buffer we need to read process memory.
-                                let mut buf = unsafe { buffers_ref.get_mut(len)? };
-                                let buf = self.process.read_process_memory(loc, &mut *buf)?;
-
-                                for (n, w) in buf.chunks(size).enumerate() {
-                                    let value = scan_type.decode(w);
-
-                                    if predicate.test(&value) {
-                                        let address = range.base.add(Size::try_from(size * n)?)?;
-                                        let scan_result = ScanResult { address, value };
-                                        tx.send(TaskProgress::ScanResult(scan_result))?;
-                                    }
-                                }
-
-                                start += buffer_size;
-                            }
-
-                            Ok(())
-                        };
-
-                        tx.send(TaskProgress::Result(work()))
-                            .expect("channel send failed");
-                    });
-                }
-
-                println!("TOTAL: {} bytes", bytes);
-
-                let mut current = 0;
-                let mut percentage = total / 100;
-
-                if percentage <= 0 {
-                    percentage = 1;
-                }
-
-                for m in rx {
-                    match m {
-                        // Scan result from a task.
-                        TaskProgress::ScanResult(scan_result) => {
-                            results.push(scan_result);
-                        }
-                        // Result from one task.
-                        TaskProgress::Result(result) => {
-                            match result {
-                                Ok(()) => {}
-                                Err(e) => {
-                                    println!("error in scan: {}", e);
-                                }
-                            }
-
-                            current += 1;
-
-                            // print progress.
-                            if current % percentage == 0 {
-                                let p = (current * 100) / total;
-                                println!("{}%", p);
-                            }
-
-                            if current >= total {
-                                break;
-                            }
-                        }
-                    }
-                }
-            })
-        });
-
-        return Ok(results);
-
-        enum TaskProgress {
-            Result(Result<(), failure::Error>),
-            ScanResult(ScanResult),
-        }
+    /// Build a persistent scanner.
+    pub fn scanner<'a>(&'a self, thread_pool: &Arc<rayon::ThreadPool>) -> Scanner<'a> {
+        Scanner::new(self, Arc::clone(thread_pool))
     }
 }
 
@@ -452,11 +332,4 @@ impl Decode for u32 {
         use byteorder::{ByteOrder, LittleEndian};
         Ok(LittleEndian::read_u32(buf))
     }
-}
-
-/// A single scan result.
-#[derive(Debug)]
-pub struct ScanResult {
-    pub address: Address,
-    pub value: scan::Value,
 }

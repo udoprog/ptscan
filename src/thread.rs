@@ -47,7 +47,7 @@ impl Thread {
 
         Ok(AddressRange {
             base: stack_limit,
-            length: stack_base.size_from(stack_limit)?,
+            size: stack_base.size_from(stack_limit)?,
         })
     }
 
@@ -134,12 +134,12 @@ impl ThreadContext<'_> {
         })?;
 
         let tib = process.read::<winnt::NT_TIB32>(address)?;
-        let length =
+        let size =
             Address::try_from(tib.StackBase)?.size_from(Address::try_from(tib.StackLimit)?)?;
 
         Ok(AddressRange {
             base: Address::try_from(tib.StackLimit)?,
-            length,
+            size,
         })
     }
 }

@@ -173,7 +173,7 @@ impl Process {
         Ok(Some(MemoryInformation {
             range: AddressRange {
                 base: Address::try_from(mbi.BaseAddress)?,
-                length: Size::try_from(mbi.RegionSize)?,
+                size: Size::try_from(mbi.RegionSize)?,
             },
             state,
             ty,
@@ -330,7 +330,7 @@ impl MemoryProtect {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct MemoryInformation {
     pub range: AddressRange,
     pub state: MemoryState,
@@ -338,16 +338,7 @@ pub struct MemoryInformation {
     pub protect: fixed_map::Set<MemoryProtect>,
 }
 
-impl fmt::Debug for MemoryInformation {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt.debug_struct("MemoryInformation")
-            .field("range", &self.range)
-            .field("state", &self.state)
-            .field("ty", &self.ty)
-            .finish()
-    }
-}
-/// Iterator over virtual memory segments.
+/// Iterator over virtual memory regions.
 pub struct VirtualMemoryRegions<'a> {
     process: &'a Process,
     current: Address,
@@ -357,21 +348,8 @@ impl<'a> Iterator for VirtualMemoryRegions<'a> {
     type Item = Result<MemoryInformation, failure::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let memory_info = match self.process.virtual_query(self.current) {
-            Ok(Some(memory_info)) => memory_info,
-            Ok(None) => return None,
-            Err(e) => return Some(Err(e)),
-        };
-
-        self.current = match self
-            .current
-            .add(memory_info.range.length)
-            .and_then(|c| c.add(Size::new(1)))
-        {
-            Ok(current) => current,
-            Err(e) => return Some(Err(e)),
-        };
-
-        return Some(Ok(memory_info));
+        let m = try_iter!(self.process.virtual_query(self.current))?;
+        self.current = try_iter!(try_iter!(self.current.add(m.range.size)).add(Size::new(1)));
+        return Some(Ok(m));
     }
 }

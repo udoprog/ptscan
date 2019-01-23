@@ -3,7 +3,7 @@ use ptscan::{
     scan, system_processes, system_threads, Location, ProcessHandle, ProcessId, ProcessName,
     ScanResult,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 #[derive(Debug, failure::Fail)]
 enum MainError {
@@ -14,6 +14,8 @@ enum MainError {
 }
 
 fn try_main() -> Result<(), failure::Error> {
+    let thread_pool = Arc::new(rayon::ThreadPoolBuilder::new().build()?);
+
     let opts = ptscan::opts::opts();
 
     let mut threads = HashMap::<_, Vec<_>>::new();
@@ -53,34 +55,49 @@ fn try_main() -> Result<(), failure::Error> {
             .refresh_threads(&threads)
             .with_context(|_| MainError::RefreshThreads(handle.name()))?;
 
+        let mut scanner = handle.scanner(&thread_pool);
+
         println!("Starting scan...");
-        let results = handle.scan_for_value(scan_type, &predicate)?;
-        println!("Found {} addresses (only showing 100)", results.len());
+        scanner.scan_for_value(scan_type, &predicate)?;
+        println!(
+            "Found {} addresses (only showing 100)",
+            scanner.results.len()
+        );
+        print_results(&handle, scanner.results.iter().take(100))?;
+    }
 
-        for result in results.into_iter().take(100) {
-            let ScanResult { address, value } = result;
+    Ok(())
+}
 
-            match handle.find_location(address)? {
-                Location::Module(module) => {
-                    let offset = address.offset_of(module.range.base)?;
-                    println!("{}{}: {} = {}", module.name, offset, address, value);
-                }
-                Location::Thread(thread) => {
-                    let base = thread
-                        .stack_exit
-                        .as_ref()
-                        .cloned()
-                        .unwrap_or(thread.stack.base);
+fn print_results<'a>(
+    handle: &ProcessHandle,
+    results: impl IntoIterator<Item = &'a ScanResult>,
+) -> Result<(), failure::Error> {
+    for result in results {
+        let ScanResult {
+            address, ref value, ..
+        } = *result;
 
-                    let offset = address.offset_of(base)?;
-                    println!(
-                        "THREADSTACK{}{}: {} = {}",
-                        thread.id, offset, address, value
-                    );
-                }
-                Location::None => {
-                    println!("{} = {}", address, value);
-                }
+        match handle.find_location(address)? {
+            Location::Module(module) => {
+                let offset = address.offset_of(module.range.base)?;
+                println!("{}{}: {} = {}", module.name, offset, address, value);
+            }
+            Location::Thread(thread) => {
+                let base = thread
+                    .stack_exit
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or(thread.stack.base);
+
+                let offset = address.offset_of(base)?;
+                println!(
+                    "THREADSTACK{}{}: {} = {}",
+                    thread.id, offset, address, value
+                );
+            }
+            Location::None => {
+                println!("{} = {}", address, value);
             }
         }
     }

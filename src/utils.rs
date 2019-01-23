@@ -1,4 +1,4 @@
-use std::{ffi::OsString, io, ops, sync, thread};
+use std::{ffi::OsString, io, ops};
 
 use crate::{
     process::{MemoryInformation, MemoryProtect},
@@ -17,6 +17,16 @@ macro_rules! checked {
             return Err(failure::Error::from(std::io::Error::last_os_error()));
         }
     }};
+}
+
+/// Helper macro to handle fallible operations inside of a fallible iterator.
+macro_rules! try_iter {
+    ($expr:expr) => {
+        match $expr {
+            Ok(value) => value,
+            Err(e) => return Some(Err(e)),
+        }
+    };
 }
 
 /// Call a function that returns a string.
@@ -107,16 +117,6 @@ impl Drop for Handle {
 
 unsafe impl Sync for Handle {}
 unsafe impl Send for Handle {}
-
-/// Helper macro to handle fallible operations inside of a fallible iterator.
-macro_rules! try_iter {
-    ($expr:expr) => {
-        match $expr {
-            Ok(value) => value,
-            Err(e) => return Some(Err(e)),
-        }
-    };
-}
 
 pub trait IteratorExtension {
     fn chunked(self, chunk_size: Size) -> Chunked<Self>
@@ -217,7 +217,7 @@ where
                 None => return None,
             };
 
-            if self.offset >= memory_info.range.length {
+            if self.offset >= memory_info.range.size {
                 self.offset = Size::new(0);
                 self.current.take();
                 continue;
@@ -226,126 +226,17 @@ where
             let s = self.offset;
             let e = Size::min(
                 try_iter!(self.offset.add(self.chunk_size)),
-                memory_info.range.length,
+                memory_info.range.size,
             );
 
             self.offset = e;
 
             let range = AddressRange {
                 base: try_iter!(memory_info.range.base.add(s)),
-                length: try_iter!(e.sub(s)),
+                size: try_iter!(e.sub(s)),
             };
 
             return Some(Ok((memory_info.clone(), range)));
-        }
-    }
-}
-
-/// A collection of buffers mapped to threads.
-pub struct ThreadBuffers {
-    buffer_size: usize,
-    map: sync::RwLock<hashbrown::HashMap<thread::ThreadId, Buffer>>,
-}
-
-impl ThreadBuffers {
-    pub fn new(buffer_size: usize) -> ThreadBuffers {
-        ThreadBuffers {
-            buffer_size,
-            map: sync::RwLock::new(hashbrown::HashMap::new()),
-        }
-    }
-
-    /// Get the buffer for the current thread.
-    pub unsafe fn get_mut<'a>(&'a self, len: usize) -> Result<Guard<'a>, failure::Error> {
-        let id = thread::current().id();
-
-        loop {
-            {
-                let inner = self
-                    .map
-                    .read()
-                    .map_err(|_| failure::format_err!("lock poisoned"))?;
-
-                if let Some(b) = inner.get(&id) {
-                    let ptr = b.ptr.clone();
-                    let cap = b.cap.clone();
-
-                    if len > cap {
-                        failure::bail!("request length is greater than capacity");
-                    }
-
-                    return Ok(Guard {
-                        _inner: inner,
-                        ptr,
-                        len,
-                    });
-                }
-            }
-
-            let mut inner = self
-                .map
-                .write()
-                .map_err(|_| failure::format_err!("lock poisoned"))?;
-            let mut buffer = Vec::with_capacity(self.buffer_size);
-
-            let ptr = buffer.as_mut_ptr();
-            let len = buffer.capacity();
-            let cap = buffer.capacity();
-
-            std::mem::forget(buffer);
-
-            inner.insert(id, Buffer { ptr, len, cap });
-        }
-    }
-}
-
-pub struct Guard<'a> {
-    _inner: sync::RwLockReadGuard<'a, hashbrown::HashMap<thread::ThreadId, Buffer>>,
-    ptr: *mut u8,
-    len: usize,
-}
-
-impl<'a> Guard<'a> {
-    /// Treat guard as mutable buffer.
-    pub fn as_ref<'b>(&'b self) -> &'b [u8] {
-        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
-    }
-
-    /// Treat guard as mutable buffer.
-    pub fn as_mut<'b>(&'b mut self) -> &'b mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
-    }
-}
-
-impl<'a> ops::Deref for Guard<'a> {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.as_ref()
-    }
-}
-
-impl<'a> ops::DerefMut for Guard<'a> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.as_mut()
-    }
-}
-
-struct Buffer {
-    ptr: *mut u8,
-    len: usize,
-    cap: usize,
-}
-
-unsafe impl Sync for Buffer {}
-
-/// TODO: why does this have to be Send?
-unsafe impl Send for Buffer {}
-
-impl Drop for Buffer {
-    fn drop(&mut self) {
-        unsafe {
-            Vec::from_raw_parts(self.ptr, self.len, self.cap);
         }
     }
 }

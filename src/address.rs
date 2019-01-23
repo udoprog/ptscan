@@ -254,23 +254,14 @@ impl fmt::Debug for Offset {
 }
 
 /// A helper structure to define a range of addresses.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct AddressRange {
     pub base: Address,
-    pub length: Size,
-}
-
-impl fmt::Debug for AddressRange {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt.debug_struct("AddressRange")
-            .field("base", &self.base)
-            .field("length", &self.length)
-            .finish()
-    }
+    pub size: Size,
 }
 
 impl AddressRange {
     pub fn contains(&self, value: Address) -> Result<bool, failure::Error> {
-        Ok(self.base <= value && value <= (self.base.add(self.length)?))
+        Ok(self.base <= value && value <= self.base.add(self.size)?)
     }
 }

@@ -11,17 +11,6 @@ pub enum Value {
     I32(i32),
 }
 
-impl fmt::Display for Value {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Value::U64(value) => write!(fmt, "{}u64", value),
-            Value::U32(value) => write!(fmt, "{}u32", value),
-            Value::I64(value) => write!(fmt, "{}i64", value),
-            Value::I32(value) => write!(fmt, "{}i32", value),
-        }
-    }
-}
-
 impl Value {
     /// Decode the given buffer into a value.
     pub fn encode(&self, buf: &mut [u8]) {
@@ -33,6 +22,29 @@ impl Value {
             U32(value) => LittleEndian::write_u32(buf, value),
             I64(value) => LittleEndian::write_i64(buf, value),
             I32(value) => LittleEndian::write_i32(buf, value),
+        }
+    }
+
+    /// Get the type of the value.
+    pub fn ty(&self) -> Type {
+        use self::Value::*;
+
+        match *self {
+            U64(..) => Type::U64,
+            U32(..) => Type::U32,
+            I64(..) => Type::I64,
+            I32(..) => Type::I32,
+        }
+    }
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Value::U64(value) => write!(fmt, "{}u64", value),
+            Value::U32(value) => write!(fmt, "{}u32", value),
+            Value::I64(value) => write!(fmt, "{}i64", value),
+            Value::I32(value) => write!(fmt, "{}i32", value),
         }
     }
 }

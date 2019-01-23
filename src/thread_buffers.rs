@@ -21,6 +21,8 @@ pub struct ThreadBuffers {
     map: RwLock<HashMap<ThreadId, Buffer>>,
 }
 
+unsafe impl Sync for ThreadBuffers {}
+
 impl ThreadBuffers {
     pub fn new() -> ThreadBuffers {
         ThreadBuffers {
@@ -127,9 +129,6 @@ struct Buffer {
     cap: usize,
     borrowed: Cell<bool>,
 }
-
-unsafe impl Sync for Buffer {}
-unsafe impl Send for Buffer {}
 
 impl Buffer {
     /// Create a buffer from a vector.

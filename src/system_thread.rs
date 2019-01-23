@@ -1,10 +1,10 @@
 use std::{fmt, io};
 
-use crate::{utils::drop_handle, ProcessId, ThreadId};
+use crate::{utils, ProcessId, ThreadId};
 
 use winapi::{
     shared::minwindef::{DWORD, FALSE},
-    um::{handleapi, tlhelp32, winnt},
+    um::{handleapi, tlhelp32},
 };
 
 /// A thread in the system with an associated parent process.
@@ -36,7 +36,7 @@ impl fmt::Debug for SystemThread {
 
 /// An iterator over all system threads.
 pub struct SystemThreads {
-    handle: winnt::HANDLE,
+    handle: utils::Handle,
     entry: Option<tlhelp32::THREADENTRY32>,
 }
 
@@ -51,7 +51,7 @@ impl<'a> Iterator for SystemThreads {
             Some(e) => {
                 e.dwSize = mem::size_of::<THREADENTRY32>() as DWORD;
 
-                if unsafe { tlhelp32::Thread32Next(self.handle, e as LPTHREADENTRY32) } == FALSE {
+                if unsafe { tlhelp32::Thread32Next(*self.handle, e as LPTHREADENTRY32) } == FALSE {
                     return None;
                 }
 
@@ -62,7 +62,7 @@ impl<'a> Iterator for SystemThreads {
                 e.dwSize = mem::size_of::<THREADENTRY32>() as DWORD;
                 let e = self.entry.get_or_insert(e);
 
-                if unsafe { tlhelp32::Thread32First(self.handle, e as LPTHREADENTRY32) } == FALSE {
+                if unsafe { tlhelp32::Thread32First(*self.handle, e as LPTHREADENTRY32) } == FALSE {
                     return None;
                 }
 
@@ -77,12 +77,6 @@ impl<'a> Iterator for SystemThreads {
     }
 }
 
-impl Drop for SystemThreads {
-    fn drop(&mut self) {
-        drop_handle(self.handle);
-    }
-}
-
 /// Enumerate all threads of the system.
 pub fn system_threads() -> Result<SystemThreads, failure::Error> {
     use tlhelp32::{CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD};
@@ -92,6 +86,8 @@ pub fn system_threads() -> Result<SystemThreads, failure::Error> {
     if handle == handleapi::INVALID_HANDLE_VALUE {
         return Err(failure::Error::from(io::Error::last_os_error()));
     }
+
+    let handle = utils::Handle::new(handle);
 
     Ok(SystemThreads {
         handle,

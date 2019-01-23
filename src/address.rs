@@ -160,6 +160,11 @@ impl Size {
         Size(value)
     }
 
+    /// Convert into the inner type.
+    pub fn into_inner(self) -> u64 {
+        self.0
+    }
+
     /// Convert into u64.
     pub fn into_u64(self) -> Result<u64, failure::Error> {
         Ok(self.0.try_into()?)

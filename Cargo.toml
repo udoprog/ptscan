@@ -23,6 +23,8 @@ byteorder = "1.3"
 clap = "2.32"
 rayon = "1.0.3"
 log = "0.4"
+fixed-map = "0.5"
+hashbrown = "0.1.8"
 
 [dependencies.winapi]
 version = "0.3"

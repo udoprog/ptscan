@@ -1,9 +1,9 @@
-use std::{convert::TryFrom, fmt, io};
+use std::{convert::TryFrom, fmt, io, sync::Arc};
 
 use crate::{
     module, system_info,
-    utils::{array, drop_handle},
-    Address, ProcessId, Size,
+    utils::{self, array},
+    Address, AddressRange, ProcessId, Size,
 };
 
 use winapi::{
@@ -19,11 +19,8 @@ use winapi::{
 #[derive(Clone)]
 pub struct Process {
     process_id: ProcessId,
-    pub(crate) handle: winnt::HANDLE,
+    pub(crate) handle: Arc<utils::Handle>,
 }
-
-unsafe impl Sync for Process {}
-unsafe impl Send for Process {}
 
 impl Process {
     pub fn builder() -> OpenProcessBuilder {
@@ -41,7 +38,7 @@ impl Process {
     /// Enumerate all modules.
     pub fn modules<'a>(&'a self) -> Result<Vec<module::Module<'a>>, failure::Error> {
         let modules = array(0x400, |buf, size, needed| unsafe {
-            psapi::EnumProcessModules(self.handle, buf, size, needed)
+            psapi::EnumProcessModules(**self.handle, buf, size, needed)
         })?;
 
         let mut out = Vec::new();
@@ -85,7 +82,7 @@ impl Process {
 
         checked! {
             memoryapi::ReadProcessMemory(
-                self.handle,
+                **self.handle,
                 address.convert::<LPCVOID>()?,
                 buffer.as_mut_ptr() as LPVOID,
                 buffer.len() as SIZE_T,
@@ -107,7 +104,10 @@ impl Process {
     /// Test if the process is a 32-bit process running under WOW64 compatibility.
     pub fn is_wow64(&self) -> Result<bool, failure::Error> {
         let mut out: BOOL = FALSE;
-        checked!(wow64apiset::IsWow64Process(self.handle, &mut out as PBOOL));
+        checked!(wow64apiset::IsWow64Process(
+            **self.handle,
+            &mut out as PBOOL
+        ));
         Ok(out == TRUE)
     }
 
@@ -132,7 +132,7 @@ impl Process {
 
         let b = unsafe {
             memoryapi::VirtualQueryEx(
-                self.handle,
+                **self.handle,
                 address.convert()?,
                 &mut mbi as *mut _ as winnt::PMEMORY_BASIC_INFORMATION,
                 LENGTH as SIZE_T,
@@ -164,11 +164,20 @@ impl Process {
             (_, ty) => failure::bail!("bad region type: {}", ty),
         };
 
+        let mut protect = fixed_map::Set::new();
+
+        if state != MemoryState::Free {
+            MemoryProtect::decode(mbi.Protect, &mut protect);
+        }
+
         Ok(Some(MemoryInformation {
-            base_address: Address::try_from(mbi.BaseAddress)?,
-            region_size: Size::try_from(mbi.RegionSize)?,
+            range: AddressRange {
+                base: Address::try_from(mbi.BaseAddress)?,
+                length: Size::try_from(mbi.RegionSize)?,
+            },
             state,
             ty,
+            protect,
         }))
     }
 
@@ -186,12 +195,6 @@ impl fmt::Debug for Process {
         fmt.debug_struct("Process")
             .field("process_id", &self.process_id)
             .finish()
-    }
-}
-
-impl Drop for Process {
-    fn drop(&mut self) {
-        drop_handle(self.handle);
     }
 }
 
@@ -245,6 +248,7 @@ impl OpenProcessBuilder {
             return Err(io::Error::last_os_error());
         }
 
+        let handle = Arc::new(utils::Handle::new(handle));
         Ok(Process { process_id, handle })
     }
 }
@@ -256,19 +260,11 @@ pub fn system_processes() -> Result<Vec<ProcessId>, failure::Error> {
     })
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MemoryState {
     Commit,
     Free,
     Reserve,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum MemoryType {
-    Image,
-    Mapped,
-    Private,
-    None,
 }
 
 impl MemoryState {
@@ -281,19 +277,71 @@ impl MemoryState {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
+pub enum MemoryType {
+    None,
+    Image,
+    Mapped,
+    Private,
+}
+
+#[derive(fixed_map::Key, Debug, Clone, Copy)]
+pub enum MemoryProtect {
+    Execute,
+    ExecuteRead,
+    ExecuteReadWrite,
+    ExecuteWriteCopy,
+    NoAccess,
+    ReadOnly,
+    ReadWrite,
+    WriteCopy,
+    TargetsInvalid,
+    TargetsNoUpdate,
+    Guard,
+    NoCache,
+    WriteCombine,
+}
+
+macro_rules! protect_bits {
+    ($flag:expr, $set:expr, {$($flag_from:ident => $flag_to:ident,)*}) => {
+        $(if $flag & winnt::$flag_from != 0 {
+            $set.insert(MemoryProtect::$flag_to);
+        })*
+    }
+}
+
+impl MemoryProtect {
+    fn decode(protect: DWORD, set: &mut fixed_map::Set<MemoryProtect>) {
+        protect_bits!(protect, set, {
+            PAGE_EXECUTE => Execute,
+            PAGE_EXECUTE_READ => ExecuteRead,
+            PAGE_EXECUTE_READWRITE => ExecuteReadWrite,
+            PAGE_EXECUTE_WRITECOPY => ExecuteWriteCopy,
+            PAGE_NOACCESS => NoAccess,
+            PAGE_READONLY => ReadOnly,
+            PAGE_READWRITE => WriteCopy,
+            PAGE_WRITECOPY => NoAccess,
+            PAGE_TARGETS_INVALID => TargetsInvalid,
+            PAGE_TARGETS_NO_UPDATE => TargetsNoUpdate,
+            PAGE_GUARD => Guard,
+            PAGE_NOCACHE => NoCache,
+            PAGE_WRITECOMBINE => WriteCombine,
+        });
+    }
+}
+
+#[derive(Clone)]
 pub struct MemoryInformation {
-    pub base_address: Address,
-    pub region_size: Size,
+    pub range: AddressRange,
     pub state: MemoryState,
     pub ty: MemoryType,
+    pub protect: fixed_map::Set<MemoryProtect>,
 }
 
 impl fmt::Debug for MemoryInformation {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt.debug_struct("AddressRange")
-            .field("base_address", &self.base_address)
-            .field("region_size", &self.region_size)
+        fmt.debug_struct("MemoryInformation")
+            .field("range", &self.range)
             .field("state", &self.state)
             .field("ty", &self.ty)
             .finish()
@@ -317,7 +365,7 @@ impl<'a> Iterator for VirtualMemoryRegions<'a> {
 
         self.current = match self
             .current
-            .add(memory_info.region_size)
+            .add(memory_info.range.length)
             .and_then(|c| c.add(Size::new(1)))
         {
             Ok(current) => current,

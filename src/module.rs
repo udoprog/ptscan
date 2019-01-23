@@ -29,7 +29,7 @@ impl<'a> Module<'a> {
     /// Get the name of the module.
     pub fn name(&self) -> Result<OsString, failure::Error> {
         crate::utils::string(|buf, len| unsafe {
-            psapi::GetModuleBaseNameW(self.process.handle, self.module, buf, len)
+            psapi::GetModuleBaseNameW(**self.process.handle, self.module, buf, len)
         })
     }
 
@@ -41,7 +41,7 @@ impl<'a> Module<'a> {
 
         checked! {
             psapi::GetModuleInformation(
-                self.process.handle,
+                **self.process.handle,
                 self.module,
                 &mut out as psapi::LPMODULEINFO,
                 mem::size_of::<psapi::MODULEINFO>() as DWORD,

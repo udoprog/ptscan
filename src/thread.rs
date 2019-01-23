@@ -1,6 +1,6 @@
-use std::{convert::TryFrom, fmt, io};
+use std::{convert::TryFrom, fmt, io, sync::Arc};
 
-use crate::{process, utils::drop_handle, Address, AddressRange};
+use crate::{process, utils, Address, AddressRange};
 
 use winapi::{
     shared::{
@@ -16,11 +16,8 @@ pub type ThreadId = DWORD;
 #[derive(Clone)]
 pub struct Thread {
     thread_id: ThreadId,
-    handle: winnt::HANDLE,
+    handle: Arc<utils::Handle>,
 }
-
-unsafe impl Sync for Thread {}
-unsafe impl Send for Thread {}
 
 impl Thread {
     /// Set up an open thread builder.
@@ -66,7 +63,7 @@ impl Thread {
 
         let status = unsafe {
             NtQueryInformationThread(
-                self.handle,
+                **self.handle,
                 ThreadBasicInformation,
                 &mut thread_info as *mut _ as ntdef::PVOID,
                 mem::size_of::<THREAD_BASIC_INFORMATION>() as DWORD,
@@ -90,7 +87,7 @@ impl Thread {
         context.ContextFlags = winnt::CONTEXT_SEGMENTS;
 
         checked! {
-            processthreadsapi::GetThreadContext(self.handle, &mut context as winnt::PCONTEXT)
+            processthreadsapi::GetThreadContext(**self.handle, &mut context as winnt::PCONTEXT)
         };
 
         Ok(ThreadContext {
@@ -105,12 +102,6 @@ impl fmt::Debug for Thread {
         fmt.debug_struct("Thread")
             .field("thread_id", &self.thread_id)
             .finish()
-    }
-}
-
-impl Drop for Thread {
-    fn drop(&mut self) {
-        drop_handle(self.handle);
     }
 }
 
@@ -129,7 +120,7 @@ impl ThreadContext<'_> {
 
         checked! {
             winbase::GetThreadSelectorEntry(
-                self.thread.handle,
+                **self.thread.handle,
                 seg_fs,
                 &mut entry as *mut _ as winbase::LPLDT_ENTRY,
             )
@@ -209,6 +200,7 @@ impl OpenThreadBuilder {
             return Err(io::Error::last_os_error());
         }
 
+        let handle = Arc::new(utils::Handle::new(handle));
         Ok(Thread { thread_id, handle })
     }
 }

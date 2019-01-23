@@ -1,6 +1,7 @@
 use failure::ResultExt;
 use ptscan::{
-    system_processes, system_threads, Location, ProcessHandle, ProcessId, ProcessName, Size,
+    scan, system_processes, system_threads, Location, ProcessHandle, ProcessId, ProcessName,
+    ScanResult,
 };
 use std::collections::HashMap;
 
@@ -21,8 +22,14 @@ fn try_main() -> Result<(), failure::Error> {
         threads.entry(t.process_id()).or_default().push(t);
     }
 
-    let buffer_size = Size::new(0x100u64);
-    let needle = 0xDEADBEEFu32;
+    let scan_type = scan::Type::U32;
+    let predicate = scan::Gt(scan::Value::U32(0x1000));
+    /*let predicate = scan::All(
+        vec![
+            Box::new(scan::Gt(scan::Value::U32(0))),
+            Box::new(scan::Lt(scan::Value::U32(4))),
+        ]
+    );*/
 
     for pid in system_processes()? {
         let mut handle = match ProcessHandle::open(pid).with_context(|_| MainError::Open(pid))? {
@@ -46,15 +53,17 @@ fn try_main() -> Result<(), failure::Error> {
             .refresh_threads(&threads)
             .with_context(|_| MainError::RefreshThreads(handle.name()))?;
 
-        for t in &handle.threads {
-            println!("{:?}", t);
-        }
+        println!("Starting scan...");
+        let results = handle.scan_for_value(scan_type, &predicate)?;
+        println!("Found {} addresses (only showing 100)", results.len());
 
-        for location in handle.scan_for_value(buffer_size, needle)? {
-            match handle.find_location(location)? {
+        for result in results.into_iter().take(100) {
+            let ScanResult { address, value } = result;
+
+            match handle.find_location(address)? {
                 Location::Module(module) => {
-                    let offset = location.offset_of(module.range.base)?;
-                    println!("{}{}: {}", module.name, offset, location);
+                    let offset = address.offset_of(module.range.base)?;
+                    println!("{}{}: {} = {}", module.name, offset, address, value);
                 }
                 Location::Thread(thread) => {
                     let base = thread
@@ -63,11 +72,14 @@ fn try_main() -> Result<(), failure::Error> {
                         .cloned()
                         .unwrap_or(thread.stack.base);
 
-                    let offset = location.offset_of(base)?;
-                    println!("THREADSTACK{}{}: {}", thread.id, offset, location);
+                    let offset = address.offset_of(base)?;
+                    println!(
+                        "THREADSTACK{}{}: {} = {}",
+                        thread.id, offset, address, value
+                    );
                 }
                 Location::None => {
-                    println!("{}", location);
+                    println!("{} = {}", address, value);
                 }
             }
         }

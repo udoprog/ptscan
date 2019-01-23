@@ -58,7 +58,9 @@ fn try_main() -> Result<(), failure::Error> {
         let mut scanner = handle.scanner(&thread_pool);
 
         println!("Starting scan...");
+        handle.process.suspend()?;
         scanner.scan_for_value(scan_type, &predicate)?;
+        handle.process.resume()?;
         println!(
             "Found {} addresses (only showing 100)",
             scanner.results.len()

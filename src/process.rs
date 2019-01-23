@@ -15,6 +15,8 @@ use winapi::{
     um::{memoryapi, processthreadsapi, psapi, winnt, wow64apiset},
 };
 
+use ntapi::ntpsapi;
+
 /// A process handle.
 #[derive(Clone)]
 pub struct Process {
@@ -187,6 +189,28 @@ impl Process {
             process: self,
             current: Address::new(0),
         }
+    }
+
+    /// Suspend the process.
+    pub fn suspend(&self) -> Result<(), io::Error> {
+        let status = unsafe { ntpsapi::NtSuspendProcess(**self.handle) };
+
+        if status != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(())
+    }
+
+    /// Resume the process.
+    pub fn resume(&self) -> Result<(), io::Error> {
+        let status = unsafe { ntpsapi::NtResumeProcess(**self.handle) };
+
+        if status != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(())
     }
 }
 

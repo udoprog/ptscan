@@ -2,7 +2,7 @@
 
 use hashbrown::HashMap;
 use std::{
-    cell::Cell,
+    cell::{Cell, UnsafeCell},
     ops,
     sync::{RwLock, RwLockReadGuard},
     thread::{self, ThreadId},
@@ -18,7 +18,7 @@ pub enum Error {
 
 /// A collection of buffers mapped to threads.
 pub struct ThreadBuffers {
-    map: RwLock<HashMap<ThreadId, Buffer>>,
+    lock: RwLock<HashMap<ThreadId, UnsafeCell<Buffer>>>,
 }
 
 unsafe impl Sync for ThreadBuffers {}
@@ -26,58 +26,86 @@ unsafe impl Sync for ThreadBuffers {}
 impl ThreadBuffers {
     pub fn new() -> ThreadBuffers {
         ThreadBuffers {
-            map: RwLock::new(hashbrown::HashMap::new()),
+            lock: RwLock::new(HashMap::new()),
         }
     }
 
     /// Access a mutable persistent buffer for the current thread.
+    ///
+    /// # Safety
+    ///
+    /// The returned slice is _not_ guaranteed to be initialized and might contain stale data.
     pub fn get_mut<'a>(&'a self, len: usize) -> Result<Guard<'a>, Error> {
         let id = thread::current().id();
 
         loop {
             {
-                let inner = self.map.read().map_err(|_| Error::LockPoisoned)?;
+                let lock_guard = self.lock.read().map_err(|_| Error::LockPoisoned)?;
 
-                if let Some(b) = inner.get(&id) {
-                    if b.borrowed.get() {
-                        return Err(Error::AlreadyBorrowed(id));
-                    }
+                if let Some(buffer) = lock_guard.get(&id) {
+                    let buffer = buffer.get();
 
-                    b.borrowed.set(true);
-                    let cap = b.cap;
+                    let cap = {
+                        let buffer = unsafe { &*buffer };
 
-                    // NB: this _should_ be OK since we're guaranteeing unique access above.
-                    // Can we use UnsafeCell?
-                    let buffer = b as *const Buffer as *mut Buffer;
+                        if buffer.borrowed.get() {
+                            return Err(Error::AlreadyBorrowed(id));
+                        }
+
+                        buffer.data.len()
+                    };
 
                     if len <= cap {
+                        unsafe { (*buffer).borrowed.set(true) };
+
                         return Ok(Guard {
-                            _inner: inner,
+                            lock_guard,
+                            len,
                             buffer,
                         });
                     }
                 }
             }
 
-            let mut inner = self.map.write().map_err(|_| Error::LockPoisoned)?;
+            let mut lock_guard = self.lock.write().map_err(|_| Error::LockPoisoned)?;
+            // NB: guarantees unique access since we are under the lock.
 
             // we already have a buffer, but it's probably too small.
-            if let Some(existing) = inner.get_mut(&id) {
-                if len <= existing.cap {
+            if let Some(buffer) = lock_guard.get(&id) {
+                let buffer = buffer.get();
+                let buffer = unsafe { &mut *buffer };
+
+                let cap = buffer.data.capacity();
+
+                if len <= cap {
                     continue;
                 }
 
-                existing.reserve(len - existing.cap);
+                buffer.data.reserve(len - cap);
+
+                // NB: set length to capacity so that slices can be properly fetched.
+                unsafe {
+                    buffer.data.set_len(buffer.data.capacity());
+                }
+
                 continue;
             }
 
-            inner.insert(id, Buffer::from_vec(Vec::with_capacity(len)));
+            let mut vec = Vec::with_capacity(len);
+
+            unsafe {
+                vec.set_len(vec.capacity());
+            }
+
+            lock_guard.insert(id, UnsafeCell::new(Buffer::from_vec(vec)));
         }
     }
 }
 
 pub struct Guard<'a> {
-    _inner: RwLockReadGuard<'a, hashbrown::HashMap<ThreadId, Buffer>>,
+    #[allow(unused)]
+    lock_guard: RwLockReadGuard<'a, HashMap<ThreadId, UnsafeCell<Buffer>>>,
+    len: usize,
     buffer: *mut Buffer,
 }
 
@@ -89,80 +117,34 @@ impl<'a> Drop for Guard<'a> {
     }
 }
 
-impl<'a> Guard<'a> {
-    /// Treat guard as mutable buffer.
-    pub fn as_ref<'b>(&'b self) -> &'b [u8] {
-        unsafe {
-            let Buffer { ptr, len, .. } = *self.buffer;
-
-            std::slice::from_raw_parts(ptr, len)
-        }
-    }
-
-    /// Treat guard as mutable buffer.
-    pub fn as_mut<'b>(&'b mut self) -> &'b mut [u8] {
-        unsafe {
-            let Buffer { ptr, len, .. } = *self.buffer;
-
-            std::slice::from_raw_parts_mut(ptr, len)
-        }
-    }
-}
-
 impl<'a> ops::Deref for Guard<'a> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        self.as_ref()
+        unsafe { &(*self.buffer).data[..self.len] }
     }
 }
 
 impl<'a> ops::DerefMut for Guard<'a> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.as_mut()
+        unsafe { &mut (*self.buffer).data[..self.len] }
     }
 }
 
+/// Helper struct for a buffer.
+///
+/// Keeps track of if the buffer is mutably borrowed.
 struct Buffer {
-    ptr: *mut u8,
-    len: usize,
-    cap: usize,
+    data: Vec<u8>,
     borrowed: Cell<bool>,
 }
 
 impl Buffer {
     /// Create a buffer from a vector.
-    pub fn from_vec(mut data: Vec<u8>) -> Buffer {
-        use std::mem;
-
-        let buffer = Buffer {
-            ptr: data.as_mut_ptr(),
-            len: data.len(),
-            cap: data.capacity(),
+    fn from_vec(data: Vec<u8>) -> Buffer {
+        Buffer {
+            data: data,
             borrowed: Cell::new(false),
-        };
-
-        mem::forget(data);
-        buffer
-    }
-
-    pub fn reserve(&mut self, additional: usize) {
-        use std::mem;
-
-        let mut v = unsafe { Vec::from_raw_parts(self.ptr, self.len, self.cap) };
-
-        v.reserve(additional);
-        let old = mem::replace(self, Buffer::from_vec(v));
-
-        // NB: need to forget the old one to avoid de-allocating it.
-        mem::forget(old);
-    }
-}
-
-impl Drop for Buffer {
-    fn drop(&mut self) {
-        unsafe {
-            Vec::from_raw_parts(self.ptr, self.len, self.cap);
         }
     }
 }

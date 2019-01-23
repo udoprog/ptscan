@@ -1,11 +1,11 @@
-use std::{fmt, io};
+use std::{convert::TryFrom, fmt, io};
 
 use failure::Error;
 
 use crate::{
     module, system_info,
-    utils::{array, drop_handle, Hex},
-    ProcessId, VirtualAddress,
+    utils::{array, drop_handle},
+    Address, ProcessId, Size,
 };
 
 use winapi::{
@@ -62,7 +62,7 @@ impl Process {
     }
 
     /// Read the given structure from the given address.
-    pub fn read<T>(&self, address: VirtualAddress) -> Result<T, Error> {
+    pub fn read<T>(&self, address: Address) -> Result<T, Error> {
         use std::{mem, slice};
 
         let mut out: T = unsafe { mem::zeroed() };
@@ -81,7 +81,7 @@ impl Process {
     /// Read process memory at the specified address.
     pub fn read_process_memory<'a>(
         &self,
-        address: VirtualAddress,
+        address: Address,
         buffer: &'a mut [u8],
     ) -> Result<&'a mut [u8], Error> {
         let mut bytes_read: SIZE_T = 0;
@@ -89,7 +89,7 @@ impl Process {
         checked! {
             memoryapi::ReadProcessMemory(
                 self.handle,
-                address as LPCVOID,
+                address.convert::<LPCVOID>()?,
                 buffer.as_mut_ptr() as LPVOID,
                 buffer.len() as SIZE_T,
                 &mut bytes_read as *mut SIZE_T,
@@ -100,7 +100,7 @@ impl Process {
     }
 
     /// Read a 64-bit memory region as a little endian unsigned integer.
-    pub fn read_u64(&self, address: VirtualAddress) -> Result<u64, Error> {
+    pub fn read_u64(&self, address: Address) -> Result<u64, Error> {
         use byteorder::{ByteOrder, LittleEndian};
         let mut out = [0u8; 8];
         let out = self.read_process_memory(address, &mut out)?;
@@ -124,10 +124,7 @@ impl Process {
     }
 
     /// Retrieve information about the memory page that corresponds to the given virtual `address`.
-    pub fn virtual_query(
-        &self,
-        address: VirtualAddress,
-    ) -> Result<Option<MemoryInformation>, Error> {
+    pub fn virtual_query(&self, address: Address) -> Result<Option<MemoryInformation>, Error> {
         const LENGTH: SIZE_T = mem::size_of::<winnt::MEMORY_BASIC_INFORMATION>() as SIZE_T;
 
         use std::mem;
@@ -136,7 +133,7 @@ impl Process {
         let b = unsafe {
             memoryapi::VirtualQueryEx(
                 self.handle,
-                address as LPCVOID,
+                address.convert()?,
                 &mut mbi as *mut _ as winnt::PMEMORY_BASIC_INFORMATION,
                 LENGTH as SIZE_T,
             )
@@ -168,8 +165,8 @@ impl Process {
         };
 
         Ok(Some(MemoryInformation {
-            base_address: mbi.BaseAddress as VirtualAddress,
-            region_size: mbi.RegionSize as VirtualAddress,
+            base_address: Address::try_from(mbi.BaseAddress)?,
+            region_size: Size::try_from(mbi.RegionSize)?,
             state,
             ty,
         }))
@@ -179,7 +176,7 @@ impl Process {
     pub fn virtual_memory_regions<'a>(&'a self) -> VirtualMemoryRegions<'a> {
         VirtualMemoryRegions {
             process: self,
-            current: 0,
+            current: Address::new(0),
         }
     }
 }
@@ -278,8 +275,8 @@ impl MemoryState {
 
 #[derive(Clone, Copy)]
 pub struct MemoryInformation {
-    pub base_address: VirtualAddress,
-    pub region_size: VirtualAddress,
+    pub base_address: Address,
+    pub region_size: Size,
     pub state: MemoryState,
     pub ty: MemoryType,
 }
@@ -287,8 +284,8 @@ pub struct MemoryInformation {
 impl fmt::Debug for MemoryInformation {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("AddressRange")
-            .field("base_address", &Hex(self.base_address))
-            .field("region_size", &Hex(self.region_size))
+            .field("base_address", &self.base_address)
+            .field("region_size", &self.region_size)
             .field("state", &self.state)
             .field("ty", &self.ty)
             .finish()
@@ -297,7 +294,7 @@ impl fmt::Debug for MemoryInformation {
 /// Iterator over virtual memory segments.
 pub struct VirtualMemoryRegions<'a> {
     process: &'a Process,
-    current: u64,
+    current: Address,
 }
 
 impl<'a> Iterator for VirtualMemoryRegions<'a> {
@@ -310,7 +307,15 @@ impl<'a> Iterator for VirtualMemoryRegions<'a> {
             Err(e) => return Some(Err(e)),
         };
 
-        self.current += memory_info.region_size + 1;
+        self.current = match self
+            .current
+            .add(memory_info.region_size)
+            .and_then(|c| c.add(Size::new(1)))
+        {
+            Ok(current) => current,
+            Err(e) => return Some(Err(e)),
+        };
+
         return Some(Ok(memory_info));
     }
 }

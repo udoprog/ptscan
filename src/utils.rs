@@ -1,8 +1,8 @@
-use std::{ffi::OsString, fmt, io};
+use std::{ffi::OsString, io};
 
 use failure::Error;
 
-use crate::{process::MemoryInformation, VirtualAddress};
+use crate::{process::MemoryInformation, AddressRange, Size};
 
 use winapi::{
     shared::minwindef::{BOOL, DWORD, LPDWORD, TRUE},
@@ -86,24 +86,25 @@ pub fn drop_handle(handle: winnt::HANDLE) {
     }
 }
 
-/// A simple virtual address wrapper to hex encode the address when formatting for debug.
-pub struct Hex(pub VirtualAddress);
-
-impl fmt::Debug for Hex {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "0x{:X}", self.0)
-    }
+/// Helper macro to handle fallible operations inside of a fallible iterator.
+macro_rules! try_iter {
+    ($expr:expr) => {
+        match $expr {
+            Ok(value) => value,
+            Err(e) => return Some(Err(e)),
+        }
+    };
 }
 
 pub trait IteratorExtension {
-    fn chunked(self, chunk_size: u64) -> Chunked<Self>
+    fn chunked(self, chunk_size: Size) -> Chunked<Self>
     where
         Self: Sized + Iterator<Item = Result<MemoryInformation, Error>>,
     {
         Chunked {
             iter: self,
             current: None,
-            offset: 0,
+            offset: Size::new(0),
             chunk_size,
         }
     }
@@ -140,8 +141,7 @@ where
 
         loop {
             let memory_info = match self.iter.next() {
-                Some(Ok(memory_info)) => memory_info,
-                Some(Err(e)) => return Some(Err(e)),
+                Some(memory_info) => try_iter!(memory_info),
                 None => return None,
             };
 
@@ -161,8 +161,8 @@ where
 {
     iter: I,
     current: Option<MemoryInformation>,
-    offset: u64,
-    chunk_size: u64,
+    offset: Size,
+    chunk_size: Size,
 }
 
 impl<I> Iterator for Chunked<I>
@@ -175,8 +175,7 @@ where
         loop {
             if self.current.is_none() {
                 self.current = match self.iter.next() {
-                    Some(Ok(memory_info)) => Some(memory_info),
-                    Some(Err(e)) => return Some(Err(e)),
+                    Some(memory_info) => Some(try_iter!(memory_info)),
                     None => return None,
                 }
             }
@@ -187,43 +186,25 @@ where
             };
 
             if self.offset >= memory_info.region_size {
-                self.offset = 0;
+                self.offset = Size::new(0);
                 self.current.take();
                 continue;
             }
 
             let s = self.offset;
-            let e = u64::min(self.offset + self.chunk_size, memory_info.region_size);
+            let e = Size::min(
+                try_iter!(self.offset.add(self.chunk_size)),
+                memory_info.region_size,
+            );
 
             self.offset = e;
 
             let range = AddressRange {
-                base: memory_info.base_address + s,
-                length: e - s,
+                base: try_iter!(memory_info.base_address.add(s)),
+                length: try_iter!(e.sub(s)),
             };
 
             return Some(Ok((*memory_info, range)));
         }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub struct AddressRange {
-    pub base: VirtualAddress,
-    pub length: VirtualAddress,
-}
-
-impl fmt::Debug for AddressRange {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt.debug_struct("AddressRange")
-            .field("base", &Hex(self.base))
-            .field("length", &Hex(self.length))
-            .finish()
-    }
-}
-
-impl AddressRange {
-    pub fn contains(&self, value: VirtualAddress) -> bool {
-        self.base <= value && value <= (self.base + self.length)
     }
 }

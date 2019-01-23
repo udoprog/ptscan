@@ -1,11 +1,11 @@
 //! High-level interface to processes.
 
 use crate::{
-    process::Process, system_thread::SystemThread, thread::Thread, utils::AddressRange, ProcessId,
-    VirtualAddress,
+    process::Process, system_thread::SystemThread, thread::Thread, Address, AddressRange,
+    ProcessId, Size,
 };
 use failure::Error;
-use std::collections::HashMap;
+use std::{collections::HashMap, convert::TryFrom};
 
 #[derive(Debug)]
 pub struct ModuleInfo {
@@ -100,21 +100,21 @@ impl ProcessHandle {
     }
 
     /// Find the module that the address is contained in.
-    pub fn find_location<'a>(&'a self, address: VirtualAddress) -> Location<'a> {
-        if let Some(module) = self.find_module(address) {
-            return Location::Module(module);
+    pub fn find_location<'a>(&'a self, address: Address) -> Result<Location<'a>, Error> {
+        if let Some(module) = self.find_module(address)? {
+            return Ok(Location::Module(module));
         }
 
         // TODO: need exact stack for thread.
-        if let Some(thread) = self.find_thread_by_stack(address) {
-            return Location::Thread(thread);
+        if let Some(thread) = self.find_thread_by_stack(address)? {
+            return Ok(Location::Thread(thread));
         }
 
-        Location::None
+        Ok(Location::None)
     }
 
     /// Find if address is contained in a module.
-    pub fn find_module<'a>(&'a self, address: VirtualAddress) -> Option<&'a ModuleInfo> {
+    pub fn find_module<'a>(&'a self, address: Address) -> Result<Option<&'a ModuleInfo>, Error> {
         let module = match self
             .modules
             .binary_search_by(|m| m.range.base.cmp(&address))
@@ -124,23 +124,23 @@ impl ProcessHandle {
                 if closest > 0 {
                     &self.modules[closest - 1]
                 } else {
-                    return None;
+                    return Ok(None);
                 }
             }
         };
 
-        if module.range.contains(address) {
-            return Some(module);
+        if module.range.contains(address)? {
+            return Ok(Some(module));
         }
 
-        None
+        Ok(None)
     }
 
     /// Find if address is contained in a module.
     pub fn find_thread_by_stack<'a>(
         &'a self,
-        address: VirtualAddress,
-    ) -> Option<&'a ProcessThread> {
+        address: Address,
+    ) -> Result<Option<&'a ProcessThread>, Error> {
         let thread = match self
             .threads
             .binary_search_by(|m| m.stack.base.cmp(&address))
@@ -150,16 +150,16 @@ impl ProcessHandle {
                 if closest > 0 {
                     &self.threads[closest - 1]
                 } else {
-                    return None;
+                    return Ok(None);
                 }
             }
         };
 
-        if thread.stack.contains(address) {
-            return Some(thread);
+        if thread.stack.contains(address)? {
+            return Ok(Some(thread));
         }
 
-        None
+        Ok(None)
     }
 
     /// Access the address of the stack for the given thread.
@@ -178,16 +178,24 @@ impl ProcessHandle {
     ///
     /// Ported from:
     /// https://github.com/cheat-engine/cheat-engine/blob/0d9d35183d0dcd9eeed4b4d0004fa3a1981b018a/Cheat%20Engine/CEFuncProc.pas
-    pub fn scan_for_exit(&self, stack: AddressRange) -> Result<Option<VirtualAddress>, Error> {
+    pub fn scan_for_exit(&self, stack: AddressRange) -> Result<Option<Address>, Error> {
         use byteorder::{ByteOrder, LittleEndian};
 
-        let ptr_width = if self.is_64bit { 8usize } else { 8usize };
+        let ptr_width = if self.is_64bit {
+            Size::new(8)
+        } else {
+            Size::new(4)
+        };
 
-        let mut buf = vec![0u8; stack.length as usize];
+        let mut buf = vec![0u8; stack.length.into_usize()?];
         let buf = self.process.read_process_memory(stack.base, &mut buf)?;
 
-        if stack.base % (ptr_width as u64) != 0 {
-            failure::bail!("for some reason, the stack is not aligned!");
+        if !stack.base.is_aligned(ptr_width)? {
+            failure::bail!(
+                "for some reason, the stack {:?} is not aligned with {}",
+                stack,
+                ptr_width
+            );
         }
 
         let kernel32 = match self.kernel32.as_ref() {
@@ -195,26 +203,21 @@ impl ProcessHandle {
             None => return Ok(None),
         };
 
-        for (n, w) in buf.chunks(ptr_width).enumerate().rev() {
-            let n = n as VirtualAddress;
-            let ptr_width = ptr_width as VirtualAddress;
-
+        for (n, w) in buf.chunks(ptr_width.into_usize()?).enumerate().rev() {
             // TODO: make independent of host architecture (use u64).
-            let ptr = LittleEndian::read_u64(w) as VirtualAddress;
+            let ptr = Address::try_from(LittleEndian::read_u64(w))?;
 
-            if kernel32.contains(ptr) {
-                return Ok(Some(stack.base + n * ptr_width));
+            if kernel32.contains(ptr)? {
+                let address = Size::try_from(n * ptr_width.into_usize()?)?;
+                return Ok(Some(stack.base.add(address)?));
             }
         }
 
         Ok(None)
     }
 
-    pub fn scan_for_value<T>(
-        &self,
-        buffer_size: u64,
-        value: T,
-    ) -> Result<Vec<VirtualAddress>, Error>
+    /// Scan for the given value in memory.
+    pub fn scan_for_value<T>(&self, buffer_size: Size, value: T) -> Result<Vec<Address>, Error>
     where
         T: Sync + PartialEq<T> + Decode,
     {
@@ -235,7 +238,7 @@ impl ProcessHandle {
             .into_par_iter()
             .map(|r| {
                 let (_, r) = r?;
-                let mut buf = vec![0u8; r.length as usize];
+                let mut buf = vec![0u8; r.length.into_usize()?];
 
                 // TODO: handle when value overlapps memory edges.
                 let buf = match self.process.read_process_memory(r.base, &mut buf) {
@@ -250,13 +253,13 @@ impl ProcessHandle {
 
                 for (n, w) in buf.chunks(size).enumerate() {
                     if T::decode(w)? == value {
-                        results.push(r.base + (size as VirtualAddress * n as VirtualAddress));
+                        results.push(r.base.add(Size::try_from(size * n)?)?);
                     }
                 }
 
                 Ok(results)
             })
-            .collect::<Result<Vec<Vec<VirtualAddress>>, Error>>()?;
+            .collect::<Result<Vec<Vec<Address>>, Error>>()?;
 
         Ok(addrs.into_iter().flat_map(|vec| vec).collect())
     }
@@ -277,7 +280,7 @@ pub struct ProcessThread {
     pub id: usize,
     pub stack: AddressRange,
     pub thread: Thread,
-    pub stack_exit: Option<VirtualAddress>,
+    pub stack_exit: Option<Address>,
 }
 
 pub trait Decode: Sized {

@@ -1,12 +1,8 @@
-use std::{fmt, io};
+use std::{convert::TryFrom, fmt, io};
 
 use failure::Error;
 
-use crate::{
-    process,
-    utils::{drop_handle, AddressRange},
-    VirtualAddress,
-};
+use crate::{process, utils::drop_handle, Address, AddressRange};
 
 use winapi::{
     shared::{
@@ -69,12 +65,14 @@ impl Thread {
             failure::bail!("{}: failed to resolve address", status);
         }
 
-        let tib = process.read::<winnt::NT_TIB64>(thread_info.TebBaseAddress as VirtualAddress)?;
-        let length = (tib.StackBase - tib.StackLimit) as VirtualAddress;
+        let base = Address::try_from(thread_info.TebBaseAddress)?;
+        let tib = process.read::<winnt::NT_TIB64>(base)?;
+        let stack_base = Address::try_from(tib.StackBase)?;
+        let stack_limit = Address::try_from(tib.StackLimit)?;
 
         Ok(AddressRange {
-            base: tib.StackLimit as VirtualAddress,
-            length,
+            base: stack_limit,
+            length: stack_base.size_from(stack_limit)?,
         })
     }
 
@@ -131,19 +129,19 @@ impl ThreadContext<'_> {
             )
         };
 
-        let address = unsafe {
+        let address = Address::try_from(unsafe {
             let bytes = entry.HighWord.Bytes();
-
-            entry.BaseLow as VirtualAddress
-                + ((bytes.BaseMid as VirtualAddress) << 0x10)
-                + ((bytes.BaseHi as VirtualAddress) << 0x18)
-        };
+            entry.BaseLow as u32
+                + ((bytes.BaseMid as u32) << 0x10)
+                + ((bytes.BaseHi as u32) << 0x18)
+        })?;
 
         let tib = process.read::<winnt::NT_TIB32>(address)?;
-        let length = (tib.StackBase - tib.StackLimit) as VirtualAddress;
+        let length =
+            Address::try_from(tib.StackBase)?.size_from(Address::try_from(tib.StackLimit)?)?;
 
         Ok(AddressRange {
-            base: tib.StackLimit as VirtualAddress,
+            base: Address::try_from(tib.StackLimit)?,
             length,
         })
     }

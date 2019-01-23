@@ -1,5 +1,5 @@
 use failure::Error;
-use ptscan::{system_processes, system_threads, Location, ProcessHandle};
+use ptscan::{system_processes, system_threads, Location, ProcessHandle, Size};
 use std::collections::HashMap;
 
 fn try_main() -> Result<(), Error> {
@@ -11,13 +11,14 @@ fn try_main() -> Result<(), Error> {
         threads.entry(t.process_id()).or_default().push(t);
     }
 
-    let buffer_size = 0x100u64;
+    let buffer_size = Size::new(0x100u64);
     let needle = 0xDEADBEEFu32;
 
     for pid in system_processes()? {
         let handle = match ProcessHandle::open(pid, &threads) {
             Ok(handle) => handle,
-            Err(_) => {
+            Err(e) => {
+                println!("failed to open: {}", e);
                 continue;
             }
         };
@@ -38,10 +39,10 @@ fn try_main() -> Result<(), Error> {
         }
 
         for location in handle.scan_for_value(buffer_size, needle)? {
-            match handle.find_location(location) {
+            match handle.find_location(location)? {
                 Location::Module(module) => {
-                    let offset = location - module.range.base;
-                    println!("{}+{:X}: {:X}", module.name, offset, location);
+                    let offset = location.offset_of(module.range.base)?;
+                    println!("{}{}: {}", module.name, offset, location);
                 }
                 Location::Thread(thread) => {
                     let base = thread
@@ -50,16 +51,11 @@ fn try_main() -> Result<(), Error> {
                         .cloned()
                         .unwrap_or(thread.stack.base);
 
-                    let offset = if location > base {
-                        format!("+{:X}", location - base)
-                    } else {
-                        format!("-{:X}", base - location)
-                    };
-
-                    println!("THREADSTACK{}{}: {:X}", thread.id, offset, location);
+                    let offset = location.offset_of(base)?;
+                    println!("THREADSTACK{}{}: {}", thread.id, offset, location);
                 }
                 Location::None => {
-                    println!("{:X}", location);
+                    println!("{}", location);
                 }
             }
         }

@@ -1,9 +1,8 @@
-use std::ffi::OsString;
-use std::fmt;
+use std::{convert::TryFrom, ffi::OsString, fmt};
 
 use failure::Error;
 
-use crate::process;
+use crate::{process, Address, Size};
 
 use winapi::{
     shared::minwindef::{DWORD, HMODULE},
@@ -52,16 +51,16 @@ impl<'a> Module<'a> {
         };
 
         Ok(ModuleInfo {
-            base_of_dll: out.lpBaseOfDll as u64,
-            size_of_image: out.SizeOfImage as u64,
-            entry_point: out.EntryPoint as usize,
+            base_of_dll: Address::try_from(out.lpBaseOfDll)?,
+            size_of_image: Size::try_from(out.SizeOfImage)?,
+            entry_point: Address::try_from(out.EntryPoint)?,
         })
     }
 }
 
 #[derive(Debug)]
 pub struct ModuleInfo {
-    pub base_of_dll: u64,
-    pub size_of_image: u64,
-    pub entry_point: usize,
+    pub base_of_dll: Address,
+    pub size_of_image: Size,
+    pub entry_point: Address,
 }

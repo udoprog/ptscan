@@ -1,6 +1,5 @@
 //! Tools to get information about the current system.
 
-use failure::Error;
 use winapi::um::{sysinfoapi, winnt};
 
 #[derive(Debug)]
@@ -24,7 +23,7 @@ pub struct SystemInfo {
 }
 
 impl SystemInfo {
-    pub fn get() -> Result<SystemInfo, Error> {
+    pub fn get() -> Result<SystemInfo, failure::Error> {
         use std::mem;
         let mut out: sysinfoapi::SYSTEM_INFO = unsafe { mem::zeroed() };
         unsafe { sysinfoapi::GetNativeSystemInfo(&mut out as sysinfoapi::LPSYSTEM_INFO) };

@@ -2,18 +2,24 @@
 
 use crate::{
     process::Process, system_thread::SystemThread, thread::Thread, Address, AddressRange,
-    ProcessId, Size,
+    ProcessId, Size, ThreadId,
 };
-use failure::Error;
-use std::{collections::HashMap, convert::TryFrom};
+use failure::ResultExt;
+use std::{collections::HashMap, convert::TryFrom, fmt};
+use winapi::shared::winerror;
 
-#[derive(Debug)]
-pub struct ModuleInfo {
-    pub name: String,
-    pub range: AddressRange,
+#[derive(Debug, failure::Fail)]
+enum RefreshThreadError {
+    #[fail(display = "failed to build thread interface: {}", _0)]
+    BuildThread(ThreadId),
+    #[fail(display = "failed to extract thread stack for thread: {}", _0)]
+    ThreadStack(ThreadId),
+    #[fail(display = "failed to scan for thread exit")]
+    ScanForExit,
 }
 
-#[derive(Debug)]
+/// A handle for a process.
+#[derive(Debug, Clone)]
 pub struct ProcessHandle {
     /// Name of the process (if present).
     pub name: Option<String>,
@@ -31,13 +37,31 @@ pub struct ProcessHandle {
 
 impl ProcessHandle {
     /// Open the given process id and create a simplified handle to it.
-    pub fn open(
-        pid: ProcessId,
-        threads: &HashMap<ProcessId, Vec<SystemThread>>,
-    ) -> Result<ProcessHandle, Error> {
+    ///
+    /// This returns `None` if:
+    ///
+    /// * We try to open a special PID like 0.
+    /// * We don't have sufficient privileges to open the process.
+    /// * The process no longer exists.
+    pub fn open(pid: ProcessId) -> Result<Option<ProcessHandle>, failure::Error> {
         use std::ffi::OsStr;
 
-        let process = Process::open(pid)?;
+        // IDLE process, cannot be opened.
+        if pid == 0 {
+            return Ok(None);
+        }
+
+        let process = match Process::builder().all_access().build(pid) {
+            Ok(process) => process,
+            Err(e) => match e.raw_os_error().map(|n| n as u32) {
+                // NB: process no longer exists.
+                Some(winerror::ERROR_INVALID_PARAMETER) => return Ok(None),
+                // NB: we don't have access to the process.
+                Some(winerror::ERROR_ACCESS_DENIED) => return Ok(None),
+                _ => return Err(failure::Error::from(e)),
+            },
+        };
+
         let is_64bit = process.is_64bit()?;
 
         let mut name = None;
@@ -72,22 +96,51 @@ impl ProcessHandle {
 
         modules.sort_by_key(|m| m.range.base);
 
-        let mut handle = ProcessHandle {
+        Ok(Some(ProcessHandle {
             name,
             process,
             is_64bit,
             modules,
             kernel32,
             threads: Vec::new(),
-        };
+        }))
+    }
 
-        let threads = threads.get(&pid).map(|t| t.as_slice()).unwrap_or(&[]);
+    /// Name of the process.
+    pub fn name(&self) -> ProcessName {
+        ProcessName {
+            id: self.process.process_id(),
+            name: self.name.clone(),
+        }
+    }
+
+    /// Refresh information about known threads.
+    pub fn refresh_threads(
+        &mut self,
+        threads: &HashMap<ProcessId, Vec<SystemThread>>,
+    ) -> Result<(), failure::Error> {
+        let threads = threads
+            .get(&self.process.process_id())
+            .map(|t| t.as_slice())
+            .unwrap_or(&[]);
 
         for (id, t) in threads.into_iter().enumerate() {
-            let thread = Thread::builder().all_access().build(t.thread_id())?;
-            let stack = handle.thread_stack(&thread)?;
-            let stack_exit = handle.scan_for_exit(stack)?;
-            handle.threads.push(ProcessThread {
+            let thread = Thread::builder()
+                .all_access()
+                .query_information()
+                .get_context()
+                .build(t.thread_id())
+                .with_context(|_| RefreshThreadError::BuildThread(t.thread_id()))?;
+
+            let stack = self
+                .thread_stack(&thread)
+                .with_context(|_| RefreshThreadError::ThreadStack(thread.thread_id()))?;
+
+            let stack_exit = self
+                .scan_for_exit(stack)
+                .with_context(|_| RefreshThreadError::ScanForExit)?;
+
+            self.threads.push(ProcessThread {
                 id,
                 stack,
                 thread,
@@ -95,12 +148,12 @@ impl ProcessHandle {
             });
         }
 
-        handle.threads.sort_by_key(|t| t.stack.base);
-        Ok(handle)
+        self.threads.sort_by_key(|t| t.stack.base);
+        Ok(())
     }
 
     /// Find the module that the address is contained in.
-    pub fn find_location<'a>(&'a self, address: Address) -> Result<Location<'a>, Error> {
+    pub fn find_location<'a>(&'a self, address: Address) -> Result<Location<'a>, failure::Error> {
         if let Some(module) = self.find_module(address)? {
             return Ok(Location::Module(module));
         }
@@ -114,7 +167,10 @@ impl ProcessHandle {
     }
 
     /// Find if address is contained in a module.
-    pub fn find_module<'a>(&'a self, address: Address) -> Result<Option<&'a ModuleInfo>, Error> {
+    pub fn find_module<'a>(
+        &'a self,
+        address: Address,
+    ) -> Result<Option<&'a ModuleInfo>, failure::Error> {
         let module = match self
             .modules
             .binary_search_by(|m| m.range.base.cmp(&address))
@@ -140,7 +196,7 @@ impl ProcessHandle {
     pub fn find_thread_by_stack<'a>(
         &'a self,
         address: Address,
-    ) -> Result<Option<&'a ProcessThread>, Error> {
+    ) -> Result<Option<&'a ProcessThread>, failure::Error> {
         let thread = match self
             .threads
             .binary_search_by(|m| m.stack.base.cmp(&address))
@@ -163,12 +219,9 @@ impl ProcessHandle {
     }
 
     /// Access the address of the stack for the given thread.
-    pub fn thread_stack(&self, thread: &Thread) -> Result<AddressRange, Error> {
-        if self.is_64bit {
-            thread.thread_stack(&self.process)
-        } else {
-            thread.get_context()?.thread_stack(&self.process)
-        }
+    pub fn thread_stack(&self, thread: &Thread) -> Result<AddressRange, failure::Error> {
+        // NB: if ptscan is running in 32-bit mode this might have to be different.
+        thread.thread_stack(&self.process)
     }
 
     /// Scan for the base of the stack.
@@ -178,7 +231,7 @@ impl ProcessHandle {
     ///
     /// Ported from:
     /// https://github.com/cheat-engine/cheat-engine/blob/0d9d35183d0dcd9eeed4b4d0004fa3a1981b018a/Cheat%20Engine/CEFuncProc.pas
-    pub fn scan_for_exit(&self, stack: AddressRange) -> Result<Option<Address>, Error> {
+    pub fn scan_for_exit(&self, stack: AddressRange) -> Result<Option<Address>, failure::Error> {
         use byteorder::{ByteOrder, LittleEndian};
 
         let ptr_width = if self.is_64bit {
@@ -217,7 +270,11 @@ impl ProcessHandle {
     }
 
     /// Scan for the given value in memory.
-    pub fn scan_for_value<T>(&self, buffer_size: Size, value: T) -> Result<Vec<Address>, Error>
+    pub fn scan_for_value<T>(
+        &self,
+        buffer_size: Size,
+        value: T,
+    ) -> Result<Vec<Address>, failure::Error>
     where
         T: Sync + PartialEq<T> + Decode,
     {
@@ -259,9 +316,32 @@ impl ProcessHandle {
 
                 Ok(results)
             })
-            .collect::<Result<Vec<Vec<Address>>, Error>>()?;
+            .collect::<Result<Vec<Vec<Address>>, failure::Error>>()?;
 
         Ok(addrs.into_iter().flat_map(|vec| vec).collect())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleInfo {
+    pub name: String,
+    pub range: AddressRange,
+}
+
+/// A helper struct to give a name to a process.
+#[derive(Debug)]
+pub struct ProcessName {
+    pub id: ProcessId,
+    pub name: Option<String>,
+}
+
+impl fmt::Display for ProcessName {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(name) = self.name.as_ref() {
+            write!(fmt, "{} ({})", name, self.id)
+        } else {
+            write!(fmt, "{}", self.id)
+        }
     }
 }
 
@@ -275,7 +355,7 @@ pub enum Location<'a> {
     None,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProcessThread {
     pub id: usize,
     pub stack: AddressRange,
@@ -284,18 +364,18 @@ pub struct ProcessThread {
 }
 
 pub trait Decode: Sized {
-    fn decode(buf: &[u8]) -> Result<Self, Error>;
+    fn decode(buf: &[u8]) -> Result<Self, failure::Error>;
 }
 
 impl Decode for u64 {
-    fn decode(buf: &[u8]) -> Result<Self, Error> {
+    fn decode(buf: &[u8]) -> Result<Self, failure::Error> {
         use byteorder::{ByteOrder, LittleEndian};
         Ok(LittleEndian::read_u64(buf))
     }
 }
 
 impl Decode for u32 {
-    fn decode(buf: &[u8]) -> Result<Self, Error> {
+    fn decode(buf: &[u8]) -> Result<Self, failure::Error> {
         use byteorder::{ByteOrder, LittleEndian};
         Ok(LittleEndian::read_u32(buf))
     }

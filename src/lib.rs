@@ -19,7 +19,7 @@ pub type ThreadId = DWORD;
 pub use self::address::{Address, AddressRange, Offset, Size};
 pub use self::module::Module;
 pub use self::process::{system_processes, MemoryState, MemoryType, Process};
-pub use self::process_handle::{Location, ProcessHandle};
+pub use self::process_handle::{Location, ProcessHandle, ProcessName};
 pub use self::system_thread::{system_threads, SystemThread};
 pub use self::thread::Thread;
 pub use self::utils::IteratorExtension;

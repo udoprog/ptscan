@@ -1,7 +1,5 @@
 use std::{convert::TryFrom, fmt, io};
 
-use failure::Error;
-
 use crate::{
     module, system_info,
     utils::{array, drop_handle},
@@ -18,12 +16,14 @@ use winapi::{
 };
 
 /// A process handle.
+#[derive(Clone)]
 pub struct Process {
     process_id: ProcessId,
     pub(crate) handle: winnt::HANDLE,
 }
 
 unsafe impl Sync for Process {}
+unsafe impl Send for Process {}
 
 impl Process {
     pub fn builder() -> OpenProcessBuilder {
@@ -33,21 +33,13 @@ impl Process {
         }
     }
 
-    /// Open the specified process by process id with default options.
-    pub fn open(process_id: ProcessId) -> Result<Process, Error> {
-        Self::builder()
-            .query_information()
-            .vm_read()
-            .build(process_id)
-    }
-
     /// Get the process ID.
     pub fn process_id(&self) -> ProcessId {
         self.process_id
     }
 
     /// Enumerate all modules.
-    pub fn modules<'a>(&'a self) -> Result<Vec<module::Module<'a>>, Error> {
+    pub fn modules<'a>(&'a self) -> Result<Vec<module::Module<'a>>, failure::Error> {
         let modules = array(0x400, |buf, size, needed| unsafe {
             psapi::EnumProcessModules(self.handle, buf, size, needed)
         })?;
@@ -62,17 +54,22 @@ impl Process {
     }
 
     /// Read the given structure from the given address.
-    pub fn read<T>(&self, address: Address) -> Result<T, Error> {
+    pub fn read<T>(&self, address: Address) -> Result<T, failure::Error> {
         use std::{mem, slice};
 
         let mut out: T = unsafe { mem::zeroed() };
+        let expected = mem::size_of::<T>();
 
         let read = self.read_process_memory(address, unsafe {
             slice::from_raw_parts_mut(&mut out as *mut T as *mut u8, mem::size_of::<T>())
         })?;
 
-        if read.len() != mem::size_of::<winnt::NT_TIB64>() {
-            failure::bail!("failed to read tib");
+        if read.len() != expected {
+            failure::bail!(
+                "expected to read {} bytes, but read {}",
+                expected,
+                read.len()
+            );
         }
 
         Ok(out)
@@ -83,7 +80,7 @@ impl Process {
         &self,
         address: Address,
         buffer: &'a mut [u8],
-    ) -> Result<&'a mut [u8], Error> {
+    ) -> Result<&'a mut [u8], failure::Error> {
         let mut bytes_read: SIZE_T = 0;
 
         checked! {
@@ -100,7 +97,7 @@ impl Process {
     }
 
     /// Read a 64-bit memory region as a little endian unsigned integer.
-    pub fn read_u64(&self, address: Address) -> Result<u64, Error> {
+    pub fn read_u64(&self, address: Address) -> Result<u64, failure::Error> {
         use byteorder::{ByteOrder, LittleEndian};
         let mut out = [0u8; 8];
         let out = self.read_process_memory(address, &mut out)?;
@@ -108,14 +105,14 @@ impl Process {
     }
 
     /// Test if the process is a 32-bit process running under WOW64 compatibility.
-    pub fn is_wow64(&self) -> Result<bool, Error> {
+    pub fn is_wow64(&self) -> Result<bool, failure::Error> {
         let mut out: BOOL = FALSE;
         checked!(wow64apiset::IsWow64Process(self.handle, &mut out as PBOOL));
         Ok(out == TRUE)
     }
 
     /// Test if this is a 64-bit process.
-    pub fn is_64bit(&self) -> Result<bool, Error> {
+    pub fn is_64bit(&self) -> Result<bool, failure::Error> {
         if self.is_wow64()? {
             return Ok(false);
         }
@@ -124,7 +121,10 @@ impl Process {
     }
 
     /// Retrieve information about the memory page that corresponds to the given virtual `address`.
-    pub fn virtual_query(&self, address: Address) -> Result<Option<MemoryInformation>, Error> {
+    pub fn virtual_query(
+        &self,
+        address: Address,
+    ) -> Result<Option<MemoryInformation>, failure::Error> {
         const LENGTH: SIZE_T = mem::size_of::<winnt::MEMORY_BASIC_INFORMATION>() as SIZE_T;
 
         use std::mem;
@@ -146,7 +146,7 @@ impl Process {
                 return Ok(None);
             }
 
-            return Err(Error::from(e));
+            return Err(failure::Error::from(e));
         }
 
         let state = match mbi.State {
@@ -203,6 +203,14 @@ pub struct OpenProcessBuilder {
 }
 
 impl OpenProcessBuilder {
+    /// Open process with all access.
+    pub fn all_access(self) -> Self {
+        OpenProcessBuilder {
+            desired_access: self.desired_access | winnt::PROCESS_ALL_ACCESS,
+            ..self
+        }
+    }
+
     /// Set the query information flag.
     pub fn query_information(self) -> Self {
         OpenProcessBuilder {
@@ -228,13 +236,13 @@ impl OpenProcessBuilder {
     }
 
     /// Build the process handle.
-    pub fn build(self, process_id: ProcessId) -> Result<Process, Error> {
+    pub fn build(self, process_id: ProcessId) -> Result<Process, io::Error> {
         let handle = unsafe {
             processthreadsapi::OpenProcess(self.desired_access, self.inherit_handles, process_id)
         };
 
         if handle.is_null() {
-            return Err(Error::from(io::Error::last_os_error()));
+            return Err(io::Error::last_os_error());
         }
 
         Ok(Process { process_id, handle })
@@ -242,7 +250,7 @@ impl OpenProcessBuilder {
 }
 
 /// Enumerate all processes, returning their corresponding pids.
-pub fn system_processes() -> Result<Vec<ProcessId>, Error> {
+pub fn system_processes() -> Result<Vec<ProcessId>, failure::Error> {
     array(0x400, |buf, size, needed| unsafe {
         psapi::EnumProcesses(buf, size, needed)
     })
@@ -298,7 +306,7 @@ pub struct VirtualMemoryRegions<'a> {
 }
 
 impl<'a> Iterator for VirtualMemoryRegions<'a> {
-    type Item = Result<MemoryInformation, Error>;
+    type Item = Result<MemoryInformation, failure::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let memory_info = match self.process.virtual_query(self.current) {

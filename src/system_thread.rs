@@ -1,7 +1,5 @@
 use std::{fmt, io};
 
-use failure::Error;
-
 use crate::{utils::drop_handle, ProcessId, ThreadId};
 
 use winapi::{
@@ -86,13 +84,13 @@ impl Drop for SystemThreads {
 }
 
 /// Enumerate all threads of the system.
-pub fn system_threads() -> Result<SystemThreads, Error> {
+pub fn system_threads() -> Result<SystemThreads, failure::Error> {
     use tlhelp32::{CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD};
 
     let handle = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
 
     if handle == handleapi::INVALID_HANDLE_VALUE {
-        return Err(Error::from(io::Error::last_os_error()));
+        return Err(failure::Error::from(io::Error::last_os_error()));
     }
 
     Ok(SystemThreads {

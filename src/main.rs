@@ -1,8 +1,18 @@
-use failure::Error;
-use ptscan::{system_processes, system_threads, Location, ProcessHandle, Size};
+use failure::ResultExt;
+use ptscan::{
+    system_processes, system_threads, Location, ProcessHandle, ProcessId, ProcessName, Size,
+};
 use std::collections::HashMap;
 
-fn try_main() -> Result<(), Error> {
+#[derive(Debug, failure::Fail)]
+enum MainError {
+    #[fail(display = "failed to open process: {}", _0)]
+    Open(ProcessId),
+    #[fail(display = "failed to refresh threads for process: {}", _0)]
+    RefreshThreads(ProcessName),
+}
+
+fn try_main() -> Result<(), failure::Error> {
     let opts = ptscan::opts::opts();
 
     let mut threads = HashMap::<_, Vec<_>>::new();
@@ -15,12 +25,10 @@ fn try_main() -> Result<(), Error> {
     let needle = 0xDEADBEEFu32;
 
     for pid in system_processes()? {
-        let handle = match ProcessHandle::open(pid, &threads) {
-            Ok(handle) => handle,
-            Err(e) => {
-                println!("failed to open: {}", e);
-                continue;
-            }
+        let mut handle = match ProcessHandle::open(pid).with_context(|_| MainError::Open(pid))? {
+            Some(handle) => handle,
+            // process cannot be opened.
+            None => continue,
         };
 
         if let Some(process) = opts.process.as_ref().map(|n| n.as_str()) {
@@ -33,6 +41,10 @@ fn try_main() -> Result<(), Error> {
                 continue;
             }
         }
+
+        handle
+            .refresh_threads(&threads)
+            .with_context(|_| MainError::RefreshThreads(handle.name()))?;
 
         for t in &handle.threads {
             println!("{:?}", t);
@@ -64,11 +76,22 @@ fn try_main() -> Result<(), Error> {
     Ok(())
 }
 
-fn main() -> Result<(), Error> {
+fn main() -> Result<(), failure::Error> {
     if let Err(e) = try_main() {
         eprintln!("{}", e);
         eprintln!("{}", e.backtrace());
+
+        for c in e.iter_chain().skip(1) {
+            eprintln!("Caused by: {}", c);
+
+            if let Some(bt) = c.backtrace() {
+                eprintln!("Backtrace: {}", bt);
+            }
+        }
     }
 
+    println!("press [enter] to exit");
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
     Ok(())
 }

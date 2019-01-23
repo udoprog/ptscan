@@ -1,10 +1,19 @@
 //! Abstraction to help deal with virtual addresses.
 
-use failure::Error;
 use std::{
     convert::{TryFrom, TryInto},
     fmt,
 };
+
+#[derive(Debug, failure::Fail)]
+pub enum Error {
+    #[fail(display = "address {} is not based on {}", _0, _1)]
+    SizeFrom(Address, Address),
+    #[fail(display = "add operation `{} + {}` overflowed", _0, _1)]
+    AddOverflow(u64, u64),
+    #[fail(display = "sub operation `{} - {}` underflowed", _0, _1)]
+    SubUnderflow(u64, u64),
+}
 
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct Address(u64);
@@ -16,16 +25,16 @@ impl Address {
     }
 
     /// Performed a checked add with an address and a size.
-    pub fn add(self, rhs: Size) -> Result<Address, Error> {
+    pub fn add(self, rhs: Size) -> Result<Address, failure::Error> {
         let sum = self
             .0
             .checked_add(rhs.0)
-            .ok_or_else(|| failure::format_err!("overflow"))?;
+            .ok_or_else(|| Error::AddOverflow(self.0, rhs.0))?;
         Ok(Address(sum))
     }
 
     /// Find how far this address offsets another one.
-    pub fn offset_of(self, base: Address) -> Result<Offset, Error> {
+    pub fn offset_of(self, base: Address) -> Result<Offset, failure::Error> {
         if self.0 >= base.0 {
             Ok(Offset(true, self.0 - base.0))
         } else {
@@ -36,14 +45,14 @@ impl Address {
     /// Safely convert two addresses into a non-negative size.
     pub fn size_from(self, base: Address) -> Result<Size, Error> {
         if self.0 < base.0 {
-            failure::bail!("argument is not smaller");
+            return Err(Error::SizeFrom(self, base));
         }
 
         Ok(Size(self.0 - base.0))
     }
 
     /// Test if the current address is aligned with the given size.
-    pub fn is_aligned(self, size: Size) -> Result<bool, Error> {
+    pub fn is_aligned(self, size: Size) -> Result<bool, failure::Error> {
         if size.0 == 0 {
             return Ok(false);
         }
@@ -52,9 +61,9 @@ impl Address {
     }
 
     /// Try to convert into the given type.
-    pub fn convert<T>(self) -> Result<T, Error>
+    pub fn convert<T>(self) -> Result<T, failure::Error>
     where
-        T: Convertible<Self, Error = Error>,
+        T: Convertible<Self, Error = failure::Error>,
     {
         T::convert(self)
     }
@@ -62,7 +71,7 @@ impl Address {
     /// Convert into usize.
     ///
     /// Internal function, use `convert` instead.
-    fn into_usize(self) -> Result<usize, Error> {
+    fn into_usize(self) -> Result<usize, failure::Error> {
         Ok(self.0.try_into()?)
     }
 }
@@ -75,7 +84,7 @@ pub trait Convertible<T>: Sized {
 }
 
 impl<T> Convertible<Address> for *mut T {
-    type Error = Error;
+    type Error = failure::Error;
 
     fn convert(value: Address) -> Result<Self, Self::Error> {
         Ok(value.into_usize()? as *mut T)
@@ -83,7 +92,7 @@ impl<T> Convertible<Address> for *mut T {
 }
 
 impl<T> Convertible<Address> for *const T {
-    type Error = Error;
+    type Error = failure::Error;
 
     fn convert(value: Address) -> Result<Self, Self::Error> {
         Ok(value.into_usize()? as *const T)
@@ -103,7 +112,7 @@ impl fmt::Debug for Address {
 }
 
 impl TryFrom<usize> for Address {
-    type Error = Error;
+    type Error = failure::Error;
 
     fn try_from(value: usize) -> Result<Self, Self::Error> {
         Ok(Address(value.try_into()?))
@@ -111,7 +120,7 @@ impl TryFrom<usize> for Address {
 }
 
 impl TryFrom<u32> for Address {
-    type Error = Error;
+    type Error = failure::Error;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         Ok(Address(value.try_into()?))
@@ -119,7 +128,7 @@ impl TryFrom<u32> for Address {
 }
 
 impl TryFrom<u64> for Address {
-    type Error = Error;
+    type Error = failure::Error;
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         Ok(Address(value.try_into()?))
@@ -127,7 +136,7 @@ impl TryFrom<u64> for Address {
 }
 
 impl<T> TryFrom<*mut T> for Address {
-    type Error = Error;
+    type Error = failure::Error;
 
     fn try_from(value: *mut T) -> Result<Self, Self::Error> {
         Ok(Address((value as usize).try_into()?))
@@ -135,7 +144,7 @@ impl<T> TryFrom<*mut T> for Address {
 }
 
 impl<T> TryFrom<*const T> for Address {
-    type Error = Error;
+    type Error = failure::Error;
 
     fn try_from(value: *const T) -> Result<Self, Self::Error> {
         Ok(Address((value as usize).try_into()?))
@@ -152,30 +161,32 @@ impl Size {
     }
 
     /// Convert into u64.
-    pub fn into_u64(self) -> Result<u64, Error> {
+    pub fn into_u64(self) -> Result<u64, failure::Error> {
         Ok(self.0.try_into()?)
     }
 
     /// Convert into usize.
-    pub fn into_usize(self) -> Result<usize, Error> {
+    pub fn into_usize(self) -> Result<usize, failure::Error> {
         Ok(self.0.try_into()?)
     }
 
     /// Performed a checked add with two sizes.
-    pub fn add(self, rhs: Size) -> Result<Size, Error> {
+    pub fn add(self, rhs: Size) -> Result<Size, failure::Error> {
         let sum = self
             .0
             .checked_add(rhs.0)
-            .ok_or_else(|| failure::format_err!("overflow"))?;
+            .ok_or_else(|| Error::AddOverflow(self.0, rhs.0))?;
+
         Ok(Size(sum))
     }
 
     /// Performed a checked add with two sizes.
-    pub fn sub(self, rhs: Size) -> Result<Size, Error> {
+    pub fn sub(self, rhs: Size) -> Result<Size, failure::Error> {
         let sum = self
             .0
             .checked_sub(rhs.0)
-            .ok_or_else(|| failure::format_err!("underflow"))?;
+            .ok_or_else(|| Error::SubUnderflow(self.0, rhs.0))?;
+
         Ok(Size(sum))
     }
 }
@@ -193,7 +204,7 @@ impl fmt::Debug for Size {
 }
 
 impl TryFrom<usize> for Size {
-    type Error = Error;
+    type Error = failure::Error;
 
     fn try_from(value: usize) -> Result<Self, Self::Error> {
         Ok(Size(value.try_into()?))
@@ -201,7 +212,7 @@ impl TryFrom<usize> for Size {
 }
 
 impl TryFrom<u64> for Size {
-    type Error = Error;
+    type Error = failure::Error;
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         Ok(Size(value.try_into()?))
@@ -209,7 +220,7 @@ impl TryFrom<u64> for Size {
 }
 
 impl TryFrom<u32> for Size {
-    type Error = Error;
+    type Error = failure::Error;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         Ok(Size(value.try_into()?))
@@ -254,7 +265,7 @@ impl fmt::Debug for AddressRange {
 }
 
 impl AddressRange {
-    pub fn contains(&self, value: Address) -> Result<bool, Error> {
+    pub fn contains(&self, value: Address) -> Result<bool, failure::Error> {
         Ok(self.base <= value && value <= (self.base.add(self.length)?))
     }
 }

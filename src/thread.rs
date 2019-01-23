@@ -1,7 +1,5 @@
 use std::{convert::TryFrom, fmt, io};
 
-use failure::Error;
-
 use crate::{process, utils::drop_handle, Address, AddressRange};
 
 use winapi::{
@@ -14,13 +12,15 @@ use winapi::{
 
 pub type ThreadId = DWORD;
 
-/// A thread being iterated over.
+/// A thread in the system.
+#[derive(Clone)]
 pub struct Thread {
     thread_id: ThreadId,
     handle: winnt::HANDLE,
 }
 
 unsafe impl Sync for Thread {}
+unsafe impl Send for Thread {}
 
 impl Thread {
     /// Set up an open thread builder.
@@ -32,7 +32,7 @@ impl Thread {
     }
 
     /// Open the specified thread by thread id with default options.
-    pub fn open(thread_id: ThreadId) -> Result<Thread, Error> {
+    pub fn open(thread_id: ThreadId) -> Result<Thread, io::Error> {
         Self::builder().query_information().build(thread_id)
     }
 
@@ -41,8 +41,21 @@ impl Thread {
         self.thread_id
     }
 
+    /// Access the thread stack from a 64-bit process.
+    pub fn thread_stack(&self, process: &process::Process) -> Result<AddressRange, failure::Error> {
+        let tib = self.thread_teb::<winnt::NT_TIB64>(process)?;
+
+        let stack_base = Address::try_from(tib.StackBase)?;
+        let stack_limit = Address::try_from(tib.StackLimit)?;
+
+        Ok(AddressRange {
+            base: stack_limit,
+            length: stack_base.size_from(stack_limit)?,
+        })
+    }
+
     /// Access the private address range of a thread to decode its stack.
-    pub fn thread_stack(&self, process: &process::Process) -> Result<AddressRange, Error> {
+    fn thread_teb<T>(&self, process: &process::Process) -> Result<T, failure::Error> {
         use ntapi::ntpsapi::{
             NtQueryInformationThread, ThreadBasicInformation, THREAD_BASIC_INFORMATION,
         };
@@ -66,18 +79,11 @@ impl Thread {
         }
 
         let base = Address::try_from(thread_info.TebBaseAddress)?;
-        let tib = process.read::<winnt::NT_TIB64>(base)?;
-        let stack_base = Address::try_from(tib.StackBase)?;
-        let stack_limit = Address::try_from(tib.StackLimit)?;
-
-        Ok(AddressRange {
-            base: stack_limit,
-            length: stack_base.size_from(stack_limit)?,
-        })
+        Ok(process.read::<T>(base)?)
     }
 
     /// Get the context for a thread.
-    pub fn get_context<'a>(&'a self) -> Result<ThreadContext<'a>, Error> {
+    pub fn get_context<'a>(&'a self) -> Result<ThreadContext<'a>, failure::Error> {
         use std::mem;
 
         let mut context: winnt::CONTEXT = unsafe { mem::zeroed() };
@@ -115,7 +121,7 @@ pub struct ThreadContext<'a> {
 
 impl ThreadContext<'_> {
     /// Find where the thread stack is located.
-    pub fn thread_stack(&self, process: &process::Process) -> Result<AddressRange, Error> {
+    pub fn thread_stack(&self, process: &process::Process) -> Result<AddressRange, failure::Error> {
         use std::mem;
         let mut entry: winnt::LDT_ENTRY = unsafe { mem::zeroed() };
 
@@ -194,13 +200,13 @@ impl OpenThreadBuilder {
     }
 
     /// Build the process handle.
-    pub fn build(self, thread_id: ThreadId) -> Result<Thread, Error> {
+    pub fn build(self, thread_id: ThreadId) -> Result<Thread, io::Error> {
         let handle = unsafe {
             processthreadsapi::OpenThread(self.desired_access, self.inherit_handles, thread_id)
         };
 
         if handle.is_null() {
-            return Err(Error::from(io::Error::last_os_error()));
+            return Err(io::Error::last_os_error());
         }
 
         Ok(Thread { thread_id, handle })

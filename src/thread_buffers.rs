@@ -1,54 +1,63 @@
-//! An unsafe data structure to maintain a set of buffers across threads.
+//! A data structure to maintain a collection of persistent buffers across threads.
 
 use hashbrown::HashMap;
-use std::{ops, sync, thread};
+use std::{
+    cell::Cell,
+    ops,
+    sync::{RwLock, RwLockReadGuard},
+    thread::{self, ThreadId},
+};
+
+#[derive(Debug, failure::Fail)]
+pub enum Error {
+    #[fail(display = "lock poisoned")]
+    LockPoisoned,
+    #[fail(display = "buffer for thread {:?} is already borrowed", _0)]
+    AlreadyBorrowed(ThreadId),
+}
 
 /// A collection of buffers mapped to threads.
 pub struct ThreadBuffers {
-    map: sync::RwLock<HashMap<thread::ThreadId, Buffer>>,
+    map: RwLock<HashMap<ThreadId, Buffer>>,
 }
 
 impl ThreadBuffers {
     pub fn new() -> ThreadBuffers {
         ThreadBuffers {
-            map: sync::RwLock::new(hashbrown::HashMap::new()),
+            map: RwLock::new(hashbrown::HashMap::new()),
         }
     }
 
-    /// Get mutable buffer for the current thread.
-    ///
-    /// # Safety
-    ///
-    /// This function is unsafe since it could allow two mutable references to the same memory.
-    /// It is up to the user to prevent this from happening.
-    pub unsafe fn get_mut<'a>(&'a self, len: usize) -> Result<Guard<'a>, failure::Error> {
+    /// Access a mutable persistent buffer for the current thread.
+    pub fn get_mut<'a>(&'a self, len: usize) -> Result<Guard<'a>, Error> {
         let id = thread::current().id();
 
         loop {
             {
-                let inner = self
-                    .map
-                    .read()
-                    .map_err(|_| failure::format_err!("lock poisoned"))?;
+                let inner = self.map.read().map_err(|_| Error::LockPoisoned)?;
 
                 if let Some(b) = inner.get(&id) {
-                    let ptr = b.ptr.clone();
-                    let cap = b.cap.clone();
+                    if b.borrowed.get() {
+                        return Err(Error::AlreadyBorrowed(id));
+                    }
+
+                    b.borrowed.set(true);
+                    let cap = b.cap;
+
+                    // NB: this _should_ be OK since we're guaranteeing unique access above.
+                    // Can we use UnsafeCell?
+                    let buffer = b as *const Buffer as *mut Buffer;
 
                     if len <= cap {
                         return Ok(Guard {
                             _inner: inner,
-                            ptr,
-                            len,
+                            buffer,
                         });
                     }
                 }
             }
 
-            let mut inner = self
-                .map
-                .write()
-                .map_err(|_| failure::format_err!("lock poisoned"))?;
+            let mut inner = self.map.write().map_err(|_| Error::LockPoisoned)?;
 
             // we already have a buffer, but it's probably too small.
             if let Some(existing) = inner.get_mut(&id) {
@@ -66,20 +75,35 @@ impl ThreadBuffers {
 }
 
 pub struct Guard<'a> {
-    _inner: sync::RwLockReadGuard<'a, hashbrown::HashMap<thread::ThreadId, Buffer>>,
-    ptr: *mut u8,
-    len: usize,
+    _inner: RwLockReadGuard<'a, hashbrown::HashMap<ThreadId, Buffer>>,
+    buffer: *mut Buffer,
+}
+
+impl<'a> Drop for Guard<'a> {
+    fn drop(&mut self) {
+        unsafe {
+            (*self.buffer).borrowed.set(false);
+        }
+    }
 }
 
 impl<'a> Guard<'a> {
     /// Treat guard as mutable buffer.
     pub fn as_ref<'b>(&'b self) -> &'b [u8] {
-        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
+        unsafe {
+            let Buffer { ptr, len, .. } = *self.buffer;
+
+            std::slice::from_raw_parts(ptr, len)
+        }
     }
 
     /// Treat guard as mutable buffer.
     pub fn as_mut<'b>(&'b mut self) -> &'b mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
+        unsafe {
+            let Buffer { ptr, len, .. } = *self.buffer;
+
+            std::slice::from_raw_parts_mut(ptr, len)
+        }
     }
 }
 
@@ -101,6 +125,7 @@ struct Buffer {
     ptr: *mut u8,
     len: usize,
     cap: usize,
+    borrowed: Cell<bool>,
 }
 
 unsafe impl Sync for Buffer {}
@@ -115,6 +140,7 @@ impl Buffer {
             ptr: data.as_mut_ptr(),
             len: data.capacity(),
             cap: data.capacity(),
+            borrowed: Cell::new(false),
         };
 
         mem::forget(data);

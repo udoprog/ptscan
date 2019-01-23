@@ -44,7 +44,7 @@ impl<'a> Scanner<'a> {
                         let ty = result.value.ty();
 
                         let size = ty.size();
-                        let mut buf = unsafe { buffers.get_mut(size)? };
+                        let mut buf = buffers.get_mut(size)?;
                         let buf = process.read_process_memory(result.address, &mut *buf)?;
 
                         if buf.len() != size {
@@ -121,7 +121,7 @@ impl<'a> Scanner<'a> {
                                 let loc = range.base.add(Size::try_from(start)?)?;
 
                                 // length of the buffer we need to read process memory.
-                                let mut buf = unsafe { buffers_ref.get_mut(len)? };
+                                let mut buf = buffers_ref.get_mut(len)?;
                                 let buf = process.read_process_memory(loc, &mut *buf)?;
 
                                 for (n, w) in buf.chunks(size).enumerate() {

@@ -1,10 +1,11 @@
 //! Predicates used for matching against memory.
 
+use crate::{scanner, Address};
 use byteorder::{ByteOrder, LittleEndian};
 use std::{fmt, mem, str};
 
 /// A single dynamic literal value.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Value {
     U128(u128),
     I128(i128),
@@ -19,6 +20,29 @@ pub enum Value {
 }
 
 impl Value {
+    /// Try to treat the value as an address.
+    ///
+    /// Returns `None` if this is not possible (e.g. value out of range).
+    pub fn as_address(&self) -> Result<Address, failure::Error> {
+        use self::Value::*;
+        use std::convert::TryFrom;
+
+        let out = match *self {
+            U128(value) => Address::try_from(value)?,
+            I128(value) => Address::try_from(value)?,
+            U64(value) => Address::try_from(value)?,
+            I64(value) => Address::try_from(value)?,
+            U32(value) => Address::try_from(value)?,
+            I32(value) => Address::try_from(value)?,
+            U16(value) => Address::try_from(value)?,
+            I16(value) => Address::try_from(value)?,
+            U8(value) => Address::try_from(value)?,
+            I8(value) => Address::try_from(value)?,
+        };
+
+        Ok(out)
+    }
+
     /// Decode the given buffer into a value.
     pub fn encode(&self, buf: &mut [u8]) {
         use self::Value::*;
@@ -60,6 +84,12 @@ impl str::FromStr for Value {
     type Err = failure::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (hex, s) = if s.starts_with("0x") {
+            (true, &s[2..])
+        } else {
+            (false, s)
+        };
+
         let mut it = s.split(|c| c == 'i' || c == 'u');
 
         let base = it
@@ -75,7 +105,11 @@ impl str::FromStr for Value {
             None => (s, Type::I32),
         };
 
-        ty.parse(s)
+        if hex {
+            ty.parse_hex(s)
+        } else {
+            ty.parse(s)
+        }
     }
 }
 
@@ -126,6 +160,26 @@ impl Type {
             I16 => Value::I16(str::parse::<i16>(input)?),
             U8 => Value::U8(str::parse::<u8>(input)?),
             I8 => Value::I8(str::parse::<i8>(input)?),
+        };
+
+        Ok(value)
+    }
+
+    /// Parse a string as hex.
+    pub fn parse_hex(&self, input: &str) -> Result<Value, failure::Error> {
+        use self::Type::*;
+
+        let value = match *self {
+            U128 => Value::U128(u128::from_str_radix(input, 16)?),
+            I128 => Value::I128(i128::from_str_radix(input, 16)?),
+            U64 => Value::U64(u64::from_str_radix(input, 16)?),
+            I64 => Value::I64(i64::from_str_radix(input, 16)?),
+            U32 => Value::U32(u32::from_str_radix(input, 16)?),
+            I32 => Value::I32(i32::from_str_radix(input, 16)?),
+            U16 => Value::U16(u16::from_str_radix(input, 16)?),
+            I16 => Value::I16(i16::from_str_radix(input, 16)?),
+            U8 => Value::U8(u8::from_str_radix(input, 16)?),
+            I8 => Value::I8(i8::from_str_radix(input, 16)?),
         };
 
         Ok(value)
@@ -199,16 +253,26 @@ static ZEROS: &'static [u8] = &[
 /// Special matching mode to speed up scanning.
 #[derive(Debug, Clone)]
 pub enum Special {
-    Exact {
-        buffer: Vec<u8>,
-    },
+    /// Must match the given buffer exactly.
+    Exact { buffer: Vec<u8> },
+    /// Must not match the given buffer exactly.
+    NotExact { buffer: Vec<u8> },
     /// All bytes in the given range are expected to be zero.
     Zero,
     /// All bytes in the given range are expected to be non-zero.
-    NonZero,
+    NotZero,
 }
 
 impl Special {
+    fn invert(self) -> Special {
+        match self {
+            Special::Zero => Special::NotZero,
+            Special::NotZero => Special::Zero,
+            Special::Exact { buffer } => Special::NotExact { buffer },
+            Special::NotExact { buffer } => Special::Exact { buffer },
+        }
+    }
+
     /// Set up an exact match for the given value.
     fn exact<T>(value: T) -> Special
     where
@@ -223,7 +287,7 @@ impl Special {
     pub fn test(&self, buf: &[u8]) -> Option<bool> {
         match self {
             Special::Zero => Some(buf == &ZEROS[..buf.len()]),
-            Special::NonZero => {
+            Special::NotZero => {
                 if buf == &ZEROS[..buf.len()] {
                     return Some(false);
                 }
@@ -231,6 +295,7 @@ impl Special {
                 None
             }
             Special::Exact { ref buffer } => Some(buf == buffer.as_slice()),
+            Special::NotExact { ref buffer } => Some(buf != buffer.as_slice()),
         }
     }
 }
@@ -239,7 +304,9 @@ pub trait Predicate: Send + Sync + fmt::Debug {
     /// TODO: implement predicate simplification.
 
     /// The type value the predicate is scanning for.
-    fn ty(&self) -> Option<Type>;
+    fn ty(&self) -> Option<Type> {
+        None
+    }
 
     /// If the predicate supports special (more efficient matching).
     fn special(&self) -> Option<Special> {
@@ -247,7 +314,7 @@ pub trait Predicate: Send + Sync + fmt::Debug {
     }
 
     /// Test the specified memory region.
-    fn test(&self, value: &Value) -> bool;
+    fn test(&self, _: Option<&scanner::ScanResult>, _: &Value) -> bool;
 }
 
 macro_rules! numeric_match {
@@ -260,6 +327,66 @@ macro_rules! numeric_match {
             _ => false,
         }
     };
+}
+
+/// Only match values which are exactly equal.
+#[derive(Debug, Clone)]
+pub struct Not<P>(pub P);
+
+impl<P> Predicate for Not<P>
+where
+    P: Predicate,
+{
+    fn ty(&self) -> Option<Type> {
+        self.0.ty()
+    }
+
+    fn special(&self) -> Option<Special> {
+        self.0.special().map(|s| s.invert())
+    }
+
+    fn test(&self, last: Option<&scanner::ScanResult>, value: &Value) -> bool {
+        !self.0.test(last, value)
+    }
+}
+
+/// Match values which are smaller than before.
+#[derive(Debug, Clone)]
+pub struct Dec;
+
+impl Predicate for Dec {
+    fn test(&self, last: Option<&scanner::ScanResult>, value: &Value) -> bool {
+        match last {
+            Some(last) => Lt(last.value).test(None, value),
+            None => false,
+        }
+    }
+}
+
+/// Match values which are larger than before.
+#[derive(Debug, Clone)]
+pub struct Inc;
+
+impl Predicate for Inc {
+    fn test(&self, last: Option<&scanner::ScanResult>, value: &Value) -> bool {
+        match last {
+            Some(last) => Gt(last.value).test(None, value),
+            None => false,
+        }
+    }
+}
+
+/// Match values which are larger than before.
+#[derive(Debug, Clone)]
+pub struct Changed;
+
+impl Predicate for Changed {
+    fn test(&self, last: Option<&scanner::ScanResult>, value: &Value) -> bool {
+        match last {
+            Some(last) => Not(Eq(last.value)).test(None, value),
+            None => false,
+        }
+    }
 }
 
 /// Only match values which are exactly equal.
@@ -297,7 +424,7 @@ impl Predicate for Eq {
         })
     }
 
-    fn test(&self, value: &Value) -> bool {
+    fn test(&self, _: Option<&scanner::ScanResult>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a == b)
     }
 }
@@ -314,20 +441,20 @@ impl Predicate for Gt {
     fn special(&self) -> Option<Special> {
         let s = match self.0 {
             Value::U128(..) | Value::U64(..) | Value::U32(..) | Value::U16(..) | Value::U8(..) => {
-                Special::NonZero
+                Special::NotZero
             }
-            Value::I128(v) if v > 0 => Special::NonZero,
-            Value::I64(v) if v > 0 => Special::NonZero,
-            Value::I32(v) if v > 0 => Special::NonZero,
-            Value::I16(v) if v > 0 => Special::NonZero,
-            Value::I8(v) if v > 0 => Special::NonZero,
+            Value::I128(v) if v > 0 => Special::NotZero,
+            Value::I64(v) if v > 0 => Special::NotZero,
+            Value::I32(v) if v > 0 => Special::NotZero,
+            Value::I16(v) if v > 0 => Special::NotZero,
+            Value::I8(v) if v > 0 => Special::NotZero,
             _ => return None,
         };
 
         Some(s)
     }
 
-    fn test(&self, value: &Value) -> bool {
+    fn test(&self, _: Option<&scanner::ScanResult>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a > b)
     }
 }
@@ -343,23 +470,23 @@ impl Predicate for Gte {
 
     fn special(&self) -> Option<Special> {
         let s = match self.0 {
-            Value::U128(v) if v > 0 => Special::NonZero,
-            Value::U64(v) if v > 0 => Special::NonZero,
-            Value::U32(v) if v > 0 => Special::NonZero,
-            Value::U16(v) if v > 0 => Special::NonZero,
-            Value::U8(v) if v > 0 => Special::NonZero,
-            Value::I128(v) if v > 0 => Special::NonZero,
-            Value::I64(v) if v > 0 => Special::NonZero,
-            Value::I32(v) if v > 0 => Special::NonZero,
-            Value::I16(v) if v > 0 => Special::NonZero,
-            Value::I8(v) if v > 0 => Special::NonZero,
+            Value::U128(v) if v > 0 => Special::NotZero,
+            Value::U64(v) if v > 0 => Special::NotZero,
+            Value::U32(v) if v > 0 => Special::NotZero,
+            Value::U16(v) if v > 0 => Special::NotZero,
+            Value::U8(v) if v > 0 => Special::NotZero,
+            Value::I128(v) if v > 0 => Special::NotZero,
+            Value::I64(v) if v > 0 => Special::NotZero,
+            Value::I32(v) if v > 0 => Special::NotZero,
+            Value::I16(v) if v > 0 => Special::NotZero,
+            Value::I8(v) if v > 0 => Special::NotZero,
             _ => return None,
         };
 
         Some(s)
     }
 
-    fn test(&self, value: &Value) -> bool {
+    fn test(&self, _: Option<&scanner::ScanResult>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a >= b)
     }
 }
@@ -386,7 +513,7 @@ impl Predicate for Lt {
         Some(s)
     }
 
-    fn test(&self, value: &Value) -> bool {
+    fn test(&self, _: Option<&scanner::ScanResult>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a < b)
     }
 }
@@ -403,17 +530,17 @@ impl Predicate for Lte {
     fn special(&self) -> Option<Special> {
         let s = match self.0 {
             Value::U128(v) if v == 0 => Special::Zero,
-            Value::U64(v) if v == 0 => Special::NonZero,
-            Value::U32(v) if v == 0 => Special::NonZero,
-            Value::U16(v) if v == 0 => Special::NonZero,
-            Value::U8(v) if v == 0 => Special::NonZero,
+            Value::U64(v) if v == 0 => Special::NotZero,
+            Value::U32(v) if v == 0 => Special::NotZero,
+            Value::U16(v) if v == 0 => Special::NotZero,
+            Value::U8(v) if v == 0 => Special::NotZero,
             _ => return None,
         };
 
         Some(s)
     }
 
-    fn test(&self, value: &Value) -> bool {
+    fn test(&self, _: Option<&scanner::ScanResult>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a <= b)
     }
 }
@@ -435,8 +562,8 @@ impl Predicate for All {
         self.0.clone()
     }
 
-    fn test(&self, value: &Value) -> bool {
-        self.1.iter().all(|p| p.test(value))
+    fn test(&self, last: Option<&scanner::ScanResult>, value: &Value) -> bool {
+        self.1.iter().all(|p| p.test(last, value))
     }
 }
 
@@ -457,8 +584,8 @@ impl Predicate for Any {
         self.0.clone()
     }
 
-    fn test(&self, value: &Value) -> bool {
-        self.1.iter().any(|p| p.test(value))
+    fn test(&self, last: Option<&scanner::ScanResult>, value: &Value) -> bool {
+        self.1.iter().any(|p| p.test(last, value))
     }
 }
 
@@ -524,20 +651,6 @@ impl Encode for u8 {
 impl Encode for i8 {
     fn encode(buffer: &mut [u8], value: Self) {
         buffer[0] = value as u8;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{Eq, Gt, Lt, Predicate, Type, Value};
-
-    #[test]
-    fn test_exact() {
-        let a = Value::U32(0xffffffffu32);
-        let b = Type::U32.decode(&[0xff, 0xff, 0xff, 0xff]);
-        assert!(Eq(a.clone()).test(&b));
-        assert!(!Lt(a.clone()).test(&b));
-        assert!(!Gt(a.clone()).test(&b));
     }
 }
 

@@ -1,31 +1,30 @@
 use crate::{
     address::{Address, Size},
     process::{MemoryInformation, Process},
-    process_handle::ProcessHandle,
     scan, thread_buffers,
 };
 use std::{convert::TryFrom, sync::Arc};
 
 /// A scanner responsible for finding results in memory.
-pub struct Scanner<'a> {
-    process_handle: &'a ProcessHandle,
+pub struct Scanner {
+    /// Thread pool this scanner uses.
     thread_pool: Arc<rayon::ThreadPool>,
     /// Only scan for aligned values.
     aligned: bool,
+    /// If this scanner has a set of initial results.
+    pub initial: bool,
     /// Current results in scanner.
     pub results: Vec<ScanResult>,
 }
 
-impl<'a> Scanner<'a> {
-    pub(crate) fn new(
-        process_handle: &'a ProcessHandle,
-        thread_pool: Arc<rayon::ThreadPool>,
-    ) -> Self {
+impl Scanner {
+    /// Construct a new scanner associated with a thread pool.
+    pub fn new(thread_pool: &Arc<rayon::ThreadPool>) -> Self {
         Self {
             results: Vec::new(),
-            process_handle,
             aligned: false,
-            thread_pool,
+            initial: false,
+            thread_pool: Arc::clone(thread_pool),
         }
     }
 
@@ -38,16 +37,16 @@ impl<'a> Scanner<'a> {
     }
 
     /// Refresh current value for scan results.
-    pub fn refresh(&mut self) -> Result<(), failure::Error> {
+    pub fn refresh(&mut self, process: &Process) -> Result<(), failure::Error> {
         use rayon::prelude::*;
 
         let buffers = thread_buffers::ThreadBuffers::new();
-        let process = &self.process_handle.process;
         let results = &mut self.results;
 
         self.thread_pool.install(|| {
             results
                 .par_iter_mut()
+                .filter(|r| !r.killed)
                 .map(|result| {
                     let mut work = || {
                         let ty = result.value.ty();
@@ -70,39 +69,38 @@ impl<'a> Scanner<'a> {
                 })
                 .sum::<u64>();
 
-            results.retain(|v| v.active);
+            results.retain(|v| !v.killed);
         });
 
         Ok(())
     }
 
     /// rescan a set of results.
-    pub fn rescan(&mut self, predicate: &(dyn scan::Predicate)) -> Result<(), failure::Error> {
+    pub fn rescan(
+        &mut self,
+        process: &Process,
+        predicate: &(dyn scan::Predicate),
+    ) -> Result<(), failure::Error> {
         use rayon::prelude::*;
 
         let buffers = thread_buffers::ThreadBuffers::new();
-        let process = &self.process_handle.process;
         let results = &mut self.results;
 
         self.thread_pool.install(|| {
             results
                 .par_iter_mut()
+                .filter(|r| !r.killed)
                 .map(|result| {
                     let mut work = || {
                         let ty = result.value.ty();
+                        let mut buf = buffers.get_mut(ty.size())?;
+                        let value = process.read_memory_of_type(result.address, ty, &mut *buf)?;
 
-                        let size = ty.size();
-                        let mut buf = buffers.get_mut(size)?;
-                        let buf = process.read_process_memory(result.address, &mut *buf)?;
-
-                        if buf.len() != size {
-                            failure::bail!("incomplete read");
-                        }
-
-                        let value = ty.decode(buf);
-                        result.active = predicate.test(&value);
+                        result.killed = !predicate.test(Some(result), &value);
+                        result.current = None;
                         result.value = value;
-                        Ok(())
+
+                        Ok::<_, failure::Error>(())
                     };
 
                     match work() {
@@ -112,7 +110,7 @@ impl<'a> Scanner<'a> {
                 })
                 .sum::<u64>();
 
-            results.retain(|v| v.active);
+            results.retain(|v| !v.killed);
         });
 
         Ok(())
@@ -132,8 +130,9 @@ impl<'a> Scanner<'a> {
     ///
     /// Therefore, any error raised by Progress will be treated as any error raised from a worker thread. Only the last
     /// error will be propagated to the user.
-    pub fn scan_for_value(
+    pub fn initial_scan(
         &mut self,
+        process: &Process,
         predicate: &(dyn scan::Predicate),
         mut progress: (impl Progress + Send),
     ) -> Result<(), failure::Error> {
@@ -155,14 +154,12 @@ impl<'a> Scanner<'a> {
 
         let Scanner {
             ref mut results,
-            ref process_handle,
             aligned,
             ..
         } = *self;
 
         // if true, threads should stop working
         let bail = AtomicBool::new(false);
-        let process = &process_handle.process;
         let special = predicate.special();
         let mut last_error = None;
 
@@ -286,7 +283,7 @@ impl<'a> Scanner<'a> {
                     address,
                     value,
                     current: None,
-                    active: true,
+                    killed: false,
                 };
 
                 tx.send(TaskProgress::ScanResult(scan_result))?;
@@ -338,11 +335,6 @@ impl<'a> Scanner<'a> {
                             if let Some(result) = special.test(w) {
                                 if result {
                                     let value = scan_type.decode(w);
-
-                                    if !predicate.test(&value) {
-                                        panic!("false positive on predicate {:?} compared to special {:?}", predicate, special);
-                                    }
-
                                     Self::emit(tx, &loc, n, value)?;
                                 }
 
@@ -358,7 +350,7 @@ impl<'a> Scanner<'a> {
 
                         let value = scan_type.decode(w);
 
-                        if predicate.test(&value) {
+                        if predicate.test(None, &value) {
                             Self::emit(tx, &loc, n, value)?;
                         }
 
@@ -388,7 +380,7 @@ pub struct ScanResult {
     /// Last seen value.
     pub current: Option<scan::Value>,
     /// If the result is valid, or if it should be pruned.
-    pub active: bool,
+    pub killed: bool,
 }
 
 /// A trait to track the progress of processes.

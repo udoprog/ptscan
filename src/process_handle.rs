@@ -1,15 +1,19 @@
 //! High-level interface to processes.
 
 use crate::{
-    process, scanner::Scanner, system_thread::SystemThread, thread::Thread, Address, AddressRange,
-    ProcessId, Size, ThreadId,
+    process, scan, scanner, system_thread, thread::Thread, Address, AddressRange, ProcessId, Size,
+    ThreadId,
 };
 use failure::ResultExt;
-use std::{collections::HashMap, convert::TryFrom, fmt, sync::Arc};
+use std::{convert::TryFrom, fmt};
 use winapi::shared::winerror;
 
 #[derive(Debug, failure::Fail)]
-enum RefreshThreadError {
+enum Error {
+    #[fail(display = "failed to open process: {}", _0)]
+    OpenProcess(ProcessId),
+    #[fail(display = "failed to refresh threads for process: {}", _0)]
+    RefreshThreads(ProcessName),
     #[fail(display = "failed to build thread interface: {}", _0)]
     BuildThread(ThreadId),
     #[fail(display = "failed to extract thread stack for thread: {}", _0)]
@@ -19,7 +23,7 @@ enum RefreshThreadError {
 }
 
 /// A handle for a process.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ProcessHandle {
     /// Name of the process (if present).
     pub name: Option<String>,
@@ -36,6 +40,50 @@ pub struct ProcessHandle {
 }
 
 impl ProcessHandle {
+    /// Find the first process matching the given name.
+    pub fn open_by_name(name: &str) -> Result<Option<ProcessHandle>, failure::Error> {
+        for pid in process::system_processes()? {
+            let mut handle =
+                match ProcessHandle::open(pid).with_context(|_| Error::OpenProcess(pid))? {
+                    Some(handle) => handle,
+                    // process cannot be opened.
+                    None => continue,
+                };
+
+            let handle_name = match handle.name.as_ref() {
+                // NB: can't find by name if we can't decode the name from the process :(.
+                None => continue,
+                Some(handle_name) => handle_name.as_str(),
+            };
+
+            if handle_name != name {
+                continue;
+            }
+
+            handle
+                .refresh_threads()
+                .with_context(|_| Error::RefreshThreads(handle.name()))?;
+
+            return Ok(Some(handle));
+        }
+
+        Ok(None)
+    }
+
+    /// Build a predicate that matches any pointers which points to valid memory.
+    pub fn pointee_predicate(&self) -> Result<PointeePredicate, failure::Error> {
+        use crate::utils::IteratorExtension;
+
+        let mut memory_regions = self
+            .process
+            .virtual_memory_regions()
+            .only_relevant()
+            .collect::<Result<Vec<_>, _>>()?;
+
+        memory_regions.sort_by_key(|m| m.range.base);
+        Ok(PointeePredicate { memory_regions })
+    }
+
     /// Open the given process id and create a simplified handle to it.
     ///
     /// This returns `None` if:
@@ -115,30 +163,28 @@ impl ProcessHandle {
     }
 
     /// Refresh information about known threads.
-    pub fn refresh_threads(
-        &mut self,
-        threads: &HashMap<ProcessId, Vec<SystemThread>>,
-    ) -> Result<(), failure::Error> {
-        let threads = threads
-            .get(&self.process.process_id())
-            .map(|t| t.as_slice())
-            .unwrap_or(&[]);
+    pub fn refresh_threads(&mut self) -> Result<(), failure::Error> {
+        self.threads.clear();
 
-        for (id, t) in threads.into_iter().enumerate() {
+        for (id, t) in system_thread::system_threads()?.enumerate() {
+            if t.process_id() != self.process.process_id() {
+                continue;
+            }
+
             let thread = Thread::builder()
                 .all_access()
                 .query_information()
                 .get_context()
                 .build(t.thread_id())
-                .with_context(|_| RefreshThreadError::BuildThread(t.thread_id()))?;
+                .with_context(|_| Error::BuildThread(t.thread_id()))?;
 
             let stack = self
                 .thread_stack(&thread)
-                .with_context(|_| RefreshThreadError::ThreadStack(thread.thread_id()))?;
+                .with_context(|_| Error::ThreadStack(thread.thread_id()))?;
 
             let stack_exit = self
                 .scan_for_exit(stack)
-                .with_context(|_| RefreshThreadError::ScanForExit)?;
+                .with_context(|_| Error::ScanForExit)?;
 
             self.threads.push(ProcessThread {
                 id,
@@ -171,25 +217,7 @@ impl ProcessHandle {
         &'a self,
         address: Address,
     ) -> Result<Option<&'a ModuleInfo>, failure::Error> {
-        let module = match self
-            .modules
-            .binary_search_by(|m| m.range.base.cmp(&address))
-        {
-            Ok(exact) => &self.modules[exact],
-            Err(closest) => {
-                if closest > 0 {
-                    &self.modules[closest - 1]
-                } else {
-                    return Ok(None);
-                }
-            }
-        };
-
-        if module.range.contains(address)? {
-            return Ok(Some(module));
-        }
-
-        Ok(None)
+        AddressRange::find_in_range(&self.modules, |m| &m.range, address)
     }
 
     /// Find if address is contained in a module.
@@ -197,25 +225,7 @@ impl ProcessHandle {
         &'a self,
         address: Address,
     ) -> Result<Option<&'a ProcessThread>, failure::Error> {
-        let thread = match self
-            .threads
-            .binary_search_by(|m| m.stack.base.cmp(&address))
-        {
-            Ok(exact) => &self.threads[exact],
-            Err(closest) => {
-                if closest > 0 {
-                    &self.threads[closest - 1]
-                } else {
-                    return Ok(None);
-                }
-            }
-        };
-
-        if thread.stack.contains(address)? {
-            return Ok(Some(thread));
-        }
-
-        Ok(None)
+        AddressRange::find_in_range(&self.threads, |m| &m.stack, address)
     }
 
     /// Access the address of the stack for the given thread.
@@ -267,11 +277,6 @@ impl ProcessHandle {
         }
 
         Ok(None)
-    }
-
-    /// Build a persistent scanner.
-    pub fn scanner<'a>(&'a self, thread_pool: &Arc<rayon::ThreadPool>) -> Scanner<'a> {
-        Scanner::new(self, Arc::clone(thread_pool))
     }
 }
 
@@ -331,5 +336,33 @@ impl Decode for u32 {
     fn decode(buf: &[u8]) -> Result<Self, failure::Error> {
         use byteorder::{ByteOrder, LittleEndian};
         Ok(LittleEndian::read_u32(buf))
+    }
+}
+
+#[derive(Debug)]
+pub struct PointeePredicate {
+    /// Sorted memory regions.
+    memory_regions: Vec<process::MemoryInformation>,
+}
+
+impl scan::Predicate for PointeePredicate {
+    fn special(&self) -> Option<scan::Special> {
+        Some(scan::Special::NotZero)
+    }
+
+    fn ty(&self) -> Option<scan::Type> {
+        Some(scan::Type::U64)
+    }
+
+    fn test(&self, _: Option<&scanner::ScanResult>, value: &scan::Value) -> bool {
+        let address = match value.as_address() {
+            Ok(address) => address,
+            Err(_) => return false,
+        };
+
+        match AddressRange::find_in_range(&self.memory_regions, |m| &m.range, address) {
+            Ok(Some(_)) => return true,
+            _ => return false,
+        }
     }
 }

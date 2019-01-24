@@ -130,10 +130,18 @@ impl TryFrom<usize> for Address {
     }
 }
 
-impl TryFrom<u32> for Address {
+impl TryFrom<u128> for Address {
     type Error = failure::Error;
 
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
+    fn try_from(value: u128) -> Result<Self, Self::Error> {
+        Ok(Address(value.try_into()?))
+    }
+}
+
+impl TryFrom<i128> for Address {
+    type Error = failure::Error;
+
+    fn try_from(value: i128) -> Result<Self, Self::Error> {
         Ok(Address(value.try_into()?))
     }
 }
@@ -142,6 +150,62 @@ impl TryFrom<u64> for Address {
     type Error = failure::Error;
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Ok(Address(value.try_into()?))
+    }
+}
+
+impl TryFrom<i64> for Address {
+    type Error = failure::Error;
+
+    fn try_from(value: i64) -> Result<Self, Self::Error> {
+        Ok(Address(value.try_into()?))
+    }
+}
+
+impl TryFrom<u32> for Address {
+    type Error = failure::Error;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Ok(Address(value.try_into()?))
+    }
+}
+
+impl TryFrom<i32> for Address {
+    type Error = failure::Error;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        Ok(Address(value.try_into()?))
+    }
+}
+
+impl TryFrom<u16> for Address {
+    type Error = failure::Error;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Ok(Address(value.try_into()?))
+    }
+}
+
+impl TryFrom<i16> for Address {
+    type Error = failure::Error;
+
+    fn try_from(value: i16) -> Result<Self, Self::Error> {
+        Ok(Address(value.try_into()?))
+    }
+}
+
+impl TryFrom<u8> for Address {
+    type Error = failure::Error;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        Ok(Address(value.try_into()?))
+    }
+}
+
+impl TryFrom<i8> for Address {
+    type Error = failure::Error;
+
+    fn try_from(value: i8) -> Result<Self, Self::Error> {
         Ok(Address(value.try_into()?))
     }
 }
@@ -209,7 +273,7 @@ impl Size {
 
 impl fmt::Display for Size {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "{:X}", self.0)
+        write!(fmt, "0x{:X}", self.0)
     }
 }
 
@@ -274,6 +338,32 @@ pub struct AddressRange {
 impl AddressRange {
     pub fn contains(&self, value: Address) -> Result<bool, failure::Error> {
         Ok(self.base <= value && value <= self.base.add(self.size)?)
+    }
+
+    /// Helper function to find which memory region a given address is contained in.
+    ///
+    /// This assumes the memory regions are sorted by their `base`.
+    pub fn find_in_range<T>(
+        things: &Vec<T>,
+        accessor: impl Fn(&T) -> &AddressRange,
+        address: Address,
+    ) -> Result<Option<&T>, failure::Error> {
+        let thing = match things.binary_search_by(|m| accessor(m).base.cmp(&address)) {
+            Ok(exact) => &things[exact],
+            Err(closest) => {
+                if closest <= 0 {
+                    return Ok(None);
+                }
+
+                &things[closest - 1]
+            }
+        };
+
+        if accessor(thing).contains(address)? {
+            return Ok(Some(thing));
+        }
+
+        Ok(None)
     }
 }
 

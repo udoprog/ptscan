@@ -1,7 +1,7 @@
 use std::{convert::TryFrom, fmt, io, sync::Arc};
 
 use crate::{
-    module, system_info,
+    module, scan, system_info,
     utils::{self, array},
     Address, AddressRange, ProcessId, Size,
 };
@@ -122,6 +122,23 @@ impl Process {
         };
 
         Ok(&mut buffer[..bytes_read])
+    }
+
+    /// Read process memory with the given type.
+    pub fn read_memory_of_type(
+        &self,
+        address: Address,
+        ty: scan::Type,
+        buf: &mut [u8],
+    ) -> Result<scan::Value, failure::Error> {
+        let size = ty.size();
+        let buf = self.read_process_memory(address, buf)?;
+
+        if buf.len() != size {
+            failure::bail!("incomplete read");
+        }
+
+        Ok(ty.decode(buf))
     }
 
     /// Read a 64-bit memory region as a little endian unsigned integer.

@@ -1,8 +1,9 @@
 //! Abstraction to help deal with virtual addresses.
 
+use crate::scan;
 use std::{
     convert::{TryFrom, TryInto},
-    fmt,
+    fmt, str,
 };
 
 #[derive(Debug, failure::Fail)]
@@ -73,6 +74,16 @@ impl Address {
     /// Internal function, use `convert` instead.
     fn into_usize(self) -> Result<usize, failure::Error> {
         Ok(self.0.try_into()?)
+    }
+}
+
+impl str::FromStr for Address {
+    type Err = failure::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = if s.starts_with("0x") { &s[2..] } else { s };
+
+        Ok(Address(u64::from_str_radix(s, 16)?))
     }
 }
 
@@ -264,4 +275,15 @@ impl AddressRange {
     pub fn contains(&self, value: Address) -> Result<bool, failure::Error> {
         Ok(self.base <= value && value <= self.base.add(self.size)?)
     }
+}
+
+/// A pointer path.
+///
+/// Each offset is applied and dereferenced on the base in a chain.
+///
+/// The last step is dereferences as the pointee type.
+pub struct Pointer {
+    pointee_type: scan::Type,
+    base: Address,
+    offset: Vec<Offset>,
 }

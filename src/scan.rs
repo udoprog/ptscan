@@ -1,10 +1,10 @@
 //! Predicates used for matching against memory.
 
 use byteorder::{ByteOrder, LittleEndian};
-use std::{fmt, mem};
+use std::{fmt, mem, str};
 
 /// A single dynamic literal value.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
     U128(u128),
     I128(i128),
@@ -56,6 +56,29 @@ impl Value {
     }
 }
 
+impl str::FromStr for Value {
+    type Err = failure::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut it = s.split(|c| c == 'i' || c == 'u');
+
+        let base = it
+            .next()
+            .ok_or_else(|| failure::format_err!("missing numeric base"))?;
+
+        let (s, ty) = match it.next() {
+            Some(suffix) => {
+                // NB: need to extract full suffix from original input.
+                let e = s.len() - suffix.len() - 1;
+                (base, str::parse::<Type>(&s[e..])?)
+            }
+            None => (s, Type::I32),
+        };
+
+        ty.parse(s)
+    }
+}
+
 impl fmt::Display for Value {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
@@ -88,6 +111,26 @@ pub enum Type {
 }
 
 impl Type {
+    /// Parse a string value of the type.
+    pub fn parse(&self, input: &str) -> Result<Value, failure::Error> {
+        use self::Type::*;
+
+        let value = match *self {
+            U128 => Value::U128(str::parse::<u128>(input)?),
+            I128 => Value::I128(str::parse::<i128>(input)?),
+            U64 => Value::U64(str::parse::<u64>(input)?),
+            I64 => Value::I64(str::parse::<i64>(input)?),
+            U32 => Value::U32(str::parse::<u32>(input)?),
+            I32 => Value::I32(str::parse::<i32>(input)?),
+            U16 => Value::U16(str::parse::<u16>(input)?),
+            I16 => Value::I16(str::parse::<i16>(input)?),
+            U8 => Value::U8(str::parse::<u8>(input)?),
+            I8 => Value::I8(str::parse::<i8>(input)?),
+        };
+
+        Ok(value)
+    }
+
     /// The size in-memory that a value has.
     pub fn size(&self) -> usize {
         use self::Type::*;
@@ -123,6 +166,28 @@ impl Type {
             U8 => Value::U8(buf[0]),
             I8 => Value::I8(buf[0] as i8),
         }
+    }
+}
+
+impl str::FromStr for Type {
+    type Err = failure::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let ty = match s {
+            "u128" => Type::U128,
+            "i128" => Type::I128,
+            "u64" => Type::U64,
+            "i64" => Type::I64,
+            "u32" => Type::U32,
+            "i32" => Type::I32,
+            "u16" => Type::U16,
+            "i16" => Type::I16,
+            "u8" => Type::U8,
+            "i8" => Type::I8,
+            other => failure::bail!("bad type: {}", other),
+        };
+
+        Ok(ty)
     }
 }
 
@@ -170,8 +235,11 @@ impl Special {
     }
 }
 
-pub trait Predicate: Sync + Send + fmt::Debug {
+pub trait Predicate: Send + Sync + fmt::Debug {
     /// TODO: implement predicate simplification.
+
+    /// The type value the predicate is scanning for.
+    fn ty(&self) -> Option<Type>;
 
     /// If the predicate supports special (more efficient matching).
     fn special(&self) -> Option<Special> {
@@ -199,6 +267,10 @@ macro_rules! numeric_match {
 pub struct Eq(pub Value);
 
 impl Predicate for Eq {
+    fn ty(&self) -> Option<Type> {
+        Some(self.0.ty())
+    }
+
     fn special(&self) -> Option<Special> {
         macro_rules! specials {
             ($(($field:ident, $ty:ident),)*) => {
@@ -235,6 +307,10 @@ impl Predicate for Eq {
 pub struct Gt(pub Value);
 
 impl Predicate for Gt {
+    fn ty(&self) -> Option<Type> {
+        Some(self.0.ty())
+    }
+
     fn special(&self) -> Option<Special> {
         let s = match self.0 {
             Value::U128(..) | Value::U64(..) | Value::U32(..) | Value::U16(..) | Value::U8(..) => {
@@ -261,6 +337,10 @@ impl Predicate for Gt {
 pub struct Gte(pub Value);
 
 impl Predicate for Gte {
+    fn ty(&self) -> Option<Type> {
+        Some(self.0.ty())
+    }
+
     fn special(&self) -> Option<Special> {
         let s = match self.0 {
             Value::U128(v) if v > 0 => Special::NonZero,
@@ -289,6 +369,10 @@ impl Predicate for Gte {
 pub struct Lt(pub Value);
 
 impl Predicate for Lt {
+    fn ty(&self) -> Option<Type> {
+        Some(self.0.ty())
+    }
+
     fn special(&self) -> Option<Special> {
         let s = match self.0 {
             Value::U128(v) if v == 1 => Special::Zero,
@@ -312,6 +396,10 @@ impl Predicate for Lt {
 pub struct Lte(pub Value);
 
 impl Predicate for Lte {
+    fn ty(&self) -> Option<Type> {
+        Some(self.0.ty())
+    }
+
     fn special(&self) -> Option<Special> {
         let s = match self.0 {
             Value::U128(v) if v == 0 => Special::Zero,
@@ -332,21 +420,45 @@ impl Predicate for Lte {
 
 /// Only matches when all nested predicates match.
 #[derive(Debug)]
-pub struct All(pub Vec<Box<Predicate>>);
+pub struct All(Option<Type>, Vec<Box<Predicate>>);
+
+impl All {
+    pub fn new(
+        predicates: impl IntoIterator<Item = Box<Predicate>>,
+    ) -> Result<All, failure::Error> {
+        collection(predicates, All)
+    }
+}
 
 impl Predicate for All {
+    fn ty(&self) -> Option<Type> {
+        self.0.clone()
+    }
+
     fn test(&self, value: &Value) -> bool {
-        self.0.iter().all(|p| p.test(value))
+        self.1.iter().all(|p| p.test(value))
     }
 }
 
 /// Only matches when any nested predicate match.
 #[derive(Debug)]
-pub struct Any(pub Vec<Box<Predicate>>);
+pub struct Any(Option<Type>, Vec<Box<Predicate>>);
+
+impl Any {
+    pub fn new(
+        predicates: impl IntoIterator<Item = Box<Predicate>>,
+    ) -> Result<Any, failure::Error> {
+        collection(predicates, Any)
+    }
+}
 
 impl Predicate for Any {
+    fn ty(&self) -> Option<Type> {
+        self.0.clone()
+    }
+
     fn test(&self, value: &Value) -> bool {
-        self.0.iter().any(|p| p.test(value))
+        self.1.iter().any(|p| p.test(value))
     }
 }
 
@@ -427,4 +539,31 @@ mod tests {
         assert!(!Lt(a.clone()).test(&b));
         assert!(!Gt(a.clone()).test(&b));
     }
+}
+
+/// Helper function to build a collection predicate.
+///
+/// Checks that every child predicate have the same type.
+fn collection<T>(
+    predicates: impl IntoIterator<Item = Box<Predicate>>,
+    constructor: impl FnOnce(Option<Type>, Vec<Box<Predicate>>) -> T,
+) -> Result<T, failure::Error> {
+    use std::collections::HashSet;
+
+    let mut all = Vec::new();
+
+    for p in predicates {
+        all.push(p);
+    }
+
+    let types = all.iter().flat_map(|p| p.ty()).collect::<HashSet<_>>();
+
+    if types.len() > 1 {
+        failure::bail!(
+            "predicates of different types are not supported: {:?}",
+            types
+        );
+    }
+
+    Ok(constructor(types.into_iter().next(), all))
 }

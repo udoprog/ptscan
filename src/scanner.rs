@@ -37,11 +37,8 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    /// rescan a set of results.
-    pub fn rescan(
-        &mut self,
-        predicate: &(dyn scan::Predicate + Sync + Send),
-    ) -> Result<(), failure::Error> {
+    /// Refresh current value for scan results.
+    pub fn refresh(&mut self) -> Result<(), failure::Error> {
         use rayon::prelude::*;
 
         let buffers = thread_buffers::ThreadBuffers::new();
@@ -49,7 +46,46 @@ impl<'a> Scanner<'a> {
         let results = &mut self.results;
 
         self.thread_pool.install(|| {
-            let count = results
+            results
+                .par_iter_mut()
+                .map(|result| {
+                    let mut work = || {
+                        let ty = result.value.ty();
+
+                        let mut buf = buffers.get_mut(ty.size())?;
+                        let buf = process.read_process_memory(result.address, &mut *buf)?;
+
+                        if buf.len() != ty.size() {
+                            failure::bail!("incomplete read");
+                        }
+
+                        result.current = Some(ty.decode(buf));
+                        Ok(())
+                    };
+
+                    match work() {
+                        Ok(()) => 1,
+                        Err(_) => 0,
+                    }
+                })
+                .sum::<u64>();
+
+            results.retain(|v| v.active);
+        });
+
+        Ok(())
+    }
+
+    /// rescan a set of results.
+    pub fn rescan(&mut self, predicate: &(dyn scan::Predicate)) -> Result<(), failure::Error> {
+        use rayon::prelude::*;
+
+        let buffers = thread_buffers::ThreadBuffers::new();
+        let process = &self.process_handle.process;
+        let results = &mut self.results;
+
+        self.thread_pool.install(|| {
+            results
                 .par_iter_mut()
                 .map(|result| {
                     let mut work = || {
@@ -76,7 +112,6 @@ impl<'a> Scanner<'a> {
                 })
                 .sum::<u64>();
 
-            println!("successful rescans: {}", count);
             results.retain(|v| v.active);
         });
 
@@ -86,16 +121,31 @@ impl<'a> Scanner<'a> {
     /// Scan for the given value in memory.
     ///
     /// TODO: handle unaligned regions.
+    ///
+    /// Errors raised in worker threads will be collected, and the last error propagated to the user.
+    /// Any error causes the processing to bail.
+    ///
+    /// # Errors raised in Progress
+    ///
+    /// We can't just ignore errors which are raised by `scanner::Progress`, since these might be important to the
+    /// processing at hand.
+    ///
+    /// Therefore, any error raised by Progress will be treated as any error raised from a worker thread. Only the last
+    /// error will be propagated to the user.
     pub fn scan_for_value(
         &mut self,
-        scan_type: scan::Type,
-        predicate: &(dyn scan::Predicate + Sync + Send),
+        predicate: &(dyn scan::Predicate),
         mut progress: (impl Progress + Send),
     ) -> Result<(), failure::Error> {
         use crate::utils::IteratorExtension;
         use std::sync::{
             atomic::{AtomicBool, Ordering},
             mpsc,
+        };
+
+        let scan_type = match predicate.ty() {
+            Some(scan_type) => scan_type,
+            None => failure::bail!("can't perform initial scan with type-less predicate"),
         };
 
         let size: usize = scan_type.size();
@@ -120,7 +170,7 @@ impl<'a> Scanner<'a> {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::sync_channel(1024);
                 let mut total = 0;
-                let mut bytes = 0;
+                let mut bytes = 0usize;
 
                 for region in process.virtual_memory_regions().only_relevant() {
                     bytes += region
@@ -153,7 +203,10 @@ impl<'a> Scanner<'a> {
                     });
                 }
 
-                println!("Total memory to scan: {}B", bytes);
+                if let Err(e) = progress.report_bytes(bytes) {
+                    last_error = Some(e);
+                    bail.store(true, Ordering::SeqCst);
+                }
 
                 let mut current = 0;
                 let mut percentage = total / 100;
@@ -162,6 +215,7 @@ impl<'a> Scanner<'a> {
                     percentage = 1;
                 }
 
+                // collect scan results.
                 for m in rx {
                     match m {
                         // Scan result from a task.
@@ -213,7 +267,7 @@ impl<'a> Scanner<'a> {
             buffer_size: usize,
             size: usize,
             aligned: bool,
-            predicate: &'a (dyn scan::Predicate + Sync + Send),
+            predicate: &'a (dyn scan::Predicate),
             special: Option<&'a scan::Special>,
             scan_type: scan::Type,
             bail: &'a AtomicBool,
@@ -231,6 +285,7 @@ impl<'a> Scanner<'a> {
                 let scan_result = ScanResult {
                     address,
                     value,
+                    current: None,
                     active: true,
                 };
 
@@ -326,13 +381,21 @@ impl<'a> Scanner<'a> {
 /// A single scan result.
 #[derive(Debug)]
 pub struct ScanResult {
+    /// Address where the scanned value lives.
     pub address: Address,
+    /// Value from last scan.
     pub value: scan::Value,
+    /// Last seen value.
+    pub current: Option<scan::Value>,
+    /// If the result is valid, or if it should be pruned.
     pub active: bool,
 }
 
 /// A trait to track the progress of processes.
 pub trait Progress {
+    /// Report the total number of bytes to process.
+    fn report_bytes(&mut self, bytes: usize) -> Result<(), failure::Error>;
+
     /// Report that the process has progresses to the given percentage.
     fn report(&mut self, percentage: usize) -> Result<(), failure::Error>;
 

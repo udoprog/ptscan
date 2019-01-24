@@ -74,6 +74,35 @@ impl Process {
         Ok(out)
     }
 
+    /// Write to process memory at the specified address.
+    pub fn write_process_memory<'a>(
+        &self,
+        address: Address,
+        buffer: &'a [u8],
+    ) -> Result<(), failure::Error> {
+        let mut bytes_written: SIZE_T = 0;
+
+        checked! {
+            memoryapi::WriteProcessMemory(
+                **self.handle,
+                address.convert::<LPVOID>()?,
+                buffer.as_ptr() as LPCVOID,
+                buffer.len() as SIZE_T,
+                &mut bytes_written as *mut SIZE_T,
+            )
+        };
+
+        if bytes_written != buffer.len() {
+            failure::bail!(
+                "bytes written {} does not match expected {}",
+                bytes_written,
+                buffer.len()
+            );
+        }
+
+        Ok(())
+    }
+
     /// Read process memory at the specified address.
     pub fn read_process_memory<'a>(
         &self,

@@ -10,19 +10,19 @@ fn main() -> Result<(), Error> {
     let out = PathBuf::from(env::var("OUT_DIR").with_context(|_| format_err!("missing OUT_DIR"))?);
 
     run("windres", |c| {
-        c.arg(root.join("src").join("main.rc"))
+        c.arg(root.join("resources").join("ptscan.rc"))
             .arg("-o")
-            .arg(out.join("main.rc.o"))
+            .arg(out.join("ptscan.rc.o"))
     })?;
 
     run("ar", |c| {
         c.arg("crus")
-            .arg(out.join("libmain_rc.a"))
-            .arg(out.join("main.rc.o"))
+            .arg(out.join("libptscan_rc.a"))
+            .arg(out.join("ptscan.rc.o"))
     })?;
 
     println!("cargo:rustc-link-search=native={}", out.display());
-    println!("cargo:rustc-link-lib=static=main_rc");
+    println!("cargo:rustc-link-lib=static=ptscan_rc");
     Ok(())
 }
 

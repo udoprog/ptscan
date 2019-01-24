@@ -1,9 +1,9 @@
 use failure::ResultExt;
 use ptscan::{
-    scan, system_processes, system_threads, Location, ProcessHandle, ProcessId, ProcessName,
-    ScanResult,
+    scan, scanner, system_processes, system_threads, Location, ProcessHandle, ProcessId,
+    ProcessName, ScanResult,
 };
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, io, sync::Arc};
 
 #[derive(Debug, failure::Fail)]
 enum MainError {
@@ -11,6 +11,33 @@ enum MainError {
     Open(ProcessId),
     #[fail(display = "failed to refresh threads for process: {}", _0)]
     RefreshThreads(ProcessName),
+}
+
+/// Read some input from the terminal.
+fn input<T: std::str::FromStr>(prompt: &str) -> Result<Option<T>, failure::Error> {
+    use std::io::{BufRead, BufReader, Write};
+
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+
+    write!(stdout, "[{}] ", prompt)?;
+    stdout.flush()?;
+
+    let stdin = io::stdin();
+    let mut stdin = BufReader::new(stdin.lock());
+
+    let mut input = String::new();
+    stdin.read_line(&mut input)?;
+
+    let input = input.trim();
+
+    if input.is_empty() {
+        return Ok(None);
+    }
+
+    let out = T::from_str(input).map_err(|_| failure::format_err!("failed to parse input"))?;
+
+    Ok(Some(out))
 }
 
 fn try_main() -> Result<(), failure::Error> {
@@ -24,14 +51,13 @@ fn try_main() -> Result<(), failure::Error> {
         threads.entry(t.process_id()).or_default().push(t);
     }
 
+    let initial = match input::<u32>("initial value")? {
+        None => return Ok(()),
+        Some(initial) => initial,
+    };
+
     let scan_type = scan::Type::U32;
-    let predicate = scan::Gt(scan::Value::U32(0x1000));
-    /*let predicate = scan::All(
-        vec![
-            Box::new(scan::Gt(scan::Value::U32(0))),
-            Box::new(scan::Lt(scan::Value::U32(4))),
-        ]
-    );*/
+    let predicate = scan::Eq(scan::Value::U32(initial));
 
     for pid in system_processes()? {
         let mut handle = match ProcessHandle::open(pid).with_context(|_| MainError::Open(pid))? {
@@ -58,32 +84,54 @@ fn try_main() -> Result<(), failure::Error> {
         let mut scanner = handle.scanner(&thread_pool);
 
         println!("Starting scan...");
-        handle.process.suspend()?;
-        scanner.scan_for_value(scan_type, &predicate)?;
-        handle.process.resume()?;
-        println!(
-            "Found {} addresses (only showing 100)",
-            scanner.results.len()
-        );
-        print_results(&handle, scanner.results.iter().take(100))?;
+        // handle.process.suspend()?;
+
+        {
+            let stdout = io::stdout();
+            scanner.scan_for_value(scan_type, &predicate, SimpleProgress::new(stdout))?;
+        }
+
+        loop {
+            // handle.process.resume()?;
+            print_results(&handle, &scanner.results)?;
+
+            let next = match input::<u32>("next value")? {
+                None => return Ok(()),
+                Some(next) => next,
+            };
+
+            let predicate = scan::Eq(scan::Value::U32(next));
+            scanner.rescan(&predicate)?;
+        }
     }
 
     Ok(())
 }
 
-fn print_results<'a>(
-    handle: &ProcessHandle,
-    results: impl IntoIterator<Item = &'a ScanResult>,
-) -> Result<(), failure::Error> {
-    for result in results {
+fn print_results<'a>(handle: &ProcessHandle, results: &[ScanResult]) -> Result<(), failure::Error> {
+    if results.len() > 10 {
+        println!("Found {} addresses (only showing 10)", results.len());
+    } else {
+        println!("Found {} addresses", results.len());
+    };
+
+    for result in results.iter().take(10) {
         let ScanResult {
-            address, ref value, ..
+            address,
+            ref value,
+            active,
+            ..
         } = *result;
+
+        let info = match active {
+            true => format!("{}", value),
+            false => format!("*{}", value),
+        };
 
         match handle.find_location(address)? {
             Location::Module(module) => {
                 let offset = address.offset_of(module.range.base)?;
-                println!("{}{}: {} = {}", module.name, offset, address, value);
+                println!("{}{}: {} = {}", module.name, offset, address, info);
             }
             Location::Thread(thread) => {
                 let base = thread
@@ -93,13 +141,10 @@ fn print_results<'a>(
                     .unwrap_or(thread.stack.base);
 
                 let offset = address.offset_of(base)?;
-                println!(
-                    "THREADSTACK{}{}: {} = {}",
-                    thread.id, offset, address, value
-                );
+                println!("THREADSTACK{}{}: {} = {}", thread.id, offset, address, info);
             }
             Location::None => {
-                println!("{} = {}", address, value);
+                println!("{} = {}", address, info);
             }
         }
     }
@@ -121,8 +166,43 @@ fn main() -> Result<(), failure::Error> {
         }
     }
 
-    println!("press [enter] to exit");
-    let mut input = String::new();
-    std::io::stdin().read_line(&mut input)?;
     Ok(())
+}
+
+struct SimpleProgress<W> {
+    out: W,
+}
+
+impl<W> SimpleProgress<W> {
+    fn new(out: W) -> SimpleProgress<W> {
+        Self { out: out }
+    }
+}
+
+impl<W> scanner::Progress for SimpleProgress<W>
+where
+    W: io::Write,
+{
+    fn report(&mut self, percentage: usize) -> Result<(), failure::Error> {
+        use std::iter;
+
+        write!(self.out, "\r")?;
+        self.out.flush()?;
+
+        let repr = iter::repeat('#').take(percentage / 10).collect::<String>();
+        write!(self.out, "{}: {}%", repr, percentage)?;
+        self.out.flush()?;
+
+        Ok(())
+    }
+
+    fn done(&mut self, interrupted: bool) -> Result<(), failure::Error> {
+        if interrupted {
+            writeln!(self.out, " interrupted!")?;
+        } else {
+            writeln!(self.out, "")?;
+        }
+
+        Ok(())
+    }
 }

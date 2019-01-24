@@ -12,7 +12,7 @@ pub mod opts;
 mod process;
 mod process_handle;
 pub mod scan;
-mod scanner;
+pub mod scanner;
 mod system_info;
 mod system_thread;
 mod thread;

@@ -1,5 +1,6 @@
 use crate::{
     address::{Address, Size},
+    process::{MemoryInformation, Process},
     process_handle::ProcessHandle,
     scan, thread_buffers,
 };
@@ -9,6 +10,8 @@ use std::{convert::TryFrom, sync::Arc};
 pub struct Scanner<'a> {
     process_handle: &'a ProcessHandle,
     thread_pool: Arc<rayon::ThreadPool>,
+    /// Only scan for aligned values.
+    aligned: bool,
     /// Current results in scanner.
     pub results: Vec<ScanResult>,
 }
@@ -21,7 +24,16 @@ impl<'a> Scanner<'a> {
         Self {
             results: Vec::new(),
             process_handle,
+            aligned: false,
             thread_pool,
+        }
+    }
+
+    /// Only scan for values which are aligned.
+    pub fn aligned(self) -> Self {
+        Self {
+            aligned: true,
+            ..self
         }
     }
 
@@ -78,16 +90,31 @@ impl<'a> Scanner<'a> {
         &mut self,
         scan_type: scan::Type,
         predicate: &(dyn scan::Predicate + Sync + Send),
+        mut progress: (impl Progress + Send),
     ) -> Result<(), failure::Error> {
         use crate::utils::IteratorExtension;
-        use std::sync::mpsc;
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        };
 
         let size: usize = scan_type.size();
         let buffer_size = 0x1000;
 
         let buffers = thread_buffers::ThreadBuffers::new();
-        let results = &mut self.results;
-        let process = &self.process_handle.process;
+
+        let Scanner {
+            ref mut results,
+            ref process_handle,
+            aligned,
+            ..
+        } = *self;
+
+        // if true, threads should stop working
+        let bail = AtomicBool::new(false);
+        let process = &process_handle.process;
+        let special = predicate.special();
+        let mut last_error = None;
 
         self.thread_pool.install(|| {
             rayon::scope(|s| {
@@ -96,7 +123,6 @@ impl<'a> Scanner<'a> {
                 let mut bytes = 0;
 
                 for region in process.virtual_memory_regions().only_relevant() {
-                    println!("{:?}", region);
                     bytes += region
                         .as_ref()
                         .map_err(|_| ())
@@ -104,52 +130,30 @@ impl<'a> Scanner<'a> {
                         .unwrap_or(0);
 
                     total += 1;
-                    let tx = tx.clone();
+                    let mut tx = tx.clone();
 
-                    let buffers_ref = &buffers;
+                    let task = Task {
+                        buffers: &buffers,
+                        process,
+                        region,
+                        buffer_size,
+                        size,
+                        aligned,
+                        predicate,
+                        special: special.as_ref(),
+                        scan_type,
+                        bail: &bail,
+                    };
 
                     s.spawn(move |_| {
-                        let work = || {
-                            let region = region?;
-                            let range = region.range;
-                            let len = range.size.into_usize()?;
+                        let result = task.work(&mut tx);
 
-                            let mut start = 0;
-
-                            while start < len {
-                                let len = usize::min(buffer_size, len - start);
-                                let loc = range.base.add(Size::try_from(start)?)?;
-
-                                // length of the buffer we need to read process memory.
-                                let mut buf = buffers_ref.get_mut(len)?;
-                                let buf = process.read_process_memory(loc, &mut *buf)?;
-
-                                for (n, w) in buf.chunks(size).enumerate() {
-                                    let value = scan_type.decode(w);
-
-                                    if predicate.test(&value) {
-                                        let address = range.base.add(Size::try_from(size * n)?)?;
-                                        let scan_result = ScanResult {
-                                            address,
-                                            value,
-                                            active: true,
-                                        };
-                                        tx.send(TaskProgress::ScanResult(scan_result))?;
-                                    }
-                                }
-
-                                start += buffer_size;
-                            }
-
-                            Ok(())
-                        };
-
-                        tx.send(TaskProgress::Result(work()))
+                        tx.send(TaskProgress::Result(result))
                             .expect("channel send failed");
                     });
                 }
 
-                println!("TOTAL: {} bytes", bytes);
+                println!("Total memory to scan: {}B", bytes);
 
                 let mut current = 0;
                 let mut percentage = total / 100;
@@ -166,19 +170,18 @@ impl<'a> Scanner<'a> {
                         }
                         // Result from one task.
                         TaskProgress::Result(result) => {
-                            match result {
-                                Ok(()) => {}
-                                Err(e) => {
-                                    println!("error in scan: {}", e);
-                                }
+                            if let Err(e) = result {
+                                last_error = Some(e);
+                                bail.store(true, Ordering::SeqCst);
                             }
 
                             current += 1;
 
-                            // print progress.
                             if current % percentage == 0 {
-                                let p = (current * 100) / total;
-                                println!("{}%", p);
+                                if let Err(e) = progress.report((current * 100) / total) {
+                                    last_error = Some(e);
+                                    bail.store(true, Ordering::SeqCst);
+                                }
                             }
 
                             if current >= total {
@@ -190,11 +193,132 @@ impl<'a> Scanner<'a> {
             })
         });
 
+        progress.done(bail.load(Ordering::SeqCst))?;
+
+        if let Some(e) = last_error {
+            return Err(e);
+        }
+
         return Ok(());
 
         enum TaskProgress {
             Result(Result<(), failure::Error>),
             ScanResult(ScanResult),
+        }
+
+        struct Task<'a> {
+            buffers: &'a thread_buffers::ThreadBuffers,
+            process: &'a Process,
+            region: Result<MemoryInformation, failure::Error>,
+            buffer_size: usize,
+            size: usize,
+            aligned: bool,
+            predicate: &'a (dyn scan::Predicate + Sync + Send),
+            special: Option<&'a scan::Special>,
+            scan_type: scan::Type,
+            bail: &'a AtomicBool,
+        }
+
+        impl<'a> Task<'a> {
+            fn emit(
+                tx: &mut mpsc::SyncSender<TaskProgress>,
+                loc: &Address,
+                offset: usize,
+                value: scan::Value,
+            ) -> Result<(), failure::Error> {
+                let address = loc.add(Size::try_from(offset)?)?;
+
+                let scan_result = ScanResult {
+                    address,
+                    value,
+                    active: true,
+                };
+
+                tx.send(TaskProgress::ScanResult(scan_result))?;
+                Ok(())
+            }
+
+            fn work(self, tx: &mut mpsc::SyncSender<TaskProgress>) -> Result<(), failure::Error> {
+                let Task {
+                    buffers,
+                    process,
+                    region,
+                    buffer_size,
+                    size,
+                    aligned,
+                    predicate,
+                    special,
+                    scan_type,
+                    bail,
+                    ..
+                } = self;
+
+                let region = region?;
+                let range = region.range;
+                let len = range.size.into_usize()?;
+
+                let mut start = 0;
+
+                while start < len && !bail.load(Ordering::SeqCst) {
+                    let len = usize::min(buffer_size, len - start);
+                    let loc = range.base.add(Size::try_from(start)?)?;
+
+                    // length of the buffer we need to read process memory.
+                    let mut buf = buffers.get_mut(len)?;
+
+                    // TODO: figure out why we are trying to read invalid memory region sometimes.
+                    let buf = match process.read_process_memory(loc, &mut *buf) {
+                        Ok(buf) => buf,
+                        Err(_) => continue,
+                    };
+
+                    let mut n = 0;
+                    let end = buf.len() - size;
+
+                    while n < end && !bail.load(Ordering::SeqCst) {
+                        let w = &buf[n..(n + size)];
+
+                        // A special, more efficient kind of matching is available.
+                        if let Some(special) = special {
+                            if let Some(result) = special.test(w) {
+                                if result {
+                                    let value = scan_type.decode(w);
+
+                                    if !predicate.test(&value) {
+                                        panic!("false positive on predicate {:?} compared to special {:?}", predicate, special);
+                                    }
+
+                                    Self::emit(tx, &loc, n, value)?;
+                                }
+
+                                if aligned {
+                                    n += size;
+                                } else {
+                                    n += 1;
+                                }
+
+                                continue;
+                            }
+                        }
+
+                        let value = scan_type.decode(w);
+
+                        if predicate.test(&value) {
+                            Self::emit(tx, &loc, n, value)?;
+                        }
+
+                        if aligned {
+                            n += size;
+                        } else {
+                            n += 1;
+                        }
+                    }
+
+                    start += buffer_size;
+                }
+
+                Ok(())
+            }
         }
     }
 }
@@ -205,4 +329,13 @@ pub struct ScanResult {
     pub address: Address,
     pub value: scan::Value,
     pub active: bool,
+}
+
+/// A trait to track the progress of processes.
+pub trait Progress {
+    /// Report that the process has progresses to the given percentage.
+    fn report(&mut self, percentage: usize) -> Result<(), failure::Error>;
+
+    /// Report that the progress is completed, and wheter it was interrupted or not.
+    fn done(&mut self, interrupted: bool) -> Result<(), failure::Error>;
 }

@@ -2,19 +2,24 @@ use std::{cell::RefCell, mem, os::raw::c_char, ptr, slice, sync};
 
 thread_local!(static LAST_ERROR: RefCell<Option<failure::Error>> = RefCell::new(None));
 
-/// NULL check the given argument and convert into a reference with an unbounded lifetime.
-/// See: https://doc.rust-lang.org/nomicon/unbounded-lifetimes.html
-///
-/// If the argument passes the null check, we assume that the reference is valid for the remainder of the function call.
-macro_rules! null_check {
-    (&mut $expr:expr) => {{
-        null_check!(@test $expr, null_mut);
-        unsafe { &mut *$expr }
+fn constrain<'a, T>(value: *const T) -> &'a T {
+    unsafe { &*value }
+}
+
+fn constrain_mut<'a, T>(value: *mut T) -> &'a mut T {
+    unsafe { &mut *value }
+}
+
+/// NULL check the given argument and convert into a reference with a bounded lifetime.
+macro_rules! null_ck {
+    (&$l:lifetime mut $expr:expr) => {{
+        null_ck!(@test $expr, null_mut);
+        $crate::constrain_mut::<$l, _>($expr)
     }};
 
-    (&$expr:expr) => {{
-        null_check!(@test $expr, null);
-        unsafe { &*$expr }
+    (&$l:lifetime $expr:expr) => {{
+        null_ck!(@test $expr, null);
+        $crate::constrain::<$l, _>($expr)
     }};
 
     (@test $expr:expr, $m:ident) => {
@@ -72,7 +77,7 @@ pub struct ProcessHandle(ptscan::ProcessHandle);
 ///
 /// If a process cannot be found, *out is set to NULL.
 #[no_mangle]
-pub extern "C" fn ptscan_process_handle_open_by_name(
+pub extern "C" fn ptscan_process_handle_open_by_name<'a>(
     name: *const c_char,
     name_len: usize,
     out: *mut *mut ProcessHandle,
@@ -82,7 +87,7 @@ pub extern "C" fn ptscan_process_handle_open_by_name(
         String::from_utf8_lossy(bytes)
     };
 
-    let out = null_check!(&mut out);
+    let out = null_ck!(&'a mut out);
 
     if let Some(process_handle) = try_last!(ptscan::ProcessHandle::open_by_name(name.as_ref())) {
         *out = into_ptr!(ProcessHandle(process_handle));
@@ -103,8 +108,8 @@ pub struct ThreadPool(sync::Arc<rayon::ThreadPool>);
 
 /// Create a new thread pool.
 #[no_mangle]
-pub extern "C" fn ptscan_thread_pool_new(out: *mut *mut ThreadPool) -> bool {
-    let out = null_check!(&mut out);
+pub extern "C" fn ptscan_thread_pool_new<'a>(out: *mut *mut ThreadPool) -> bool {
+    let out = null_ck!(&'a mut out);
     let thread_pool = try_last!(rayon::ThreadPoolBuilder::new().build());
     *out = into_ptr!(ThreadPool(sync::Arc::new(thread_pool)));
     true
@@ -120,12 +125,12 @@ pub extern "C" fn ptscan_thread_pool_free(thread_pool: *mut ThreadPool) {
 pub struct Scanner(ptscan::scanner::Scanner);
 
 #[no_mangle]
-pub extern "C" fn ptscan_scanner_new(
+pub extern "C" fn ptscan_scanner_new<'a>(
     thread_pool: *const ThreadPool,
     out: *mut *mut Scanner,
 ) -> bool {
-    let ThreadPool(ref thread_pool) = *null_check!(&thread_pool);
-    let out = null_check!(&mut out);
+    let ThreadPool(ref thread_pool) = *null_ck!(&'a thread_pool);
+    let out = null_ck!(&'a mut out);
     *out = into_ptr!(Scanner(ptscan::scanner::Scanner::new(thread_pool)));
     true
 }
@@ -148,12 +153,12 @@ pub struct ScanResult(*const ptscan::scanner::ScanResult);
 ///
 /// Modifying a collection while an iterate is open results in undefined behavior.
 #[no_mangle]
-pub extern "C" fn ptscan_scanner_results_iter(
+pub extern "C" fn ptscan_scanner_results_iter<'a>(
     scanner: *mut Scanner,
     out: *mut *mut ScannerResultsIter,
 ) -> bool {
-    let scanner = null_check!(&mut scanner);
-    let out = null_check!(&mut out);
+    let scanner = null_ck!(&'a mut scanner);
+    let out = null_ck!(&'a mut out);
     *out = into_ptr!(ScannerResultsIter(unsafe {
         mem::transmute(scanner.0.results.iter())
     }));
@@ -164,12 +169,12 @@ pub extern "C" fn ptscan_scanner_results_iter(
 ///
 /// If no more elements are available *out is set to NULL, otherwise it is set to point to the next element.
 #[no_mangle]
-pub extern "C" fn ptscan_scanner_results_next(
+pub extern "C" fn ptscan_scanner_results_next<'a>(
     scanner_results: *mut ScannerResultsIter,
     out: *mut *mut ScanResult,
 ) -> bool {
-    let scanner_results = null_check!(&mut scanner_results);
-    let out = null_check!(&mut out);
+    let scanner_results = null_ck!(&'a mut scanner_results);
+    let out = null_ck!(&'a mut out);
 
     *out = match scanner_results.0.next() {
         Some(next) => into_ptr!(ScanResult(next as *const _)),

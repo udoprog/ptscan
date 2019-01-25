@@ -323,9 +323,9 @@ impl<'a> Iterator for Lexer<'a> {
                     match ident.as_str() {
                         "value" => return Some(Ok((s, Token::Value, e))),
                         other => {
-                            return Some(
-                                Err(self.err(format!("unsupported identifier `{}`", other))),
-                            );
+                            return Some(Err(
+                                self.err(format!("unsupported identifier `{}`", other))
+                            ));
                         }
                     }
                 }

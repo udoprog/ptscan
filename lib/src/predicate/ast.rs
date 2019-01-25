@@ -21,7 +21,8 @@ pub enum Expression {
 }
 
 impl Expression {
-    fn into_predicate(self) -> Result<Box<dyn predicate::Predicate>, failure::Error> {
+    /// Convert an expression into a predicate.
+    pub fn into_predicate(self) -> Result<Box<dyn predicate::Predicate>, failure::Error> {
         use self::Expression::*;
 
         let p: Box<dyn predicate::Predicate> = match self {

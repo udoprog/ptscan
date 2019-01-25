@@ -2,7 +2,7 @@
 use crate::{
     scan::Value,
     predicate::{
-        lexer::{self, Token},
+        lexer::Token,
         ast::*
     }
 };

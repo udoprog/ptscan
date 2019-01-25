@@ -8,6 +8,13 @@ mod ast;
 mod lexer;
 lalrpop_util::lalrpop_mod!(parser, "/predicate/parser.rs");
 
+/// Parse a a string into a predicate.
+pub fn parse(input: &str) -> Result<Box<Predicate>, failure::Error> {
+    parser::OrParser::new()
+        .parse(lexer::Lexer::new(input))?
+        .into_predicate()
+}
+
 pub trait Predicate: Send + Sync + fmt::Debug {
     /// TODO: implement predicate simplification.
 

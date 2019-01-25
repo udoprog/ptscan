@@ -20,7 +20,7 @@ fn try_main() -> Result<(), failure::Error> {
     Ok(())
 }
 
-fn main() -> Result<(), failure::Error> {
+fn main() {
     if let Err(e) = try_main() {
         eprintln!("{}", e);
         eprintln!("{}", e.backtrace());
@@ -33,8 +33,6 @@ fn main() -> Result<(), failure::Error> {
             }
         }
     }
-
-    Ok(())
 }
 
 struct SimpleProgress<W> {

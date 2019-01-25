@@ -9,6 +9,7 @@ mod utils;
 mod address;
 mod module;
 pub mod opts;
+pub mod predicate;
 mod process;
 mod process_handle;
 pub mod scan;
@@ -21,7 +22,7 @@ mod thread_buffers;
 pub type ProcessId = DWORD;
 pub type ThreadId = DWORD;
 
-pub use self::address::{Address, AddressRange, Offset, Size};
+pub use self::address::{Address, AddressRange, Offset, Pointer, Size};
 pub use self::module::Module;
 pub use self::process::{system_processes, MemoryState, MemoryType, Process};
 pub use self::process_handle::{Location, ProcessHandle, ProcessName};

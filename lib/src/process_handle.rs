@@ -1,8 +1,8 @@
 //! High-level interface to processes.
 
 use crate::{
-    process, scan, scanner, system_thread, thread::Thread, Address, AddressRange, ProcessId, Size,
-    ThreadId,
+    predicate, process, scan, scanner, system_thread, thread::Thread, Address, AddressRange,
+    ProcessId, Size, ThreadId,
 };
 use failure::ResultExt;
 use std::{convert::TryFrom, fmt};
@@ -345,7 +345,7 @@ pub struct PointeePredicate {
     memory_regions: Vec<process::MemoryInformation>,
 }
 
-impl scan::Predicate for PointeePredicate {
+impl predicate::Predicate for PointeePredicate {
     fn special(&self) -> Option<scan::Special> {
         Some(scan::Special::NotZero)
     }

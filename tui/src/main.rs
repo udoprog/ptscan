@@ -1,5 +1,5 @@
 use hashbrown::HashMap;
-use ptscan::{scan, scanner, Address, Location, Process, ProcessHandle, ScanResult};
+use ptscan::{predicate, scan, scanner, Address, Location, Process, ProcessHandle, ScanResult};
 use std::{io, sync::Arc};
 
 static HELP: &'static str = include_str!("help.md");
@@ -274,7 +274,7 @@ where
     }
 
     /// Scan memory using the given predicate and the currently selected scanner.
-    fn scan(&mut self, predicate: &(dyn scan::Predicate)) -> Result<(), failure::Error> {
+    fn scan(&mut self, predicate: &(dyn predicate::Predicate)) -> Result<(), failure::Error> {
         let handle = match self.handle.as_ref() {
             Some(handle) => handle,
             None => failure::bail!("not attached to a process"),
@@ -582,7 +582,7 @@ where
     pub fn parse_predicate(
         &mut self,
         rest: &[&str],
-    ) -> Result<Box<dyn scan::Predicate>, failure::Error> {
+    ) -> Result<Box<dyn predicate::Predicate>, failure::Error> {
         let op = rest[0];
 
         match op {
@@ -594,9 +594,9 @@ where
 
                 return Ok(Box::new(handle.pointee_predicate()?));
             }
-            "dec" | "smaller" => return Ok(Box::new(scan::Dec)),
-            "inc" | "bigger" => return Ok(Box::new(scan::Inc)),
-            "changed" => return Ok(Box::new(scan::Changed)),
+            "dec" | "smaller" => return Ok(Box::new(predicate::Dec)),
+            "inc" | "bigger" => return Ok(Box::new(predicate::Inc)),
+            "changed" => return Ok(Box::new(predicate::Changed)),
             _ => {}
         }
 
@@ -606,12 +606,12 @@ where
 
         let value: scan::Value = str::parse(rest[1])?;
 
-        let predicate: Box<dyn scan::Predicate> = match op {
-            "eq" => Box::new(scan::Eq(value)),
-            "gt" => Box::new(scan::Gt(value)),
-            "gte" => Box::new(scan::Gte(value)),
-            "lt" => Box::new(scan::Lt(value)),
-            "lte" => Box::new(scan::Lte(value)),
+        let predicate: Box<dyn predicate::Predicate> = match op {
+            "eq" => Box::new(predicate::Eq(value)),
+            "gt" => Box::new(predicate::Gt(value)),
+            "gte" => Box::new(predicate::Gte(value)),
+            "lt" => Box::new(predicate::Lt(value)),
+            "lte" => Box::new(predicate::Lte(value)),
             other => failure::bail!("bad <op>: {}", other),
         };
 
@@ -639,7 +639,7 @@ pub enum Action {
     /// Attach to a new, or re-attach to an old process.
     Attach(Option<String>),
     /// Initialize or refine the existing scan.
-    Scan(Box<dyn scan::Predicate>),
+    Scan(Box<dyn predicate::Predicate>),
     /// Reset the state of the scan.
     Reset,
     /// Print results from scan.

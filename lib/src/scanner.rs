@@ -1,5 +1,6 @@
 use crate::{
     address::{Address, Size},
+    predicate,
     process::{MemoryInformation, Process},
     scan, thread_buffers,
 };
@@ -79,7 +80,7 @@ impl Scanner {
     pub fn rescan(
         &mut self,
         process: &Process,
-        predicate: &(dyn scan::Predicate),
+        predicate: &(dyn predicate::Predicate),
     ) -> Result<(), failure::Error> {
         use rayon::prelude::*;
 
@@ -133,7 +134,7 @@ impl Scanner {
     pub fn initial_scan(
         &mut self,
         process: &Process,
-        predicate: &(dyn scan::Predicate),
+        predicate: &(dyn predicate::Predicate),
         mut progress: (impl Progress + Send),
     ) -> Result<(), failure::Error> {
         use crate::utils::IteratorExtension;
@@ -264,7 +265,7 @@ impl Scanner {
             buffer_size: usize,
             size: usize,
             aligned: bool,
-            predicate: &'a (dyn scan::Predicate),
+            predicate: &'a (dyn predicate::Predicate),
             special: Option<&'a scan::Special>,
             scan_type: scan::Type,
             bail: &'a AtomicBool,

@@ -1,48 +1,5 @@
-[package]
-name = "ptscan"
-version = "0.1.0"
-authors = ["John-John Tedro <udoprog@tedro.se>"]
-edition = "2018"
-license = "MIT/Apache-2.0"
-categories = ["data-structures"]
-
-description = """
-A pointer scanner for Windows written in Rust.
-"""
-
-documentation = "https://docs.rs/ptscan"
-homepage = "https://github.com/udoprog/ptscan"
-repository = "https://github.com/udoprog/ptscan"
-
-readme = "README.md"
-
-[dependencies]
-failure = "0.1.5"
-memoffset = "0.2"
-byteorder = "1.3"
-clap = "2.32"
-rayon = "1.0.3"
-log = "0.4"
-fixed-map = "0.6"
-hashbrown = "0.1.8"
-
-[dependencies.winapi]
-version = "0.3"
-features = [
-    "sysinfoapi",
-    "wow64apiset",
-    "psapi",
-    "errhandlingapi",
-    "winbase",
-    "winnt",
-    "memoryapi",
-    "tlhelp32",
-    "handleapi",
-    "winerror",
+[workspace]
+members = [
+    "lib",
+    "tui"
 ]
-
-[dependencies.ntapi]
-version = "0.2"
-
-[build-dependencies]
-failure = "0.1"

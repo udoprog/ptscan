@@ -1,0 +1,76 @@
+// vim: ft=rust
+use crate::{
+    scan::Value,
+    predicate::{
+        lexer::{self, Token},
+        ast::*
+    }
+};
+
+grammar<'input>;
+
+pub Or: Expression = {
+    <left:And> <rest:(or And)+> => {
+        let mut or = Vec::new();
+        or.push(left);
+        or.extend(rest.into_iter().map(|(_, r)| r));
+        Expression::Or(or)
+    },
+
+    And,
+}
+
+And: Expression = {
+    <left:Predicate> <rest:(and Predicate)+> => {
+        let mut and = Vec::new();
+        and.push(left);
+        and.extend(rest.into_iter().map(|(_, r)| r));
+        Expression::And(and)
+    },
+
+    Predicate,
+}
+
+Predicate: Expression = {
+    "$value" "==" <value:literal> => {
+        Expression::Eq(value)
+    },
+
+    "$value" "!=" <value:literal> => {
+        Expression::Neq(value)
+    },
+
+    "$value" "<=" <value:literal> => {
+        Expression::Lte(value)
+    },
+
+    "$value" ">=" <value:literal> => {
+        Expression::Gte(value)
+    },
+
+    "$value" "<" <value:literal> => {
+        Expression::Lt(value)
+    },
+
+    "$value" ">" <value:literal> => {
+        Expression::Gt(value)
+    },
+};
+
+extern {
+    type Location = usize;
+    type Error = crate::predicate::lexer::Error;
+
+    enum Token {
+        "$value" => Token::Value,
+        and => Token::And,
+        or => Token::Or,
+        "==" => Token::Eq,
+        "!=" => Token::Eq,
+        "<=" => Token::Lte,
+        ">=" => Token::Gte,
+        "<" => Token::Lt,
+        ">" => Token::Gt,
+        literal => Token::Literal(<Value>),
+    }
+}

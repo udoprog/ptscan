@@ -40,11 +40,11 @@ void ptscan_scanner_results_free(ScannerResultsIter *scanner_results);
 /// Create an iterator over the results of a scan.
 /// # Safety
 /// Modifying a collection while an iterate is open results in undefined behavior.
-void ptscan_scanner_results_iter(Scanner *scanner, ScannerResultsIter **out);
+bool ptscan_scanner_results_iter(Scanner *scanner, ScannerResultsIter **out);
 
 /// Walk the iterator one step.
 /// If no more elements are available *out is set to NULL, otherwise it is set to point to the next element.
-void ptscan_scanner_results_next(ScannerResultsIter *scanner_results,
+bool ptscan_scanner_results_next(ScannerResultsIter *scanner_results,
                                  ScanResult **out);
 
 /// Close and free the thread pool.

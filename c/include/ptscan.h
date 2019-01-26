@@ -9,6 +9,7 @@ struct pts_error_t;
 
 struct pts_process_handle_t;
 
+/// A opaque process identifier.
 struct pts_process_id_t;
 
 /// A single scan result.
@@ -22,6 +23,7 @@ struct pts_scanner_t;
 
 struct pts_system_processes_iter_t;
 
+/// A thread pool.
 struct pts_thread_pool_t;
 
 extern "C" {
@@ -35,7 +37,18 @@ const pts_error_t *pts_error_last();
 uintptr_t pts_error_message(const pts_error_t *error, char *message, uintptr_t message_len);
 
 /// Close and free the process handle.
-void pts_process_handle_free(pts_process_handle_t *process_handle);
+void pts_process_handle_free(pts_process_handle_t *handle);
+
+/// Access the name of the process handle.
+/// If the process handle has no name, returns 0.
+uintptr_t pts_process_handle_name(const pts_process_handle_t *handle,
+                                  char *name,
+                                  uintptr_t name_len);
+
+/// Open a process handle by a pid.
+/// If the process doesn't exist or access is denied *out is set to NULL.
+/// If any error was raised, returns false and set errors appropriately.
+bool pts_process_handle_open(const pts_process_id_t *pid, pts_process_handle_t **out);
 
 /// Find a process by name.
 /// If a process cannot be found, *out is set to NULL.
@@ -43,6 +56,9 @@ void pts_process_handle_free(pts_process_handle_t *process_handle);
 bool pts_process_handle_open_by_name(const char *name,
                                      uintptr_t name_len,
                                      pts_process_handle_t **out);
+
+/// Access a readable process identifier for the handle.
+uintptr_t pts_process_handle_pid(const pts_process_handle_t *handle, char *pid, uintptr_t pid_len);
 
 /// Close and free the scanner.
 void pts_scanner_free(pts_scanner_t *scanner);

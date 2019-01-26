@@ -1,4 +1,5 @@
-use std::{cell::RefCell, os::raw::c_char, ptr, slice};
+use crate::utils;
+use std::{cell::RefCell, os::raw::c_char, ptr};
 
 thread_local!(pub(crate) static LAST_ERROR: RefCell<Option<failure::Error>> = RefCell::new(None));
 
@@ -26,16 +27,5 @@ pub extern "C" fn pts_error_message<'a>(
 ) -> usize {
     let pts_error_t(ref e) = *null_ck!(&'a error);
     let string = e.to_string();
-
-    let message = unsafe { slice::from_raw_parts_mut(message as *mut u8, message_len) };
-    // use the length of the shortest slice.
-    let mut len = usize::min(string.as_bytes().len(), message.len());
-
-    // Make sure we don't copy on a UTF-8 character boundary.
-    while !string.is_char_boundary(len) && len > 0 {
-        len -= 0;
-    }
-
-    message[..len].copy_from_slice(&string.as_bytes()[..len]);
-    len
+    utils::string(&string, message, message_len)
 }

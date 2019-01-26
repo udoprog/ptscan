@@ -40,50 +40,6 @@ pub struct ProcessHandle {
 }
 
 impl ProcessHandle {
-    /// Find the first process matching the given name.
-    pub fn open_by_name(name: &str) -> Result<Option<ProcessHandle>, failure::Error> {
-        for pid in system::processes()? {
-            let mut handle =
-                match ProcessHandle::open(pid).with_context(|_| Error::OpenProcess(pid))? {
-                    Some(handle) => handle,
-                    // process cannot be opened.
-                    None => continue,
-                };
-
-            let handle_name = match handle.name.as_ref() {
-                // NB: can't find by name if we can't decode the name from the process :(.
-                None => continue,
-                Some(handle_name) => handle_name.as_str(),
-            };
-
-            if handle_name != name {
-                continue;
-            }
-
-            handle
-                .refresh_threads()
-                .with_context(|_| Error::RefreshThreads(handle.name()))?;
-
-            return Ok(Some(handle));
-        }
-
-        Ok(None)
-    }
-
-    /// Build a predicate that matches any pointers which points to valid memory.
-    pub fn pointee_predicate(&self) -> Result<PointeePredicate, failure::Error> {
-        use crate::utils::IteratorExtension;
-
-        let mut memory_regions = self
-            .process
-            .virtual_memory_regions()
-            .only_relevant()
-            .collect::<Result<Vec<_>, _>>()?;
-
-        memory_regions.sort_by_key(|m| m.range.base);
-        Ok(PointeePredicate { memory_regions })
-    }
-
     /// Open the given process id and create a simplified handle to it.
     ///
     /// This returns `None` if:
@@ -110,12 +66,9 @@ impl ProcessHandle {
             },
         };
 
-        let is_64bit = process.is_64bit()?;
-
         let mut name = None;
-        let mut kernel32 = None;
-
         let mut modules = Vec::new();
+        let mut kernel32 = None;
 
         for module in process.modules()? {
             let module_name = module.name()?;
@@ -126,23 +79,23 @@ impl ProcessHandle {
 
             let info = module.info()?;
 
+            let range = AddressRange {
+                base: info.base_of_dll,
+                size: info.size_of_image,
+            };
+
             if module_name.as_os_str() == OsStr::new("KERNEL32.DLL") {
-                kernel32 = Some(AddressRange {
-                    base: info.base_of_dll,
-                    size: info.size_of_image,
-                });
+                kernel32 = Some(range.clone());
             }
 
             modules.push(ModuleInfo {
                 name: module_name.to_string_lossy().to_string(),
-                range: AddressRange {
-                    base: info.base_of_dll,
-                    size: info.size_of_image,
-                },
+                range,
             });
         }
 
         modules.sort_by_key(|m| m.range.base);
+        let is_64bit = process.is_64bit()?;
 
         Ok(Some(ProcessHandle {
             name,
@@ -152,6 +105,46 @@ impl ProcessHandle {
             kernel32,
             threads: Vec::new(),
         }))
+    }
+
+    /// Find the first process matching the given name.
+    pub fn open_by_name(name: &str) -> Result<Option<ProcessHandle>, failure::Error> {
+        for pid in system::processes()? {
+            let mut handle =
+                match ProcessHandle::open(pid).with_context(|_| Error::OpenProcess(pid))? {
+                    Some(handle) => handle,
+                    // process cannot be opened.
+                    None => continue,
+                };
+
+            let handle_name = match handle.name.as_ref() {
+                // NB: can't find by name if we can't decode the name from the process :(.
+                None => continue,
+                Some(handle_name) => handle_name.as_str(),
+            };
+
+            if handle_name != name {
+                continue;
+            }
+
+            return Ok(Some(handle));
+        }
+
+        Ok(None)
+    }
+
+    /// Build a predicate that matches any pointers which points to valid memory.
+    pub fn pointee_predicate(&self) -> Result<PointeePredicate, failure::Error> {
+        use crate::utils::IteratorExtension;
+
+        let mut memory_regions = self
+            .process
+            .virtual_memory_regions()
+            .only_relevant()
+            .collect::<Result<Vec<_>, _>>()?;
+
+        memory_regions.sort_by_key(|m| m.range.base);
+        Ok(PointeePredicate { memory_regions })
     }
 
     /// Name of the process.

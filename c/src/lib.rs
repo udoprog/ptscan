@@ -9,8 +9,10 @@ pub mod process_handle;
 pub mod scanner;
 pub mod system;
 
-pub struct pts_process_id_t(ptscan::ProcessId);
+/// A opaque process identifier.
+pub struct pts_process_id_t(pub(crate) ptscan::ProcessId);
 
+/// A thread pool.
 pub struct pts_thread_pool_t(pub(crate) sync::Arc<rayon::ThreadPool>);
 
 /// Create a new thread pool.

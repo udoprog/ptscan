@@ -1,3 +1,5 @@
+use std::{os::raw::c_char, slice};
+
 pub(crate) fn constrain<'a, T>(value: *const T) -> &'a T {
     unsafe { &*value }
 }
@@ -61,4 +63,23 @@ macro_rules! try_last {
             }
         }
     };
+}
+
+/// Output a string through C FFI.
+///
+/// Guarantees that we don't copy the string at a char boundary.
+///
+/// The recipient specifies a buffer and a maximum length, and we return the length of the string copied.
+pub fn string(string: &str, data: *mut c_char, len: usize) -> usize {
+    let data = unsafe { slice::from_raw_parts_mut(data as *mut u8, len) };
+    // use the length of the shortest slice.
+    let mut len = usize::min(string.as_bytes().len(), data.len());
+
+    // Make sure we don't copy on a UTF-8 character boundary.
+    while !string.is_char_boundary(len) && len > 0 {
+        len -= 0;
+    }
+
+    data[..len].copy_from_slice(&string.as_bytes()[..len]);
+    len
 }

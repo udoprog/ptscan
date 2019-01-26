@@ -1,4 +1,4 @@
-use std::{os::raw::c_char, slice};
+use std::{io, os::raw::c_char, slice};
 
 pub(crate) fn constrain<'a, T>(value: *const T) -> &'a T {
     unsafe { &*value }
@@ -82,4 +82,46 @@ pub fn string(string: &str, data: *mut c_char, len: usize) -> usize {
 
     data[..len].copy_from_slice(&string.as_bytes()[..len]);
     len
+}
+
+/// A fixed-size writable buffer based on a raw pointer.
+///
+/// Any writes which would overflow the buffer will be ignored.
+pub struct FixedRawBuffer {
+    /// Output data to write.
+    data: *mut u8,
+    /// Write position.
+    pos: usize,
+    /// Remaining buffer available.
+    len: usize,
+}
+
+impl FixedRawBuffer {
+    /// Create a new fixed buffer.
+    pub fn new(data: *mut c_char, len: usize) -> FixedRawBuffer {
+        FixedRawBuffer {
+            data: data as *mut u8,
+            pos: 0,
+            len,
+        }
+    }
+
+    /// Convert into the length that was written.
+    pub fn into_len(self) -> usize {
+        self.pos
+    }
+}
+
+impl io::Write for FixedRawBuffer {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let len = usize::min(buf.len(), self.len - self.pos);
+        let mut_buf = unsafe { slice::from_raw_parts_mut(self.data.add(self.pos), len) };
+        mut_buf.copy_from_slice(buf);
+        self.pos += len;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }

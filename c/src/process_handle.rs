@@ -74,9 +74,12 @@ pub extern "C" fn pts_process_handle_pid<'a>(
     pid: *mut c_char,
     pid_len: usize,
 ) -> usize {
+    use std::io::Write;
     let pts_process_handle_t(ref handle) = *null_ck!(&'a handle);
-    let p = handle.process.process_id().to_string();
-    utils::string(&p, pid, pid_len)
+    let pid = null_ck!(&'a mut pid);
+    let mut out = utils::FixedRawBuffer::new(pid, pid_len);
+    try_last!(write!(&mut out, "{}", handle.process.process_id()), 0);
+    out.into_len()
 }
 
 /// Close and free the process handle.

@@ -9,7 +9,7 @@ fn main() -> Result<(), Box<error::Error>> {
             crate_dir.join("cbindgen.toml"),
         )?)
         .generate()?
-        .write_to_file(crate_dir.join("include").join("ptscan.hpp"));
+        .write_to_file(crate_dir.join("include").join("ptscan.h"));
 
     Ok(())
 }

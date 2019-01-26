@@ -18,7 +18,6 @@ readme = "README.md"
 
 [lib]
 crate-type = ["staticlib"]
-path = "lib.rs"
 
 [dependencies]
 ptscan = {path = "../lib", version = "0.1.0"}

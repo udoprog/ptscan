@@ -1,10 +1,6 @@
 use std::{convert::TryFrom, fmt, io, sync::Arc};
 
-use crate::{
-    module, scan, system_info,
-    utils::{self, array},
-    Address, AddressRange, ProcessId, Size,
-};
+use crate::{module, scan, system, utils, Address, AddressRange, ProcessId, Size};
 
 use winapi::{
     shared::{
@@ -39,7 +35,7 @@ impl Process {
 
     /// Enumerate all modules.
     pub fn modules<'a>(&'a self) -> Result<Vec<module::Module<'a>>, failure::Error> {
-        let modules = array(0x400, |buf, size, needed| unsafe {
+        let modules = utils::array(0x400, |buf, size, needed| unsafe {
             psapi::EnumProcessModules(**self.handle, buf, size, needed)
         })?;
 
@@ -165,7 +161,7 @@ impl Process {
             return Ok(false);
         }
 
-        Ok(system_info::SystemInfo::get()?.arch.is_64bit())
+        Ok(system::info()?.arch.is_64bit())
     }
 
     /// Retrieve information about the memory page that corresponds to the given virtual `address`.
@@ -321,13 +317,6 @@ impl OpenProcessBuilder {
         let handle = Arc::new(utils::Handle::new(handle));
         Ok(Process { process_id, handle })
     }
-}
-
-/// Enumerate all processes, returning their corresponding pids.
-pub fn system_processes() -> Result<Vec<ProcessId>, failure::Error> {
-    array(0x400, |buf, size, needed| unsafe {
-        psapi::EnumProcesses(buf, size, needed)
-    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

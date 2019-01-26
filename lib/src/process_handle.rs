@@ -1,8 +1,8 @@
 //! High-level interface to processes.
 
 use crate::{
-    predicate, process, scan, scanner, system_thread, thread::Thread, Address, AddressRange,
-    ProcessId, Size, ThreadId,
+    predicate, process, scan, scanner, system, thread::Thread, Address, AddressRange, ProcessId,
+    Size, ThreadId,
 };
 use failure::ResultExt;
 use std::{convert::TryFrom, fmt};
@@ -42,7 +42,7 @@ pub struct ProcessHandle {
 impl ProcessHandle {
     /// Find the first process matching the given name.
     pub fn open_by_name(name: &str) -> Result<Option<ProcessHandle>, failure::Error> {
-        for pid in process::system_processes()? {
+        for pid in system::processes()? {
             let mut handle =
                 match ProcessHandle::open(pid).with_context(|_| Error::OpenProcess(pid))? {
                     Some(handle) => handle,
@@ -166,7 +166,7 @@ impl ProcessHandle {
     pub fn refresh_threads(&mut self) -> Result<(), failure::Error> {
         self.threads.clear();
 
-        for (id, t) in system_thread::system_threads()?.enumerate() {
+        for (id, t) in system::threads()?.enumerate() {
             if t.process_id() != self.process.process_id() {
                 continue;
             }

@@ -1,3 +1,2 @@
 include_guard = "ptscan_h"
 language = "C++"
-namespace = "PtScan"

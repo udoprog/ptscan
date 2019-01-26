@@ -1,19 +1,80 @@
+//! Utilities to query the system for things.
+
 use std::{fmt, io};
 
 use crate::{utils, ProcessId, ThreadId};
 
 use winapi::{
     shared::minwindef::{DWORD, FALSE},
-    um::{handleapi, tlhelp32},
+    um::{handleapi, psapi, sysinfoapi, tlhelp32, winnt},
 };
 
+/// Enumerate all processes, returning their corresponding pids.
+pub fn processes() -> Result<Vec<ProcessId>, failure::Error> {
+    utils::array(0x400, |buf, size, needed| unsafe {
+        psapi::EnumProcesses(buf, size, needed)
+    })
+}
+
+/// Enumerate all threads of the system.
+pub fn threads() -> Result<Threads, failure::Error> {
+    use tlhelp32::{CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD};
+
+    let handle = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+
+    if handle == handleapi::INVALID_HANDLE_VALUE {
+        return Err(failure::Error::from(io::Error::last_os_error()));
+    }
+
+    let handle = utils::Handle::new(handle);
+
+    Ok(Threads {
+        handle,
+        entry: None,
+    })
+}
+
+/// Get general system information.
+pub fn info() -> Result<Info, failure::Error> {
+    use std::mem;
+    let mut out: sysinfoapi::SYSTEM_INFO = unsafe { mem::zeroed() };
+    unsafe { sysinfoapi::GetNativeSystemInfo(&mut out as sysinfoapi::LPSYSTEM_INFO) };
+
+    let arch = match unsafe { out.u.s() }.wProcessorArchitecture {
+        winnt::PROCESSOR_ARCHITECTURE_AMD64 => Arch::Amd64,
+        _ => Arch::Other,
+    };
+
+    Ok(Info { arch })
+}
+
+#[derive(Debug)]
+pub enum Arch {
+    Amd64,
+    Other,
+}
+
+impl Arch {
+    pub fn is_64bit(&self) -> bool {
+        match *self {
+            Arch::Amd64 => true,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Info {
+    pub arch: Arch,
+}
+
 /// A thread in the system with an associated parent process.
-pub struct SystemThread {
+pub struct Thread {
     process_id: ProcessId,
     thread_id: ThreadId,
 }
 
-impl SystemThread {
+impl Thread {
     /// Access the process ID the thread belongs to.
     pub fn process_id(&self) -> ProcessId {
         self.process_id
@@ -25,7 +86,7 @@ impl SystemThread {
     }
 }
 
-impl fmt::Debug for SystemThread {
+impl fmt::Debug for Thread {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("Thread")
             .field("process_id", &self.process_id)
@@ -35,13 +96,13 @@ impl fmt::Debug for SystemThread {
 }
 
 /// An iterator over all system threads.
-pub struct SystemThreads {
+pub struct Threads {
     handle: utils::Handle,
     entry: Option<tlhelp32::THREADENTRY32>,
 }
 
-impl<'a> Iterator for SystemThreads {
-    type Item = SystemThread;
+impl<'a> Iterator for Threads {
+    type Item = Thread;
 
     fn next(&mut self) -> Option<Self::Item> {
         use std::mem;
@@ -70,27 +131,9 @@ impl<'a> Iterator for SystemThreads {
             }
         };
 
-        return Some(SystemThread {
+        return Some(Thread {
             process_id: e.th32OwnerProcessID,
             thread_id: e.th32ThreadID,
         });
     }
-}
-
-/// Enumerate all threads of the system.
-pub fn system_threads() -> Result<SystemThreads, failure::Error> {
-    use tlhelp32::{CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD};
-
-    let handle = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-
-    if handle == handleapi::INVALID_HANDLE_VALUE {
-        return Err(failure::Error::from(io::Error::last_os_error()));
-    }
-
-    let handle = utils::Handle::new(handle);
-
-    Ok(SystemThreads {
-        handle,
-        entry: None,
-    })
 }

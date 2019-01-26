@@ -14,8 +14,7 @@ mod process;
 mod process_handle;
 pub mod scan;
 pub mod scanner;
-mod system_info;
-mod system_thread;
+pub mod system;
 mod thread;
 mod thread_buffers;
 
@@ -24,9 +23,8 @@ pub type ThreadId = DWORD;
 
 pub use self::address::{Address, AddressRange, Offset, Pointer, Size};
 pub use self::module::Module;
-pub use self::process::{system_processes, MemoryState, MemoryType, Process};
+pub use self::process::{MemoryState, MemoryType, Process};
 pub use self::process_handle::{Location, ProcessHandle, ProcessName};
 pub use self::scanner::{ScanResult, Scanner};
-pub use self::system_thread::{system_threads, SystemThread};
 pub use self::thread::Thread;
 pub use self::utils::IteratorExtension;

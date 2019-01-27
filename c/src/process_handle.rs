@@ -1,6 +1,7 @@
-use crate::{pts_process_id_t, string::pts_string_t};
-use std::{os::raw::c_char, ptr, slice};
+use crate::{pts_process_id_t, string::pts_string_t, utils};
+use std::{os::raw::c_char, ptr};
 
+/// Handle for a process.
 pub struct pts_process_handle_t(ptscan::ProcessHandle);
 
 /// Open a process handle by a pid.
@@ -33,11 +34,7 @@ pub extern "C" fn pts_process_handle_open_by_name<'a>(
     name_len: usize,
     out: *mut *mut pts_process_handle_t,
 ) -> bool {
-    let name = unsafe {
-        let bytes = slice::from_raw_parts(name as *const u8, name_len);
-        String::from_utf8_lossy(bytes)
-    };
-
+    let name = utils::lossy_string(name, name_len);
     let out = null_ck!(&'a mut out);
 
     if let Some(handle) = try_last!(ptscan::ProcessHandle::open_by_name(name.as_ref()), false) {

@@ -7,9 +7,9 @@ use winapi::shared::minwindef::DWORD;
 #[macro_use]
 mod utils;
 mod address;
+pub mod filter;
 mod module;
 pub mod opts;
-pub mod predicate;
 mod process;
 mod process_handle;
 pub mod scan;

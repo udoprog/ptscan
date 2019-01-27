@@ -1,6 +1,6 @@
 use crate::{
     address::{Address, Size},
-    predicate,
+    filter,
     process::{MemoryInformation, Process},
     scan, thread_buffers,
 };
@@ -80,39 +80,81 @@ impl Scanner {
     pub fn rescan(
         &mut self,
         process: &Process,
-        predicate: &(dyn predicate::Predicate),
+        filter: &(dyn filter::Filter),
+        progress: (impl Progress + Send),
     ) -> Result<(), failure::Error> {
-        use rayon::prelude::*;
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc,
+        };
 
         let buffers = thread_buffers::ThreadBuffers::new();
         let results = &mut self.results;
 
+        let mut last_error = None;
+        let bail = AtomicBool::new(false);
+
         self.thread_pool.install(|| {
-            results
-                .par_iter_mut()
-                .filter(|r| !r.killed)
-                .map(|result| {
-                    let mut work = || {
-                        let ty = result.value.ty();
-                        let mut buf = buffers.get_mut(ty.size())?;
-                        let value = process.read_memory_of_type(result.address, ty, &mut *buf)?;
+            rayon::scope(|s| {
+                let (tx, rx) = mpsc::sync_channel(1024);
 
-                        result.killed = !predicate.test(Some(result), &value);
-                        result.current = None;
-                        result.value = value;
+                let mut reporter = Reporter::new(progress, results.len());
 
-                        Ok::<_, failure::Error>(())
-                    };
+                for result in results {
+                    let tx = tx.clone();
+                    let buffers = &buffers;
+                    let bail = &bail;
 
-                    match work() {
-                        Ok(()) => 1,
-                        Err(_) => 0,
+                    s.spawn(move |_| {
+                        if bail.load(Ordering::SeqCst) {
+                            tx.send(Ok(())).expect("closed channel");
+                            return;
+                        }
+
+                        let mut work = || {
+                            let ty = result.value.ty();
+                            let mut buf = buffers.get_mut(ty.size())?;
+                            let value =
+                                process.read_memory_of_type(result.address, ty, &mut *buf)?;
+
+                            result.killed = !filter.test(Some(result), &value);
+                            result.current = None;
+                            result.value = value;
+
+                            Ok::<_, failure::Error>(())
+                        };
+
+                        tx.send(work()).expect("closed channel");
+                    });
+                }
+
+                for r in rx {
+                    if let Err(e) = reporter.tick() {
+                        last_error = Some(e);
+                        bail.store(true, Ordering::SeqCst);
                     }
-                })
-                .sum::<u64>();
 
-            results.retain(|v| !v.killed);
+                    if let Err(e) = r {
+                        last_error = Some(e);
+                        bail.store(true, Ordering::SeqCst);
+                    }
+
+                    if reporter.is_done() {
+                        break;
+                    }
+                }
+
+                if let Err(e) = reporter.done(bail.load(Ordering::SeqCst)) {
+                    last_error = Some(e);
+                }
+            });
         });
+
+        self.results.retain(|v| !v.killed);
+
+        if let Some(e) = last_error {
+            return Err(e);
+        }
 
         Ok(())
     }
@@ -134,8 +176,8 @@ impl Scanner {
     pub fn initial_scan(
         &mut self,
         process: &Process,
-        predicate: &(dyn predicate::Predicate),
-        mut progress: (impl Progress + Send),
+        filter: &(dyn filter::Filter),
+        progress: (impl Progress + Send),
     ) -> Result<(), failure::Error> {
         use crate::utils::IteratorExtension;
         use std::sync::{
@@ -143,9 +185,9 @@ impl Scanner {
             mpsc,
         };
 
-        let scan_type = match predicate.ty() {
+        let scan_type = match filter.ty() {
             Some(scan_type) => scan_type,
-            None => failure::bail!("can't perform initial scan with type-less predicate"),
+            None => failure::bail!("can't perform initial scan with type-less filter"),
         };
 
         let size: usize = scan_type.size();
@@ -161,7 +203,7 @@ impl Scanner {
 
         // if true, threads should stop working
         let bail = AtomicBool::new(false);
-        let special = predicate.special();
+        let special = filter.special();
         let mut last_error = None;
 
         self.thread_pool.install(|| {
@@ -187,7 +229,7 @@ impl Scanner {
                         buffer_size,
                         size,
                         aligned,
-                        predicate,
+                        filter,
                         special: special.as_ref(),
                         scan_type,
                         bail: &bail,
@@ -201,16 +243,11 @@ impl Scanner {
                     });
                 }
 
-                if let Err(e) = progress.report_bytes(bytes) {
+                let mut reporter = Reporter::new(progress, total);
+
+                if let Err(e) = reporter.report_bytes(bytes) {
                     last_error = Some(e);
                     bail.store(true, Ordering::SeqCst);
-                }
-
-                let mut current = 0;
-                let mut percentage = total / 100;
-
-                if percentage <= 0 {
-                    percentage = 1;
                 }
 
                 // collect scan results.
@@ -227,25 +264,23 @@ impl Scanner {
                                 bail.store(true, Ordering::SeqCst);
                             }
 
-                            current += 1;
-
-                            if current % percentage == 0 {
-                                if let Err(e) = progress.report((current * 100) / total) {
-                                    last_error = Some(e);
-                                    bail.store(true, Ordering::SeqCst);
-                                }
+                            if let Err(e) = reporter.tick() {
+                                last_error = Some(e);
+                                bail.store(true, Ordering::SeqCst);
                             }
 
-                            if current >= total {
+                            if reporter.is_done() {
                                 break;
                             }
                         }
                     }
                 }
+
+                if let Err(e) = reporter.done(bail.load(Ordering::SeqCst)) {
+                    last_error = Some(e);
+                }
             })
         });
-
-        progress.done(bail.load(Ordering::SeqCst))?;
 
         if let Some(e) = last_error {
             return Err(e);
@@ -265,7 +300,7 @@ impl Scanner {
             buffer_size: usize,
             size: usize,
             aligned: bool,
-            predicate: &'a (dyn predicate::Predicate),
+            filter: &'a (dyn filter::Filter),
             special: Option<&'a scan::Special>,
             scan_type: scan::Type,
             bail: &'a AtomicBool,
@@ -299,7 +334,7 @@ impl Scanner {
                     buffer_size,
                     size,
                     aligned,
-                    predicate,
+                    filter,
                     special,
                     scan_type,
                     bail,
@@ -351,7 +386,7 @@ impl Scanner {
 
                         let value = scan_type.decode(w);
 
-                        if predicate.test(None, &value) {
+                        if filter.test(None, &value) {
                             Self::emit(tx, &loc, n, value)?;
                         }
 
@@ -368,6 +403,66 @@ impl Scanner {
                 Ok(())
             }
         }
+    }
+}
+
+pub struct Reporter<P> {
+    progress: P,
+    current: usize,
+    /// how many ticks constitute a percentage.
+    percentage: usize,
+    total: usize,
+}
+
+impl<P> Reporter<P> {
+    pub fn new(progress: P, total: usize) -> Reporter<P> {
+        let mut percentage = total / 100;
+
+        if percentage <= 0 {
+            percentage = 1;
+        }
+
+        Reporter {
+            progress,
+            current: 0,
+            percentage,
+            total,
+        }
+    }
+
+    // Report a number of bytes.
+    pub fn report_bytes(&mut self, bytes: usize) -> Result<(), failure::Error>
+    where
+        P: Progress,
+    {
+        self.progress.report_bytes(bytes)
+    }
+
+    // Tick a single task.
+    pub fn tick(&mut self) -> Result<(), failure::Error>
+    where
+        P: Progress,
+    {
+        self.current += 1;
+
+        if self.current % self.percentage == 0 {
+            return self.progress.report((self.current * 100) / self.total);
+        }
+
+        Ok(())
+    }
+
+    // Indicate that progress is done and if it was OK or not.
+    pub fn done(&mut self, ok: bool) -> Result<(), failure::Error>
+    where
+        P: Progress,
+    {
+        self.progress.done(ok)
+    }
+
+    // Are we done?
+    pub fn is_done(&self) -> bool {
+        self.current >= self.total
     }
 }
 

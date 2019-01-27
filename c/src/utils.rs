@@ -1,3 +1,5 @@
+use std::{borrow::Cow, os::raw::c_char, slice};
+
 pub(crate) fn constrain<'a, T>(value: *const T) -> &'a T {
     unsafe { &*value }
 }
@@ -61,4 +63,12 @@ macro_rules! try_last {
             }
         }
     };
+}
+
+/// Convert a character array into a lossy string.
+pub fn lossy_string(name: *const c_char, len: usize) -> Cow<'static, str> {
+    unsafe {
+        let bytes = slice::from_raw_parts(name as *const u8, len);
+        String::from_utf8_lossy(bytes)
+    }
 }

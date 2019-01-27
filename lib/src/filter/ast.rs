@@ -1,4 +1,4 @@
-use crate::{predicate, scan::Value};
+use crate::{filter, scan::Value};
 
 #[derive(Debug)]
 pub enum Expression {
@@ -21,30 +21,30 @@ pub enum Expression {
 }
 
 impl Expression {
-    /// Convert an expression into a predicate.
-    pub fn into_predicate(self) -> Result<Box<dyn predicate::Predicate>, failure::Error> {
+    /// Convert an expression into a filter.
+    pub fn into_filter(self) -> Result<Box<dyn filter::Filter>, failure::Error> {
         use self::Expression::*;
 
-        let p: Box<dyn predicate::Predicate> = match self {
-            Eq(value) => Box::new(predicate::Eq(value)),
-            Neq(value) => Box::new(predicate::Not(predicate::Eq(value))),
-            Lte(value) => Box::new(predicate::Lte(value)),
-            Gte(value) => Box::new(predicate::Gte(value)),
-            Lt(value) => Box::new(predicate::Lt(value)),
-            Gt(value) => Box::new(predicate::Gt(value)),
+        let p: Box<dyn filter::Filter> = match self {
+            Eq(value) => Box::new(filter::Eq(value)),
+            Neq(value) => Box::new(filter::Neq(value)),
+            Lte(value) => Box::new(filter::Lte(value)),
+            Gte(value) => Box::new(filter::Gte(value)),
+            Lt(value) => Box::new(filter::Lt(value)),
+            Gt(value) => Box::new(filter::Gt(value)),
             And(expressions) => {
-                let predicates = expressions
+                let filters = expressions
                     .into_iter()
-                    .map(Expression::into_predicate)
+                    .map(Expression::into_filter)
                     .collect::<Result<Vec<_>, _>>()?;
-                Box::new(predicate::All::new(predicates)?)
+                Box::new(filter::All::new(filters)?)
             }
             Or(expressions) => {
-                let predicates = expressions
+                let filters = expressions
                     .into_iter()
-                    .map(Expression::into_predicate)
+                    .map(Expression::into_filter)
                     .collect::<Result<Vec<_>, _>>()?;
-                Box::new(predicate::Any::new(predicates)?)
+                Box::new(filter::Any::new(filters)?)
             }
         };
 

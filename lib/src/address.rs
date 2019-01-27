@@ -372,6 +372,7 @@ impl AddressRange {
 /// Each offset is applied and dereferenced on the base in a chain.
 ///
 /// The last step is dereferences as the pointee type.
+#[allow(unused)]
 pub struct Pointer {
     pointee_type: scan::Type,
     base: Address,

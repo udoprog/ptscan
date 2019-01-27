@@ -1,5 +1,5 @@
 use hashbrown::HashMap;
-use ptscan::{predicate, scan, scanner, Address, Location, Process, ProcessHandle, ScanResult};
+use ptscan::{filter, scan, scanner, Address, Location, Process, ProcessHandle, ScanResult};
 use std::{io, sync::Arc};
 
 static HELP: &'static str = include_str!("help.md");
@@ -226,8 +226,8 @@ where
                     killed: false,
                 });
             }
-            Action::Scan(predicate) => {
-                self.scan(&*predicate)?;
+            Action::Scan(filter) => {
+                self.scan(&*filter)?;
             }
             Action::Reset => match self.scans.get_mut(&self.current_scan) {
                 Some(scanner) => {
@@ -271,8 +271,8 @@ where
         Ok(())
     }
 
-    /// Scan memory using the given predicate and the currently selected scanner.
-    fn scan(&mut self, predicate: &(dyn predicate::Predicate)) -> Result<(), failure::Error> {
+    /// Scan memory using the given filter and the currently selected scanner.
+    fn scan(&mut self, filter: &(dyn filter::Filter)) -> Result<(), failure::Error> {
         let handle = match self.handle.as_ref() {
             Some(handle) => handle,
             None => failure::bail!("not attached to a process"),
@@ -292,7 +292,7 @@ where
         // NB: defer unpacking the result until we have at least tried to resume the process.
         let res = if !scanner.initial {
             let res =
-                scanner.initial_scan(&handle.process, predicate, SimpleProgress::new(&mut self.w));
+                scanner.initial_scan(&handle.process, filter, SimpleProgress::new(&mut self.w));
 
             if res.is_ok() {
                 scanner.initial = true;
@@ -300,7 +300,7 @@ where
 
             res
         } else {
-            scanner.rescan(&handle.process, predicate)
+            scanner.rescan(&handle.process, filter, SimpleProgress::new(&mut self.w))
         };
 
         if self.suspend {
@@ -508,11 +508,11 @@ where
                 let command = &command[1..];
 
                 if command.len() < 1 {
-                    failure::bail!("Usage: scan <predicate>");
+                    failure::bail!("Usage: scan <filter>");
                 }
 
-                let predicate = self.parse_predicate(command)?;
-                return Ok(Action::Scan(predicate));
+                let filter = self.parse_predicate(command)?;
+                return Ok(Action::Scan(filter));
             }
             "ps" | "process" => return Ok(Action::Process),
             "attach" => {
@@ -574,13 +574,13 @@ where
         }
     }
 
-    /// Parse the predicate from commandline input.
+    /// Parse the filter from commandline input.
     ///
     /// Note: only supports simple predicates for now.
     pub fn parse_predicate(
         &mut self,
         rest: &[&str],
-    ) -> Result<Box<dyn predicate::Predicate>, failure::Error> {
+    ) -> Result<Box<dyn filter::Filter>, failure::Error> {
         let op = rest[0];
 
         match op {
@@ -590,11 +590,11 @@ where
                     None => failure::bail!("not attached to a process"),
                 };
 
-                return Ok(Box::new(handle.pointee_predicate()?));
+                return Ok(Box::new(handle.pointer_filter()?));
             }
-            "dec" | "smaller" => return Ok(Box::new(predicate::Dec)),
-            "inc" | "bigger" => return Ok(Box::new(predicate::Inc)),
-            "changed" => return Ok(Box::new(predicate::Changed)),
+            "dec" | "smaller" => return Ok(Box::new(filter::Dec)),
+            "inc" | "bigger" => return Ok(Box::new(filter::Inc)),
+            "changed" => return Ok(Box::new(filter::Changed)),
             _ => {}
         }
 
@@ -604,16 +604,16 @@ where
 
         let value: scan::Value = str::parse(rest[1])?;
 
-        let predicate: Box<dyn predicate::Predicate> = match op {
-            "eq" => Box::new(predicate::Eq(value)),
-            "gt" => Box::new(predicate::Gt(value)),
-            "gte" => Box::new(predicate::Gte(value)),
-            "lt" => Box::new(predicate::Lt(value)),
-            "lte" => Box::new(predicate::Lte(value)),
+        let filter: Box<dyn filter::Filter> = match op {
+            "eq" => Box::new(filter::Eq(value)),
+            "gt" => Box::new(filter::Gt(value)),
+            "gte" => Box::new(filter::Gte(value)),
+            "lt" => Box::new(filter::Lt(value)),
+            "lte" => Box::new(filter::Lte(value)),
             other => failure::bail!("bad <op>: {}", other),
         };
 
-        Ok(predicate)
+        Ok(filter)
     }
 
     /// Print help messages.
@@ -637,7 +637,7 @@ pub enum Action {
     /// Attach to a new, or re-attach to an old process.
     Attach(Option<String>),
     /// Initialize or refine the existing scan.
-    Scan(Box<dyn predicate::Predicate>),
+    Scan(Box<dyn filter::Filter>),
     /// Reset the state of the scan.
     Reset,
     /// Print results from scan.

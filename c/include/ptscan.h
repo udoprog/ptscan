@@ -7,6 +7,10 @@
 
 struct pts_error_t;
 
+/// A filter.
+struct pts_filter_t;
+
+/// Handle for a process.
 struct pts_process_handle_t;
 
 /// A opaque process identifier.
@@ -41,6 +45,18 @@ const pts_error_t *pts_error_last();
 /// Write the last error message to the given string.
 /// Returns the number of bytes copied.
 void pts_error_message(const pts_error_t *error, pts_string_t *message);
+
+/// Find a process by name.
+/// If a process cannot be found, *out is set to NULL.
+/// If an error is raised, false is returned and `pts_error_last()` is updated accordingly.
+void pts_filter_display(const pts_filter_t *filter, pts_string_t *display);
+
+/// Free a filter.
+void pts_filter_free(pts_filter_t *filter);
+
+/// Parse a string as a filter.
+/// Returns NULL and sets error accordingly on failure.
+pts_filter_t *pts_filter_parse(const char *input, uintptr_t input_len);
 
 /// Close and free the process handle.
 void pts_process_handle_free(pts_process_handle_t *handle);

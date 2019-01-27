@@ -6,24 +6,22 @@ use std::fmt;
 
 mod ast;
 mod lexer;
-lalrpop_util::lalrpop_mod!(parser, "/predicate/parser.rs");
+lalrpop_util::lalrpop_mod!(parser, "/filter/parser.rs");
 
-/// Parse a a string into a predicate.
-pub fn parse(input: &str) -> Result<Box<Predicate>, failure::Error> {
+/// Parse a a string into a filter.
+pub fn parse(input: &str) -> Result<Box<Filter>, failure::Error> {
     parser::OrParser::new()
         .parse(lexer::Lexer::new(input))?
-        .into_predicate()
+        .into_filter()
 }
 
-pub trait Predicate: Send + Sync + fmt::Debug {
-    /// TODO: implement predicate simplification.
-
-    /// The type value the predicate is scanning for.
+pub trait Filter: Send + Sync + fmt::Debug + fmt::Display {
+    /// The type value the filter is scanning for.
     fn ty(&self) -> Option<Type> {
         None
     }
 
-    /// If the predicate supports special (more efficient matching).
+    /// If the filter supports special (more efficient matching).
     fn special(&self) -> Option<Special> {
         None
     }
@@ -45,13 +43,10 @@ macro_rules! numeric_match {
 }
 
 /// Only match values which are exactly equal.
-#[derive(Debug, Clone)]
-pub struct Not<P>(pub P);
+#[derive(Debug)]
+pub struct Not(Box<dyn Filter>);
 
-impl<P> Predicate for Not<P>
-where
-    P: Predicate,
-{
+impl Filter for Not {
     fn ty(&self) -> Option<Type> {
         self.0.ty()
     }
@@ -65,11 +60,17 @@ where
     }
 }
 
+impl fmt::Display for Not {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "!{}", self.0)
+    }
+}
+
 /// Match values which are smaller than before.
 #[derive(Debug, Clone)]
 pub struct Dec;
 
-impl Predicate for Dec {
+impl Filter for Dec {
     fn test(&self, last: Option<&scanner::ScanResult>, value: &Value) -> bool {
         match last {
             Some(last) => Lt(last.value).test(None, value),
@@ -78,11 +79,17 @@ impl Predicate for Dec {
     }
 }
 
+impl fmt::Display for Dec {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "dec($value)")
+    }
+}
+
 /// Match values which are larger than before.
 #[derive(Debug, Clone)]
 pub struct Inc;
 
-impl Predicate for Inc {
+impl Filter for Inc {
     fn test(&self, last: Option<&scanner::ScanResult>, value: &Value) -> bool {
         match last {
             Some(last) => Gt(last.value).test(None, value),
@@ -91,16 +98,28 @@ impl Predicate for Inc {
     }
 }
 
+impl fmt::Display for Inc {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "inc($value)")
+    }
+}
+
 /// Match values which are larger than before.
 #[derive(Debug, Clone)]
 pub struct Changed;
 
-impl Predicate for Changed {
+impl Filter for Changed {
     fn test(&self, last: Option<&scanner::ScanResult>, value: &Value) -> bool {
         match last {
-            Some(last) => Not(Eq(last.value)).test(None, value),
+            Some(last) => !Eq(last.value).test(None, value),
             None => false,
         }
+    }
+}
+
+impl fmt::Display for Changed {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "changed($value)")
     }
 }
 
@@ -108,7 +127,7 @@ impl Predicate for Changed {
 #[derive(Debug, Clone)]
 pub struct Eq(pub Value);
 
-impl Predicate for Eq {
+impl Filter for Eq {
     fn ty(&self) -> Option<Type> {
         Some(self.0.ty())
     }
@@ -144,11 +163,63 @@ impl Predicate for Eq {
     }
 }
 
+impl fmt::Display for Eq {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "$value == {}", self.0)
+    }
+}
+
+/// Only match values which are exactly equal.
+#[derive(Debug, Clone)]
+pub struct Neq(pub Value);
+
+impl Filter for Neq {
+    fn ty(&self) -> Option<Type> {
+        Some(self.0.ty())
+    }
+
+    fn special(&self) -> Option<Special> {
+        macro_rules! specials {
+            ($(($field:ident, $ty:ident),)*) => {
+                match self.0 {
+                $(Value::$field(v) => match v {
+                    0 => Special::NotZero,
+                    o => Special::not_exact(o),
+                },)*
+                }
+            };
+        }
+
+        Some(specials! {
+            (U128, u128),
+            (I128, i128),
+            (U64, u64),
+            (I64, i64),
+            (U32, u32),
+            (I32, i32),
+            (U16, u16),
+            (I16, i16),
+            (U8, u8),
+            (I8, i8),
+        })
+    }
+
+    fn test(&self, _: Option<&scanner::ScanResult>, value: &Value) -> bool {
+        numeric_match!(value, &self.0, a, b, a != b)
+    }
+}
+
+impl fmt::Display for Neq {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "$value != {}", self.0)
+    }
+}
+
 /// Only match values which are greater than the specified value.
 #[derive(Debug, Clone)]
 pub struct Gt(pub Value);
 
-impl Predicate for Gt {
+impl Filter for Gt {
     fn ty(&self) -> Option<Type> {
         Some(self.0.ty())
     }
@@ -174,11 +245,17 @@ impl Predicate for Gt {
     }
 }
 
+impl fmt::Display for Gt {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "$value > {}", self.0)
+    }
+}
+
 /// Only match values which are greater than or equal to the specified value.
 #[derive(Debug, Clone)]
 pub struct Gte(pub Value);
 
-impl Predicate for Gte {
+impl Filter for Gte {
     fn ty(&self) -> Option<Type> {
         Some(self.0.ty())
     }
@@ -206,11 +283,17 @@ impl Predicate for Gte {
     }
 }
 
+impl fmt::Display for Gte {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "$value >= {}", self.0)
+    }
+}
+
 /// Only match values which are less than the specified value.
 #[derive(Debug, Clone)]
 pub struct Lt(pub Value);
 
-impl Predicate for Lt {
+impl Filter for Lt {
     fn ty(&self) -> Option<Type> {
         Some(self.0.ty())
     }
@@ -233,11 +316,17 @@ impl Predicate for Lt {
     }
 }
 
+impl fmt::Display for Lt {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "$value < {}", self.0)
+    }
+}
+
 /// Only match values which are less than or equal to the specified value.
 #[derive(Debug, Clone)]
 pub struct Lte(pub Value);
 
-impl Predicate for Lte {
+impl Filter for Lte {
     fn ty(&self) -> Option<Type> {
         Some(self.0.ty())
     }
@@ -260,19 +349,39 @@ impl Predicate for Lte {
     }
 }
 
-/// Only matches when all nested predicates match.
-#[derive(Debug)]
-pub struct All(Option<Type>, Vec<Box<Predicate>>);
-
-impl All {
-    pub fn new(
-        predicates: impl IntoIterator<Item = Box<Predicate>>,
-    ) -> Result<All, failure::Error> {
-        collection(predicates, All)
+impl fmt::Display for Lte {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "$value <= {}", self.0)
     }
 }
 
-impl Predicate for All {
+/// Only matches when all nested filters match.
+#[derive(Debug)]
+pub struct All(Option<Type>, Vec<Box<Filter>>);
+
+impl All {
+    pub fn new(filters: impl IntoIterator<Item = Box<Filter>>) -> Result<All, failure::Error> {
+        collection(filters, All)
+    }
+}
+
+impl fmt::Display for All {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut it = self.1.iter().peekable();
+
+        if let Some(p) = it.next() {
+            if it.peek().is_some() {
+                write!(fmt, "{} and ", p)?;
+            } else {
+                write!(fmt, "{}", p)?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl Filter for All {
     fn ty(&self) -> Option<Type> {
         self.0.clone()
     }
@@ -282,19 +391,17 @@ impl Predicate for All {
     }
 }
 
-/// Only matches when any nested predicate match.
+/// Only matches when any nested filter match.
 #[derive(Debug)]
-pub struct Any(Option<Type>, Vec<Box<Predicate>>);
+pub struct Any(Option<Type>, Vec<Box<Filter>>);
 
 impl Any {
-    pub fn new(
-        predicates: impl IntoIterator<Item = Box<Predicate>>,
-    ) -> Result<Any, failure::Error> {
-        collection(predicates, Any)
+    pub fn new(filters: impl IntoIterator<Item = Box<Filter>>) -> Result<Any, failure::Error> {
+        collection(filters, Any)
     }
 }
 
-impl Predicate for Any {
+impl Filter for Any {
     fn ty(&self) -> Option<Type> {
         self.0.clone()
     }
@@ -304,28 +411,41 @@ impl Predicate for Any {
     }
 }
 
-/// Helper function to build a collection predicate.
+impl fmt::Display for Any {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut it = self.1.iter().peekable();
+
+        if let Some(p) = it.next() {
+            if it.peek().is_some() {
+                write!(fmt, "{} or ", p)?;
+            } else {
+                write!(fmt, "{}", p)?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Helper function to build a collection filter.
 ///
-/// Checks that every child predicate have the same type.
+/// Checks that every child filter have the same type.
 fn collection<T>(
-    predicates: impl IntoIterator<Item = Box<Predicate>>,
-    constructor: impl FnOnce(Option<Type>, Vec<Box<Predicate>>) -> T,
+    filters: impl IntoIterator<Item = Box<Filter>>,
+    constructor: impl FnOnce(Option<Type>, Vec<Box<Filter>>) -> T,
 ) -> Result<T, failure::Error> {
     use std::collections::HashSet;
 
     let mut all = Vec::new();
 
-    for p in predicates {
+    for p in filters {
         all.push(p);
     }
 
     let types = all.iter().flat_map(|p| p.ty()).collect::<HashSet<_>>();
 
     if types.len() > 1 {
-        failure::bail!(
-            "predicates of different types are not supported: {:?}",
-            types
-        );
+        failure::bail!("filters of different types are not supported: {:?}", types);
     }
 
     Ok(constructor(types.into_iter().next(), all))

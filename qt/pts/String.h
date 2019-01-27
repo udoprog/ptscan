@@ -1,8 +1,9 @@
 #ifndef PTS_STRING_H
 #define PTS_STRING_H
 
-#include <ptscan.h>
 #include <string>
+
+#include <ptscan.h>
 
 namespace pts {
 class String {

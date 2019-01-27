@@ -11,9 +11,9 @@ greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 TARGET = ptscan
 TEMPLATE = app
 
-LIBS += $$PWD/../../repo/ptscan/target/release/ptscan_c.lib
-INCLUDEPATH += $$PWD/../../repo/ptscan/c/include
-DEPENDPATH += $$PWD/../../repo/ptscan/c/include
+LIBS += $$PWD/../target/release/ptscan_c.lib
+INCLUDEPATH += $$PWD/../c/include/
+DEPENDPATH += $$PWD/../c/include/
 LIBS += -lws2_32 -lpsapi -lkernel32 -ladvapi32 -luserenv -lntdll -ldbghelp
 
 # The following define makes your compiler emit warnings if you use
@@ -37,7 +37,9 @@ SOURCES += \
     pts/ThreadPool.cpp \
     pts/String.cpp \
     pts/ProcessHandle.cpp \
-    pts/Scanner.cpp
+    pts/Scanner.cpp \
+    addfilter.cpp \
+    pts/Filter.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -46,17 +48,17 @@ HEADERS += \
     pts/ThreadPool.h \
     pts/String.h \
     pts/ProcessHandle.h \
-    pts/Scanner.h
+    pts/Scanner.h \
+    addfilter.h \
+    pts/Filter.h
 
 FORMS += \
-        mainwindow.ui \
-    openprocess.ui
+    mainwindow.ui \
+    openprocess.ui \
+    addfilter.ui \
+    addfilter.ui
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin
 else: unix:!android: target.path = /opt/$${TARGET}/bin
 !isEmpty(target.path): INSTALLS += target
-
-win32:CONFIG(release, debug|release): LIBS += -L$$PWD/../../repo/ptscan/target/release/ -lptscan_c
-else:win32:CONFIG(debug, debug|release): LIBS += -L$$PWD/../../repo/ptscan/target/debug/ -lptscan_c
-else:unix: LIBS += -L$$PWD/../../repo/ptscan/target/ -lptscan_c

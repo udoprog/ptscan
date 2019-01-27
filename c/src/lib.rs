@@ -5,6 +5,7 @@ use std::{ptr, sync};
 #[macro_use]
 mod utils;
 pub mod error;
+pub mod filter;
 pub mod process_handle;
 pub mod scanner;
 pub mod string;

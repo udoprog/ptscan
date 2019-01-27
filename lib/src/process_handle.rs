@@ -1,8 +1,8 @@
 //! High-level interface to processes.
 
 use crate::{
-    predicate, process, scan, scanner, system, thread::Thread, Address, AddressRange, ProcessId,
-    Size, ThreadId,
+    filter, process, scan, scanner, system, thread::Thread, Address, AddressRange, ProcessId, Size,
+    ThreadId,
 };
 use failure::ResultExt;
 use std::{convert::TryFrom, fmt};
@@ -12,8 +12,6 @@ use winapi::shared::winerror;
 enum Error {
     #[fail(display = "failed to open process: {}", _0)]
     OpenProcess(ProcessId),
-    #[fail(display = "failed to refresh threads for process: {}", _0)]
-    RefreshThreads(ProcessName),
     #[fail(display = "failed to build thread interface: {}", _0)]
     BuildThread(ThreadId),
     #[fail(display = "failed to extract thread stack for thread: {}", _0)]
@@ -110,12 +108,11 @@ impl ProcessHandle {
     /// Find the first process matching the given name.
     pub fn open_by_name(name: &str) -> Result<Option<ProcessHandle>, failure::Error> {
         for pid in system::processes()? {
-            let mut handle =
-                match ProcessHandle::open(pid).with_context(|_| Error::OpenProcess(pid))? {
-                    Some(handle) => handle,
-                    // process cannot be opened.
-                    None => continue,
-                };
+            let handle = match ProcessHandle::open(pid).with_context(|_| Error::OpenProcess(pid))? {
+                Some(handle) => handle,
+                // process cannot be opened.
+                None => continue,
+            };
 
             let handle_name = match handle.name.as_ref() {
                 // NB: can't find by name if we can't decode the name from the process :(.
@@ -133,8 +130,8 @@ impl ProcessHandle {
         Ok(None)
     }
 
-    /// Build a predicate that matches any pointers which points to valid memory.
-    pub fn pointee_predicate(&self) -> Result<PointeePredicate, failure::Error> {
+    /// Build a filter that matches any pointers which points to valid memory.
+    pub fn pointer_filter(&self) -> Result<PointerFilter, failure::Error> {
         use crate::utils::IteratorExtension;
 
         let mut memory_regions = self
@@ -144,7 +141,7 @@ impl ProcessHandle {
             .collect::<Result<Vec<_>, _>>()?;
 
         memory_regions.sort_by_key(|m| m.range.base);
-        Ok(PointeePredicate { memory_regions })
+        Ok(PointerFilter { memory_regions })
     }
 
     /// Name of the process.
@@ -333,12 +330,12 @@ impl Decode for u32 {
 }
 
 #[derive(Debug)]
-pub struct PointeePredicate {
+pub struct PointerFilter {
     /// Sorted memory regions.
     memory_regions: Vec<process::MemoryInformation>,
 }
 
-impl predicate::Predicate for PointeePredicate {
+impl filter::Filter for PointerFilter {
     fn special(&self) -> Option<scan::Special> {
         Some(scan::Special::NotZero)
     }
@@ -357,5 +354,11 @@ impl predicate::Predicate for PointeePredicate {
             Ok(Some(_)) => return true,
             _ => return false,
         }
+    }
+}
+
+impl fmt::Display for PointerFilter {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "pointer")
     }
 }

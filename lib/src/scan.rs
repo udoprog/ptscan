@@ -293,6 +293,16 @@ impl Special {
         Special::Exact { buffer }
     }
 
+    /// Set up a not-exact match for the given value.
+    pub fn not_exact<T>(value: T) -> Special
+    where
+        T: Encode,
+    {
+        let mut buffer = vec![0u8; mem::size_of::<T>()];
+        T::encode(&mut buffer, value);
+        Special::NotExact { buffer }
+    }
+
     /// Test if this special scanner matches the given slice of memory.
     pub fn test(&self, buf: &[u8]) -> Option<bool> {
         match self {

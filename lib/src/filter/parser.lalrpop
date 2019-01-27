@@ -1,7 +1,7 @@
 // vim: ft=rust
 use crate::{
     scan::Value,
-    predicate::{
+    filter::{
         lexer::Token,
         ast::*
     }
@@ -21,17 +21,17 @@ pub Or: Expression = {
 }
 
 And: Expression = {
-    <left:Predicate> <rest:(and Predicate)+> => {
+    <left:Filter> <rest:(and Filter)+> => {
         let mut and = Vec::new();
         and.push(left);
         and.extend(rest.into_iter().map(|(_, r)| r));
         Expression::And(and)
     },
 
-    Predicate,
+    Filter,
 }
 
-Predicate: Expression = {
+Filter: Expression = {
     "$value" "==" <value:literal> => {
         Expression::Eq(value)
     },
@@ -59,14 +59,14 @@ Predicate: Expression = {
 
 extern {
     type Location = usize;
-    type Error = crate::predicate::lexer::Error;
+    type Error = crate::filter::lexer::Error;
 
     enum Token {
         "$value" => Token::Value,
         and => Token::And,
         or => Token::Or,
         "==" => Token::Eq,
-        "!=" => Token::Eq,
+        "!=" => Token::Neq,
         "<=" => Token::Lte,
         ">=" => Token::Gte,
         "<" => Token::Lt,

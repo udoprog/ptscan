@@ -3,24 +3,24 @@
 
 namespace pts
 {
-ProcessHandle::ProcessHandle(pts_process_handle_t *handle) : handle(handle)
+ProcessHandle::ProcessHandle(pts_process_handle_t *inner) : inner(inner)
 {
 }
 
 ProcessHandle::~ProcessHandle()
 {
-    pts_process_handle_free(handle);
+    pts_process_handle_free(inner);
 }
 
 std::string ProcessHandle::pid() {
     String pid;
-    pts_process_handle_pid(this->handle, pid.ptr());
+    pts_process_handle_pid(inner, pid.ptr());
     return pid.string();
 }
 
 std::string ProcessHandle::name() {
     String name;
-    pts_process_handle_name(this->handle, name.ptr());
+    pts_process_handle_name(inner, name.ptr());
     return name.string();
 }
 

@@ -9,9 +9,11 @@
 
 namespace pts
 {
+class Scanner;
+
 class ProcessHandle {
+    friend class Scanner;
 public:
-    ProcessHandle(pts_process_handle_t *handle);
     ProcessHandle(const ProcessHandle &) = delete;
     ~ProcessHandle();
 
@@ -22,7 +24,9 @@ public:
     static std::shared_ptr<ProcessHandle> open(process_id pid);
 
 private:
-    pts_process_handle_t *handle;
+    ProcessHandle(pts_process_handle_t *inner);
+
+    pts_process_handle_t *inner;
 };
 }
 

@@ -36,6 +36,18 @@ struct pts_string_t {
   uintptr_t cap;
 };
 
+using pts_scanner_progress_report_fn = void(*)(uintptr_t);
+
+using pts_scanner_progress_done_fn = void(*)(bool);
+
+struct pts_scanner_progress_t {
+  /// Called to indicate that the process is in progress.
+  pts_scanner_progress_report_fn report;
+  /// Called to indicate that the process is done.
+  /// The argument is true if the process was interrupted or failed, pts_last_error will be set appropriately.
+  pts_scanner_progress_done_fn done;
+};
+
 extern "C" {
 
 /// Returns the last error raised in this thread.
@@ -97,6 +109,12 @@ pts_scanner_results_iter_t *pts_scanner_results_iter(const pts_scanner_t *scanne
 /// Walk the iterator one step.
 /// If no more elements are available NULL is returned.
 pts_scanner_result_t *pts_scanner_results_next(pts_scanner_results_iter_t *iter);
+
+/// Creates and returns a new scanner.
+bool pts_scanner_scan(pts_scanner_t *scanner,
+                      const pts_process_handle_t *handle,
+                      const pts_filter_t *filter,
+                      const pts_scanner_progress_t *progress);
 
 /// Free the underlying string.
 void pts_string_free(pts_string_t *string);

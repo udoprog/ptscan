@@ -81,12 +81,17 @@ impl Scanner {
         &mut self,
         process: &Process,
         filter: &(dyn filter::Filter),
-        progress: (impl Progress + Send),
+        mut progress: (impl Progress + Send),
     ) -> Result<(), failure::Error> {
         use std::sync::{
             atomic::{AtomicBool, Ordering},
             mpsc,
         };
+
+        if self.results.is_empty() {
+            progress.done(true)?;
+            return Ok(());
+        }
 
         let buffers = thread_buffers::ThreadBuffers::new();
         let results = &mut self.results;
@@ -128,13 +133,15 @@ impl Scanner {
                     });
                 }
 
-                for r in rx {
+                while !reporter.is_done() {
+                    let m = rx.recv().expect("closed channel");
+
                     if let Err(e) = reporter.tick() {
                         last_error = Some(e);
                         bail.store(true, Ordering::SeqCst);
                     }
 
-                    if let Err(e) = r {
+                    if let Err(e) = m {
                         last_error = Some(e);
                         bail.store(true, Ordering::SeqCst);
                     }
@@ -250,8 +257,9 @@ impl Scanner {
                     bail.store(true, Ordering::SeqCst);
                 }
 
-                // collect scan results.
-                for m in rx {
+                while !reporter.is_done() {
+                    let m = rx.recv().expect("closed channel");
+
                     match m {
                         // Scan result from a task.
                         TaskProgress::ScanResult(scan_result) => {

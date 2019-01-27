@@ -7,7 +7,6 @@
 namespace pts {
 class ThreadPool {
 public:
-    ThreadPool(pts_thread_pool_t *inner);
     ThreadPool(const ThreadPool &) = delete;
     ~ThreadPool();
 
@@ -16,6 +15,8 @@ public:
 
     pts_thread_pool_t *ptr();
 private:
+    ThreadPool(pts_thread_pool_t *inner);
+
     pts_thread_pool_t *inner;
 };
 };

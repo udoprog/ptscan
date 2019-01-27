@@ -2,7 +2,7 @@ use crate::{string, utils};
 use std::{os::raw::c_char, ptr};
 
 /// A filter.
-pub struct pts_filter_t(Box<dyn ptscan::filter::Filter>);
+pub struct pts_filter_t(pub(crate) Box<dyn ptscan::filter::Filter>);
 
 /// Parse a string as a filter.
 ///

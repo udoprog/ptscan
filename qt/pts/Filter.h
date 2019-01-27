@@ -8,8 +8,12 @@
 
 namespace pts
 {
+class Scanner;
+
 class Filter
 {
+    friend class Scanner;
+
 public:
     Filter(pts_filter_t *);
     ~Filter();

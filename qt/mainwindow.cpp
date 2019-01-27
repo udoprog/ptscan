@@ -4,7 +4,9 @@
 #include <QApplication>
 #include <QDesktopWidget>
 #include <QCheckBox>
+#include <QtConcurrent>
 #include <pts.h>
+#include <pts/Scanner.h>
 
 #include "mainwindow.h"
 #include "openprocess.h"
@@ -29,7 +31,31 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
             return;
         }
 
-        // TODO: apply on running process.
+        if (!processHandle) {
+            return;
+        }
+
+        auto filter = this->filters.at(index.row());
+
+        auto processHandle = this->processHandle;
+        auto threadPool = this->threadPool;
+
+        QtConcurrent::run([threadPool, processHandle, filter]() {
+            std::cout << "SCAN" << std::endl;
+
+            auto scanner = pts::Scanner::create(threadPool);
+
+            pts_scanner_progress_t progress {
+                [](uintptr_t percentage) {
+                    std::cout << percentage << std::endl;
+                },
+                [](bool interrupted) {
+                    std::cout << "done: " << interrupted << std::endl;
+                },
+            };
+
+            scanner->scan(*processHandle, *filter, &progress);
+        });
     });
 
     ui->actionRemoveFilter->setEnabled(this->filtersModel->rowCount() > 0);

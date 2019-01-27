@@ -1,2 +1,3 @@
 /target
 **/*.rs.bk
+/qt/qtscan.pro.user

@@ -1,4 +1,4 @@
-use crate::{pts_process_id_t, utils};
+use crate::{pts_process_id_t, string::pts_string_t};
 use std::{os::raw::c_char, ptr, slice};
 
 pub struct pts_process_handle_t(ptscan::ProcessHandle);
@@ -55,15 +55,16 @@ pub extern "C" fn pts_process_handle_open_by_name<'a>(
 #[no_mangle]
 pub extern "C" fn pts_process_handle_name<'a>(
     handle: *const pts_process_handle_t,
-    name: *mut c_char,
-    name_len: usize,
-) -> usize {
+    name: *mut pts_string_t,
+) {
+    let name = null_ck!(&'a mut name);
+
     let pts_process_handle_t(ref handle) = *null_ck!(&'a handle);
 
     if let Some(n) = handle.name.as_ref() {
-        utils::string(n, name, name_len)
+        *name = pts_string_t::new(n.to_string());
     } else {
-        0
+        *name = pts_string_t::empty();
     }
 }
 
@@ -71,15 +72,11 @@ pub extern "C" fn pts_process_handle_name<'a>(
 #[no_mangle]
 pub extern "C" fn pts_process_handle_pid<'a>(
     handle: *const pts_process_handle_t,
-    pid: *mut c_char,
-    pid_len: usize,
-) -> usize {
-    use std::io::Write;
+    pid: *mut pts_string_t,
+) {
     let pts_process_handle_t(ref handle) = *null_ck!(&'a handle);
     let pid = null_ck!(&'a mut pid);
-    let mut out = utils::FixedRawBuffer::new(pid, pid_len);
-    try_last!(write!(&mut out, "{}", handle.process.process_id()), 0);
-    out.into_len()
+    *pid = pts_string_t::new(handle.process.process_id().to_string());
 }
 
 /// Close and free the process handle.

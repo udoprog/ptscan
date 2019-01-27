@@ -26,6 +26,12 @@ struct pts_system_processes_iter_t;
 /// A thread pool.
 struct pts_thread_pool_t;
 
+struct pts_string_t {
+  char *ptr;
+  uintptr_t len;
+  uintptr_t cap;
+};
+
 extern "C" {
 
 /// Returns the last error raised in this thread.
@@ -34,16 +40,14 @@ const pts_error_t *pts_error_last();
 
 /// Write the last error message to the given string.
 /// Returns the number of bytes copied.
-uintptr_t pts_error_message(const pts_error_t *error, char *message, uintptr_t message_len);
+void pts_error_message(const pts_error_t *error, pts_string_t *message);
 
 /// Close and free the process handle.
 void pts_process_handle_free(pts_process_handle_t *handle);
 
 /// Access the name of the process handle.
 /// If the process handle has no name, returns 0.
-uintptr_t pts_process_handle_name(const pts_process_handle_t *handle,
-                                  char *name,
-                                  uintptr_t name_len);
+void pts_process_handle_name(const pts_process_handle_t *handle, pts_string_t *name);
 
 /// Open a process handle by a pid.
 /// If the process doesn't exist or access is denied *out is set to NULL.
@@ -58,7 +62,7 @@ bool pts_process_handle_open_by_name(const char *name,
                                      pts_process_handle_t **out);
 
 /// Access a readable process identifier for the handle.
-uintptr_t pts_process_handle_pid(const pts_process_handle_t *handle, char *pid, uintptr_t pid_len);
+void pts_process_handle_pid(const pts_process_handle_t *handle, pts_string_t *pid);
 
 /// Close and free the scanner.
 void pts_scanner_free(pts_scanner_t *scanner);
@@ -77,6 +81,9 @@ pts_scanner_results_iter_t *pts_scanner_results_iter(const pts_scanner_t *scanne
 /// Walk the iterator one step.
 /// If no more elements are available NULL is returned.
 pts_scanner_result_t *pts_scanner_results_next(pts_scanner_results_iter_t *iter);
+
+/// Free the underlying string.
+void pts_string_free(pts_string_t *string);
 
 /// Free the process iterator.
 void pts_system_processes_free(pts_system_processes_iter_t *iter);

@@ -7,6 +7,7 @@ mod utils;
 pub mod error;
 pub mod process_handle;
 pub mod scanner;
+pub mod string;
 pub mod system;
 
 /// A opaque process identifier.

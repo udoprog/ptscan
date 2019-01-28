@@ -6,6 +6,7 @@
 
 #include <ptscan.h>
 #include <pts.h>
+#include <pts/String.h>
 
 namespace pts
 {
@@ -17,8 +18,8 @@ public:
     ProcessHandle(const ProcessHandle &) = delete;
     ~ProcessHandle();
 
-    std::string pid();
-    std::string name();
+    String pid();
+    String name();
 
     /// Open a process handle from a pid.
     static std::shared_ptr<ProcessHandle> open(process_id pid);

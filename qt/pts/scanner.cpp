@@ -22,9 +22,20 @@ std::shared_ptr<Scanner> Scanner::create(std::shared_ptr<ThreadPool> threadPool)
     return std::shared_ptr<Scanner>(new Scanner(threadPool, inner));
 }
 
-void Scanner::scan(ProcessHandle &processHandle, Filter &filter, pts_scanner_progress_t *progress)
+void Scanner::scan(ProcessHandle &processHandle, Filter &filter, ScanReporter &reporter)
 {
-    if (!pts_scanner_scan(inner, processHandle.inner, filter.inner, progress)) {
+    pts_scanner_progress_t progress {
+        [](auto data, uintptr_t percentage) {
+            auto d = reinterpret_cast<ScanReporter *>(data);
+            (d->report)(percentage);
+        },
+        [](auto data, bool interrupted) {
+            auto d = reinterpret_cast<ScanReporter *>(data);
+            (d->done)(interrupted);
+        },
+    };
+
+    if (!pts_scanner_scan(inner, processHandle.inner, filter.inner, &progress, reinterpret_cast<void *>(&reporter))) {
         throw last_exception();
     }
 }

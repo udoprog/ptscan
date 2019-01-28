@@ -2,9 +2,23 @@
 
 namespace pts
 {
-pts_string_t *String::ptr()
+String::String() : inner({nullptr, 0, 0})
 {
-    return &inner;
+}
+
+String::String(String&& other) : inner(other.inner)
+{
+    other.inner.ptr = nullptr;
+}
+
+QByteArray String::toQByteArray()
+{
+    return QByteArray(inner.ptr, int(inner.len));
+}
+
+QString String::toQString()
+{
+    return QString::fromUtf8(toQByteArray());
 }
 
 std::string String::string()
@@ -12,8 +26,16 @@ std::string String::string()
     return std::string(inner.ptr, inner.len);
 }
 
+pts_string_t *String::ptr()
+{
+    return &inner;
+}
+
 String::~String()
 {
-    pts_string_free(&inner);
+    if (inner.ptr) {
+        pts_string_free(&inner);
+        inner.ptr = nullptr;
+    }
 }
 }

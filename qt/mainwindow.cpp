@@ -41,20 +41,18 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
         auto threadPool = this->threadPool;
 
         QtConcurrent::run([threadPool, processHandle, filter]() {
-            std::cout << "SCAN" << std::endl;
+            pts::ScanReporter reporter;
 
-            auto scanner = pts::Scanner::create(threadPool);
-
-            pts_scanner_progress_t progress {
-                [](uintptr_t percentage) {
-                    std::cout << percentage << std::endl;
-                },
-                [](bool interrupted) {
-                    std::cout << "done: " << interrupted << std::endl;
-                },
+            reporter.report = [](int percentage){
+                std::cout << percentage << std::endl;
             };
 
-            scanner->scan(*processHandle, *filter, &progress);
+            reporter.done = [](bool interrupted){
+                std::cout << interrupted << std::endl;
+            };
+
+            auto scanner = pts::Scanner::create(threadPool);
+            scanner->scan(*processHandle, *filter, reporter);
         });
     });
 
@@ -126,7 +124,7 @@ void MainWindow::updateView()
     this->ui->actionDetach->setEnabled(!!this->processHandle);
 
     if (this->processHandle) {
-        auto name = QString::fromStdString(this->processHandle->name());
+        auto name = this->processHandle->name().toQString();
 
         if (name.isEmpty()) {
             name = "*unknown*";
@@ -134,7 +132,7 @@ void MainWindow::updateView()
 
         auto info = QString("Attached to %1 (pid: %2)")
             .arg(name)
-            .arg(QString::fromStdString(this->processHandle->pid()));
+            .arg(this->processHandle->pid().toQString());
 
         ui->processInfo->setText(info);
     } else {

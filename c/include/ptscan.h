@@ -36,9 +36,9 @@ struct pts_string_t {
   uintptr_t cap;
 };
 
-using pts_scanner_progress_report_fn = void(*)(uintptr_t);
+using pts_scanner_progress_report_fn = void(*)(void*, uintptr_t);
 
-using pts_scanner_progress_done_fn = void(*)(bool);
+using pts_scanner_progress_done_fn = void(*)(void*, bool);
 
 struct pts_scanner_progress_t {
   /// Called to indicate that the process is in progress.
@@ -114,7 +114,8 @@ pts_scanner_result_t *pts_scanner_results_next(pts_scanner_results_iter_t *iter)
 bool pts_scanner_scan(pts_scanner_t *scanner,
                       const pts_process_handle_t *handle,
                       const pts_filter_t *filter,
-                      const pts_scanner_progress_t *progress);
+                      const pts_scanner_progress_t *progress,
+                      void *data);
 
 /// Free the underlying string.
 void pts_string_free(pts_string_t *string);

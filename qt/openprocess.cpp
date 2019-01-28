@@ -45,8 +45,8 @@ void OpenProcess::refreshList()
     for (auto pid: pts::system::processes()) {
         if (auto handle = pts::ProcessHandle::open(pid)) {
             QList<QStandardItem *> row;
-            row.push_back(new QStandardItem(QString::fromStdString(handle->pid())));
-            row.push_back(new QStandardItem(QString::fromStdString(handle->name())));
+            row.push_back(new QStandardItem(QString::fromUtf8(handle->pid().toQByteArray())));
+            row.push_back(new QStandardItem(QString::fromUtf8(handle->name().toQByteArray())));
             model->appendRow(row);
             handles.push_back(handle);
         }

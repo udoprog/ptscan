@@ -1,5 +1,5 @@
 use crate::{filter::pts_filter_t, process_handle::pts_process_handle_t, pts_thread_pool_t};
-use std::{mem, ptr};
+use std::{mem, os::raw::c_void, ptr};
 
 /// A scanner keeping track of results scanned from memory.
 pub struct pts_scanner_t(ptscan::scanner::Scanner);
@@ -60,8 +60,8 @@ pub extern "C" fn pts_scanner_results_free(scanner_results: *mut pts_scanner_res
     free!(scanner_results);
 }
 
-type pts_scanner_progress_report_fn = fn(usize);
-type pts_scanner_progress_done_fn = fn(bool);
+type pts_scanner_progress_report_fn = fn(*mut c_void, usize);
+type pts_scanner_progress_done_fn = fn(*mut c_void, bool);
 
 #[repr(C)]
 pub struct pts_scanner_progress_t {
@@ -79,13 +79,14 @@ pub extern "C" fn pts_scanner_scan<'a>(
     handle: *const pts_process_handle_t,
     filter: *const pts_filter_t,
     progress: *const pts_scanner_progress_t,
+    data: *mut c_void,
 ) -> bool {
     let pts_scanner_t(ref mut scanner) = *null_ck!(&'a mut scanner);
     let pts_process_handle_t(ref handle) = *null_ck!(&'a handle);
     let pts_filter_t(ref filter) = *null_ck!(&'a filter);
     let pts_scanner_progress_t { report, done } = *null_ck!(&'a progress);
 
-    let progress = RawProgress { report, done };
+    let progress = RawProgress { data, report, done };
 
     if !scanner.initial {
         try_last!(
@@ -102,9 +103,13 @@ pub extern "C" fn pts_scanner_scan<'a>(
 
 /// A reporter implementation that adapts a raw reporter.
 pub struct RawProgress {
+    data: *mut c_void,
     report: pts_scanner_progress_report_fn,
     done: pts_scanner_progress_done_fn,
 }
+
+unsafe impl Send for RawProgress {}
+unsafe impl Sync for RawProgress {}
 
 impl ptscan::scanner::Progress for RawProgress {
     fn report_bytes(&mut self, _: usize) -> Result<(), failure::Error> {
@@ -112,13 +117,12 @@ impl ptscan::scanner::Progress for RawProgress {
     }
 
     fn report(&mut self, percentage: usize) -> Result<(), failure::Error> {
-        println!("HERE");
-        (self.report)(percentage);
+        (self.report)(self.data, percentage);
         Ok(())
     }
 
     fn done(&mut self, interrupted: bool) -> Result<(), failure::Error> {
-        (self.done)(interrupted);
+        (self.done)(self.data, interrupted);
         Ok(())
     }
 }

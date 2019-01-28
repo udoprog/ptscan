@@ -12,16 +12,16 @@ ProcessHandle::~ProcessHandle()
     pts_process_handle_free(inner);
 }
 
-std::string ProcessHandle::pid() {
+String ProcessHandle::pid() {
     String pid;
     pts_process_handle_pid(inner, pid.ptr());
-    return pid.string();
+    return pid;
 }
 
-std::string ProcessHandle::name() {
+String ProcessHandle::name() {
     String name;
     pts_process_handle_name(inner, name.ptr());
-    return name.string();
+    return name;
 }
 
 std::shared_ptr<ProcessHandle> ProcessHandle::open(process_id pid)

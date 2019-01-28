@@ -7,7 +7,7 @@ mod utils;
 pub mod error;
 pub mod filter;
 pub mod process_handle;
-pub mod scanner;
+pub mod scan;
 pub mod string;
 pub mod system;
 
@@ -30,4 +30,26 @@ pub extern "C" fn pts_thread_pool_new<'a>() -> *mut pts_thread_pool_t {
 #[no_mangle]
 pub extern "C" fn pts_thread_pool_free(thread_pool: *mut pts_thread_pool_t) {
     free!(thread_pool);
+}
+
+/// A token that can be used to indicate some condition.
+pub struct pts_token_t(ptscan::Token);
+
+/// Create a new token.
+#[no_mangle]
+pub extern "C" fn pts_token_new<'a>() -> *mut pts_token_t {
+    into_ptr!(pts_token_t(ptscan::Token::new()))
+}
+
+/// Set the token.
+#[no_mangle]
+pub extern "C" fn pts_token_set<'a>(token: *const pts_token_t) {
+    let pts_token_t(ref token) = *null_ck!(&'a token);
+    token.set();
+}
+
+/// Free the token.
+#[no_mangle]
+pub extern "C" fn pts_token_free<'a>(token: *mut pts_token_t) {
+    free!(token);
 }

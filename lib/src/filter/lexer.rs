@@ -18,6 +18,10 @@ pub enum Token {
     Or,
     /// $value, references the value in memory.
     Value,
+    /// changed keyword.
+    Changed,
+    /// same keyword.
+    Same,
     /// `==`.
     Eq,
     /// `!=`.
@@ -30,6 +34,10 @@ pub enum Token {
     Lt,
     /// `>`.
     Gt,
+    /// `(`.
+    OpenParen,
+    /// `)`.
+    CloseParen,
     /// A literal value, like `0x42`, or `128u32`.
     Literal(Value),
 }
@@ -303,6 +311,16 @@ impl<'a> Iterator for Lexer<'a> {
                     let e = self.pos();
                     return Some(Ok((s, Token::Gt, e)));
                 }
+                '(' => {
+                    self.step();
+                    let e = self.pos();
+                    return Some(Ok((s, Token::OpenParen, e)));
+                }
+                ')' => {
+                    self.step();
+                    let e = self.pos();
+                    return Some(Ok((s, Token::CloseParen, e)));
+                }
                 'a'..='z' => {
                     let ident = try_iter!(self.scan_ident());
                     let e = self.pos();
@@ -310,6 +328,8 @@ impl<'a> Iterator for Lexer<'a> {
                     match ident.as_str() {
                         "and" => return Some(Ok((s, Token::And, e))),
                         "or" => return Some(Ok((s, Token::Or, e))),
+                        "same" => return Some(Ok((s, Token::Same, e))),
+                        "changed" => return Some(Ok((s, Token::Changed, e))),
                         other => {
                             return Some(Err(self.err(format!("unsupported keyword `{}`", other))));
                         }

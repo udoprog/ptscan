@@ -2,6 +2,10 @@ use crate::{filter, scan::Value};
 
 #[derive(Debug)]
 pub enum Expression {
+    /// A value that stays the same.
+    Same,
+    /// A value that has changed.
+    Changed,
     /// Test that the value equals the expected value.
     Eq(Value),
     /// Test that the value is not equal to the given value.
@@ -26,6 +30,8 @@ impl Expression {
         use self::Expression::*;
 
         let p: Box<dyn filter::Filter> = match self {
+            Same => Box::new(filter::Same),
+            Changed => Box::new(filter::Changed),
             Eq(value) => Box::new(filter::Eq(value)),
             Neq(value) => Box::new(filter::Neq(value)),
             Lte(value) => Box::new(filter::Lte(value)),

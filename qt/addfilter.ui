@@ -21,9 +21,16 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
-    <widget class="QLabel" name="label">
+    <widget class="QLabel" name="addFilterLabel">
      <property name="text">
-      <string>Filter to add</string>
+      <string>Adding filter</string>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="editFilterLabel">
+     <property name="text">
+      <string>Editing filter</string>
      </property>
     </widget>
    </item>

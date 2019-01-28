@@ -32,6 +32,14 @@ And: Expression = {
 }
 
 Filter: Expression = {
+    changed "(" "$value" ")" => {
+        Expression::Changed
+    },
+
+    same "(" "$value" ")" => {
+        Expression::Same
+    },
+
     "$value" "==" <value:literal> => {
         Expression::Eq(value)
     },
@@ -63,6 +71,8 @@ extern {
 
     enum Token {
         "$value" => Token::Value,
+        changed => Token::Changed,
+        same => Token::Same,
         and => Token::And,
         or => Token::Or,
         "==" => Token::Eq,
@@ -71,6 +81,8 @@ extern {
         ">=" => Token::Gte,
         "<" => Token::Lt,
         ">" => Token::Gt,
+        "(" => Token::OpenParen,
+        ")" => Token::CloseParen,
         literal => Token::Literal(<Value>),
     }
 }

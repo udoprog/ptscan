@@ -5,11 +5,13 @@
 
 #include <QMainWindow>
 #include <QStandardItemModel>
+#include <QFuture>
 
 #include <pts.h>
 #include <pts/ThreadPool.h>
 #include <pts/Filter.h>
 #include <pts/ProcessHandle.h>
+#include <pts/Token.h>
 
 class OpenProcess;
 class AddFilter;
@@ -26,6 +28,31 @@ public:
     explicit MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *parent = nullptr);
     ~MainWindow();
 
+    void updateScanResults();
+
+public slots:
+    // Fire off a scan.
+    void scan();
+
+    // Report an error.
+    void addError(QString message);
+
+    // Report that a scan progress has progressed.
+    void scanProgress(int percentage);
+
+    // Report that a scan progress has completed.
+    void scanDone(bool interrupted);
+
+    // Report that a refresh has completed.
+    void refreshDone(bool interrupted);
+
+private slots:
+    // Trigger an update to currently visualized values.
+    void updateCurrent();
+
+    // Update the view because something interesting happened.
+    void updateView();
+
 private:
     std::shared_ptr<pts::ThreadPool> threadPool;
     Ui::MainWindow *ui;
@@ -33,19 +60,22 @@ private:
     AddFilter *addFilter;
 
     // Model for rendering filters.
-    QStandardItemModel *filtersModel;
+    QStandardItemModel filtersModel;
     // List of pts filters.
     std::vector<std::shared_ptr<pts::Filter>> filters;
-    // Currently selected filter.
-    std::optional<QModelIndex> selectedFilter;
 
     // Current process we are interacting with.
     std::shared_ptr<pts::ProcessHandle> processHandle;
 
-    void filtersListContextMenu(const QPoint &pos);
+    // A scan that is in progress.
+    std::shared_ptr<pts::Token> scanToken;
+    std::shared_ptr<pts::Scan> scanCurrent;
+    QStandardItemModel scanResults;
+    // Set if we have clicked scan, but another one is already in progress.
+    bool wantsScan;
 
-    // Update the view because something interesting happened.
-    void updateView();
+    // A timer to refresh current values.
+    QTimer *refreshTimer;
 };
 
 #endif // MAINWINDOW_H

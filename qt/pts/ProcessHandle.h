@@ -10,10 +10,13 @@
 
 namespace pts
 {
-class Scanner;
+class Scan;
+class ScanResult;
 
 class ProcessHandle {
-    friend class Scanner;
+    friend class Scan;
+    friend class ScanResult;
+
 public:
     ProcessHandle(const ProcessHandle &) = delete;
     ~ProcessHandle();

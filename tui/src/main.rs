@@ -1,5 +1,5 @@
 use hashbrown::HashMap;
-use ptscan::{filter, scan, scanner, Address, Location, Process, ProcessHandle, ScanResult};
+use ptscan::{filter, scan, Address, Process, ProcessHandle, Token};
 use std::{io, sync::Arc};
 
 static HELP: &'static str = include_str!("help.md");
@@ -45,7 +45,7 @@ impl<W> SimpleProgress<W> {
     }
 }
 
-impl<W> scanner::Progress for SimpleProgress<W>
+impl<W> scan::Progress for SimpleProgress<W>
 where
     W: io::Write,
 {
@@ -66,16 +66,6 @@ where
 
         Ok(())
     }
-
-    fn done(&mut self, interrupted: bool) -> Result<(), failure::Error> {
-        if interrupted {
-            writeln!(self.out, " interrupted!")?;
-        } else {
-            writeln!(self.out, "")?;
-        }
-
-        Ok(())
-    }
 }
 
 pub struct Application<R, W> {
@@ -87,7 +77,7 @@ pub struct Application<R, W> {
     process_name: Option<String>,
     /// Process that we are currently attached to.
     handle: Option<ProcessHandle>,
-    scans: HashMap<String, scanner::Scanner>,
+    scans: HashMap<String, scan::Scan>,
     current_scan: String,
 }
 
@@ -158,7 +148,7 @@ where
                 }
 
                 self.scans
-                    .insert(name.clone(), scanner::Scanner::new(&self.thread_pool));
+                    .insert(name.clone(), scan::Scan::new(&self.thread_pool));
                 self.current_scan = name;
             }
             Action::ScansDel(name) => {
@@ -187,7 +177,8 @@ where
             Action::Print(limit) => {
                 if let Some(handle) = self.handle.as_ref() {
                     if let Some(scan) = self.scans.get_mut(&self.current_scan) {
-                        scan.refresh(&handle.process)?;
+                        scan.refresh(&handle.process, 100, None, SimpleProgress::new(&mut self.w))?;
+                        println!("");
                     }
                 }
 
@@ -219,7 +210,7 @@ where
                 let mut buf = vec![0u8; ty.size()];
                 let value = handle.process.read_memory_of_type(address, ty, &mut buf)?;
 
-                scan.results.push(scanner::ScanResult {
+                scan.results.push(scan::ScanResult {
                     address,
                     value,
                     current: None,
@@ -227,14 +218,14 @@ where
                 });
             }
             Action::Scan(filter) => {
-                self.scan(&*filter)?;
+                self.scan(&*filter, None)?;
             }
             Action::Reset => match self.scans.get_mut(&self.current_scan) {
-                Some(scanner) => {
-                    scanner.results.clear();
-                    scanner.initial = false;
+                Some(scan) => {
+                    scan.results.clear();
+                    scan.initial = false;
                 }
-                None => writeln!(self.w, "no scanner in use")?,
+                None => writeln!(self.w, "no scan in use")?,
             },
             Action::Set(address, value) => {
                 let handle = match self.handle.as_ref() {
@@ -271,18 +262,20 @@ where
         Ok(())
     }
 
-    /// Scan memory using the given filter and the currently selected scanner.
-    fn scan(&mut self, filter: &(dyn filter::Filter)) -> Result<(), failure::Error> {
+    /// Scan memory using the given filter and the currently selected scan.
+    fn scan(
+        &mut self,
+        filter: &(dyn filter::Filter),
+        cancel: Option<&Token>,
+    ) -> Result<(), failure::Error> {
         let handle = match self.handle.as_ref() {
             Some(handle) => handle,
             None => failure::bail!("not attached to a process"),
         };
 
-        let scanner = match self.scans.entry(self.current_scan.clone()) {
+        let scan = match self.scans.entry(self.current_scan.clone()) {
             hashbrown::hash_map::Entry::Occupied(e) => e.into_mut(),
-            hashbrown::hash_map::Entry::Vacant(e) => {
-                e.insert(scanner::Scanner::new(&self.thread_pool))
-            }
+            hashbrown::hash_map::Entry::Vacant(e) => e.insert(scan::Scan::new(&self.thread_pool)),
         };
 
         if self.suspend {
@@ -290,23 +283,33 @@ where
         }
 
         // NB: defer unpacking the result until we have at least tried to resume the process.
-        let res = if !scanner.initial {
-            let res =
-                scanner.initial_scan(&handle.process, filter, SimpleProgress::new(&mut self.w));
+        let res = if !scan.initial {
+            let res = scan.initial_scan(
+                &handle.process,
+                filter,
+                cancel,
+                SimpleProgress::new(&mut self.w),
+            );
 
             if res.is_ok() {
-                scanner.initial = true;
+                scan.initial = true;
             }
 
             res
         } else {
-            scanner.rescan(&handle.process, filter, SimpleProgress::new(&mut self.w))
+            scan.rescan(
+                &handle.process,
+                filter,
+                cancel,
+                SimpleProgress::new(&mut self.w),
+            )
         };
 
         if self.suspend {
             handle.process.resume()?;
         }
 
+        println!("");
         res?;
         self.print(None)?;
         Ok(())
@@ -343,12 +346,12 @@ where
         Ok(())
     }
 
-    /// Print the current state of the scanner.
+    /// Print the current state of the scan.
     fn print(&mut self, limit: Option<usize>) -> Result<(), failure::Error> {
         let results = match self.scans.get(&self.current_scan) {
-            Some(scanner) => &scanner.results,
+            Some(scan) => &scan.results,
             None => {
-                writeln!(self.w, "no scanner in use")?;
+                writeln!(self.w, "no scan in use")?;
                 return Ok(());
             }
         };
@@ -366,50 +369,15 @@ where
         };
 
         for result in results.iter().take(limit) {
-            let ScanResult {
-                address,
-                ref value,
-                ref current,
-                ..
-            } = *result;
-
-            let status = match result.killed {
-                true => " (*dead*)",
-                false => "",
-            };
-
-            let info = match current.as_ref() {
-                // How to display values that have changed.
-                Some(current) if current != value => format!("{} => {}{}", value, current, status),
-                Some(_) | None => format!("{}{}", value, status),
-            };
-
             if let Some(handle) = self.handle.as_ref() {
-                match handle.find_location(address)? {
-                    Location::Module(module) => {
-                        let offset = address.offset_of(module.range.base)?;
-                        writeln!(self.w, "{}{}: {} = {}", module.name, offset, address, info)?;
-                    }
-                    Location::Thread(thread) => {
-                        let base = thread
-                            .stack_exit
-                            .as_ref()
-                            .cloned()
-                            .unwrap_or(thread.stack.base);
-
-                        let offset = address.offset_of(base)?;
-                        writeln!(
-                            self.w,
-                            "THREADSTACK{}{}: {} = {}",
-                            thread.id, offset, address, info
-                        )?;
-                    }
-                    Location::None => {
-                        writeln!(self.w, "{} = {}", address, info)?;
-                    }
-                }
+                writeln!(
+                    self.w,
+                    "{} = {}",
+                    result.address_display(handle),
+                    result.value
+                )?;
             } else {
-                writeln!(self.w, "{} = {}", address, info)?;
+                writeln!(self.w, "{} = {}", result.address, result.value)?;
             }
         }
 
@@ -417,13 +385,13 @@ where
     }
 
     /// Run the given procedure while suspending the process (if application is configured to do so).
-    pub fn with_scanner(
+    pub fn with_scan(
         &mut self,
         handle: &ProcessHandle,
-        mut proc: impl FnMut(&mut scanner::Scanner, &Process, &mut W) -> Result<(), failure::Error>,
+        mut proc: impl FnMut(&mut scan::Scan, &Process, &mut W) -> Result<(), failure::Error>,
     ) -> Result<(), failure::Error> {
-        let scanner = match self.scans.get_mut(&self.current_scan) {
-            Some(scanner) => scanner,
+        let scan = match self.scans.get_mut(&self.current_scan) {
+            Some(scan) => scan,
             None => return Ok(()),
         };
 
@@ -431,7 +399,7 @@ where
             handle.process.suspend()?;
         }
 
-        let ret = proc(scanner, &handle.process, &mut self.w);
+        let ret = proc(scan, &handle.process, &mut self.w);
 
         if self.suspend {
             handle.process.resume()?;
@@ -650,8 +618,8 @@ pub enum Action {
     Set(Address, scan::Value),
     /// List all scans.
     ScansList,
-    /// Create a new scanner with the given name.
+    /// Create a new scan with the given name.
     ScansNew(String),
-    /// Delete the scanner with the given name.
+    /// Delete the scan with the given name.
     ScansDel(String),
 }

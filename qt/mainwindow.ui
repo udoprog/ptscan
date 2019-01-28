@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>826</width>
-    <height>645</height>
+    <height>851</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -15,7 +15,7 @@
   </property>
   <widget class="QWidget" name="centralWidget">
    <layout class="QGridLayout" name="gridLayout">
-    <item row="4" column="0">
+    <item row="5" column="0">
      <layout class="QVBoxLayout" name="verticalLayout">
       <item>
        <layout class="QHBoxLayout" name="horizontalLayout_4">
@@ -28,8 +28,15 @@
            <string> Results</string>
           </property>
           <layout class="QGridLayout" name="gridLayout_3">
+           <item row="1" column="0">
+            <widget class="QLabel" name="scanResultsCount">
+             <property name="text">
+              <string>scanResultsCount</string>
+             </property>
+            </widget>
+           </item>
            <item row="0" column="0">
-            <widget class="QListWidget" name="scanResults"/>
+            <widget class="QTreeView" name="scanResults"/>
            </item>
           </layout>
          </widget>
@@ -38,7 +45,7 @@
          <widget class="QGroupBox" name="options">
           <property name="minimumSize">
            <size>
-            <width>500</width>
+            <width>200</width>
             <height>0</height>
            </size>
           </property>
@@ -65,6 +72,13 @@
                  <number>0</number>
                 </property>
                 <item>
+                 <widget class="QPushButton" name="scanReset">
+                  <property name="text">
+                   <string>Reset</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
                  <spacer name="horizontalSpacer">
                   <property name="orientation">
                    <enum>Qt::Horizontal</enum>
@@ -78,9 +92,16 @@
                  </spacer>
                 </item>
                 <item>
+                 <widget class="QPushButton" name="scan">
+                  <property name="text">
+                   <string>Scan</string>
+                  </property>
+                 </widget>
+                </item>
+                <item>
                  <widget class="QPushButton" name="addFilterButton">
                   <property name="text">
-                   <string>Add Filter</string>
+                   <string>Add</string>
                   </property>
                  </widget>
                 </item>
@@ -106,6 +127,30 @@
       </item>
      </layout>
     </item>
+    <item row="3" column="0">
+     <layout class="QHBoxLayout" name="horizontalLayout_2">
+      <property name="bottomMargin">
+       <number>0</number>
+      </property>
+      <item>
+       <widget class="QProgressBar" name="scanProgress">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="value">
+         <number>0</number>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QPushButton" name="scanCancel">
+        <property name="text">
+         <string>Cancel</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </item>
     <item row="0" column="0">
      <widget class="QLabel" name="processInfo">
       <property name="font">
@@ -118,29 +163,65 @@
       </property>
      </widget>
     </item>
-    <item row="2" column="0">
-     <layout class="QHBoxLayout" name="horizontalLayout_2">
-      <property name="bottomMargin">
-       <number>0</number>
+    <item row="4" column="0">
+     <widget class="QGroupBox" name="errorBox">
+      <property name="sizePolicy">
+       <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+        <horstretch>0</horstretch>
+        <verstretch>0</verstretch>
+       </sizepolicy>
       </property>
-      <item>
-       <widget class="QProgressBar" name="scanProgress">
-        <property name="enabled">
-         <bool>true</bool>
-        </property>
-        <property name="value">
-         <number>24</number>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QPushButton" name="scanCancel">
-        <property name="text">
-         <string>Cancel Scan</string>
-        </property>
-       </widget>
-      </item>
-     </layout>
+      <property name="font">
+       <font>
+        <pointsize>10</pointsize>
+       </font>
+      </property>
+      <property name="title">
+       <string>Error</string>
+      </property>
+      <layout class="QVBoxLayout" name="verticalLayout_4">
+       <item>
+        <widget class="QLabel" name="errorText">
+         <property name="sizePolicy">
+          <sizepolicy hsizetype="Preferred" vsizetype="Preferred">
+           <horstretch>0</horstretch>
+           <verstretch>0</verstretch>
+          </sizepolicy>
+         </property>
+         <property name="text">
+          <string>errorText</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_3">
+         <property name="bottomMargin">
+          <number>0</number>
+         </property>
+         <item>
+          <spacer name="horizontalSpacer_2">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>40</width>
+             <height>20</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+         <item>
+          <widget class="QPushButton" name="errorDismissButton">
+           <property name="text">
+            <string>Dismiss</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+      </layout>
+     </widget>
     </item>
    </layout>
   </widget>
@@ -230,6 +311,21 @@
    </property>
    <property name="shortcut">
     <string>Del</string>
+   </property>
+  </action>
+  <action name="actionScan">
+   <property name="text">
+    <string>Scan</string>
+   </property>
+  </action>
+  <action name="actionScanCancel">
+   <property name="text">
+    <string>Cancel Scan</string>
+   </property>
+  </action>
+  <action name="actionScanReset">
+   <property name="text">
+    <string>Reset Scan</string>
    </property>
   </action>
  </widget>

@@ -37,9 +37,10 @@ SOURCES += \
     pts/ThreadPool.cpp \
     pts/String.cpp \
     pts/ProcessHandle.cpp \
-    pts/Scanner.cpp \
     addfilter.cpp \
-    pts/Filter.cpp
+    pts/Filter.cpp \
+    pts/Scan.cpp \
+    pts/Token.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -48,9 +49,10 @@ HEADERS += \
     pts/ThreadPool.h \
     pts/String.h \
     pts/ProcessHandle.h \
-    pts/Scanner.h \
     addfilter.h \
-    pts/Filter.h
+    pts/Filter.h \
+    pts/Scan.h \
+    pts/Token.h
 
 FORMS += \
     mainwindow.ui \

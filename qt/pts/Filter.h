@@ -4,22 +4,23 @@
 #include <memory>
 #include <string>
 
+#include <pts/String.h>
 #include <ptscan.h>
 
 namespace pts
 {
-class Scanner;
+class Scan;
 
 class Filter
 {
-    friend class Scanner;
+    friend class Scan;
 
 public:
     Filter(pts_filter_t *);
     ~Filter();
 
     // Return a string which is a human-readable display of this filter.
-    std::string display() const;
+    String display() const;
 
     static std::shared_ptr<Filter> parse(const std::string &input);
 private:

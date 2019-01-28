@@ -27,6 +27,27 @@ macro_rules! null_ck {
     };
 }
 
+/// NULL check the given argument and convert into a reference wrapped in an Option.
+/// If NULL, the value will be `None`.
+/// If non-NULL, the value will be wrapped as a reference `Some(&T)` / `Some(&mut T)`.
+macro_rules! null_opt {
+    (&$l:lifetime mut $expr:expr) => {{
+        null_opt!(@test $l, $expr, null_mut, constrain_mut)
+    }};
+
+    (&$l:lifetime $expr:expr) => {{
+        null_opt!(@test $l, $expr, null, constrain)
+    }};
+
+    (@test $l:lifetime, $expr:expr, $ptr_m:ident, $constrain_m:ident) => {
+        if $expr == std::ptr::$ptr_m() {
+            None
+        } else {
+            Some($crate::utils::$constrain_m::<$l, _>($expr))
+        }
+    };
+}
+
 /// Convert the given expression into a pointer.
 macro_rules! into_ptr {
     ($expr:expr) => {

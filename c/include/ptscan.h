@@ -17,18 +17,21 @@ struct pts_process_handle_t;
 struct pts_process_id_t;
 
 /// A single scan result.
-struct pts_scanner_result_t;
+struct pts_scan_result_t;
 
 /// An iterator over scan results.
-struct pts_scanner_results_iter_t;
+struct pts_scan_results_iter_t;
 
-/// A scanner keeping track of results scanned from memory.
-struct pts_scanner_t;
+/// A scan keeping track of results scanned from memory.
+struct pts_scan_t;
 
 struct pts_system_processes_iter_t;
 
 /// A thread pool.
 struct pts_thread_pool_t;
+
+/// A token that can be used to indicate some condition.
+struct pts_token_t;
 
 struct pts_string_t {
   char *ptr;
@@ -36,16 +39,11 @@ struct pts_string_t {
   uintptr_t cap;
 };
 
-using pts_scanner_progress_report_fn = void(*)(void*, uintptr_t);
+using pts_scan_progress_report_fn = void(*)(void*, uintptr_t);
 
-using pts_scanner_progress_done_fn = void(*)(void*, bool);
-
-struct pts_scanner_progress_t {
+struct pts_scan_progress_t {
   /// Called to indicate that the process is in progress.
-  pts_scanner_progress_report_fn report;
-  /// Called to indicate that the process is done.
-  /// The argument is true if the process was interrupted or failed, pts_last_error will be set appropriately.
-  pts_scanner_progress_done_fn done;
+  pts_scan_progress_report_fn report;
 };
 
 extern "C" {
@@ -92,30 +90,55 @@ bool pts_process_handle_open_by_name(const char *name,
 /// Access a readable process identifier for the handle.
 void pts_process_handle_pid(const pts_process_handle_t *handle, pts_string_t *pid);
 
-/// Close and free the scanner.
-void pts_scanner_free(pts_scanner_t *scanner);
+/// Create an iterator over the results of a scan.
+/// # Safety
+/// Modifying a collection while an iterate is open results in undefined behavior.
+uintptr_t pts_scan_count(const pts_scan_t *scan);
 
-/// Creates and returns a new scanner.
-pts_scanner_t *pts_scanner_new(const pts_thread_pool_t *thread_pool);
+/// Close and free the scan.
+void pts_scan_free(pts_scan_t *scan);
 
-/// Free the scanner results iterator.
-void pts_scanner_results_free(pts_scanner_results_iter_t *scanner_results);
+/// Creates and returns a new scan.
+pts_scan_t *pts_scan_new(const pts_thread_pool_t *thread_pool);
+
+/// Creates and returns a new scan.
+bool pts_scan_refresh(pts_scan_t *scan,
+                      const pts_process_handle_t *handle,
+                      uintptr_t limit,
+                      const pts_token_t *cancel,
+                      const pts_scan_progress_t *progress,
+                      void *data);
+
+/// Access a readable process identifier for the handle.
+void pts_scan_result_address(const pts_scan_result_t *result,
+                             const pts_process_handle_t *handle,
+                             pts_string_t *out);
+
+/// Access a readable process identifier for the handle.
+void pts_scan_result_current(const pts_scan_result_t *result, pts_string_t *out);
+
+/// Access a readable process identifier for the handle.
+void pts_scan_result_value(const pts_scan_result_t *result, pts_string_t *out);
+
+/// Free the scan results iterator.
+void pts_scan_results_free(pts_scan_results_iter_t *scan_results);
 
 /// Create an iterator over the results of a scan.
 /// # Safety
 /// Modifying a collection while an iterate is open results in undefined behavior.
-pts_scanner_results_iter_t *pts_scanner_results_iter(const pts_scanner_t *scanner);
+pts_scan_results_iter_t *pts_scan_results_iter(const pts_scan_t *scan);
 
 /// Walk the iterator one step.
 /// If no more elements are available NULL is returned.
-pts_scanner_result_t *pts_scanner_results_next(pts_scanner_results_iter_t *iter);
+const pts_scan_result_t *pts_scan_results_next(pts_scan_results_iter_t *iter);
 
-/// Creates and returns a new scanner.
-bool pts_scanner_scan(pts_scanner_t *scanner,
-                      const pts_process_handle_t *handle,
-                      const pts_filter_t *filter,
-                      const pts_scanner_progress_t *progress,
-                      void *data);
+/// Creates and returns a new scan.
+bool pts_scan_scan(pts_scan_t *scan,
+                   const pts_process_handle_t *handle,
+                   const pts_filter_t *filter,
+                   const pts_token_t *cancel,
+                   const pts_scan_progress_t *progress,
+                   void *data);
 
 /// Free the underlying string.
 void pts_string_free(pts_string_t *string);
@@ -136,6 +159,15 @@ void pts_thread_pool_free(pts_thread_pool_t *thread_pool);
 /// Create a new thread pool.
 /// If an error is raised, NULL is returned and `pts_error_last()` is updated accordingly.
 pts_thread_pool_t *pts_thread_pool_new();
+
+/// Free the token.
+void pts_token_free(pts_token_t *token);
+
+/// Create a new token.
+pts_token_t *pts_token_new();
+
+/// Set the token.
+void pts_token_set(const pts_token_t *token);
 
 } // extern "C"
 

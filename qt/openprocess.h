@@ -17,11 +17,14 @@ class OpenProcess : public QDialog
 public:
     explicit OpenProcess(QWidget *parent = nullptr);
     ~OpenProcess();
+
+    // Clear the list of processes.
+    void clearList();
+
+    // Refresh the list of processes.
     void refreshList();
 
     std::shared_ptr<pts::ProcessHandle> selected;
-
-signals:
 
 public slots:
     void clicked(const QModelIndex &index);

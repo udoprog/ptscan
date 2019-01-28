@@ -13,11 +13,11 @@ Filter::~Filter()
     pts_filter_free(inner);
 }
 
-std::string Filter::display() const
+String Filter::display() const
 {
     pts::String display;
     pts_filter_display(inner, display.ptr());
-    return display.string();
+    return display;
 }
 
 std::shared_ptr<Filter> Filter::parse(const std::string &input)

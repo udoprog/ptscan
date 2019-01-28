@@ -14,12 +14,14 @@ AddFilter::AddFilter(QWidget *parent) :
     ui->setupUi(this);
     ui->error->hide();
     ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(false);
+    ui->addFilterLabel->hide();
+    ui->editFilterLabel->hide();
 
     connect(ui->input, &QLineEdit::textChanged, this, [this](const QString& input) {
         std::string s = input.toUtf8().constData();
 
         try {
-            this->predicate = std::make_optional(pts::Filter::parse(s));
+            this->filter = pts::Filter::parse(s);
             this->error = {};
             this->stateChanged();
         } catch(const std::exception &e) {
@@ -27,6 +29,38 @@ AddFilter::AddFilter(QWidget *parent) :
             this->stateChanged();
         }
     });
+}
+
+std::shared_ptr<pts::Filter> AddFilter::takeFilter()
+{
+    auto filter = this->filter;
+    this->filter.reset();
+    return filter;
+}
+
+QModelIndex AddFilter::takeIndex()
+{
+    auto index = this->index;
+    this->index = QModelIndex();
+    return index;
+}
+
+void AddFilter::addFilter()
+{
+    this->filter = {};
+    this->index = {};
+    this->ui->input->setText("");
+    this->ui->addFilterLabel->show();
+    this->ui->editFilterLabel->hide();
+}
+
+void AddFilter::editFilter(std::shared_ptr<pts::Filter> filter, QModelIndex index)
+{
+    this->filter = filter;
+    this->index = index;
+    this->ui->input->setText(filter->display().toQString());
+    this->ui->addFilterLabel->hide();
+    this->ui->editFilterLabel->show();
 }
 
 void AddFilter::stateChanged()

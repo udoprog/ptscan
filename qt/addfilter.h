@@ -7,6 +7,7 @@
 #include <pts/Filter.h>
 
 #include <QDialog>
+#include <QModelIndex>
 
 namespace Ui {
 class AddFilter;
@@ -20,11 +21,20 @@ public:
     explicit AddFilter(QWidget *parent = nullptr);
     ~AddFilter();
 
-    std::optional<std::shared_ptr<pts::Filter>> predicate;
+    // Take filter that was edited.
+    std::shared_ptr<pts::Filter> takeFilter();
+    // Take index that was edited.
+    QModelIndex takeIndex();
 
+    // Indicate that we want to add a filter through the dialog.
+    void addFilter();
+    // Indicate that we want to edit a filter through the dialog.
+    void editFilter(std::shared_ptr<pts::Filter> filter, QModelIndex index);
 private:
     Ui::AddFilter *ui;
     std::optional<std::string> error;
+    std::shared_ptr<pts::Filter> filter;
+    QModelIndex index;
 
     void stateChanged();
 };

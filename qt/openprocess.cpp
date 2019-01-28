@@ -36,6 +36,13 @@ void OpenProcess::clicked(const QModelIndex &index)
     selected = handles.at(index.row());
 }
 
+void OpenProcess::clearList()
+{
+    model->removeRows(0, model->rowCount());
+    selected.reset();
+    handles.clear();
+}
+
 void OpenProcess::refreshList()
 {
     model->removeRows(0, model->rowCount());

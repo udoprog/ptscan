@@ -21,7 +21,22 @@ pub extern "C" fn pts_error_last<'a>() -> *const pts_error_t {
 /// Returns the number of bytes copied.
 #[no_mangle]
 pub extern "C" fn pts_error_message<'a>(error: *const pts_error_t, message: *mut pts_string_t) {
+    use std::fmt::Write;
+
     let message = null_ck!(&'a mut message);
     let pts_error_t(ref e) = *null_ck!(&'a error);
-    *message = pts_string_t::new(e.to_string());
+
+    let mut m = String::new();
+
+    let mut causes = e.iter_chain();
+
+    if let Some(cause) = causes.next() {
+        try_last!(writeln!(&mut m, "{}", cause), ());
+    }
+
+    while let Some(cause) = causes.next() {
+        try_last!(writeln!(&mut m, "Caused by: {}", cause), ());
+    }
+
+    *message = pts_string_t::new(m);
 }

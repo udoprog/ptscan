@@ -1,7 +1,4 @@
-use crate::{
-    scan::{Special, Type, Value},
-    scanner,
-};
+use crate::scan::{ScanResult, Special, Type, Value};
 use std::fmt;
 
 mod ast;
@@ -27,7 +24,7 @@ pub trait Filter: Send + Sync + fmt::Debug + fmt::Display {
     }
 
     /// Test the specified memory region.
-    fn test(&self, _: Option<&scanner::ScanResult>, _: &Value) -> bool;
+    fn test(&self, _: Option<&ScanResult>, _: &Value) -> bool;
 }
 
 macro_rules! numeric_match {
@@ -55,7 +52,7 @@ impl Filter for Not {
         self.0.special().map(|s| s.invert())
     }
 
-    fn test(&self, last: Option<&scanner::ScanResult>, value: &Value) -> bool {
+    fn test(&self, last: Option<&ScanResult>, value: &Value) -> bool {
         !self.0.test(last, value)
     }
 }
@@ -71,7 +68,7 @@ impl fmt::Display for Not {
 pub struct Dec;
 
 impl Filter for Dec {
-    fn test(&self, last: Option<&scanner::ScanResult>, value: &Value) -> bool {
+    fn test(&self, last: Option<&ScanResult>, value: &Value) -> bool {
         match last {
             Some(last) => Lt(last.value).test(None, value),
             None => false,
@@ -90,7 +87,7 @@ impl fmt::Display for Dec {
 pub struct Inc;
 
 impl Filter for Inc {
-    fn test(&self, last: Option<&scanner::ScanResult>, value: &Value) -> bool {
+    fn test(&self, last: Option<&ScanResult>, value: &Value) -> bool {
         match last {
             Some(last) => Gt(last.value).test(None, value),
             None => false,
@@ -104,12 +101,12 @@ impl fmt::Display for Inc {
     }
 }
 
-/// Match values which are larger than before.
+/// Match a value that has changed from the last scan.
 #[derive(Debug, Clone)]
 pub struct Changed;
 
 impl Filter for Changed {
-    fn test(&self, last: Option<&scanner::ScanResult>, value: &Value) -> bool {
+    fn test(&self, last: Option<&ScanResult>, value: &Value) -> bool {
         match last {
             Some(last) => !Eq(last.value).test(None, value),
             None => false,
@@ -120,6 +117,25 @@ impl Filter for Changed {
 impl fmt::Display for Changed {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "changed($value)")
+    }
+}
+
+/// Match a value that is the same as last scan.
+#[derive(Debug, Clone)]
+pub struct Same;
+
+impl Filter for Same {
+    fn test(&self, last: Option<&ScanResult>, value: &Value) -> bool {
+        match last {
+            Some(last) => Eq(last.value).test(None, value),
+            None => false,
+        }
+    }
+}
+
+impl fmt::Display for Same {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "same($value)")
     }
 }
 
@@ -158,7 +174,7 @@ impl Filter for Eq {
         })
     }
 
-    fn test(&self, _: Option<&scanner::ScanResult>, value: &Value) -> bool {
+    fn test(&self, _: Option<&ScanResult>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a == b)
     }
 }
@@ -204,7 +220,7 @@ impl Filter for Neq {
         })
     }
 
-    fn test(&self, _: Option<&scanner::ScanResult>, value: &Value) -> bool {
+    fn test(&self, _: Option<&ScanResult>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a != b)
     }
 }
@@ -240,7 +256,7 @@ impl Filter for Gt {
         Some(s)
     }
 
-    fn test(&self, _: Option<&scanner::ScanResult>, value: &Value) -> bool {
+    fn test(&self, _: Option<&ScanResult>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a > b)
     }
 }
@@ -278,7 +294,7 @@ impl Filter for Gte {
         Some(s)
     }
 
-    fn test(&self, _: Option<&scanner::ScanResult>, value: &Value) -> bool {
+    fn test(&self, _: Option<&ScanResult>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a >= b)
     }
 }
@@ -311,7 +327,7 @@ impl Filter for Lt {
         Some(s)
     }
 
-    fn test(&self, _: Option<&scanner::ScanResult>, value: &Value) -> bool {
+    fn test(&self, _: Option<&ScanResult>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a < b)
     }
 }
@@ -344,7 +360,7 @@ impl Filter for Lte {
         Some(s)
     }
 
-    fn test(&self, _: Option<&scanner::ScanResult>, value: &Value) -> bool {
+    fn test(&self, _: Option<&ScanResult>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a <= b)
     }
 }
@@ -369,11 +385,11 @@ impl fmt::Display for All {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut it = self.1.iter().peekable();
 
-        if let Some(p) = it.next() {
+        while let Some(p) = it.next() {
+            fmt::Display::fmt(p, fmt)?;
+
             if it.peek().is_some() {
-                write!(fmt, "{} and ", p)?;
-            } else {
-                write!(fmt, "{}", p)?;
+                write!(fmt, " and ")?;
             }
         }
 
@@ -386,7 +402,7 @@ impl Filter for All {
         self.0.clone()
     }
 
-    fn test(&self, last: Option<&scanner::ScanResult>, value: &Value) -> bool {
+    fn test(&self, last: Option<&ScanResult>, value: &Value) -> bool {
         self.1.iter().all(|p| p.test(last, value))
     }
 }
@@ -406,7 +422,7 @@ impl Filter for Any {
         self.0.clone()
     }
 
-    fn test(&self, last: Option<&scanner::ScanResult>, value: &Value) -> bool {
+    fn test(&self, last: Option<&ScanResult>, value: &Value) -> bool {
         self.1.iter().any(|p| p.test(last, value))
     }
 }
@@ -415,11 +431,11 @@ impl fmt::Display for Any {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut it = self.1.iter().peekable();
 
-        if let Some(p) = it.next() {
+        while let Some(p) = it.next() {
+            write!(fmt, "{}", p)?;
+
             if it.peek().is_some() {
-                write!(fmt, "{} or ", p)?;
-            } else {
-                write!(fmt, "{}", p)?;
+                write!(fmt, " or ")?;
             }
         }
 

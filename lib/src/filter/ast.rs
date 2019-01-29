@@ -6,6 +6,10 @@ pub enum Expression {
     Same,
     /// A value that has changed.
     Changed,
+    /// A value that has increased.
+    Inc,
+    /// A value that has decreased.
+    Dec,
     /// Test that the value equals the expected value.
     Eq(Value),
     /// Test that the value is not equal to the given value.
@@ -32,6 +36,8 @@ impl Expression {
         let p: Box<dyn filter::Filter> = match self {
             Same => Box::new(filter::Same),
             Changed => Box::new(filter::Changed),
+            Inc => Box::new(filter::Inc),
+            Dec => Box::new(filter::Dec),
             Eq(value) => Box::new(filter::Eq(value)),
             Neq(value) => Box::new(filter::Neq(value)),
             Lte(value) => Box::new(filter::Lte(value)),

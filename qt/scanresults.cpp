@@ -44,16 +44,16 @@ void ScanResults::setCount(std::optional<uintptr_t> count)
     }
 }
 
-void ScanResults::updateCurrent(const pts::Values& values)
+void ScanResults::updateCurrent(const std::shared_ptr<pts::Values> values)
 {
-    auto length = values.length();
+    auto length = values->length();
 
     for (int index = 0; index < length; index++) {
         if (index >= model.rowCount()) {
             break;
         }
 
-        auto current = values.valueAt(index).toQString();
+        auto current = values->valueAt(index).toQString();
         auto currentItem = model.item(index, 2);
 
         currentItem->setText(current);

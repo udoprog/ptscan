@@ -1,10 +1,13 @@
 #ifndef PTS_WATCH_H
 #define PTS_WATCH_H
 
+#include <memory>
+
 #include <pts/String.h>
 
 namespace pts {
 class ScanResult;
+class Pointer;
 
 class Watch
 {
@@ -16,7 +19,16 @@ public:
     Watch(Watch &&);
     ~Watch();
 
-    String display();
+    // Get the pointer as a string.
+    std::shared_ptr<Pointer> pointer();
+
+    // Get the value of the watch as a string.
+    String value();
+
+    // Get the type of the watch as a string.
+    String type();
+
+    void setPointer(const std::shared_ptr<Pointer> pointer);
 private:
     Watch(pts_watch_t *inner);
 

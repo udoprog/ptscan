@@ -16,6 +16,6 @@ impl Token {
 
     /// Test if the token is set and unset it if it is.
     pub fn test(&self) -> bool {
-        self.0.compare_and_swap(true, false, Ordering::SeqCst)
+        self.0.load(Ordering::SeqCst)
     }
 }

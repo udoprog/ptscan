@@ -10,6 +10,7 @@ mod address;
 pub mod filter;
 mod module;
 pub mod opts;
+pub mod pointer;
 mod process;
 mod process_handle;
 pub mod scan;
@@ -22,8 +23,9 @@ pub mod watch;
 pub type ProcessId = DWORD;
 pub type ThreadId = DWORD;
 
-pub use self::address::{Address, AddressRange, Offset, Pointer, Size};
+pub use self::address::{Address, AddressRange, Offset, Size};
 pub use self::module::Module;
+pub use self::pointer::Pointer;
 pub use self::process::{MemoryState, MemoryType, Process};
 pub use self::process_handle::{Location, ProcessHandle, ProcessName};
 pub use self::scan::{Scan, ScanResult};

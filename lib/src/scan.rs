@@ -2,10 +2,10 @@
 
 use crate::{
     address::{Address, Size},
-    filter,
+    filter, pointer,
     process::{MemoryInformation, Process},
     scan, thread_buffers,
-    watch::{Watch, WatchAddress, WatchLocation},
+    watch::Watch,
     Location, ProcessHandle, Token,
 };
 use byteorder::{ByteOrder, LittleEndian};
@@ -252,14 +252,25 @@ impl Type {
     }
 }
 
-#[derive(Debug)]
-pub struct ParseTypeError(String);
-
-impl error::Error for ParseTypeError {}
-
-impl fmt::Display for ParseTypeError {
+impl fmt::Display for Type {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "`{}` is not a valid", self.0)
+        use self::Type::*;
+
+        let o = match *self {
+            None => "none",
+            U128 => "u128",
+            I128 => "i128",
+            U64 => "u64",
+            I64 => "i64",
+            U32 => "u32",
+            I32 => "i32",
+            U16 => "u16",
+            I16 => "i16",
+            U8 => "u8",
+            I8 => "i8",
+        };
+
+        o.fmt(fmt)
     }
 }
 
@@ -282,6 +293,17 @@ impl str::FromStr for Type {
         };
 
         Ok(ty)
+    }
+}
+
+#[derive(Debug)]
+pub struct ParseTypeError(String);
+
+impl error::Error for ParseTypeError {}
+
+impl fmt::Display for ParseTypeError {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "`{}` is not a valid", self.0)
     }
 }
 
@@ -484,7 +506,7 @@ impl Scan {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::sync_channel(1024);
 
-                let mut reporter = Reporter::new(progress, len);
+                let mut reporter = Reporter::new(progress, len, cancel);
 
                 for (result, v) in self.results.iter().zip(values) {
                     let tx = tx.clone();
@@ -512,12 +534,6 @@ impl Scan {
                 while !reporter.is_done() {
                     let m = rx.recv().expect("closed channel");
 
-                    if cancel.test() {
-                        reporter.suppress();
-                        last_error = Some(failure::format_err!("scan cancelled"));
-                        cancel.set();
-                    }
-
                     if let Err(e) = reporter.tick() {
                         last_error = Some(e);
                         cancel.set();
@@ -533,6 +549,10 @@ impl Scan {
 
         if let Some(e) = last_error {
             return Err(e);
+        }
+
+        if cancel.test() {
+            return Err(failure::format_err!("scan cancelled"));
         }
 
         Ok(())
@@ -566,7 +586,7 @@ impl Scan {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::sync_channel(1024);
 
-                let mut reporter = Reporter::new(progress, results.len());
+                let mut reporter = Reporter::new(progress, results.len(), cancel);
 
                 for result in results {
                     let tx = tx.clone();
@@ -600,12 +620,6 @@ impl Scan {
                 while !reporter.is_done() {
                     let m = rx.recv().expect("closed channel");
 
-                    if cancel.test() {
-                        reporter.suppress();
-                        last_error = Some(failure::format_err!("scan cancelled"));
-                        cancel.set();
-                    }
-
                     if let Err(e) = reporter.tick() {
                         last_error = Some(e);
                         cancel.set();
@@ -623,6 +637,10 @@ impl Scan {
 
         if let Some(e) = last_error {
             return Err(e);
+        }
+
+        if cancel.test() {
+            return Err(failure::format_err!("scan cancelled"));
         }
 
         Ok(())
@@ -721,7 +739,7 @@ impl Scan {
                     });
                 }
 
-                let mut reporter = Reporter::new(progress, total);
+                let mut reporter = Reporter::new(progress, total, cancel);
 
                 if let Err(e) = reporter.report_bytes(bytes) {
                     last_error = Some(e);
@@ -730,12 +748,6 @@ impl Scan {
 
                 while !reporter.is_done() {
                     let m = rx.recv().expect("closed channel");
-
-                    if cancel.test() {
-                        reporter.suppress();
-                        last_error = Some(failure::format_err!("scan cancelled"));
-                        cancel.set();
-                    }
 
                     match m {
                         // Scan result from a task.
@@ -761,6 +773,10 @@ impl Scan {
 
         if let Some(e) = last_error {
             return Err(e);
+        }
+
+        if cancel.test() {
+            return Err(failure::format_err!("scan cancelled"));
         }
 
         return Ok(());
@@ -878,7 +894,7 @@ impl Scan {
     }
 }
 
-pub struct Reporter<P> {
+pub struct Reporter<'token, P> {
     progress: P,
     /// Current progress.
     current: usize,
@@ -887,11 +903,11 @@ pub struct Reporter<P> {
     /// Total.
     total: usize,
     /// Whether to report progress or not.
-    suppressed: bool,
+    token: &'token Token,
 }
 
-impl<P> Reporter<P> {
-    pub fn new(progress: P, total: usize) -> Reporter<P> {
+impl<'token, P> Reporter<'token, P> {
+    pub fn new<'a>(progress: P, total: usize, token: &'a Token) -> Reporter<P> {
         let mut percentage = total / 100;
 
         if percentage <= 0 {
@@ -903,13 +919,8 @@ impl<P> Reporter<P> {
             current: 0,
             percentage,
             total,
-            suppressed: false,
+            token,
         }
-    }
-
-    /// Supress any more reporting.
-    pub fn suppress(&mut self) {
-        self.suppressed = true;
     }
 
     // Report a number of bytes.
@@ -927,7 +938,7 @@ impl<P> Reporter<P> {
     {
         self.current += 1;
 
-        if self.suppressed {
+        if self.token.test() {
             return Ok(());
         }
 
@@ -969,22 +980,22 @@ impl ScanResult {
 
     /// Buld a watch out of a scan result.
     pub fn as_watch(&self, handle: Option<&ProcessHandle>) -> Result<Watch, io::Error> {
-        let address = match handle {
+        let (base, offset) = match handle {
             Some(handle) => match handle.find_location(self.address)? {
                 Location::Module(module) => {
                     let offset = self.address.offset_of(module.range.base)?;
-                    WatchAddress::Relative {
-                        base_module: module.name.to_string(),
-                        offset,
-                    }
+                    (pointer::Base::Module(module.name.to_string()), Some(offset))
                 }
-                _ => WatchAddress::Absolute(self.address),
+                _ => (pointer::Base::Fixed(self.address), None),
             },
-            None => WatchAddress::Absolute(self.address),
+            None => (pointer::Base::Fixed(self.address), None),
         };
 
+        let mut pointer = pointer::Pointer::new(base);
+        pointer.offsets.extend(offset);
+
         Ok(Watch {
-            location: WatchLocation::Address(address),
+            pointer,
             value: self.value.clone(),
             ty: self.value.ty(),
         })
@@ -1011,13 +1022,16 @@ impl<'a> fmt::Display for AddressDisplay<'a> {
             .ok()
             .unwrap_or(Location::None);
 
-        match location {
+        let offset = match location {
             Location::Module(module) => match address.offset_of(module.range.base).ok() {
                 Some(offset) => {
-                    write!(fmt, "{}{}", module.name, offset)?;
+                    write!(fmt, "{}", module.name)?;
+                    offset
                 }
+                // TODO: handle error differently?
                 None => {
-                    write!(fmt, "{}+? ({})", module.name, address)?;
+                    write!(fmt, "{}", address)?;
+                    return Ok(());
                 }
             },
             Location::Thread(thread) => {
@@ -1029,16 +1043,26 @@ impl<'a> fmt::Display for AddressDisplay<'a> {
 
                 match address.offset_of(base).ok() {
                     Some(offset) => {
-                        write!(fmt, "THREADSTACK{}{}", thread.id, offset)?;
+                        write!(fmt, "THREADSTACK{}", thread.id)?;
+                        offset
                     }
+                    // TODO: handle error differently?
                     None => {
-                        write!(fmt, "THREADSTACK{}+? ({})", thread.id, address)?;
+                        write!(fmt, "{}", address)?;
+                        return Ok(());
                     }
                 }
             }
             Location::None => {
                 write!(fmt, "{}", address)?;
+                return Ok(());
             }
+        };
+
+        if offset.sign() {
+            write!(fmt, " + {}", offset)?;
+        } else {
+            write!(fmt, " - {}", offset.abs())?;
         }
 
         Ok(())

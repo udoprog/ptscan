@@ -32,37 +32,16 @@ And: Expression = {
 }
 
 Filter: Expression = {
-    changed => {
-        Expression::Changed
-    },
-
-    same => {
-        Expression::Same
-    },
-
-    "$value" "==" <value:literal> => {
-        Expression::Eq(value)
-    },
-
-    "$value" "!=" <value:literal> => {
-        Expression::Neq(value)
-    },
-
-    "$value" "<=" <value:literal> => {
-        Expression::Lte(value)
-    },
-
-    "$value" ">=" <value:literal> => {
-        Expression::Gte(value)
-    },
-
-    "$value" "<" <value:literal> => {
-        Expression::Lt(value)
-    },
-
-    "$value" ">" <value:literal> => {
-        Expression::Gt(value)
-    },
+    changed => Expression::Changed,
+    same => Expression::Same,
+    inc => Expression::Inc,
+    dec => Expression::Dec,
+    "$value" "==" <value:literal> => Expression::Eq(value),
+    "$value" "!=" <value:literal> => Expression::Neq(value),
+    "$value" "<=" <value:literal> => Expression::Lte(value),
+    "$value" ">=" <value:literal> => Expression::Gte(value),
+    "$value" "<" <value:literal> => Expression::Lt(value),
+    "$value" ">" <value:literal> => Expression::Gt(value),
 };
 
 extern {
@@ -73,6 +52,8 @@ extern {
         "$value" => Token::Value,
         changed => Token::Changed,
         same => Token::Same,
+        inc => Token::Inc,
+        dec => Token::Dec,
         and => Token::And,
         or => Token::Or,
         "==" => Token::Eq,

@@ -175,8 +175,8 @@ where
                 self.attach()?;
             }
             Action::Print(limit) => {
-                if let Some(handle) = self.handle.as_ref() {
-                    if let Some(scan) = self.scans.get_mut(&self.current_scan) {
+                if let Some(_handle) = self.handle.as_ref() {
+                    if let Some(_scan) = self.scans.get_mut(&self.current_scan) {
                         // TODO: rewrite to keep track of values separately.
                         // scan.refresh(&handle.process, 100, None, SimpleProgress::new(&mut self.w))?;
                         println!("");

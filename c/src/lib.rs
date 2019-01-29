@@ -6,6 +6,7 @@ use std::{os::raw::c_char, ptr, sync};
 mod utils;
 pub mod error;
 pub mod filter;
+pub mod pointer;
 pub mod process_handle;
 pub mod scan;
 pub mod string;

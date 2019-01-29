@@ -25,7 +25,7 @@ public:
     ~ScanResults();
 
     void update(const std::shared_ptr<pts::ProcessHandle> &handle, std::optional<std::vector<pts::ScanResult>> results);
-    void updateCurrent(const pts::Values &values);
+    void updateCurrent(const std::shared_ptr<pts::Values> values);
 public slots:
     void setCount(std::optional<uintptr_t> count);
 

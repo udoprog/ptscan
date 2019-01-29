@@ -79,6 +79,7 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
 
     connect(ui->actionScanCancel, &QAction::triggered, this, [this]() {
         if (scanToken) {
+            qDebug() << "cancelling";
             scanToken->set();
         }
     });
@@ -185,7 +186,7 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
 
         if (auto result = scan->at(index.row())) {
             auto watch = result->asWatch(processHandle);
-            qDebug() << watch->display().toQString();
+            addressList->addWatch(watch);
         }
     });
 
@@ -237,10 +238,11 @@ void MainWindow::scan()
             QMetaObject::invokeMethod(this, "scanProgress", Qt::QueuedConnection, Q_ARG(int, percentage));
         };
 
+        auto token = scanToken;
         bool ok = true;
 
         try {
-            scan->scan(*processHandle, *filter, *scanToken, reporter);
+            scan->scan(*processHandle, *filter, *token, reporter);
         } catch(const std::exception &e) {
             ok = false;
             QString message(e.what());
@@ -350,7 +352,7 @@ void MainWindow::addError(QString message)
 void MainWindow::refreshDone()
 {
     if (scanValues) {
-        scanResults->updateCurrent(*scanValues);
+        scanResults->updateCurrent(this->scanValues);
         scanValues.reset();
     }
 

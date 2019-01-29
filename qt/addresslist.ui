@@ -27,7 +27,7 @@
     <number>0</number>
    </property>
    <item>
-    <widget class="QListView" name="list">
+    <widget class="QTreeView" name="list">
      <property name="sizePolicy">
       <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
        <horstretch>0</horstretch>
@@ -61,6 +61,19 @@
     </layout>
    </item>
   </layout>
+  <action name="actionEdit">
+   <property name="text">
+    <string>Edit Address</string>
+   </property>
+  </action>
+  <action name="actionDelete">
+   <property name="text">
+    <string>Delete Address</string>
+   </property>
+   <property name="shortcut">
+    <string>Del</string>
+   </property>
+  </action>
  </widget>
  <resources/>
  <connections/>

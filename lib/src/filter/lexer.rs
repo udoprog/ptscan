@@ -22,6 +22,10 @@ pub enum Token {
     Changed,
     /// same keyword.
     Same,
+    /// Value increased.
+    Inc,
+    /// Value decreased.
+    Dec,
     /// `==`.
     Eq,
     /// `!=`.
@@ -330,6 +334,8 @@ impl<'a> Iterator for Lexer<'a> {
                         "or" => return Some(Ok((s, Token::Or, e))),
                         "same" => return Some(Ok((s, Token::Same, e))),
                         "changed" => return Some(Ok((s, Token::Changed, e))),
+                        "inc" => return Some(Ok((s, Token::Inc, e))),
+                        "dec" => return Some(Ok((s, Token::Dec, e))),
                         other => {
                             return Some(Err(self.err(format!("unsupported keyword `{}`", other))));
                         }
@@ -349,7 +355,7 @@ impl<'a> Iterator for Lexer<'a> {
                         }
                     }
                 }
-                '0'..='9' => {
+                '-' | '+' | '0'..='9' => {
                     let literal = try_iter!(self.scan_literal());
                     let e = self.pos();
                     return Some(Ok((s, Token::Literal(literal), e)));

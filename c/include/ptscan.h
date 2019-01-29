@@ -10,6 +10,9 @@ struct pts_error_t;
 /// A filter.
 struct pts_filter_t;
 
+/// A pointer.
+struct pts_pointer_t;
+
 /// Handle for a process.
 struct pts_process_handle_t;
 
@@ -73,6 +76,18 @@ void pts_filter_free(pts_filter_t *filter);
 /// Parse a string as a filter.
 /// Returns NULL and sets error accordingly on failure.
 pts_filter_t *pts_filter_parse(const char *input, uintptr_t input_len);
+
+/// Find a process by name.
+/// If a process cannot be found, *out is set to NULL.
+/// If an error is raised, false is returned and `pts_error_last()` is updated accordingly.
+void pts_pointer_display(const pts_pointer_t *pointer, pts_string_t *display);
+
+/// Free a pointer.
+void pts_pointer_free(pts_pointer_t *pointer);
+
+/// Parse a string as a pointer.
+/// Returns NULL and sets error accordingly on failure.
+pts_pointer_t *pts_pointer_parse(const char *input, uintptr_t input_len);
 
 /// Close and free the process handle.
 void pts_process_handle_free(pts_process_handle_t *handle);
@@ -204,11 +219,23 @@ void pts_values_value_at(const pts_values_t *values, uintptr_t pos, pts_string_t
 /// Get the current ptscan version.
 const char *pts_version();
 
-/// Access a human-readable version of the watch.
-void pts_watch_display(const pts_watch_t *watch, pts_string_t *out);
+/// Access a human-readable version of the pointer.
+void pts_watch_display_pointer(const pts_watch_t *watch, pts_string_t *out);
+
+/// Access a human-readable version of the watch type.
+void pts_watch_display_type(const pts_watch_t *watch, pts_string_t *out);
+
+/// Access a human-readable version of the watch value.
+void pts_watch_display_value(const pts_watch_t *watch, pts_string_t *out);
 
 /// Free the watch.
 void pts_watch_free(pts_watch_t *watch);
+
+/// Get a clone of the pointer used by the watch.
+pts_pointer_t *pts_watch_get_pointer(pts_watch_t *watch);
+
+/// Set the pointer of the watch using a clone of the provided pointer.
+void pts_watch_set_pointer(pts_watch_t *watch, const pts_pointer_t *pointer);
 
 } // extern "C"
 

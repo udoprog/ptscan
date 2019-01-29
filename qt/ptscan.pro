@@ -44,7 +44,9 @@ SOURCES += \
     addresslist.cpp \
     scanresults.cpp \
     pts/Watch.cpp \
-    pts/Values.cpp
+    pts/Values.cpp \
+    editaddress.cpp \
+    pts/Pointer.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -60,7 +62,9 @@ HEADERS += \
     addresslist.h \
     scanresults.h \
     pts/Watch.h \
-    pts/Values.h
+    pts/Values.h \
+    editaddress.h \
+    pts/Pointer.h
 
 FORMS += \
     mainwindow.ui \
@@ -68,7 +72,8 @@ FORMS += \
     addfilter.ui \
     addfilter.ui \
     addresslist.ui \
-    scanresults.ui
+    scanresults.ui \
+    editaddress.ui
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin

@@ -1,6 +1,5 @@
 //! Abstraction to help deal with virtual addresses.
 
-use crate::scan;
 use err_derive::Error;
 use std::{
     convert::{TryFrom, TryInto},
@@ -312,12 +311,30 @@ impl TryFrom<u32> for Size {
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct Offset(bool, u64);
 
+impl Offset {
+    /// Construct a new offset.
+    /// If `sign` is true, the offset is positive. Otherwise it is negative.
+    pub fn new(sign: bool, offset: u64) -> Self {
+        Offset(sign, offset)
+    }
+
+    /// Return the sign which is `true` for positive, `false` for negative.
+    pub fn sign(self) -> bool {
+        self.0
+    }
+
+    /// Return the absolute offset of this offset.
+    pub fn abs(self) -> u64 {
+        self.1
+    }
+}
+
 impl fmt::Display for Offset {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Offset(sign, value) = *self;
 
         if sign {
-            write!(fmt, "+{:X}", value)
+            write!(fmt, "{:X}", value)
         } else {
             write!(fmt, "-{:X}", value)
         }
@@ -367,18 +384,6 @@ impl AddressRange {
 
         Ok(None)
     }
-}
-
-/// A pointer path.
-///
-/// Each offset is applied and dereferenced on the base in a chain.
-///
-/// The last step is dereferences as the pointee type.
-#[allow(unused)]
-pub struct Pointer {
-    pointee_type: scan::Type,
-    base: Address,
-    offset: Vec<Offset>,
 }
 
 /// Convert the given error into an I/O error.

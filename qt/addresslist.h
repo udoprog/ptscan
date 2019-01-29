@@ -4,6 +4,10 @@
 #include <QStandardItemModel>
 #include <QWidget>
 
+class QMenu;
+
+class EditAddress;
+
 namespace pts
 {
 class Watch;
@@ -23,11 +27,12 @@ public:
 
     // Add the given watch to the address list.
     void addWatch(std::shared_ptr<pts::Watch> watch);
-
 private:
     Ui::AddressList *ui;
     QStandardItemModel model;
     std::vector<std::shared_ptr<pts::Watch>> watches;
+    EditAddress *editAddress;
+    QMenu *menu;
 };
 
 #endif // ADDRESSLIST_H

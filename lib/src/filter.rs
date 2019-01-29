@@ -109,7 +109,7 @@ impl Filter for Dec {
 
 impl fmt::Display for Dec {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "dec($value)")
+        write!(fmt, "dec")
     }
 }
 
@@ -128,7 +128,7 @@ impl Filter for Inc {
 
 impl fmt::Display for Inc {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "inc($value)")
+        write!(fmt, "inc")
     }
 }
 
@@ -147,7 +147,7 @@ impl Filter for Changed {
 
 impl fmt::Display for Changed {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "changed($value)")
+        write!(fmt, "changed")
     }
 }
 
@@ -166,7 +166,7 @@ impl Filter for Same {
 
 impl fmt::Display for Same {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "same($value)")
+        write!(fmt, "same")
     }
 }
 
@@ -519,7 +519,7 @@ mod tests {
 
     #[test]
     fn basic_parsing() -> Result<(), Box<error::Error>> {
-        let mut parser = parser::OrParser::new();
+        let parser = parser::OrParser::new();
         let a = parser.parse(lexer::Lexer::new("$value == 1"))?;
         let b = parser.parse(lexer::Lexer::new("$value == 1 and $value == 2"))?;
         let c = parser.parse(lexer::Lexer::new(

@@ -146,6 +146,9 @@ bool pts_scan_scan(pts_scan_t *scan,
                    const pts_scan_progress_t *progress,
                    void *data);
 
+/// Setup function that needs to be called to initialize the library.
+void pts_setup();
+
 /// Free the underlying string.
 void pts_string_free(pts_string_t *string);
 

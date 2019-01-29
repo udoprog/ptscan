@@ -14,6 +14,8 @@
 #include "openprocess.h"
 #include "addfilter.h"
 #include "ui_mainwindow.h"
+#include "addresslist.h"
+#include "scanresults.h"
 
 MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *parent) :
     QMainWindow(parent),
@@ -25,28 +27,54 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
     refreshTimer(new QTimer())
 {
     ui->setupUi(this);
+    addressList = new AddressList(ui->addressListBox);
+    ui->addressListBoxLayout->addWidget(addressList);
+
+    scanResults = new ScanResults(ui->scanResultsBox);
+    ui->scanResultsBoxLayout->addWidget(scanResults);
 
     refreshTimer->start(100);
 
     ui->filtersList->setModel(&filtersModel);
-    ui->scanResults->setModel(&scanResults);
     ui->errorBox->setVisible(false);
 
-    QStringList headers;
-    headers.push_back("Address");
-    headers.push_back("Last Scan");
-    headers.push_back("Current");
-    scanResults.setHorizontalHeaderLabels(headers);
+    filtersContextMenu = new QMenu(ui->filtersList);
+    filtersContextMenu->addAction(ui->actionRemoveFilter);
+    ui->filtersList->setContextMenuPolicy(Qt::CustomContextMenu);
+
+    connect(ui->filtersList, &QAbstractItemView::customContextMenuRequested, this, [this](const QPoint &pos) {
+        auto index = ui->filtersList->indexAt(pos);
+
+        if (!index.isValid()) {
+            return;
+        }
+
+        filtersCurrentIndex = index;
+        filtersContextMenu->exec(ui->filtersList->viewport()->mapToGlobal(pos));
+        filtersCurrentIndex = {};
+    });
+
+    connect(ui->actionRemoveFilter, &QAction::triggered, this, [this]() {
+        auto index = filtersCurrentIndex;
+
+        if (!index.isValid()) {
+            return;
+        }
+
+        filters.erase(filters.begin() + index.row());
+        filtersModel.removeRow(index.row());
+        updateView();
+    });
 
     connect(refreshTimer, &QTimer::timeout, this, &MainWindow::updateCurrent);
 
     connect(ui->errorDismissButton, &QPushButton::clicked, ui->errorBox, &QGroupBox::hide);
     connect(ui->scan, &QPushButton::clicked, ui->actionScan, &QAction::trigger);
 
-    ui->filtersList->addAction(ui->actionRemoveFilter);
     addAction(ui->actionAddFilter);
     addAction(ui->actionRemoveFilter);
     addAction(ui->actionScanCancel);
+    addAction(ui->actionScan);
 
     connect(ui->actionScanCancel, &QAction::triggered, this, [this]() {
         if (scanToken) {
@@ -59,7 +87,6 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
     connect(ui->actionScan, &QAction::triggered, this, [this]() {
         if (scanToken) {
             wantsScan = true;
-            addError("scan already in progress");
             return;
         }
 
@@ -105,18 +132,6 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
     connect(ui->actionAddFilter, &QAction::triggered, this, [this]() {
         addFilter->addFilter();
         addFilter->show();
-    });
-
-    connect(ui->actionRemoveFilter, &QAction::triggered, this, [this]() {
-        auto index = ui->filtersList->currentIndex();
-
-        if (!index.isValid()) {
-            return;
-        }
-
-        filters.erase(filters.begin() + index.row());
-        filtersModel.removeRow(index.row());
-        updateView();
     });
 
     connect(ui->addFilterButton, &QPushButton::pressed, ui->actionAddFilter, &QAction::trigger);
@@ -249,19 +264,13 @@ void MainWindow::updateView()
     // Can only remove if there are filters present.
     ui->actionRemoveFilter->setEnabled(filtersModel.rowCount() > 0);
 
-    if (scanCurrent) {
-        auto count = scanCurrent->count();
+    auto count = std::make_optional(0);
 
-        if (count == 0) {
-            ui->scanResultsCount->setText("no results");
-        } else if (count <= 1) {
-            ui->scanResultsCount->setText(QString("%1 result").arg(count));
-        } else {
-            ui->scanResultsCount->setText(QString("%1 results").arg(count));
-        }
-    } else {
-        ui->scanResultsCount->setText("no active scan");
+    if (scanCurrent) {
+        count = std::make_optional(scanCurrent->count());
     }
+
+    scanResults->setCount(count);
 
     if (processHandle) {
         auto name = processHandle->name().toQString();
@@ -327,31 +336,9 @@ void MainWindow::refreshDone()
         throw std::exception("expected scan token to be set");
     }
 
-    auto scanCurrent = this->scanCurrent;
-
-    if (scanCurrent) {
-        auto results = scanCurrent->results(100);
-        int index = 0;
-
-        for (auto const &result: results) {
-            if (index >= scanResults.rowCount()) {
-                break;
-            }
-
-            auto row = index++;
-            auto current = result.current().toQString();
-            auto currentItem = scanResults.item(row, 2);
-
-            currentItem->setText(current);
-
-            auto last = scanResults.item(row, 1)->text();
-
-            if (current != last) {
-                currentItem->setForeground(Qt::red);
-            } else {
-                currentItem->setForeground(Qt::black);
-            }
-        }
+    if (this->scanCurrent) {
+        auto results = this->scanCurrent->results(100);
+        scanResults->updateCurrent(results);
     }
 
     scanToken.reset();
@@ -380,17 +367,11 @@ void MainWindow::scanDone(bool ok)
 
 void MainWindow::updateScanResults()
 {
-    scanResults.removeRows(0, scanResults.rowCount());
+    std::optional<std::vector<pts::ScanResult>> results = {};
 
     if (scanCurrent) {
-        auto results = scanCurrent->results(100);
-
-        for (auto const &result: results) {
-            QList<QStandardItem *> row;
-            row.push_back(new QStandardItem(result.address(processHandle).toQString()));
-            row.push_back(new QStandardItem(result.value().toQString()));
-            row.push_back(new QStandardItem(result.current().toQString()));
-            scanResults.appendRow(row);
-        }
+        results = std::make_optional(scanCurrent->results(100));
     }
+
+    scanResults->update(processHandle, results);
 }

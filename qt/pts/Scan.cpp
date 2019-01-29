@@ -97,18 +97,7 @@ ScanResult::ScanResult(const pts_scan_result_t *inner) :
 {
 }
 
-ScanResult::ScanResult() :
-    inner(nullptr)
-{
-}
-
-ScanResult::ScanResult(ScanResult &&other) :
-    inner(other.inner)
-{
-    other.inner = nullptr;
-}
-
-String ScanResult::address(std::shared_ptr<ProcessHandle> handle) const
+String ScanResult::address(const std::shared_ptr<ProcessHandle>& handle) const
 {
     String display;
 

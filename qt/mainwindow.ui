@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>MainWindow</string>
+   <string>PtScan</string>
   </property>
   <widget class="QWidget" name="centralWidget">
    <layout class="QGridLayout" name="gridLayout">
@@ -23,22 +23,11 @@
          <number>6</number>
         </property>
         <item>
-         <widget class="QGroupBox" name="scanResultsGroup">
+         <widget class="QGroupBox" name="scanResultsBox">
           <property name="title">
-           <string> Results</string>
+           <string>Scan Results</string>
           </property>
-          <layout class="QGridLayout" name="gridLayout_3">
-           <item row="1" column="0">
-            <widget class="QLabel" name="scanResultsCount">
-             <property name="text">
-              <string>scanResultsCount</string>
-             </property>
-            </widget>
-           </item>
-           <item row="0" column="0">
-            <widget class="QTreeView" name="scanResults"/>
-           </item>
-          </layout>
+          <layout class="QGridLayout" name="scanResultsBoxLayout"/>
          </widget>
         </item>
         <item>
@@ -54,7 +43,7 @@
           </property>
           <layout class="QVBoxLayout" name="verticalLayout_2">
            <item>
-            <widget class="QGroupBox" name="groupBox">
+            <widget class="QGroupBox" name="filtersBox">
              <property name="title">
               <string>Filters</string>
              </property>
@@ -116,13 +105,11 @@
        </layout>
       </item>
       <item>
-       <widget class="QListView" name="watchList">
-        <property name="sizePolicy">
-         <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
-          <horstretch>0</horstretch>
-          <verstretch>0</verstretch>
-         </sizepolicy>
+       <widget class="QGroupBox" name="addressListBox">
+        <property name="title">
+         <string>Address List</string>
         </property>
+        <layout class="QGridLayout" name="addressListBoxLayout"/>
        </widget>
       </item>
      </layout>
@@ -316,6 +303,9 @@
   <action name="actionScan">
    <property name="text">
     <string>Scan</string>
+   </property>
+   <property name="shortcut">
+    <string>Return</string>
    </property>
   </action>
   <action name="actionScanCancel">

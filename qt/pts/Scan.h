@@ -22,7 +22,7 @@ public:
 class Scan
 {
 public:
-    Scan(std::shared_ptr<ThreadPool> threadPool, pts_scan_t* inner);
+    explicit Scan(std::shared_ptr<ThreadPool> threadPool, pts_scan_t* inner);
     Scan();
     Scan(const Scan &) = delete;
     Scan(Scan &&);
@@ -51,12 +51,12 @@ class ScanResult {
     friend class Scan;
 
 public:
-    ScanResult();
-    ScanResult(const ScanResult &) = delete;
-    ScanResult(ScanResult &&);
+    ScanResult() = default;
+    ScanResult(const ScanResult &) = default;
+    ScanResult(ScanResult &&) = default;
 
     // Display the scan result.
-    String address(std::shared_ptr<ProcessHandle> handle) const;
+    String address(const std::shared_ptr<ProcessHandle> &handle) const;
 
     // Last scanned value.
     String value() const;
@@ -65,7 +65,7 @@ public:
     String current() const;
 
 private:
-    ScanResult(const pts_scan_result_t* inner);
+    explicit ScanResult(const pts_scan_result_t* inner);
 
     const pts_scan_result_t *inner;
 };

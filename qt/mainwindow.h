@@ -15,6 +15,8 @@
 
 class OpenProcess;
 class AddFilter;
+class AddressList;
+class ScanResults;
 
 namespace Ui {
 class MainWindow;
@@ -27,8 +29,6 @@ class MainWindow : public QMainWindow
 public:
     explicit MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *parent = nullptr);
     ~MainWindow();
-
-    void updateScanResults();
 
 public slots:
     // Fire off a scan.
@@ -46,6 +46,9 @@ public slots:
     // Report that a refresh has completed.
     void refreshDone();
 
+    // Update existing scan results.
+    void updateScanResults();
+
 private slots:
     // Trigger an update to currently visualized values.
     void updateCurrent();
@@ -58,11 +61,16 @@ private:
     Ui::MainWindow *ui;
     OpenProcess *openProcess;
     AddFilter *addFilter;
+    AddressList *addressList;
+    ScanResults *scanResults;
 
     // Model for rendering filters.
     QStandardItemModel filtersModel;
     // List of pts filters.
     std::vector<std::shared_ptr<pts::Filter>> filters;
+    QMenu *filtersContextMenu;
+    // Current index that has activated the context menu.
+    QModelIndex filtersCurrentIndex;
 
     // Current process we are interacting with.
     std::shared_ptr<pts::ProcessHandle> processHandle;
@@ -70,7 +78,6 @@ private:
     // A scan that is in progress.
     std::shared_ptr<pts::Token> scanToken;
     std::shared_ptr<pts::Scan> scanCurrent;
-    QStandardItemModel scanResults;
     // Set if we have clicked scan, but another one is already in progress.
     bool wantsScan;
 

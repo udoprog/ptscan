@@ -40,7 +40,9 @@ SOURCES += \
     addfilter.cpp \
     pts/Filter.cpp \
     pts/Scan.cpp \
-    pts/Token.cpp
+    pts/Token.cpp \
+    addresslist.cpp \
+    scanresults.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -52,13 +54,17 @@ HEADERS += \
     addfilter.h \
     pts/Filter.h \
     pts/Scan.h \
-    pts/Token.h
+    pts/Token.h \
+    addresslist.h \
+    scanresults.h
 
 FORMS += \
     mainwindow.ui \
     openprocess.ui \
     addfilter.ui \
-    addfilter.ui
+    addfilter.ui \
+    addresslist.ui \
+    scanresults.ui
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin

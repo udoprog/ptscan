@@ -22,11 +22,14 @@ static VERSION: &'static [u8] = b"0.1.0\x00";
 /// Get the current ptscan version.
 #[no_mangle]
 pub extern "C" fn pts_version() -> *const c_char {
-    error::LAST_ERROR.with(|e| {
-        *e.borrow_mut() = Some(failure::format_err!("hello"));
-    });
-
     VERSION as *const _ as *const c_char
+}
+
+/// Setup function that needs to be called to initialize the library.
+#[no_mangle]
+pub extern "C" fn pts_setup() {
+    // NB: needed to initialize eagerly initialized data.
+    failure::format_err!("dummy error");
 }
 
 /// Create a new thread pool.

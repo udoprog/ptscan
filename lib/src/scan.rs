@@ -9,7 +9,7 @@ use crate::{
 use byteorder::{ByteOrder, LittleEndian};
 use std::{
     convert::TryFrom,
-    error, fmt, mem, str,
+    error, fmt, io, mem, str,
     sync::{mpsc, Arc},
 };
 
@@ -752,7 +752,7 @@ impl Scan {
         struct Task<'a> {
             buffers: &'a thread_buffers::ThreadBuffers,
             process: &'a Process,
-            region: Result<MemoryInformation, failure::Error>,
+            region: Result<MemoryInformation, io::Error>,
             buffer_size: usize,
             size: usize,
             aligned: bool,
@@ -809,12 +809,12 @@ impl Scan {
 
                     // length of the buffer we need to read process memory.
                     let mut buf = buffers.get_mut(len)?;
+                    let buf = &mut *buf;
 
                     // TODO: figure out why we are trying to read invalid memory region sometimes.
-                    let buf = match process.read_process_memory(loc, &mut *buf) {
-                        Ok(buf) => buf,
-                        Err(_) => continue,
-                    };
+                    if let Err(_) = process.read_process_memory(loc, buf) {
+                        continue;
+                    }
 
                     let mut n = 0;
                     let end = buf.len() - size;

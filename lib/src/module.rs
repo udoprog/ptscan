@@ -1,4 +1,4 @@
-use std::{convert::TryFrom, ffi::OsString, fmt};
+use std::{convert::TryFrom, ffi::OsString, fmt, io};
 
 use crate::{process, Address, Size};
 
@@ -27,14 +27,14 @@ impl<'a> Module<'a> {
     }
 
     /// Get the name of the module.
-    pub fn name(&self) -> Result<OsString, failure::Error> {
+    pub fn name(&self) -> Result<OsString, io::Error> {
         crate::utils::string(|buf, len| unsafe {
             psapi::GetModuleBaseNameW(**self.process.handle, self.module, buf, len)
         })
     }
 
     /// Get the information about the module.
-    pub fn info(&self) -> Result<ModuleInfo, failure::Error> {
+    pub fn info(&self) -> Result<ModuleInfo, io::Error> {
         use std::mem;
 
         let mut out: psapi::MODULEINFO = unsafe { mem::zeroed() };

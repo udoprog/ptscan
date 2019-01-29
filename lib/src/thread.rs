@@ -1,4 +1,4 @@
-use std::{convert::TryFrom, fmt, io, sync::Arc};
+use std::{convert::TryFrom, fmt, io, mem, sync::Arc};
 
 use crate::{process, utils, Address, AddressRange};
 
@@ -26,6 +26,21 @@ impl Thread {
             desired_access: Default::default(),
             inherit_handles: FALSE,
         }
+    }
+
+    /// Get the specified thread selector entry.
+    pub fn thread_selector_entry(&self, selector: DWORD) -> Result<winnt::LDT_ENTRY, io::Error> {
+        let mut entry: winnt::LDT_ENTRY = unsafe { mem::zeroed() };
+
+        checked! {
+            winbase::GetThreadSelectorEntry(
+                **self.handle,
+                selector,
+                &mut entry as *mut _ as winbase::LPLDT_ENTRY,
+            )
+        };
+
+        Ok(entry)
     }
 
     /// Open the specified thread by thread id with default options.
@@ -80,7 +95,7 @@ impl Thread {
     }
 
     /// Get the context for a thread.
-    pub fn get_context<'a>(&'a self) -> Result<ThreadContext<'a>, failure::Error> {
+    pub fn get_context<'a>(&'a self) -> Result<ThreadContext<'a>, io::Error> {
         use std::mem;
 
         let mut context: winnt::CONTEXT = unsafe { mem::zeroed() };
@@ -113,18 +128,9 @@ pub struct ThreadContext<'a> {
 impl ThreadContext<'_> {
     /// Find where the thread stack is located.
     pub fn thread_stack(&self, process: &process::Process) -> Result<AddressRange, failure::Error> {
-        use std::mem;
-        let mut entry: winnt::LDT_ENTRY = unsafe { mem::zeroed() };
-
-        let seg_fs = self.context.SegFs as DWORD;
-
-        checked! {
-            winbase::GetThreadSelectorEntry(
-                **self.thread.handle,
-                seg_fs,
-                &mut entry as *mut _ as winbase::LPLDT_ENTRY,
-            )
-        };
+        let entry = self
+            .thread
+            .thread_selector_entry(self.context.SegFs as DWORD)?;
 
         let address = Address::try_from(unsafe {
             let bytes = entry.HighWord.Bytes();

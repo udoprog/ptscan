@@ -4,7 +4,7 @@ use crate::{
     filter, process, scan, system, thread::Thread, Address, AddressRange, ProcessId, Size, ThreadId,
 };
 use failure::ResultExt;
-use std::{convert::TryFrom, fmt};
+use std::{convert::TryFrom, fmt, io};
 use winapi::shared::winerror;
 
 #[derive(Debug, failure::Fail)]
@@ -100,7 +100,7 @@ impl ProcessHandle {
     }
 
     /// Build a filter that matches any pointers which points to valid memory.
-    pub fn pointer_filter(&self) -> Result<PointerFilter, failure::Error> {
+    pub fn pointer_filter(&self) -> Result<PointerFilter, io::Error> {
         use crate::utils::IteratorExtension;
 
         let mut memory_regions = self
@@ -212,7 +212,7 @@ impl ProcessHandle {
     pub fn find_module<'a>(
         &'a self,
         address: Address,
-    ) -> Result<Option<&'a ModuleInfo>, failure::Error> {
+    ) -> Result<Option<&'a ModuleInfo>, io::Error> {
         AddressRange::find_in_range(&self.modules, |m| &m.range, address)
     }
 
@@ -220,7 +220,7 @@ impl ProcessHandle {
     pub fn find_thread_by_stack<'a>(
         &'a self,
         address: Address,
-    ) -> Result<Option<&'a ProcessThread>, failure::Error> {
+    ) -> Result<Option<&'a ProcessThread>, io::Error> {
         AddressRange::find_in_range(&self.threads, |m| &m.stack, address)
     }
 
@@ -247,7 +247,7 @@ impl ProcessHandle {
         };
 
         let mut buf = vec![0u8; stack.size.into_usize()?];
-        let buf = self.process.read_process_memory(stack.base, &mut buf)?;
+        self.process.read_process_memory(stack.base, &mut buf)?;
 
         if !stack.base.is_aligned(ptr_width)? {
             failure::bail!(

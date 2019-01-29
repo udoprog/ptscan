@@ -14,7 +14,7 @@ use winapi::{
 macro_rules! checked {
     ($expr:expr) => {{
         if unsafe { $expr } != winapi::shared::minwindef::TRUE {
-            return Err(failure::Error::from(std::io::Error::last_os_error()));
+            return Err(std::io::Error::last_os_error());
         }
     }};
 }
@@ -30,7 +30,7 @@ macro_rules! try_iter {
 }
 
 /// Call a function that returns a string.
-pub fn string(cb: impl Fn(winnt::LPWSTR, DWORD) -> DWORD) -> Result<OsString, failure::Error> {
+pub fn string(cb: impl Fn(winnt::LPWSTR, DWORD) -> DWORD) -> Result<OsString, io::Error> {
     use std::os::windows::ffi::OsStringExt;
 
     let mut buf: [winnt::WCHAR; 1024] = [0u16; 1024];
@@ -38,7 +38,7 @@ pub fn string(cb: impl Fn(winnt::LPWSTR, DWORD) -> DWORD) -> Result<OsString, fa
     let out = cb(buf.as_mut_ptr(), buf.len() as DWORD);
 
     if out == 0 {
-        return Err(failure::Error::from(io::Error::last_os_error()));
+        return Err(io::Error::last_os_error());
     }
 
     Ok(OsString::from_wide(&buf[..(out as usize)]))
@@ -48,7 +48,7 @@ pub fn string(cb: impl Fn(winnt::LPWSTR, DWORD) -> DWORD) -> Result<OsString, fa
 pub fn array<T>(
     initial: usize,
     cb: impl Fn(*mut T, DWORD, LPDWORD) -> BOOL,
-) -> Result<Vec<T>, failure::Error> {
+) -> Result<Vec<T>, io::Error> {
     use std::mem;
 
     let mut buf = vec![0u8; initial * mem::size_of::<T>()];
@@ -63,7 +63,7 @@ pub fn array<T>(
         );
 
         if ok != TRUE {
-            return Err(failure::Error::from(io::Error::last_os_error()));
+            return Err(io::Error::last_os_error());
         }
 
         unsafe {
@@ -121,7 +121,7 @@ unsafe impl Send for Handle {}
 pub trait IteratorExtension {
     fn chunked(self, chunk_size: Size) -> Chunked<Self>
     where
-        Self: Sized + Iterator<Item = Result<MemoryInformation, failure::Error>>,
+        Self: Sized + Iterator<Item = Result<MemoryInformation, io::Error>>,
     {
         Chunked {
             iter: self,
@@ -133,7 +133,7 @@ pub trait IteratorExtension {
 
     fn only_relevant(self) -> OnlyRelevant<Self>
     where
-        Self: Sized + Iterator<Item = Result<MemoryInformation, failure::Error>>,
+        Self: Sized + Iterator<Item = Result<MemoryInformation, io::Error>>,
     {
         OnlyRelevant { iter: self }
     }
@@ -151,9 +151,9 @@ where
 
 impl<I> Iterator for OnlyRelevant<I>
 where
-    I: Iterator<Item = Result<MemoryInformation, failure::Error>>,
+    I: Iterator<Item = Result<MemoryInformation, io::Error>>,
 {
-    type Item = Result<MemoryInformation, failure::Error>;
+    type Item = Result<MemoryInformation, io::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         use crate::process::{MemoryState, MemoryType};
@@ -199,9 +199,9 @@ where
 
 impl<I> Iterator for Chunked<I>
 where
-    I: Iterator<Item = Result<MemoryInformation, failure::Error>>,
+    I: Iterator<Item = Result<MemoryInformation, io::Error>>,
 {
-    type Item = Result<(MemoryInformation, AddressRange), failure::Error>;
+    type Item = Result<(MemoryInformation, AddressRange), io::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {

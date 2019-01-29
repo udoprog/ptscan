@@ -2,6 +2,8 @@ use std::{convert::TryFrom, ffi, fmt, io, ptr, sync::Arc};
 
 use crate::{module, scan, system, utils, Address, AddressRange, ProcessId, Size};
 
+use err_derive::Error;
+use ntapi::ntpsapi;
 use winapi::{
     shared::{
         basetsd::SIZE_T,
@@ -11,7 +13,25 @@ use winapi::{
     um::{memoryapi, processthreadsapi, psapi, winnt, wow64apiset},
 };
 
-use ntapi::ntpsapi;
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error(display = "bad region state: {}", _0)]
+    BadRegionState(DWORD),
+    #[error(display = "bad region type: {}", _0)]
+    BadRegionType(DWORD),
+    #[error(
+        display = "read underflow, expected `{}` but got `{}`",
+        expected,
+        actual
+    )]
+    ReadUnderflow { expected: usize, actual: usize },
+    #[error(
+        display = "write underflow, expected `{}` but got `{}`",
+        expected,
+        actual
+    )]
+    WriteUnderflow { expected: usize, actual: usize },
+}
 
 /// A process handle.
 #[derive(Clone)]
@@ -29,7 +49,7 @@ impl Process {
     }
 
     /// Get the name of the process.
-    pub fn module_base_name(&self) -> Result<ffi::OsString, failure::Error> {
+    pub fn module_base_name(&self) -> Result<ffi::OsString, io::Error> {
         crate::utils::string(|buf, len| unsafe {
             psapi::GetModuleBaseNameW(**self.handle, ptr::null_mut(), buf, len)
         })
@@ -41,7 +61,7 @@ impl Process {
     }
 
     /// Enumerate all modules.
-    pub fn modules<'a>(&'a self) -> Result<Vec<module::Module<'a>>, failure::Error> {
+    pub fn modules<'a>(&'a self) -> Result<Vec<module::Module<'a>>, io::Error> {
         let modules = utils::array(0x400, |buf, size, needed| unsafe {
             psapi::EnumProcessModules(**self.handle, buf, size, needed)
         })?;
@@ -56,22 +76,21 @@ impl Process {
     }
 
     /// Read the given structure from the given address.
-    pub fn read<T>(&self, address: Address) -> Result<T, failure::Error> {
+    pub fn read<T>(&self, address: Address) -> Result<T, io::Error> {
         use std::{mem, slice};
 
         let mut out: T = unsafe { mem::zeroed() };
         let expected = mem::size_of::<T>();
 
-        let read = self.read_process_memory(address, unsafe {
+        let actual = self.read_process_memory(address, unsafe {
             slice::from_raw_parts_mut(&mut out as *mut T as *mut u8, mem::size_of::<T>())
         })?;
 
-        if read.len() != expected {
-            failure::bail!(
-                "expected to read {} bytes, but read {}",
-                expected,
-                read.len()
-            );
+        if expected != actual {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                Error::ReadUnderflow { expected, actual },
+            ));
         }
 
         Ok(out)
@@ -82,8 +101,8 @@ impl Process {
         &self,
         address: Address,
         buffer: &'a [u8],
-    ) -> Result<(), failure::Error> {
-        let mut bytes_written: SIZE_T = 0;
+    ) -> Result<(), io::Error> {
+        let mut actual: SIZE_T = 0;
 
         checked! {
             memoryapi::WriteProcessMemory(
@@ -91,16 +110,20 @@ impl Process {
                 address.convert::<LPVOID>()?,
                 buffer.as_ptr() as LPCVOID,
                 buffer.len() as SIZE_T,
-                &mut bytes_written as *mut SIZE_T,
+                &mut actual as *mut SIZE_T,
             )
         };
 
-        if bytes_written != buffer.len() {
-            failure::bail!(
-                "bytes written {} does not match expected {}",
-                bytes_written,
-                buffer.len()
-            );
+        let actual = actual as usize;
+
+        if actual != buffer.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                Error::WriteUnderflow {
+                    expected: buffer.len(),
+                    actual,
+                },
+            ));
         }
 
         Ok(())
@@ -111,7 +134,7 @@ impl Process {
         &self,
         address: Address,
         buffer: &'a mut [u8],
-    ) -> Result<&'a mut [u8], failure::Error> {
+    ) -> Result<usize, io::Error> {
         let mut bytes_read: SIZE_T = 0;
 
         checked! {
@@ -124,7 +147,7 @@ impl Process {
             )
         };
 
-        Ok(&mut buffer[..bytes_read])
+        Ok(bytes_read)
     }
 
     /// Read process memory with the given type.
@@ -133,27 +156,27 @@ impl Process {
         address: Address,
         ty: scan::Type,
         buf: &mut [u8],
-    ) -> Result<scan::Value, failure::Error> {
+    ) -> Result<scan::Value, io::Error> {
         let size = ty.size();
-        let buf = self.read_process_memory(address, buf)?;
+        let bytes_read = self.read_process_memory(address, buf)?;
 
-        if buf.len() != size {
-            failure::bail!("incomplete read");
+        if bytes_read != size {
+            return Err(io::Error::new(io::ErrorKind::Other, "incomplete read"));
         }
 
         Ok(ty.decode(buf))
     }
 
     /// Read a 64-bit memory region as a little endian unsigned integer.
-    pub fn read_u64(&self, address: Address) -> Result<u64, failure::Error> {
+    pub fn read_u64(&self, address: Address) -> Result<u64, io::Error> {
         use byteorder::{ByteOrder, LittleEndian};
         let mut out = [0u8; 8];
-        let out = self.read_process_memory(address, &mut out)?;
-        Ok(LittleEndian::read_u64(out))
+        self.read_process_memory(address, &mut out)?;
+        Ok(LittleEndian::read_u64(&out))
     }
 
     /// Test if the process is a 32-bit process running under WOW64 compatibility.
-    pub fn is_wow64(&self) -> Result<bool, failure::Error> {
+    pub fn is_wow64(&self) -> Result<bool, io::Error> {
         let mut out: BOOL = FALSE;
         checked!(wow64apiset::IsWow64Process(
             **self.handle,
@@ -172,10 +195,7 @@ impl Process {
     }
 
     /// Retrieve information about the memory page that corresponds to the given virtual `address`.
-    pub fn virtual_query(
-        &self,
-        address: Address,
-    ) -> Result<Option<MemoryInformation>, failure::Error> {
+    pub fn virtual_query(&self, address: Address) -> Result<Option<MemoryInformation>, io::Error> {
         const LENGTH: SIZE_T = mem::size_of::<winnt::MEMORY_BASIC_INFORMATION>() as SIZE_T;
 
         use std::mem;
@@ -197,14 +217,19 @@ impl Process {
                 return Ok(None);
             }
 
-            return Err(failure::Error::from(e));
+            return Err(e);
         }
 
         let state = match mbi.State {
             winnt::MEM_COMMIT => MemoryState::Commit,
             winnt::MEM_FREE => MemoryState::Free,
             winnt::MEM_RESERVE => MemoryState::Reserve,
-            state => failure::bail!("bad region state: {}", state),
+            state => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    Error::BadRegionState(state),
+                ));
+            }
         };
 
         let ty = match (state, mbi.Type) {
@@ -212,7 +237,12 @@ impl Process {
             (_, winnt::MEM_IMAGE) => MemoryType::Image,
             (_, winnt::MEM_MAPPED) => MemoryType::Mapped,
             (_, winnt::MEM_PRIVATE) => MemoryType::Private,
-            (_, ty) => failure::bail!("bad region type: {}", ty),
+            (_, ty) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    Error::BadRegionType(ty),
+                ));
+            }
         };
 
         let mut protect = fixed_map::Set::new();
@@ -411,7 +441,7 @@ pub struct VirtualMemoryRegions<'a> {
 }
 
 impl<'a> Iterator for VirtualMemoryRegions<'a> {
-    type Item = Result<MemoryInformation, failure::Error>;
+    type Item = Result<MemoryInformation, io::Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let m = try_iter!(self.process.virtual_query(self.current))?;

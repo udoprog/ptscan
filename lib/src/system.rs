@@ -10,7 +10,7 @@ use winapi::{
 };
 
 /// Enumerate all processes, returning their corresponding pids.
-pub fn processes() -> Result<Vec<ProcessId>, failure::Error> {
+pub fn processes() -> Result<Vec<ProcessId>, io::Error> {
     utils::array(0x400, |buf, size, needed| unsafe {
         psapi::EnumProcesses(buf, size, needed)
     })

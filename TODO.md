@@ -7,6 +7,10 @@
 * Be able to right click scan result to delete it (shortcut: del, when selected).
 * Want to be able to double-click to add address to address list.
 
+# ARCH
+
+* Make updating current results independent of scan results (they are usually _much_ fewer).
+
 # BUGS
 
 #### Something wrong with scanning `$value == u128`.

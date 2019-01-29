@@ -33,6 +33,12 @@ struct pts_thread_pool_t;
 /// A token that can be used to indicate some condition.
 struct pts_token_t;
 
+/// A collection of scan values that can be populated through e.g. pts_scan_refresh.
+struct pts_values_t;
+
+/// An address being watched.
+struct pts_watch_t;
+
 struct pts_string_t {
   char *ptr;
   uintptr_t len;
@@ -108,9 +114,9 @@ void pts_scan_free(pts_scan_t *scan);
 pts_scan_t *pts_scan_new(const pts_thread_pool_t *thread_pool);
 
 /// Creates and returns a new scan.
-bool pts_scan_refresh(pts_scan_t *scan,
+bool pts_scan_refresh(const pts_scan_t *scan,
                       const pts_process_handle_t *handle,
-                      uintptr_t limit,
+                      pts_values_t *values,
                       const pts_token_t *cancel,
                       const pts_scan_progress_t *progress,
                       void *data);
@@ -120,10 +126,14 @@ void pts_scan_result_address(const pts_scan_result_t *result,
                              const pts_process_handle_t *handle,
                              pts_string_t *out);
 
-/// Access a readable process identifier for the handle.
-void pts_scan_result_current(const pts_scan_result_t *result, pts_string_t *out);
+/// Convert the scan result into a watch.
+pts_watch_t *pts_scan_result_as_watch(const pts_scan_result_t *result,
+                                      const pts_process_handle_t *handle);
 
-/// Access a readable process identifier for the handle.
+/// Access the scan result at the given offset.
+const pts_scan_result_t *pts_scan_result_at(const pts_scan_t *scan, uintptr_t offset);
+
+/// Access the value for the scan result.
 void pts_scan_result_value(const pts_scan_result_t *result, pts_string_t *out);
 
 /// Free the scan results iterator.
@@ -178,8 +188,27 @@ pts_token_t *pts_token_new();
 /// Set the token.
 void pts_token_set(const pts_token_t *token);
 
+/// Free the scan values.
+void pts_values_free(pts_values_t *values);
+
+/// Get the value at the given position as a string.
+uintptr_t pts_values_length(const pts_values_t *values);
+
+/// Create a new collection of scan values.
+/// The collection will be set to the given size.
+pts_values_t *pts_values_new(uintptr_t size);
+
+/// Get the value at the given position as a string.
+void pts_values_value_at(const pts_values_t *values, uintptr_t pos, pts_string_t *out);
+
 /// Get the current ptscan version.
 const char *pts_version();
+
+/// Access a human-readable version of the watch.
+void pts_watch_display(const pts_watch_t *watch, pts_string_t *out);
+
+/// Free the watch.
+void pts_watch_free(pts_watch_t *watch);
 
 } // extern "C"
 

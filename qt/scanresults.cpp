@@ -1,7 +1,8 @@
 #include "scanresults.h"
 #include "ui_scanresults.h"
-
 #include <pts/Scan.h>
+#include <pts/Values.h>
+#include <QDebug>
 
 ScanResults::ScanResults(QWidget *parent) :
     QWidget(parent),
@@ -15,6 +16,10 @@ ScanResults::ScanResults(QWidget *parent) :
     headers.push_back("Last Scan");
     headers.push_back("Current");
     model.setHorizontalHeaderLabels(headers);
+
+    connect(ui->list, &QTreeView::doubleClicked, this, [this](auto index) {
+        emit addWatch(index);
+    });
 }
 
 ScanResults::~ScanResults()
@@ -39,22 +44,21 @@ void ScanResults::setCount(std::optional<uintptr_t> count)
     }
 }
 
-void ScanResults::updateCurrent(const std::vector<pts::ScanResult> &results)
+void ScanResults::updateCurrent(const pts::Values& values)
 {
-    int index = 0;
+    auto length = values.length();
 
-    for (auto const &result: results) {
+    for (int index = 0; index < length; index++) {
         if (index >= model.rowCount()) {
             break;
         }
 
-        auto row = index++;
-        auto current = result.current().toQString();
-        auto currentItem = model.item(row, 2);
+        auto current = values.valueAt(index).toQString();
+        auto currentItem = model.item(index, 2);
 
         currentItem->setText(current);
 
-        auto last = model.item(row, 1)->text();
+        auto last = model.item(index, 1)->text();
 
         if (current != last) {
             currentItem->setForeground(Qt::red);
@@ -80,7 +84,7 @@ void ScanResults::update(const std::shared_ptr<pts::ProcessHandle> &handle, std:
             value->setEditable(false);
             row.push_back(value);
 
-            auto current = new QStandardItem(result.current().toQString());
+            auto current = new QStandardItem(value->text());
             value->setEditable(false);
             row.push_back(current);
 

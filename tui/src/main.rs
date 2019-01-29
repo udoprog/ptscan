@@ -177,7 +177,8 @@ where
             Action::Print(limit) => {
                 if let Some(handle) = self.handle.as_ref() {
                     if let Some(scan) = self.scans.get_mut(&self.current_scan) {
-                        scan.refresh(&handle.process, 100, None, SimpleProgress::new(&mut self.w))?;
+                        // TODO: rewrite to keep track of values separately.
+                        // scan.refresh(&handle.process, 100, None, SimpleProgress::new(&mut self.w))?;
                         println!("");
                     }
                 }
@@ -192,9 +193,11 @@ where
 
                 for result in &mut scan.results {
                     if result.address == address {
-                        result.killed = true;
+                        result.value = scan::Value::None;
                     }
                 }
+
+                scan.results.retain(|r| r.value.is_some());
             }
             Action::Add(address, ty) => {
                 let handle = match self.handle.as_ref() {
@@ -210,12 +213,7 @@ where
                 let mut buf = vec![0u8; ty.size()];
                 let value = handle.process.read_memory_of_type(address, ty, &mut buf)?;
 
-                scan.results.push(scan::ScanResult {
-                    address,
-                    value,
-                    current: None,
-                    killed: false,
-                });
+                scan.results.push(scan::ScanResult { address, value });
             }
             Action::Scan(filter) => {
                 self.scan(&*filter, None)?;

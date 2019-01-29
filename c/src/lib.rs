@@ -10,6 +10,8 @@ pub mod process_handle;
 pub mod scan;
 pub mod string;
 pub mod system;
+pub mod values;
+pub mod watch;
 
 /// A opaque process identifier.
 pub struct pts_process_id_t(pub(crate) ptscan::ProcessId);

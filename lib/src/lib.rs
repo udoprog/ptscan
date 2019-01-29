@@ -17,6 +17,7 @@ pub mod system;
 mod thread;
 mod thread_buffers;
 mod token;
+pub mod watch;
 
 pub type ProcessId = DWORD;
 pub type ThreadId = DWORD;

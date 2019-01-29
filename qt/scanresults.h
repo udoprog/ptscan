@@ -9,6 +9,7 @@
 namespace pts {
 class ProcessHandle;
 class ScanResult;
+class Values;
 }
 
 namespace Ui {
@@ -24,9 +25,14 @@ public:
     ~ScanResults();
 
     void update(const std::shared_ptr<pts::ProcessHandle> &handle, std::optional<std::vector<pts::ScanResult>> results);
-    void updateCurrent(const std::vector<pts::ScanResult> &results);
+    void updateCurrent(const pts::Values &values);
 public slots:
     void setCount(std::optional<uintptr_t> count);
+
+signals:
+    // Signal indicating that we should add a watch for the given scan result.
+    void addWatch(QModelIndex index);
+
 private:
     Ui::ScanResults *ui;
     QStandardItemModel model;

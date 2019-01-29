@@ -12,6 +12,7 @@
 #include <pts/Filter.h>
 #include <pts/ProcessHandle.h>
 #include <pts/Token.h>
+#include <pts/Values.h>
 
 class OpenProcess;
 class AddFilter;
@@ -63,6 +64,8 @@ private:
     AddFilter *addFilter;
     AddressList *addressList;
     ScanResults *scanResults;
+    // Buffer of up-to-date values.
+    std::shared_ptr<pts::Values> scanValues;
 
     // Model for rendering filters.
     QStandardItemModel filtersModel;
@@ -79,7 +82,7 @@ private:
     std::shared_ptr<pts::Token> scanToken;
     std::shared_ptr<pts::Scan> scanCurrent;
     // Set if we have clicked scan, but another one is already in progress.
-    bool wantsScan;
+    std::shared_ptr<pts::Token> refreshToken;
 
     // A timer to refresh current values.
     QTimer *refreshTimer;

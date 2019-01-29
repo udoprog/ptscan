@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <functional>
+#include <optional>
 
 #include <ptscan.h>
 #include <pts/String.h>
@@ -13,6 +14,8 @@ class Filter;
 class ThreadPool;
 class Token;
 class ScanResult;
+class Watch;
+class Values;
 
 class ScanReporter {
 public:
@@ -34,10 +37,13 @@ public:
     void scan(ProcessHandle &handle, Filter &filter, Token &token, ScanReporter &reporter);
 
     // Refresh the scan with value from the given handle.
-    void refresh(ProcessHandle &handle, uintptr_t limit, Token &token, ScanReporter &reporter);
+    void refresh(ProcessHandle &handle, Values &values, Token &token, ScanReporter &reporter);
 
     // Access scan results.
     std::vector<ScanResult> results(uintptr_t limit);
+
+    // Access the scan result at the given location.
+    std::optional<ScanResult> at(uintptr_t);
 
     // Access the count of a scan.
     uintptr_t count();
@@ -55,14 +61,16 @@ public:
     ScanResult(const ScanResult &) = default;
     ScanResult(ScanResult &&) = default;
 
+    // Convert into a watch.
+    // If there is a process handle available, the watch will be decorated with more information.
+    // Otherwise the watch will just be a plain address.
+    std::shared_ptr<Watch> asWatch(std::shared_ptr<ProcessHandle> &handle);
+
     // Display the scan result.
     String address(const std::shared_ptr<ProcessHandle> &handle) const;
 
     // Last scanned value.
     String value() const;
-
-    // Current value of the result.
-    String current() const;
 
 private:
     explicit ScanResult(const pts_scan_result_t* inner);

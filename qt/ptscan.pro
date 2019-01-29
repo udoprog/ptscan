@@ -42,7 +42,9 @@ SOURCES += \
     pts/Scan.cpp \
     pts/Token.cpp \
     addresslist.cpp \
-    scanresults.cpp
+    scanresults.cpp \
+    pts/Watch.cpp \
+    pts/Values.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -56,7 +58,9 @@ HEADERS += \
     pts/Scan.h \
     pts/Token.h \
     addresslist.h \
-    scanresults.h
+    scanresults.h \
+    pts/Watch.h \
+    pts/Values.h
 
 FORMS += \
     mainwindow.ui \

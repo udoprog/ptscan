@@ -4,7 +4,9 @@ use crate::{
     address::{Address, Size},
     filter,
     process::{MemoryInformation, Process},
-    scan, thread_buffers, Location, ProcessHandle, Token,
+    scan, thread_buffers,
+    watch::{Watch, WatchAddress, WatchLocation},
+    Location, ProcessHandle, Token,
 };
 use byteorder::{ByteOrder, LittleEndian};
 use std::{
@@ -16,6 +18,7 @@ use std::{
 /// A single dynamic literal value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Value {
+    None,
     U128(u128),
     I128(i128),
     U64(u64),
@@ -29,6 +32,14 @@ pub enum Value {
 }
 
 impl Value {
+    /// Test if this value is something.
+    pub fn is_some(&self) -> bool {
+        match *self {
+            Value::None => false,
+            _ => true,
+        }
+    }
+
     /// Try to treat the value as an address.
     ///
     /// Returns `None` if this is not possible (e.g. value out of range).
@@ -37,6 +48,7 @@ impl Value {
         use std::convert::TryFrom;
 
         let out = match *self {
+            None => failure::bail!("nothing cannot be made into address"),
             U128(value) => Address::try_from(value)?,
             I128(value) => Address::try_from(value)?,
             U64(value) => Address::try_from(value)?,
@@ -57,6 +69,7 @@ impl Value {
         use self::Value::*;
 
         match *self {
+            None => {}
             U128(value) => u128::encode(buf, value),
             I128(value) => i128::encode(buf, value),
             U64(value) => u64::encode(buf, value),
@@ -75,6 +88,7 @@ impl Value {
         use self::Value::*;
 
         match *self {
+            None => Type::None,
             U128(..) => Type::U128,
             I128(..) => Type::I128,
             U64(..) => Type::U64,
@@ -125,6 +139,7 @@ impl str::FromStr for Value {
 impl fmt::Display for Value {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
+            Value::None => write!(fmt, "none"),
             Value::U128(value) => write!(fmt, "{}u128", value),
             Value::I128(value) => write!(fmt, "{}i128", value),
             Value::U64(value) => write!(fmt, "{}u64", value),
@@ -141,6 +156,7 @@ impl fmt::Display for Value {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Type {
+    None,
     U128,
     I128,
     U64,
@@ -159,6 +175,7 @@ impl Type {
         use self::Type::*;
 
         let value = match *self {
+            None => failure::bail!("cannot parse none type"),
             U128 => Value::U128(str::parse::<u128>(input)?),
             I128 => Value::I128(str::parse::<i128>(input)?),
             U64 => Value::U64(str::parse::<u64>(input)?),
@@ -179,6 +196,7 @@ impl Type {
         use self::Type::*;
 
         let value = match *self {
+            None => failure::bail!("cannot parse none type"),
             U128 => Value::U128(u128::from_str_radix(input, 16)?),
             I128 => Value::I128(i128::from_str_radix(input, 16)?),
             U64 => Value::U64(u64::from_str_radix(input, 16)?),
@@ -199,6 +217,7 @@ impl Type {
         use self::Type::*;
 
         match *self {
+            None => 0,
             U128 => mem::size_of::<u128>(),
             I128 => mem::size_of::<i128>(),
             U64 => mem::size_of::<u64>(),
@@ -218,6 +237,7 @@ impl Type {
         use byteorder::{ByteOrder, LittleEndian};
 
         match *self {
+            None => Value::None,
             U128 => Value::U128(LittleEndian::read_u128(buf)),
             I128 => Value::I128(LittleEndian::read_i128(buf)),
             U64 => Value::U64(LittleEndian::read_u64(buf)),
@@ -437,9 +457,9 @@ impl Scan {
 
     /// Refresh current value for scan results.
     pub fn refresh(
-        &mut self,
+        &self,
         process: &Process,
-        limit: usize,
+        values: &mut Vec<scan::Value>,
         cancel: Option<&Token>,
         progress: (impl Progress + Send),
     ) -> Result<(), failure::Error> {
@@ -450,10 +470,9 @@ impl Scan {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        let len = usize::min(self.results.len(), limit);
-        let results = &mut self.results[..len];
+        let len = usize::min(self.results.len(), values.len());
 
-        if results.is_empty() {
+        if len == 0 {
             return Ok(());
         }
 
@@ -465,9 +484,9 @@ impl Scan {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::sync_channel(1024);
 
-                let mut reporter = Reporter::new(progress, results.len());
+                let mut reporter = Reporter::new(progress, len);
 
-                for result in results {
+                for (result, v) in self.results.iter().zip(values) {
                     let tx = tx.clone();
                     let buffers = &buffers;
 
@@ -482,7 +501,7 @@ impl Scan {
                             let mut buf = buffers.get_mut(ty.size())?;
                             let value =
                                 process.read_memory_of_type(result.address, ty, &mut *buf)?;
-                            result.current = Some(value);
+                            *v = value;
                             Ok::<_, failure::Error>(())
                         };
 
@@ -565,9 +584,11 @@ impl Scan {
                             let value =
                                 process.read_memory_of_type(result.address, ty, &mut *buf)?;
 
-                            result.killed = !filter.test(Some(result), &value);
-                            result.current = None;
-                            result.value = value;
+                            if filter.test(Some(result), &value) {
+                                result.value = value;
+                            } else {
+                                result.value = scan::Value::None;
+                            }
 
                             Ok::<_, failure::Error>(())
                         };
@@ -598,7 +619,7 @@ impl Scan {
             });
         });
 
-        self.results.retain(|v| !v.killed);
+        self.results.retain(|v| v.value.is_some());
 
         if let Some(e) = last_error {
             return Err(e);
@@ -771,12 +792,7 @@ impl Scan {
             ) -> Result<(), failure::Error> {
                 let address = loc.add(Size::try_from(offset)?)?;
 
-                let scan_result = ScanResult {
-                    address,
-                    value,
-                    current: None,
-                    killed: false,
-                };
+                let scan_result = ScanResult { address, value };
 
                 tx.send(TaskProgress::ScanResult(scan_result))?;
                 Ok(())
@@ -935,10 +951,6 @@ pub struct ScanResult {
     pub address: Address,
     /// Value from last scan.
     pub value: scan::Value,
-    /// Last seen value.
-    pub current: Option<scan::Value>,
-    /// If the result is valid, or if it should be pruned.
-    pub killed: bool,
 }
 
 impl ScanResult {
@@ -953,6 +965,29 @@ impl ScanResult {
             result: self,
             handle,
         }
+    }
+
+    /// Buld a watch out of a scan result.
+    pub fn as_watch(&self, handle: Option<&ProcessHandle>) -> Result<Watch, io::Error> {
+        let address = match handle {
+            Some(handle) => match handle.find_location(self.address)? {
+                Location::Module(module) => {
+                    let offset = self.address.offset_of(module.range.base)?;
+                    WatchAddress::Relative {
+                        base_module: module.name.to_string(),
+                        offset,
+                    }
+                }
+                _ => WatchAddress::Absolute(self.address),
+            },
+            None => WatchAddress::Absolute(self.address),
+        };
+
+        Ok(Watch {
+            location: WatchLocation::Address(address),
+            value: self.value.clone(),
+            ty: self.value.ty(),
+        })
     }
 }
 
@@ -971,13 +1006,10 @@ impl<'a> fmt::Display for AddressDisplay<'a> {
 
         let ScanResult { address, .. } = *result;
 
-        let location = match handle.find_location(*address).ok() {
-            Some(location) => location,
-            None => {
-                write!(fmt, "{}", address)?;
-                return Ok(());
-            }
-        };
+        let location = handle
+            .find_location(*address)
+            .ok()
+            .unwrap_or(Location::None);
 
         match location {
             Location::Module(module) => match address.offset_of(module.range.base).ok() {

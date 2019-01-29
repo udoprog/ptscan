@@ -9,6 +9,8 @@
 #include <pts.h>
 #include <pts/Scan.h>
 #include <pts/Token.h>
+#include <pts/Values.h>
+#include <pts/Watch.h>
 
 #include "mainwindow.h"
 #include "openprocess.h"
@@ -23,7 +25,6 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
     ui(new Ui::MainWindow),
     openProcess(new OpenProcess(this)),
     addFilter(new AddFilter(this)),
-    wantsScan(false),
     refreshTimer(new QTimer())
 {
     ui->setupUi(this);
@@ -86,7 +87,6 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
 
     connect(ui->actionScan, &QAction::triggered, this, [this]() {
         if (scanToken) {
-            wantsScan = true;
             return;
         }
 
@@ -174,6 +174,19 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
         }
 
         updateView();
+    });
+
+    connect(scanResults, &ScanResults::addWatch, this, [this](auto index) {
+        auto scan = scanCurrent;
+
+        if (!scan) {
+            return;
+        }
+
+        if (auto result = scan->at(index.row())) {
+            auto watch = result->asWatch(processHandle);
+            qDebug() << watch->display().toQString();
+        }
     });
 
     updateView();
@@ -302,11 +315,11 @@ void MainWindow::updateCurrent()
         return;
     }
 
-    if (scanToken) {
+    if (refreshToken) {
         return;
     }
 
-    scanToken = std::shared_ptr<pts::Token>(new pts::Token());
+    refreshToken = std::shared_ptr<pts::Token>(new pts::Token());
 
     QtConcurrent::run([this, scanCurrent, processHandle]() {
         pts::ScanReporter reporter;
@@ -314,12 +327,16 @@ void MainWindow::updateCurrent()
         reporter.report = [](int percentage){
         };
 
+        auto values = std::make_shared<pts::Values>(pts::Values(100));
+
         try {
-            scanCurrent->refresh(*processHandle, 100, *scanToken, reporter);
+            scanCurrent->refresh(*processHandle, *values, *refreshToken, reporter);
         } catch(const std::exception &e) {
             qDebug() << "failed to refresh" << e.what();
         }
 
+        scanValues = values;
+        refreshToken.reset();
         QMetaObject::invokeMethod(this, "refreshDone", Qt::QueuedConnection);
     });
 }
@@ -332,16 +349,11 @@ void MainWindow::addError(QString message)
 
 void MainWindow::refreshDone()
 {
-    if (!scanToken) {
-        throw std::exception("expected scan token to be set");
+    if (scanValues) {
+        scanResults->updateCurrent(*scanValues);
+        scanValues.reset();
     }
 
-    if (this->scanCurrent) {
-        auto results = this->scanCurrent->results(100);
-        scanResults->updateCurrent(results);
-    }
-
-    scanToken.reset();
     updateView();
 }
 

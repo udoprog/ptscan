@@ -195,7 +195,7 @@ impl ProcessHandle {
     }
 
     /// Find the module that the address is contained in.
-    pub fn find_location<'a>(&'a self, address: Address) -> Result<Location<'a>, failure::Error> {
+    pub fn find_location<'a>(&'a self, address: Address) -> Result<Location<'a>, io::Error> {
         if let Some(module) = self.find_module(address)? {
             return Ok(Location::Module(module));
         }

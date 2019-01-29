@@ -6,6 +6,8 @@
 #include <pts/ProcessHandle.h>
 #include <pts/Filter.h>
 #include <pts/Token.h>
+#include <pts/Watch.h>
+#include <pts/Values.h>
 
 namespace pts {
 Scan::Scan(std::shared_ptr<ThreadPool> threadPool, pts_scan_t* inner) :
@@ -57,7 +59,7 @@ void Scan::scan(ProcessHandle &processHandle, Filter &filter, Token &token, Scan
     }
 }
 
-void Scan::refresh(ProcessHandle &processHandle, uintptr_t limit, Token &token, ScanReporter &reporter)
+void Scan::refresh(ProcessHandle &processHandle, Values &values, Token &token, ScanReporter &reporter)
 {
     pts_scan_progress_t progress {
         [](auto data, uintptr_t percentage) {
@@ -66,7 +68,7 @@ void Scan::refresh(ProcessHandle &processHandle, uintptr_t limit, Token &token, 
         },
     };
 
-    if (!pts_scan_refresh(inner, processHandle.inner, limit, token.inner, &progress, reinterpret_cast<void *>(&reporter))) {
+    if (!pts_scan_refresh(inner, processHandle.inner, values.inner, token.inner, &progress, reinterpret_cast<void *>(&reporter))) {
         throw last_exception();
     }
 }
@@ -87,6 +89,15 @@ std::vector<ScanResult> Scan::results(uintptr_t limit)
     return out;
 }
 
+std::optional<ScanResult> Scan::at(uintptr_t offset)
+{
+    if (auto result = pts_scan_result_at(inner, offset)) {
+        return std::make_optional(ScanResult{result});
+    }
+
+    return {};
+}
+
 uintptr_t Scan::count()
 {
     return pts_scan_count(inner);
@@ -95,6 +106,23 @@ uintptr_t Scan::count()
 ScanResult::ScanResult(const pts_scan_result_t *inner) :
     inner(inner)
 {
+}
+
+std::shared_ptr<Watch> ScanResult::asWatch(std::shared_ptr<ProcessHandle> &handle)
+{
+    pts_process_handle_t *p = nullptr;
+
+    if (handle) {
+        p = handle.get()->inner;
+    }
+
+    auto watch = pts_scan_result_as_watch(inner, p);
+
+    if (!watch) {
+        throw last_exception();
+    }
+
+    return std::make_shared<Watch>(Watch{watch});
 }
 
 String ScanResult::address(const std::shared_ptr<ProcessHandle>& handle) const
@@ -116,12 +144,5 @@ String ScanResult::value() const
     String value;
     pts_scan_result_value(inner, value.ptr());
     return value;
-}
-
-String ScanResult::current() const
-{
-    String current;
-    pts_scan_result_current(inner, current.ptr());
-    return current;
 }
 }

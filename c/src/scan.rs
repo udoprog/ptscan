@@ -1,6 +1,6 @@
 use crate::{
     filter::pts_filter_t, process_handle::pts_process_handle_t, pts_thread_pool_t, pts_token_t,
-    string::pts_string_t,
+    string::pts_string_t, values::pts_values_t, watch::pts_watch_t,
 };
 use std::{mem, os::raw::c_void, ptr};
 
@@ -18,6 +18,32 @@ pub extern "C" fn pts_scan_new<'a>(thread_pool: *const pts_thread_pool_t) -> *mu
 #[no_mangle]
 pub extern "C" fn pts_scan_free(scan: *mut pts_scan_t) {
     free!(scan);
+}
+
+/// Access the scan result at the given offset.
+#[no_mangle]
+pub extern "C" fn pts_scan_result_at<'a>(
+    scan: *const pts_scan_t,
+    offset: usize,
+) -> *const pts_scan_result_t {
+    let pts_scan_t(ref scan) = *null_ck!(&'a scan);
+
+    match scan.results.get(offset) {
+        Some(result) => result as *const _ as *const pts_scan_result_t,
+        None => ptr::null(),
+    }
+}
+
+/// Convert the scan result into a watch.
+#[no_mangle]
+pub extern "C" fn pts_scan_result_as_watch<'a>(
+    result: *const pts_scan_result_t,
+    handle: *const pts_process_handle_t,
+) -> *mut pts_watch_t {
+    let pts_scan_result_t(ref result) = *null_ck!(&'a result);
+    let handle = null_opt!(&'a handle).map(|h| &h.0);
+    let watch = try_last!(result.as_watch(handle), ptr::null_mut());
+    into_ptr!(pts_watch_t(watch))
 }
 
 /// An iterator over scan results.
@@ -80,7 +106,7 @@ pub extern "C" fn pts_scan_result_address<'a>(
     });
 }
 
-/// Access a readable process identifier for the handle.
+/// Access the value for the scan result.
 #[no_mangle]
 pub extern "C" fn pts_scan_result_value<'a>(
     result: *const pts_scan_result_t,
@@ -89,21 +115,6 @@ pub extern "C" fn pts_scan_result_value<'a>(
     let pts_scan_result_t(ref result) = *null_ck!(&'a result);
     let out = null_ck!(&'a mut out);
     *out = pts_string_t::new(result.value.to_string());
-}
-
-/// Access a readable process identifier for the handle.
-#[no_mangle]
-pub extern "C" fn pts_scan_result_current<'a>(
-    result: *const pts_scan_result_t,
-    out: *mut pts_string_t,
-) {
-    let pts_scan_result_t(ref result) = *null_ck!(&'a result);
-    let out = null_ck!(&'a mut out);
-
-    *out = match result.current.as_ref() {
-        Some(current) => pts_string_t::new(current.to_string()),
-        None => pts_string_t::empty(),
-    };
 }
 
 /// Create an iterator over the results of a scan.
@@ -162,24 +173,26 @@ pub extern "C" fn pts_scan_scan<'a>(
 /// Creates and returns a new scan.
 #[no_mangle]
 pub extern "C" fn pts_scan_refresh<'a>(
-    scan: *mut pts_scan_t,
+    scan: *const pts_scan_t,
     handle: *const pts_process_handle_t,
-    limit: usize,
+    values: *mut pts_values_t,
     cancel: *const pts_token_t,
     progress: *const pts_scan_progress_t,
     data: *mut c_void,
 ) -> bool {
-    let pts_scan_t(ref mut scan) = *null_ck!(&'a mut scan);
+    let pts_scan_t(ref scan) = *null_ck!(&'a scan);
     let pts_process_handle_t(ref handle) = *null_ck!(&'a handle);
+    let pts_values_t(ref mut values) = *null_ck!(&'a mut values);
     let cancel = null_opt!(&'a cancel).map(|t| &t.0);
     let pts_scan_progress_t { report } = *null_ck!(&'a progress);
 
     let progress = RawProgress { data, report };
 
     try_last!(
-        scan.refresh(&handle.process, limit, cancel, progress),
+        scan.refresh(&handle.process, values, cancel, progress),
         false
     );
+
     true
 }
 

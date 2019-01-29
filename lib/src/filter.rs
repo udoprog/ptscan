@@ -53,10 +53,14 @@ pub trait Filter: Send + Sync + fmt::Debug + fmt::Display {
 macro_rules! numeric_match {
     ($expr_a:expr, $expr_b:expr, $a:ident, $b:ident, $test:expr) => {
         match ($expr_a, $expr_b) {
+            (Value::U128($a), Value::U128($b)) => $test,
+            (Value::I128($a), Value::I128($b)) => $test,
             (Value::U64($a), Value::U64($b)) => $test,
-            (Value::U32($a), Value::U32($b)) => $test,
             (Value::I64($a), Value::I64($b)) => $test,
+            (Value::U32($a), Value::U32($b)) => $test,
             (Value::I32($a), Value::I32($b)) => $test,
+            (Value::U8($a), Value::U8($b)) => $test,
+            (Value::I8($a), Value::I8($b)) => $test,
             _ => false,
         }
     };
@@ -183,6 +187,7 @@ impl Filter for Eq {
         macro_rules! specials {
             ($(($field:ident, $ty:ident),)*) => {
                 match self.0 {
+                Value::None => return None,
                 $(Value::$field(v) => match v {
                     0 => Special::Zero,
                     o => Special::exact(o),
@@ -233,6 +238,7 @@ impl Filter for Neq {
         macro_rules! specials {
             ($(($field:ident, $ty:ident),)*) => {
                 match self.0 {
+                Value::None => return None,
                 $(Value::$field(v) => match v {
                     0 => Special::NotZero,
                     o => Special::not_exact(o),

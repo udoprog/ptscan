@@ -59,7 +59,7 @@ macro_rules! into_ptr {
 macro_rules! free {
     ($expr:expr) => {
         // FIXME: should we panic on NULL?
-        if $expr != ptr::null_mut() {
+        if $expr != std::ptr::null_mut() {
             unsafe {
                 Box::from_raw($expr);
             }

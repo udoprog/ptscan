@@ -7,7 +7,11 @@ use crate::{
     scan, thread_buffers, Location, ProcessHandle, Token,
 };
 use byteorder::{ByteOrder, LittleEndian};
-use std::{convert::TryFrom, fmt, mem, str, sync::Arc};
+use std::{
+    convert::TryFrom,
+    error, fmt, mem, str,
+    sync::{mpsc, Arc},
+};
 
 /// A single dynamic literal value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -228,8 +232,19 @@ impl Type {
     }
 }
 
+#[derive(Debug)]
+pub struct ParseTypeError(String);
+
+impl error::Error for ParseTypeError {}
+
+impl fmt::Display for ParseTypeError {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "`{}` is not a valid", self.0)
+    }
+}
+
 impl str::FromStr for Type {
-    type Err = failure::Error;
+    type Err = ParseTypeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let ty = match s {
@@ -243,7 +258,7 @@ impl str::FromStr for Type {
             "i16" => Type::I16,
             "u8" => Type::U8,
             "i8" => Type::I8,
-            other => failure::bail!("bad type: {}", other),
+            other => return Err(ParseTypeError(other.to_string())),
         };
 
         Ok(ty)
@@ -294,7 +309,6 @@ impl Special {
     {
         let mut buffer = vec![0u8; mem::size_of::<T>()];
         T::encode(&mut buffer, value);
-
         Special::Exact { buffer }
     }
 
@@ -429,14 +443,11 @@ impl Scan {
         cancel: Option<&Token>,
         progress: (impl Progress + Send),
     ) -> Result<(), failure::Error> {
-        use std::sync::{
-            atomic::{AtomicBool, Ordering},
-            mpsc,
-        };
+        let mut local_cancel = None;
 
         let cancel = match cancel {
             Some(cancel) => cancel,
-            None => Token::default(),
+            None => local_cancel.get_or_insert(Token::new()),
         };
 
         let len = usize::min(self.results.len(), limit);
@@ -449,7 +460,6 @@ impl Scan {
         let buffers = thread_buffers::ThreadBuffers::new();
 
         let mut last_error = None;
-        let bail = AtomicBool::new(false);
 
         self.thread_pool.install(|| {
             rayon::scope(|s| {
@@ -460,10 +470,9 @@ impl Scan {
                 for result in results {
                     let tx = tx.clone();
                     let buffers = &buffers;
-                    let bail = &bail;
 
                     s.spawn(move |_| {
-                        if bail.load(Ordering::SeqCst) {
+                        if cancel.test() {
                             tx.send(Ok(())).expect("closed channel");
                             return;
                         }
@@ -487,21 +496,17 @@ impl Scan {
                     if cancel.test() {
                         reporter.suppress();
                         last_error = Some(failure::format_err!("scan cancelled"));
-                        bail.store(true, Ordering::SeqCst);
+                        cancel.set();
                     }
 
                     if let Err(e) = reporter.tick() {
                         last_error = Some(e);
-                        bail.store(true, Ordering::SeqCst);
+                        cancel.set();
                     }
 
                     if let Err(e) = m {
                         last_error = Some(e);
-                        bail.store(true, Ordering::SeqCst);
-                    }
-
-                    if reporter.is_done() {
-                        break;
+                        cancel.set();
                     }
                 }
             });
@@ -522,14 +527,11 @@ impl Scan {
         cancel: Option<&Token>,
         progress: (impl Progress + Send),
     ) -> Result<(), failure::Error> {
-        use std::sync::{
-            atomic::{AtomicBool, Ordering},
-            mpsc,
-        };
+        let mut local_cancel = None;
 
         let cancel = match cancel {
             Some(cancel) => cancel,
-            None => Token::default(),
+            None => local_cancel.get_or_insert(Token::new()),
         };
 
         if self.results.is_empty() {
@@ -540,7 +542,6 @@ impl Scan {
         let results = &mut self.results;
 
         let mut last_error = None;
-        let bail = AtomicBool::new(false);
 
         self.thread_pool.install(|| {
             rayon::scope(|s| {
@@ -551,10 +552,9 @@ impl Scan {
                 for result in results {
                     let tx = tx.clone();
                     let buffers = &buffers;
-                    let bail = &bail;
 
                     s.spawn(move |_| {
-                        if bail.load(Ordering::SeqCst) {
+                        if cancel.test() {
                             tx.send(Ok(())).expect("closed channel");
                             return;
                         }
@@ -582,21 +582,17 @@ impl Scan {
                     if cancel.test() {
                         reporter.suppress();
                         last_error = Some(failure::format_err!("scan cancelled"));
-                        bail.store(true, Ordering::SeqCst);
+                        cancel.set();
                     }
 
                     if let Err(e) = reporter.tick() {
                         last_error = Some(e);
-                        bail.store(true, Ordering::SeqCst);
+                        cancel.set();
                     }
 
                     if let Err(e) = m {
                         last_error = Some(e);
-                        bail.store(true, Ordering::SeqCst);
-                    }
-
-                    if reporter.is_done() {
-                        break;
+                        cancel.set();
                     }
                 }
             });
@@ -616,7 +612,7 @@ impl Scan {
     /// TODO: handle unaligned regions.
     ///
     /// Errors raised in worker threads will be collected, and the last error propagated to the user.
-    /// Any error causes the processing to bail.
+    /// Any error causes the processing to cancel.
     ///
     /// # Errors raised in Progress
     ///
@@ -633,14 +629,12 @@ impl Scan {
         progress: (impl Progress + Send),
     ) -> Result<(), failure::Error> {
         use crate::utils::IteratorExtension;
-        use std::sync::{
-            atomic::{AtomicBool, Ordering},
-            mpsc,
-        };
+
+        let mut local_cancel = None;
 
         let cancel = match cancel {
             Some(cancel) => cancel,
-            None => Token::default(),
+            None => local_cancel.get_or_insert(Token::new()),
         };
 
         let scan_type = match filter.ty() {
@@ -665,7 +659,6 @@ impl Scan {
         } = *self;
 
         // if true, threads should stop working
-        let bail = AtomicBool::new(false);
         let special = filter.special();
         let mut last_error = None;
 
@@ -695,7 +688,7 @@ impl Scan {
                         filter,
                         special: special.as_ref(),
                         scan_type,
-                        bail: &bail,
+                        cancel: &cancel,
                     };
 
                     s.spawn(move |_| {
@@ -710,7 +703,7 @@ impl Scan {
 
                 if let Err(e) = reporter.report_bytes(bytes) {
                     last_error = Some(e);
-                    bail.store(true, Ordering::SeqCst);
+                    cancel.set();
                 }
 
                 while !reporter.is_done() {
@@ -719,7 +712,7 @@ impl Scan {
                     if cancel.test() {
                         reporter.suppress();
                         last_error = Some(failure::format_err!("scan cancelled"));
-                        bail.store(true, Ordering::SeqCst);
+                        cancel.set();
                     }
 
                     match m {
@@ -731,12 +724,12 @@ impl Scan {
                         TaskProgress::Result(result) => {
                             if let Err(e) = result {
                                 last_error = Some(e);
-                                bail.store(true, Ordering::SeqCst);
+                                cancel.set();
                             }
 
                             if let Err(e) = reporter.tick() {
                                 last_error = Some(e);
-                                bail.store(true, Ordering::SeqCst);
+                                cancel.set();
                             }
                         }
                     }
@@ -765,7 +758,7 @@ impl Scan {
             filter: &'a (dyn filter::Filter),
             special: Option<&'a scan::Special>,
             scan_type: scan::Type,
-            bail: &'a AtomicBool,
+            cancel: &'a Token,
         }
 
         impl<'a> Task<'a> {
@@ -799,7 +792,7 @@ impl Scan {
                     filter,
                     special,
                     scan_type,
-                    bail,
+                    cancel,
                     ..
                 } = self;
 
@@ -809,7 +802,7 @@ impl Scan {
 
                 let mut start = 0;
 
-                while start < len && !bail.load(Ordering::SeqCst) {
+                while start < len && !cancel.test() {
                     let len = usize::min(buffer_size, len - start);
                     let loc = range.base.add(Size::try_from(start)?)?;
 
@@ -825,7 +818,7 @@ impl Scan {
                     let mut n = 0;
                     let end = buf.len() - size;
 
-                    while n < end && !bail.load(Ordering::SeqCst) {
+                    while n < end && !cancel.test() {
                         let w = &buf[n..(n + size)];
 
                         // A special, more efficient kind of matching is available.

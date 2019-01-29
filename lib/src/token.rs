@@ -1,8 +1,5 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// A static token that is never set.
-static TOKEN_SET: Token = Token::new();
-
 /// A thread safe token that can be set to flag some condition.
 pub struct Token(AtomicBool);
 
@@ -10,11 +7,6 @@ impl Token {
     /// Create a new token.
     pub const fn new() -> Token {
         Token(AtomicBool::new(false))
-    }
-
-    /// Access a static token that is never set.
-    pub fn default() -> &'static Token {
-        &TOKEN_SET
     }
 
     /// Set the token.

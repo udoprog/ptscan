@@ -43,14 +43,14 @@ impl Expression {
                     .into_iter()
                     .map(Expression::into_filter)
                     .collect::<Result<Vec<_>, _>>()?;
-                Box::new(filter::All::new(filters)?)
+                Box::new(filter::All::new(filters))
             }
             Or(expressions) => {
                 let filters = expressions
                     .into_iter()
                     .map(Expression::into_filter)
                     .collect::<Result<Vec<_>, _>>()?;
-                Box::new(filter::Any::new(filters)?)
+                Box::new(filter::Any::new(filters))
             }
         };
 

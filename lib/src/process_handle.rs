@@ -342,12 +342,16 @@ pub struct PointerFilter {
 }
 
 impl filter::Filter for PointerFilter {
-    fn special(&self) -> Option<scan::Special> {
-        Some(scan::Special::NotZero)
+    fn types(&self, out: &mut Vec<scan::Type>) {
+        out.push(scan::Type::U64);
     }
 
-    fn ty(&self) -> Option<scan::Type> {
-        Some(scan::Type::U64)
+    fn size(&self) -> Option<usize> {
+        Some(8)
+    }
+
+    fn special(&self) -> Option<scan::Special> {
+        Some(scan::Special::NotZero)
     }
 
     fn test(&self, _: Option<&scan::ScanResult>, value: &scan::Value) -> bool {

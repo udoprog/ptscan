@@ -4,6 +4,8 @@
 
 int main(int argc, char *argv[])
 {
+    qDebug() << "Loaded ptscan version:" << QString::fromLocal8Bit(pts_version());
+
     auto threadPool = pts::ThreadPool::create();
 
     QApplication a(argc, argv);

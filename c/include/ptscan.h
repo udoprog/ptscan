@@ -175,6 +175,9 @@ pts_token_t *pts_token_new();
 /// Set the token.
 void pts_token_set(const pts_token_t *token);
 
+/// Get the current ptscan version.
+const char *pts_version();
+
 } // extern "C"
 
 #endif // ptscan_h

@@ -13,8 +13,31 @@ pub fn parse(input: &str) -> Result<Box<Filter>, failure::Error> {
 }
 
 pub trait Filter: Send + Sync + fmt::Debug + fmt::Display {
-    /// The type value the filter is scanning for.
-    fn ty(&self) -> Option<Type> {
+    /// Extract one type from the filter.
+    fn ty(&self) -> Result<Type, failure::Error> {
+        use std::collections::HashSet;
+
+        let mut out = Vec::new();
+        self.types(&mut out);
+        let out = out.into_iter().collect::<HashSet<_>>();
+
+        if out.len() > 1 {
+            failure::bail!("more than one type is used in the filter");
+        }
+
+        match out.into_iter().next() {
+            Some(ty) => Ok(ty),
+            None => {
+                failure::bail!("filter does not have any type information");
+            }
+        }
+    }
+
+    /// Collect all types used in the filter.
+    fn types(&self, _: &mut Vec<Type>) {}
+
+    /// The size in bytes of memory that must be fetched for this filter to operate.
+    fn size(&self) -> Option<usize> {
         None
     }
 
@@ -44,8 +67,12 @@ macro_rules! numeric_match {
 pub struct Not(Box<dyn Filter>);
 
 impl Filter for Not {
-    fn ty(&self) -> Option<Type> {
-        self.0.ty()
+    fn types(&self, out: &mut Vec<Type>) {
+        self.0.types(out);
+    }
+
+    fn size(&self) -> Option<usize> {
+        self.0.size()
     }
 
     fn special(&self) -> Option<Special> {
@@ -144,8 +171,12 @@ impl fmt::Display for Same {
 pub struct Eq(pub Value);
 
 impl Filter for Eq {
-    fn ty(&self) -> Option<Type> {
-        Some(self.0.ty())
+    fn types(&self, out: &mut Vec<Type>) {
+        out.push(self.0.ty());
+    }
+
+    fn size(&self) -> Option<usize> {
+        Some(self.0.ty().size())
     }
 
     fn special(&self) -> Option<Special> {
@@ -190,8 +221,12 @@ impl fmt::Display for Eq {
 pub struct Neq(pub Value);
 
 impl Filter for Neq {
-    fn ty(&self) -> Option<Type> {
-        Some(self.0.ty())
+    fn types(&self, out: &mut Vec<Type>) {
+        out.push(self.0.ty());
+    }
+
+    fn size(&self) -> Option<usize> {
+        Some(self.0.ty().size())
     }
 
     fn special(&self) -> Option<Special> {
@@ -236,8 +271,12 @@ impl fmt::Display for Neq {
 pub struct Gt(pub Value);
 
 impl Filter for Gt {
-    fn ty(&self) -> Option<Type> {
-        Some(self.0.ty())
+    fn types(&self, out: &mut Vec<Type>) {
+        out.push(self.0.ty());
+    }
+
+    fn size(&self) -> Option<usize> {
+        Some(self.0.ty().size())
     }
 
     fn special(&self) -> Option<Special> {
@@ -272,8 +311,12 @@ impl fmt::Display for Gt {
 pub struct Gte(pub Value);
 
 impl Filter for Gte {
-    fn ty(&self) -> Option<Type> {
-        Some(self.0.ty())
+    fn types(&self, out: &mut Vec<Type>) {
+        out.push(self.0.ty());
+    }
+
+    fn size(&self) -> Option<usize> {
+        Some(self.0.ty().size())
     }
 
     fn special(&self) -> Option<Special> {
@@ -310,8 +353,12 @@ impl fmt::Display for Gte {
 pub struct Lt(pub Value);
 
 impl Filter for Lt {
-    fn ty(&self) -> Option<Type> {
-        Some(self.0.ty())
+    fn types(&self, out: &mut Vec<Type>) {
+        out.push(self.0.ty());
+    }
+
+    fn size(&self) -> Option<usize> {
+        Some(self.0.ty().size())
     }
 
     fn special(&self) -> Option<Special> {
@@ -343,8 +390,12 @@ impl fmt::Display for Lt {
 pub struct Lte(pub Value);
 
 impl Filter for Lte {
-    fn ty(&self) -> Option<Type> {
-        Some(self.0.ty())
+    fn types(&self, out: &mut Vec<Type>) {
+        out.push(self.0.ty());
+    }
+
+    fn size(&self) -> Option<usize> {
+        Some(self.0.ty().size())
     }
 
     fn special(&self) -> Option<Special> {
@@ -373,17 +424,17 @@ impl fmt::Display for Lte {
 
 /// Only matches when all nested filters match.
 #[derive(Debug)]
-pub struct All(Option<Type>, Vec<Box<Filter>>);
+pub struct All(Vec<Box<Filter>>);
 
 impl All {
-    pub fn new(filters: impl IntoIterator<Item = Box<Filter>>) -> Result<All, failure::Error> {
-        collection(filters, All)
+    pub fn new(filters: impl IntoIterator<Item = Box<Filter>>) -> Self {
+        All(filters.into_iter().collect())
     }
 }
 
 impl fmt::Display for All {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut it = self.1.iter().peekable();
+        let mut it = self.0.iter().peekable();
 
         while let Some(p) = it.next() {
             fmt::Display::fmt(p, fmt)?;
@@ -398,38 +449,50 @@ impl fmt::Display for All {
 }
 
 impl Filter for All {
-    fn ty(&self) -> Option<Type> {
-        self.0.clone()
+    fn types(&self, out: &mut Vec<Type>) {
+        for f in &self.0 {
+            f.types(out);
+        }
+    }
+
+    fn size(&self) -> Option<usize> {
+        self.0.iter().flat_map(|f| f.size()).max()
     }
 
     fn test(&self, last: Option<&ScanResult>, value: &Value) -> bool {
-        self.1.iter().all(|p| p.test(last, value))
+        self.0.iter().all(|p| p.test(last, value))
     }
 }
 
 /// Only matches when any nested filter match.
 #[derive(Debug)]
-pub struct Any(Option<Type>, Vec<Box<Filter>>);
+pub struct Any(Vec<Box<Filter>>);
 
 impl Any {
-    pub fn new(filters: impl IntoIterator<Item = Box<Filter>>) -> Result<Any, failure::Error> {
-        collection(filters, Any)
+    pub fn new(filters: impl IntoIterator<Item = Box<Filter>>) -> Self {
+        Any(filters.into_iter().collect())
     }
 }
 
 impl Filter for Any {
-    fn ty(&self) -> Option<Type> {
-        self.0.clone()
+    fn types(&self, out: &mut Vec<Type>) {
+        for f in &self.0 {
+            f.types(out);
+        }
+    }
+
+    fn size(&self) -> Option<usize> {
+        self.0.iter().flat_map(|f| f.size()).max()
     }
 
     fn test(&self, last: Option<&ScanResult>, value: &Value) -> bool {
-        self.1.iter().any(|p| p.test(last, value))
+        self.0.iter().any(|p| p.test(last, value))
     }
 }
 
 impl fmt::Display for Any {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut it = self.1.iter().peekable();
+        let mut it = self.0.iter().peekable();
 
         while let Some(p) = it.next() {
             write!(fmt, "{}", p)?;
@@ -441,30 +504,6 @@ impl fmt::Display for Any {
 
         Ok(())
     }
-}
-
-/// Helper function to build a collection filter.
-///
-/// Checks that every child filter have the same type.
-fn collection<T>(
-    filters: impl IntoIterator<Item = Box<Filter>>,
-    constructor: impl FnOnce(Option<Type>, Vec<Box<Filter>>) -> T,
-) -> Result<T, failure::Error> {
-    use std::collections::HashSet;
-
-    let mut all = Vec::new();
-
-    for p in filters {
-        all.push(p);
-    }
-
-    let types = all.iter().flat_map(|p| p.ty()).collect::<HashSet<_>>();
-
-    if types.len() > 1 {
-        failure::bail!("filters of different types are not supported: {:?}", types);
-    }
-
-    Ok(constructor(types.into_iter().next(), all))
 }
 
 #[cfg(test)]

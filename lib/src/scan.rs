@@ -637,8 +637,8 @@ impl Scan {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        let scan_type = match filter.ty() {
-            Some(scan_type) => scan_type,
+        let size = match filter.size() {
+            Some(size) => size,
             None => {
                 return Err(failure::format_err!(
                     "can't perform initial scan with type-less filter"
@@ -646,7 +646,8 @@ impl Scan {
             }
         };
 
-        let size: usize = scan_type.size();
+        let scan_type = filter.ty()?;
+
         let buffer_size = 0x1000;
 
         let buffers = thread_buffers::ThreadBuffers::new();
@@ -941,6 +942,11 @@ pub struct ScanResult {
 }
 
 impl ScanResult {
+    /// The size in bytes of the scan result.
+    pub fn size(&self) -> usize {
+        self.value.ty().size()
+    }
+
     /// An improved display implemented with a process handle.
     pub fn address_display<'a>(&'a self, handle: &'a ProcessHandle) -> AddressDisplay<'a> {
         AddressDisplay {

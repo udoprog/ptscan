@@ -15,7 +15,8 @@ pub extern "C" fn pts_filter_parse<'a>(
     let input = utils::lossy_string(input, input_len);
     let res = ptscan::filter::parse(&input);
     let filter = try_last!(res, ptr::null_mut());
-    into_ptr!(pts_filter_t(filter))
+    let out = into_ptr!(pts_filter_t(filter));
+    out
 }
 
 /// Free a filter.

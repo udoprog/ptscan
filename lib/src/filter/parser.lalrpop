@@ -32,11 +32,11 @@ And: Expression = {
 }
 
 Filter: Expression = {
-    changed "(" "$value" ")" => {
+    changed => {
         Expression::Changed
     },
 
-    same "(" "$value" ")" => {
+    same => {
         Expression::Same
     },
 

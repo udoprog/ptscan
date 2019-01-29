@@ -46,6 +46,26 @@ pub extern "C" fn pts_process_handle_open_by_name<'a>(
     true
 }
 
+/// Refresh known modules.
+#[no_mangle]
+pub extern "C" fn pts_process_handle_refresh_modules<'a>(
+    handle: *mut pts_process_handle_t,
+) -> bool {
+    let pts_process_handle_t(ref mut handle) = *null_ck!(&'a mut handle);
+    try_last!(handle.refresh_modules(), false);
+    true
+}
+
+/// Refresh known threads.
+#[no_mangle]
+pub extern "C" fn pts_process_handle_refresh_threads<'a>(
+    handle: *mut pts_process_handle_t,
+) -> bool {
+    let pts_process_handle_t(ref mut handle) = *null_ck!(&'a mut handle);
+    try_last!(handle.refresh_threads(), false);
+    true
+}
+
 /// Access the name of the process handle.
 ///
 /// If the process handle has no name, returns 0.

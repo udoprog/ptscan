@@ -1,4 +1,4 @@
-use std::{convert::TryFrom, fmt, io, sync::Arc};
+use std::{convert::TryFrom, ffi, fmt, io, ptr, sync::Arc};
 
 use crate::{module, scan, system, utils, Address, AddressRange, ProcessId, Size};
 
@@ -26,6 +26,13 @@ impl Process {
             desired_access: Default::default(),
             inherit_handles: FALSE,
         }
+    }
+
+    /// Get the name of the process.
+    pub fn module_base_name(&self) -> Result<ffi::OsString, failure::Error> {
+        crate::utils::string(|buf, len| unsafe {
+            psapi::GetModuleBaseNameW(**self.handle, ptr::null_mut(), buf, len)
+        })
     }
 
     /// Get the process ID.

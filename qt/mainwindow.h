@@ -44,7 +44,7 @@ public slots:
     void scanDone(bool interrupted);
 
     // Report that a refresh has completed.
-    void refreshDone(bool interrupted);
+    void refreshDone();
 
 private slots:
     // Trigger an update to currently visualized values.

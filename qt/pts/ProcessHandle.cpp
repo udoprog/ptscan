@@ -3,13 +3,27 @@
 
 namespace pts
 {
-ProcessHandle::ProcessHandle(pts_process_handle_t *inner) : inner(inner)
+ProcessHandle::ProcessHandle(pts_process_handle_t *inner) :
+    inner(inner)
 {
+}
+
+ProcessHandle::ProcessHandle() :
+    inner(nullptr)
+{
+}
+
+ProcessHandle::ProcessHandle(ProcessHandle &&other) :
+    inner(other.inner)
+{
+    other.inner = nullptr;
 }
 
 ProcessHandle::~ProcessHandle()
 {
-    pts_process_handle_free(inner);
+    if (inner) {
+        pts_process_handle_free(inner);
+    }
 }
 
 String ProcessHandle::pid() {
@@ -24,6 +38,20 @@ String ProcessHandle::name() {
     return name;
 }
 
+void ProcessHandle::refreshThreads()
+{
+    if (!pts_process_handle_refresh_threads(inner)) {
+        throw last_exception();
+    }
+}
+
+void ProcessHandle::refreshModules()
+{
+    if (!pts_process_handle_refresh_modules(inner)) {
+        throw last_exception();
+    }
+}
+
 std::shared_ptr<ProcessHandle> ProcessHandle::open(process_id pid)
 {
     pts_process_handle_t *handle = nullptr;
@@ -33,7 +61,6 @@ std::shared_ptr<ProcessHandle> ProcessHandle::open(process_id pid)
         return {};
     }
 
-    std::shared_ptr<ProcessHandle> p{new ProcessHandle(handle)};
-    return std::shared_ptr<ProcessHandle>{p};
+    return std::make_shared<ProcessHandle>(handle);
 }
 }

@@ -22,6 +22,12 @@ public:
 class Scan
 {
 public:
+    Scan(std::shared_ptr<ThreadPool> threadPool, pts_scan_t* inner);
+    Scan();
+    Scan(const Scan &) = delete;
+    Scan(Scan &&);
+    ~Scan();
+
     static std::shared_ptr<Scan> create(std::shared_ptr<ThreadPool> threadPool);
 
     // Perform a scan.
@@ -36,8 +42,6 @@ public:
     // Access the count of a scan.
     uintptr_t count();
 private:
-    Scan(std::shared_ptr<ThreadPool> threadPool, pts_scan_t* inner);
-
     // NB: hold on to a reference of the thread pool since it's used by pts_scan_t.
     std::shared_ptr<ThreadPool> threadPool;
     pts_scan_t *inner;

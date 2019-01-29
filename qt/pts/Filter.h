@@ -17,6 +17,8 @@ class Filter
 
 public:
     Filter(pts_filter_t *);
+    Filter(const Filter&) = delete;
+    Filter(Filter&&);
     ~Filter();
 
     // Return a string which is a human-readable display of this filter.

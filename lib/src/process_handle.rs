@@ -45,8 +45,6 @@ impl ProcessHandle {
     /// * We don't have sufficient privileges to open the process.
     /// * The process no longer exists.
     pub fn open(pid: ProcessId) -> Result<Option<ProcessHandle>, failure::Error> {
-        use std::ffi::OsStr;
-
         // IDLE process, cannot be opened.
         if pid == 0 {
             return Ok(None);
@@ -63,43 +61,15 @@ impl ProcessHandle {
             },
         };
 
-        let mut name = None;
-        let mut modules = Vec::new();
-        let mut kernel32 = None;
-
-        for module in process.modules()? {
-            let module_name = module.name()?;
-
-            if name.is_none() {
-                name = Some(module_name.to_string_lossy().to_string());
-            }
-
-            let info = module.info()?;
-
-            let range = AddressRange {
-                base: info.base_of_dll,
-                size: info.size_of_image,
-            };
-
-            if module_name.as_os_str() == OsStr::new("KERNEL32.DLL") {
-                kernel32 = Some(range.clone());
-            }
-
-            modules.push(ModuleInfo {
-                name: module_name.to_string_lossy().to_string(),
-                range,
-            });
-        }
-
-        modules.sort_by_key(|m| m.range.base);
+        let name = process.module_base_name()?.to_string_lossy().to_string();
         let is_64bit = process.is_64bit()?;
 
         Ok(Some(ProcessHandle {
-            name,
+            name: Some(name),
             process,
             is_64bit,
-            modules,
-            kernel32,
+            modules: Vec::new(),
+            kernel32: None,
             threads: Vec::new(),
         }))
     }
@@ -149,6 +119,43 @@ impl ProcessHandle {
             id: self.process.process_id(),
             name: self.name.clone(),
         }
+    }
+
+    /// Refresh all available modules.
+    ///
+    /// If kernel32 is found, extract its range separately.
+    pub fn refresh_modules(&mut self) -> Result<(), failure::Error> {
+        use std::ffi::OsStr;
+
+        let mut modules = Vec::with_capacity(self.modules.len());
+
+        for module in self.process.modules()? {
+            let module_name = module.name()?;
+
+            if self.name.is_none() {
+                self.name = Some(module_name.to_string_lossy().to_string());
+            }
+
+            let info = module.info()?;
+
+            let range = AddressRange {
+                base: info.base_of_dll,
+                size: info.size_of_image,
+            };
+
+            if module_name.as_os_str() == OsStr::new("KERNEL32.DLL") {
+                self.kernel32 = Some(range.clone());
+            }
+
+            modules.push(ModuleInfo {
+                name: module_name.to_string_lossy().to_string(),
+                range,
+            });
+        }
+
+        modules.sort_by_key(|m| m.range.base);
+        self.modules = modules;
+        Ok(())
     }
 
     /// Refresh information about known threads.

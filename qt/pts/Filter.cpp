@@ -4,13 +4,22 @@
 
 namespace pts
 {
-Filter::Filter(pts_filter_t *inner) : inner(inner)
+Filter::Filter(pts_filter_t *inner) :
+    inner(inner)
 {
+}
+
+Filter::Filter(Filter &&other) :
+    inner(other.inner)
+{
+    other.inner = nullptr;
 }
 
 Filter::~Filter()
 {
-    pts_filter_free(inner);
+    if (inner) {
+        pts_filter_free(inner);
+    }
 }
 
 String Filter::display() const

@@ -90,6 +90,12 @@ bool pts_process_handle_open_by_name(const char *name,
 /// Access a readable process identifier for the handle.
 void pts_process_handle_pid(const pts_process_handle_t *handle, pts_string_t *pid);
 
+/// Refresh known modules.
+bool pts_process_handle_refresh_modules(pts_process_handle_t *handle);
+
+/// Refresh known threads.
+bool pts_process_handle_refresh_threads(pts_process_handle_t *handle);
+
 /// Create an iterator over the results of a scan.
 /// # Safety
 /// Modifying a collection while an iterate is open results in undefined behavior.

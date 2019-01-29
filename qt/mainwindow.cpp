@@ -127,11 +127,15 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
             scanToken.reset();
         }
 
-        if (!openProcess->selected) {
+        auto selected = openProcess->takeSelected();
+
+        if (!selected) {
             return;
         }
 
-        processHandle = openProcess->selected;
+        processHandle = selected;
+        processHandle->refreshModules();
+        processHandle->refreshThreads();
         openProcess->clearList();
         updateView();
     });
@@ -190,30 +194,37 @@ void MainWindow::scan()
     auto filter = this->filters.at(index.row());
     auto threadPool = this->threadPool;
 
-    if (!scanCurrent) {
-        scanCurrent = pts::Scan::create(threadPool);
+    auto scan = scanCurrent;
+
+    if (!scan) {
+        scan = pts::Scan::create(threadPool);
     }
 
     scanToken = std::shared_ptr<pts::Token>(new pts::Token());
 
-    QtConcurrent::run([this, processHandle, filter]() {
+    QtConcurrent::run([this, processHandle, filter, scan]() {
         pts::ScanReporter reporter;
 
         reporter.report = [this](int percentage){
             QMetaObject::invokeMethod(this, "scanProgress", Qt::QueuedConnection, Q_ARG(int, percentage));
         };
 
-        bool interrupted = false;
+        bool ok = true;
 
         try {
-            scanCurrent->scan(*processHandle, *filter, *scanToken, reporter);
+            scan->scan(*processHandle, *filter, *scanToken, reporter);
         } catch(const std::exception &e) {
-            interrupted = true;
+            ok = false;
             QString message(e.what());
             QMetaObject::invokeMethod(this, "addError", Qt::QueuedConnection, Q_ARG(QString, message));
         }
 
-        QMetaObject::invokeMethod(this, "scanDone", Qt::QueuedConnection, Q_ARG(bool, interrupted));
+        // set the current scan if there is none, and the new scan was successful.
+        if (!scanCurrent && ok) {
+            scanCurrent = scan;
+        }
+
+        QMetaObject::invokeMethod(this, "scanDone", Qt::QueuedConnection, Q_ARG(bool, ok));
     });
 
     updateView();
@@ -294,16 +305,13 @@ void MainWindow::updateCurrent()
         reporter.report = [](int percentage){
         };
 
-        bool interrupted = false;
-
         try {
             scanCurrent->refresh(*processHandle, 100, *scanToken, reporter);
         } catch(const std::exception &e) {
-            interrupted = true;
             qDebug() << "failed to refresh" << e.what();
         }
 
-        QMetaObject::invokeMethod(this, "refreshDone", Qt::QueuedConnection, Q_ARG(bool, interrupted));
+        QMetaObject::invokeMethod(this, "refreshDone", Qt::QueuedConnection);
     });
 }
 
@@ -313,7 +321,7 @@ void MainWindow::addError(QString message)
     ui->errorBox->show();
 }
 
-void MainWindow::refreshDone(bool interrupted)
+void MainWindow::refreshDone()
 {
     if (!scanToken) {
         throw std::exception("expected scan token to be set");
@@ -355,12 +363,12 @@ void MainWindow::scanProgress(int percentage)
     ui->scanProgress->setValue(percentage);
 }
 
-void MainWindow::scanDone(bool interrupted)
+void MainWindow::scanDone(bool ok)
 {
-    if (interrupted) {
-        ui->scanProgress->setValue(0);
-    } else {
+    if (ok) {
         ui->scanProgress->setValue(100);
+    } else {
+        ui->scanProgress->setValue(0);
     }
 
     ui->scanProgress->setEnabled(false);

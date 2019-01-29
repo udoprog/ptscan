@@ -12,8 +12,8 @@ class String {
 public:
     // Construct a default empty string.
     String();
-    String(String &&other);
     String(const String &) = delete;
+    String(String &&other);
     ~String();
 
     // Convert to a QByteArray.

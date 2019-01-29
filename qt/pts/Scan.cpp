@@ -14,6 +14,24 @@ Scan::Scan(std::shared_ptr<ThreadPool> threadPool, pts_scan_t* inner) :
 {
 }
 
+Scan::Scan() :
+    inner(nullptr)
+{
+}
+
+Scan::Scan(Scan &&other) :
+    inner(other.inner)
+{
+    other.inner = nullptr;
+}
+
+Scan::~Scan()
+{
+    if (inner) {
+        pts_scan_free(inner);
+    }
+}
+
 std::shared_ptr<Scan> Scan::create(std::shared_ptr<ThreadPool> threadPool)
 {
     pts_scan_t *inner = pts_scan_new(threadPool->ptr());
@@ -22,7 +40,7 @@ std::shared_ptr<Scan> Scan::create(std::shared_ptr<ThreadPool> threadPool)
         throw last_exception();
     }
 
-    return std::shared_ptr<Scan>(new Scan(threadPool, inner));
+    return std::make_shared<Scan>(Scan{threadPool, inner});
 }
 
 void Scan::scan(ProcessHandle &processHandle, Filter &filter, Token &token, ScanReporter &reporter)

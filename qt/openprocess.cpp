@@ -10,7 +10,6 @@
 
 OpenProcess::OpenProcess(QWidget *parent) :
     QDialog(parent),
-    selected(nullptr),
     ui(new Ui::OpenProcess),
     model(new QStandardItemModel())
 {
@@ -58,4 +57,11 @@ void OpenProcess::refreshList()
             handles.push_back(handle);
         }
     }
+}
+
+std::shared_ptr<pts::ProcessHandle> OpenProcess::takeSelected()
+{
+    auto selected = this->selected;
+    this->selected.reset();
+    return selected;
 }

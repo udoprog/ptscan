@@ -1,7 +1,7 @@
 mod lexer;
 lalrpop_util::lalrpop_mod!(parser, "/pointer/parser.rs");
 
-use crate::address::{Address, Offset};
+use crate::address::{Address, Offset, Sign};
 use std::fmt;
 
 /// The base of the pointer.
@@ -9,7 +9,9 @@ use std::fmt;
 /// Can either be a module identified by a string that has to be looked up from a `ProcessHandle`, or a fixed address.
 #[derive(Debug, Clone)]
 pub enum Base {
-    Module(String),
+    /// An offset from a module.
+    Module(String, Offset),
+    /// A fixed address.
     Fixed(Address),
 }
 
@@ -17,9 +19,17 @@ impl fmt::Display for Base {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Base::Fixed(ref address) => fmt::Display::fmt(address, fmt),
-            Base::Module(ref name) => {
+            Base::Module(ref name, ref offset) => {
                 // TODO: properly escape
                 write!(fmt, "\"{}\"", name)?;
+
+                if offset.abs() > 0 {
+                    match offset.sign() {
+                        Sign::Pos => write!(fmt, " + {}", offset)?,
+                        Sign::Neg => write!(fmt, " - {}", offset.abs())?,
+                    }
+                }
+
                 Ok(())
             }
         }
@@ -53,10 +63,9 @@ impl fmt::Display for Pointer {
         let mut it = self.offsets.iter();
 
         if let Some(o) = it.next() {
-            if o.sign() {
-                write!(fmt, " + {}", o)?;
-            } else {
-                write!(fmt, " - {}", o.abs())?;
+            match o.sign() {
+                Sign::Pos => write!(fmt, " + {}", o)?,
+                Sign::Neg => write!(fmt, " - {}", o.abs())?,
             }
         }
 
@@ -82,11 +91,12 @@ mod tests {
 
     #[test]
     fn basic_parsing() -> Result<(), Box<error::Error>> {
-        dbg!(Pointer::parse("ABCDEF + 0F")?);
+        dbg!(Pointer::parse("ABCDEF")?);
         dbg!(Pointer::parse("\"Steam.exe\" + 0F")?);
         dbg!(Pointer::parse("\"Steam.exe\" + 0F -> -FFAA")?);
         dbg!(Pointer::parse("\"Steam.exe\" - F0F -> -FFAA")?);
         dbg!(Pointer::parse("\"Steam.exe\" - -F0F -> -FFAA")?);
+        dbg!(Pointer::parse("\"Steam.exe\" -> +FFAA")?);
         Ok(())
     }
 }

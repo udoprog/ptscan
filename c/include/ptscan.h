@@ -16,6 +16,7 @@ struct pts_pointer_t;
 /// Handle for a process.
 struct pts_process_handle_t;
 
+/// An opaque process identifier.
 struct pts_process_id_t;
 
 /// A single scan result.

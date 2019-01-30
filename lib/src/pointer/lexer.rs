@@ -1,4 +1,4 @@
-use crate::address::{Address, Offset};
+use crate::address::{Address, Offset, Sign};
 use std::{borrow::Cow, fmt, str};
 
 #[derive(Debug, err_derive::Error)]
@@ -22,9 +22,9 @@ impl Hex {
     /// Forcibly convert into an offset.
     pub fn into_offset(self) -> Offset {
         if self.0 < 0 {
-            Offset::new(false, (-self.0) as u64)
+            Offset::new(Sign::Neg, (-self.0) as u64)
         } else {
-            Offset::new(true, self.0 as u64)
+            Offset::new(Sign::Pos, self.0 as u64)
         }
     }
 
@@ -306,7 +306,7 @@ impl<'a> Iterator for Lexer<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, Lexer, Token};
+    use super::{Error, Hex, Lexer, Token};
 
     fn tokenize(input: &str) -> Result<Vec<(usize, Token, usize)>, Error> {
         Lexer::new(input).collect::<Result<Vec<_>, _>>()
@@ -315,7 +315,13 @@ mod tests {
     #[test]
     fn basic_expression() -> Result<(), Error> {
         assert_eq!(
-            vec![(0, Token::String(String::from("Steam.exe")), 0)],
+            vec![
+                (0, Token::String(String::from("Steam.exe")), 11),
+                (12, Token::Plus, 13),
+                (14, Token::Hex(Hex(12)), 16),
+                (17, Token::Rocket, 19),
+                (20, Token::Hex(Hex(-8)), 22)
+            ],
             tokenize("\"Steam.exe\" + 0C -> -8")?
         );
 

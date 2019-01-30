@@ -25,6 +25,14 @@ impl Address {
         Address(value)
     }
 
+    /// Add an offset in a saturating manner.
+    pub fn saturating_offset(self, offset: Offset) -> Address {
+        Address(match offset {
+            Offset(Sign::Pos, o) => self.0.saturating_add(o),
+            Offset(Sign::Neg, o) => self.0.saturating_sub(o),
+        })
+    }
+
     /// Performed a checked add with an address and a size.
     pub fn add(self, rhs: Size) -> Result<Address, io::Error> {
         let sum = self.0.checked_add(rhs.0).ok_or_else(|| {
@@ -36,9 +44,9 @@ impl Address {
     /// Find how far this address offsets another one.
     pub fn offset_of(self, base: Address) -> Result<Offset, io::Error> {
         if self.0 >= base.0 {
-            Ok(Offset(true, self.0 - base.0))
+            Ok(Offset(Sign::Pos, self.0 - base.0))
         } else {
-            Ok(Offset(false, base.0 - self.0))
+            Ok(Offset(Sign::Neg, base.0 - self.0))
         }
     }
 
@@ -309,17 +317,52 @@ impl TryFrom<u32> for Size {
 }
 
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
-pub struct Offset(bool, u64);
+pub enum Sign {
+    Pos,
+    Neg,
+}
+
+#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
+pub struct Offset(Sign, u64);
 
 impl Offset {
     /// Construct a new offset.
     /// If `sign` is true, the offset is positive. Otherwise it is negative.
-    pub fn new(sign: bool, offset: u64) -> Self {
+    pub fn new(sign: Sign, offset: u64) -> Self {
         Offset(sign, offset)
     }
 
+    /// Initialize the zero offset.
+    pub fn zero() -> Self {
+        Offset(Sign::Pos, 0)
+    }
+
+    /// Add two offsets together in a saturating manner.
+    pub fn saturating_add(self, offset: Offset) -> Offset {
+        use self::Sign::*;
+
+        match (self, offset) {
+            (Offset(Pos, a), Offset(Pos, b)) => Offset(Pos, a.saturating_add(b)),
+            (Offset(Pos, a), Offset(Neg, b)) => {
+                if a >= b {
+                    Offset(Pos, a - b)
+                } else {
+                    Offset(Neg, b - a)
+                }
+            }
+            (Offset(Neg, a), Offset(Pos, b)) => {
+                if a > b {
+                    Offset(Neg, a - b)
+                } else {
+                    Offset(Pos, b - a)
+                }
+            }
+            (Offset(Neg, a), Offset(Neg, b)) => Offset(Neg, a.saturating_add(b)),
+        }
+    }
+
     /// Return the sign which is `true` for positive, `false` for negative.
-    pub fn sign(self) -> bool {
+    pub fn sign(self) -> Sign {
         self.0
     }
 
@@ -331,12 +374,9 @@ impl Offset {
 
 impl fmt::Display for Offset {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Offset(sign, value) = *self;
-
-        if sign {
-            write!(fmt, "{:X}", value)
-        } else {
-            write!(fmt, "-{:X}", value)
+        match *self {
+            Offset(Sign::Pos, o) => write!(fmt, "{:X}", o),
+            Offset(Sign::Neg, o) => write!(fmt, "-{:X}", o),
         }
     }
 }
@@ -389,4 +429,49 @@ impl AddressRange {
 /// Convert the given error into an I/O error.
 fn into_io_error<E: 'static + Send + Sync + error::Error>(input: E) -> io::Error {
     io::Error::new(io::ErrorKind::Other, input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Offset, Sign};
+
+    #[test]
+    fn test_offsets() {
+        use self::Sign::*;
+
+        assert_eq!(
+            Offset(Pos, 0),
+            Offset(Neg, 0x10).saturating_add(Offset(Pos, 0x10))
+        );
+        assert_eq!(
+            Offset(Pos, 0x10),
+            Offset(Neg, 0x10).saturating_add(Offset(Pos, 0x20))
+        );
+        assert_eq!(
+            Offset(Neg, 0x10),
+            Offset(Neg, 0x20).saturating_add(Offset(Pos, 0x10))
+        );
+
+        assert_eq!(
+            Offset(Pos, 0),
+            Offset(Pos, 0x10).saturating_add(Offset(Neg, 0x10))
+        );
+        assert_eq!(
+            Offset(Neg, 0x10),
+            Offset(Pos, 0x10).saturating_add(Offset(Neg, 0x20))
+        );
+        assert_eq!(
+            Offset(Pos, 0x10),
+            Offset(Pos, 0x20).saturating_add(Offset(Neg, 0x10))
+        );
+
+        assert_eq!(
+            Offset(Pos, 0),
+            Offset(Pos, 0).saturating_add(Offset(Pos, 0))
+        );
+        assert_eq!(
+            Offset(Pos, 0x20),
+            Offset(Pos, 0x10).saturating_add(Offset(Pos, 0x10))
+        );
+    }
 }

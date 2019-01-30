@@ -46,7 +46,8 @@ SOURCES += \
     addresslist.cpp \
     scanresults.cpp \
     editaddress.cpp \
-    editfilter.cpp
+    editfilter.cpp \
+    validator.cpp
 
 HEADERS += \
     pts.h \
@@ -64,7 +65,8 @@ HEADERS += \
     addresslist.h \
     scanresults.h \
     editaddress.h \
-    editfilter.h
+    editfilter.h \
+    validator.h
 
 FORMS += \
     mainwindow.ui \

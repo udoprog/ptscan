@@ -1,7 +1,7 @@
 //! Predicates used for matching against memory.
 
 use crate::{
-    address::{Address, Size},
+    address::{Address, Sign, Size},
     filter, pointer,
     process::{MemoryInformation, Process},
     scan, thread_buffers,
@@ -980,22 +980,19 @@ impl ScanResult {
 
     /// Buld a watch out of a scan result.
     pub fn as_watch(&self, handle: Option<&ProcessHandle>) -> Result<Watch, io::Error> {
-        let (base, offset) = match handle {
+        let base = match handle {
             Some(handle) => match handle.find_location(self.address)? {
                 Location::Module(module) => {
                     let offset = self.address.offset_of(module.range.base)?;
-                    (pointer::Base::Module(module.name.to_string()), Some(offset))
+                    pointer::Base::Module(module.name.to_string(), offset)
                 }
-                _ => (pointer::Base::Fixed(self.address), None),
+                _ => pointer::Base::Fixed(self.address),
             },
-            None => (pointer::Base::Fixed(self.address), None),
+            None => pointer::Base::Fixed(self.address),
         };
 
-        let mut pointer = pointer::Pointer::new(base);
-        pointer.offsets.extend(offset);
-
         Ok(Watch {
-            pointer,
+            pointer: pointer::Pointer::new(base),
             value: self.value.clone(),
             ty: self.value.ty(),
         })
@@ -1059,10 +1056,9 @@ impl<'a> fmt::Display for AddressDisplay<'a> {
             }
         };
 
-        if offset.sign() {
-            write!(fmt, " + {}", offset)?;
-        } else {
-            write!(fmt, " - {}", offset.abs())?;
+        match offset.sign() {
+            Sign::Pos => write!(fmt, " + {}", offset)?,
+            Sign::Neg => write!(fmt, " - {}", offset.abs())?,
         }
 
         Ok(())

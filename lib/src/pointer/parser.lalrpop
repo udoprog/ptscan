@@ -1,36 +1,50 @@
 // vim: ft=rust
 use crate::{
+    address::Offset,
     pointer::{Pointer, Base, lexer::{Hex, Token}},
 };
 
 grammar<'input>;
 
 pub Pointer: Pointer = {
-    <base:Base> <first:FirstOffset?> <rest:("->" <Hex>)*> => {
-        let mut offsets = Vec::new();
-
-        offsets.extend(first.map(Hex::into_offset));
-        offsets.extend(rest.into_iter().map(Hex::into_offset));
-
+    <base:Base> <offsets:("->" <Deref>)*> => {
         Pointer {
             base,
-            offsets,
+            offsets: offsets.into_iter().map(Hex::into_offset).collect(),
         }
     },
 }
 
-FirstOffset: Hex = {
+Deref: Hex = {
+    <hex:Hex> => hex,
     "+" <hex:Hex> => hex,
     "-" <hex:Hex> => hex.negate(),
 }
 
 Base: Base = {
-    <address:Hex> => {
-        Base::Fixed(address.into_address())
+    <address:Hex> <offsets:BaseOffset*> => {
+        let mut address = address.into_address();
+
+        for o in offsets {
+            address = address.saturating_offset(o);
+        }
+
+        Base::Fixed(address)
     },
-    <string:String> => {
-        Base::Module(string)
+    <string:String> <offsets:BaseOffset*> => {
+        let mut offset = Offset::zero();
+
+        for o in offsets {
+            offset = offset.saturating_add(o);
+        }
+
+        Base::Module(string, offset)
     },
+}
+
+BaseOffset: Offset = {
+    "+" <hex:Hex> => hex.into_offset(),
+    "-" <hex:Hex> => hex.negate().into_offset(),
 }
 
 extern {

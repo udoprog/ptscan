@@ -1,4 +1,5 @@
 #include "editaddress.h"
+#include "pointervalidator.h"
 #include "ui_editaddress.h"
 #include <pts/Watch.h>
 #include <pts/Pointer.h>
@@ -11,6 +12,7 @@ EditAddress::EditAddress(QWidget *parent) :
 {
     ui->setupUi(this);
     ui->error->hide();
+    ui->pointer->setValidator(new PointerValidator(this));
 
     auto widths = EditAddress::widths();
     auto index = 0;

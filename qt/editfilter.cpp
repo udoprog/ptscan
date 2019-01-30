@@ -4,10 +4,10 @@
 #include <QPushButton>
 
 #include <pts/Filter.h>
-#include "addfilter.h"
-#include "ui_addfilter.h"
+#include "editfilter.h"
+#include "ui_editfilter.h"
 
-AddFilter::AddFilter(QWidget *parent) :
+EditFilter::EditFilter(QWidget *parent) :
     QDialog(parent),
     ui(new Ui::AddFilter)
 {
@@ -23,29 +23,29 @@ AddFilter::AddFilter(QWidget *parent) :
         try {
             this->filter = pts::Filter::parse(s);
             this->error = {};
-            this->stateChanged();
+            this->updateView();
         } catch(const std::exception &e) {
             this->error = std::make_optional(e.what());
-            this->stateChanged();
+            this->updateView();
         }
     });
 }
 
-std::shared_ptr<pts::Filter> AddFilter::takeFilter()
+std::shared_ptr<pts::Filter> EditFilter::takeFilter()
 {
     auto filter = this->filter;
     this->filter.reset();
     return filter;
 }
 
-QModelIndex AddFilter::takeIndex()
+QModelIndex EditFilter::takeIndex()
 {
     auto index = this->index;
     this->index = QModelIndex();
     return index;
 }
 
-void AddFilter::addFilter()
+void EditFilter::addFilter()
 {
     this->filter = {};
     this->index = {};
@@ -54,7 +54,7 @@ void AddFilter::addFilter()
     this->ui->editFilterLabel->hide();
 }
 
-void AddFilter::editFilter(std::shared_ptr<pts::Filter> filter, QModelIndex index)
+void EditFilter::editFilter(std::shared_ptr<pts::Filter> filter, QModelIndex index)
 {
     this->filter = filter;
     this->index = index;
@@ -63,7 +63,7 @@ void AddFilter::editFilter(std::shared_ptr<pts::Filter> filter, QModelIndex inde
     this->ui->editFilterLabel->show();
 }
 
-void AddFilter::stateChanged()
+void EditFilter::updateView()
 {
     if (auto error = this->error) {
         this->ui->error->setText(QString::fromStdString(*error));
@@ -75,7 +75,7 @@ void AddFilter::stateChanged()
     }
 }
 
-AddFilter::~AddFilter()
+EditFilter::~EditFilter()
 {
     delete ui;
 }

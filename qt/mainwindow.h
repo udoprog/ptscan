@@ -15,7 +15,7 @@
 #include <pts/Values.h>
 
 class OpenProcess;
-class AddFilter;
+class EditFilter;
 class AddressList;
 class ScanResults;
 
@@ -61,7 +61,7 @@ private:
     std::shared_ptr<pts::ThreadPool> threadPool;
     Ui::MainWindow *ui;
     OpenProcess *openProcess;
-    AddFilter *addFilter;
+    EditFilter *addFilter;
     AddressList *addressList;
     ScanResults *scanResults;
     // Buffer of up-to-date values.

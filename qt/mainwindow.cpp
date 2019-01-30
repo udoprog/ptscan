@@ -14,7 +14,7 @@
 
 #include "mainwindow.h"
 #include "openprocess.h"
-#include "addfilter.h"
+#include "editfilter.h"
 #include "ui_mainwindow.h"
 #include "addresslist.h"
 #include "scanresults.h"
@@ -24,7 +24,7 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
     threadPool(threadPool),
     ui(new Ui::MainWindow),
     openProcess(new OpenProcess(this)),
-    addFilter(new AddFilter(this)),
+    addFilter(new EditFilter(this)),
     refreshTimer(new QTimer())
 {
     ui->setupUi(this);

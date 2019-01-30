@@ -8,14 +8,14 @@
 #include <ptscan.h>
 
 namespace pts {
-    /// Get the last ptscan error as an exception.
-    std::exception last_exception();
+// Get the last ptscan error as an exception.
+std::exception last_exception();
+// An opauq process identifier.
+typedef pts_process_id_t *process_id;
 
-    typedef pts_process_id_t* process_id;
-
-    namespace system {
-        std::vector<process_id> processes();
-    }
+namespace system {
+std::vector<process_id> processes();
+}
 }
 
 #endif // PTS_H

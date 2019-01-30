@@ -30,50 +30,49 @@ DEFINES += QT_DEPRECATED_WARNINGS
 CONFIG += c++17
 
 SOURCES += \
-    main.cpp \
-    mainwindow.cpp \
-    openprocess.cpp \
     pts.cpp \
     pts/ThreadPool.cpp \
     pts/String.cpp \
     pts/ProcessHandle.cpp \
-    addfilter.cpp \
     pts/Filter.cpp \
     pts/Scan.cpp \
     pts/Token.cpp \
-    addresslist.cpp \
-    scanresults.cpp \
     pts/Watch.cpp \
     pts/Values.cpp \
+    pts/Pointer.cpp \
+    main.cpp \
+    mainwindow.cpp \
+    openprocess.cpp \
+    addresslist.cpp \
+    scanresults.cpp \
     editaddress.cpp \
-    pts/Pointer.cpp
+    editfilter.cpp
 
 HEADERS += \
-    mainwindow.h \
-    openprocess.h \
     pts.h \
     pts/ThreadPool.h \
     pts/String.h \
     pts/ProcessHandle.h \
-    addfilter.h \
     pts/Filter.h \
     pts/Scan.h \
     pts/Token.h \
-    addresslist.h \
-    scanresults.h \
     pts/Watch.h \
     pts/Values.h \
+    pts/Pointer.h \
+    mainwindow.h \
+    openprocess.h \
+    addresslist.h \
+    scanresults.h \
     editaddress.h \
-    pts/Pointer.h
+    editfilter.h
 
 FORMS += \
     mainwindow.ui \
     openprocess.ui \
-    addfilter.ui \
-    addfilter.ui \
     addresslist.ui \
     scanresults.ui \
-    editaddress.ui
+    editaddress.ui \
+    editfilter.ui
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin

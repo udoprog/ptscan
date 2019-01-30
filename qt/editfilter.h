@@ -13,19 +13,17 @@ namespace Ui {
 class AddFilter;
 }
 
-class AddFilter : public QDialog
+class EditFilter : public QDialog
 {
     Q_OBJECT
 
 public:
-    explicit AddFilter(QWidget *parent = nullptr);
-    ~AddFilter();
-
+    explicit EditFilter(QWidget *parent = nullptr);
+    ~EditFilter();
     // Take filter that was edited.
     std::shared_ptr<pts::Filter> takeFilter();
     // Take index that was edited.
     QModelIndex takeIndex();
-
     // Indicate that we want to add a filter through the dialog.
     void addFilter();
     // Indicate that we want to edit a filter through the dialog.
@@ -36,7 +34,7 @@ private:
     std::shared_ptr<pts::Filter> filter;
     QModelIndex index;
 
-    void stateChanged();
+    void updateView();
 };
 
 #endif // ADDFILTER_H

@@ -1,3 +1,12 @@
+#ifndef _PTS_DEFINES
+#define _PTS_DEFINES
+#include <cstdint>
+
+typedef uint8_t pts_i128[8];
+typedef uint8_t pts_u128[8];
+#endif // _PTS_DEFINES
+
+
 #ifndef ptscan_h
 #define ptscan_h
 
@@ -10,23 +19,25 @@ struct pts_error_t;
 /// A filter.
 struct pts_filter_t;
 
-/// A pointer.
+/// A pointer path.
+/// Each offset is applied and dereferenced on the base in a chain.
+/// The last step is dereferences as the pointee type.
 struct pts_pointer_t;
 
-/// Handle for a process.
+/// A handle for a process.
 struct pts_process_handle_t;
 
 /// An opaque process identifier.
 struct pts_process_id_t;
+
+/// A scan responsible for finding results in memory.
+struct pts_scan_t;
 
 /// A single scan result.
 struct pts_scan_result_t;
 
 /// An iterator over scan results.
 struct pts_scan_results_iter_t;
-
-/// A scan keeping track of results scanned from memory.
-struct pts_scan_t;
 
 struct pts_system_processes_iter_t;
 
@@ -36,10 +47,12 @@ struct pts_thread_pool_t;
 /// A token that can be used to indicate some condition.
 struct pts_token_t;
 
-/// A collection of scan values that can be populated through e.g. pts_scan_refresh.
+/// A single dynamic literal value.
+struct pts_value_t;
+
+/// A collection of scan values that can be populated through e.g. scan_refresh.
 struct pts_values_t;
 
-/// An address being watched.
 struct pts_watch_t;
 
 struct pts_string_t {
@@ -67,7 +80,7 @@ void pts_error_message(const pts_error_t *error, pts_string_t *message);
 
 /// Find a process by name.
 /// If a process cannot be found, *out is set to NULL.
-/// If an error is raised, false is returned and `pts_error_last()` is updated accordingly.
+/// If an error is raised, false is returned and `error_last()` is updated accordingly.
 void pts_filter_display(const pts_filter_t *filter, pts_string_t *display);
 
 /// Free a filter.
@@ -79,7 +92,7 @@ pts_filter_t *pts_filter_parse(const char *input, uintptr_t input_len);
 
 /// Find a process by name.
 /// If a process cannot be found, *out is set to NULL.
-/// If an error is raised, false is returned and `pts_error_last()` is updated accordingly.
+/// If an error is raised, false is returned and `error_last()` is updated accordingly.
 void pts_pointer_display(const pts_pointer_t *pointer, pts_string_t *display);
 
 /// Free a pointer.
@@ -103,7 +116,7 @@ bool pts_process_handle_open(const pts_process_id_t *pid, pts_process_handle_t *
 
 /// Find a process by name.
 /// If a process cannot be found, *out is set to NULL.
-/// If an error is raised, false is returned and `pts_error_last()` is updated accordingly.
+/// If an error is raised, false is returned and `error_last()` is updated accordingly.
 bool pts_process_handle_open_by_name(const char *name,
                                      uintptr_t name_len,
                                      pts_process_handle_t **out);
@@ -152,7 +165,7 @@ const pts_scan_result_t *pts_scan_result_at(const pts_scan_t *scan, uintptr_t of
 void pts_scan_result_value(const pts_scan_result_t *result, pts_string_t *out);
 
 /// Free the scan results iterator.
-void pts_scan_results_free(pts_scan_results_iter_t *scan_results);
+void pts_scan_results_free(pts_scan_results_iter_t *pts_scan_results);
 
 /// Create an iterator over the results of a scan.
 /// # Safety
@@ -187,11 +200,17 @@ pts_system_processes_iter_t *pts_system_processes_iter();
 /// At the end of the iteration NULL is returned.
 pts_process_id_t *pts_system_processes_next(pts_system_processes_iter_t *iter);
 
+/// Free the underlying string.
+pts_value_t pts_test_value();
+
+/// Free the underlying string.
+pts_value_t pts_test_value2();
+
 /// Close and free the thread pool.
 void pts_thread_pool_free(pts_thread_pool_t *thread_pool);
 
 /// Create a new thread pool.
-/// If an error is raised, NULL is returned and `pts_error_last()` is updated accordingly.
+/// If an error is raised, NULL is returned and `error_last()` is updated accordingly.
 pts_thread_pool_t *pts_thread_pool_new();
 
 /// Free the token.

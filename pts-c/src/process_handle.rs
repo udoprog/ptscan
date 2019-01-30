@@ -1,8 +1,8 @@
-use crate::{string::pts_string_t, system::pts_process_id_t, utils};
+use crate::{string::StringT, system::ProcessId, utils};
 use std::{os::raw::c_char, ptr};
 
 /// Handle for a process.
-pub struct pts_process_handle_t(pub(crate) ptscan::ProcessHandle);
+pub struct ProcessHandle(pub(crate) ptscan::ProcessHandle);
 
 /// Open a process handle by a pid.
 ///
@@ -10,14 +10,14 @@ pub struct pts_process_handle_t(pub(crate) ptscan::ProcessHandle);
 /// If any error was raised, returns false and set errors appropriately.
 #[no_mangle]
 pub extern "C" fn pts_process_handle_open<'a>(
-    pid: *const pts_process_id_t,
-    out: *mut *mut pts_process_handle_t,
+    pid: *const ProcessId,
+    out: *mut *mut ProcessHandle,
 ) -> bool {
-    let pts_process_id_t(pid) = *null_ck!(&'a pid);
+    let ProcessId(pid) = *null_ck!(&'a pid);
     let out = null_ck!(&'a mut out);
 
     *out = match try_last!(ptscan::ProcessHandle::open(pid), false) {
-        Some(handle) => into_ptr!(pts_process_handle_t(handle)),
+        Some(handle) => into_ptr!(ProcessHandle(handle)),
         None => ptr::null_mut(),
     };
 
@@ -27,18 +27,18 @@ pub extern "C" fn pts_process_handle_open<'a>(
 /// Find a process by name.
 ///
 /// If a process cannot be found, *out is set to NULL.
-/// If an error is raised, false is returned and `pts_error_last()` is updated accordingly.
+/// If an error is raised, false is returned and `error_last()` is updated accordingly.
 #[no_mangle]
 pub extern "C" fn pts_process_handle_open_by_name<'a>(
     name: *const c_char,
     name_len: usize,
-    out: *mut *mut pts_process_handle_t,
+    out: *mut *mut ProcessHandle,
 ) -> bool {
     let name = utils::lossy_string(name, name_len);
     let out = null_ck!(&'a mut out);
 
     if let Some(handle) = try_last!(ptscan::ProcessHandle::open_by_name(name.as_ref()), false) {
-        *out = into_ptr!(pts_process_handle_t(handle));
+        *out = into_ptr!(ProcessHandle(handle));
     } else {
         *out = ptr::null_mut();
     }
@@ -48,20 +48,16 @@ pub extern "C" fn pts_process_handle_open_by_name<'a>(
 
 /// Refresh known modules.
 #[no_mangle]
-pub extern "C" fn pts_process_handle_refresh_modules<'a>(
-    handle: *mut pts_process_handle_t,
-) -> bool {
-    let pts_process_handle_t(ref mut handle) = *null_ck!(&'a mut handle);
+pub extern "C" fn pts_process_handle_refresh_modules<'a>(handle: *mut ProcessHandle) -> bool {
+    let ProcessHandle(ref mut handle) = *null_ck!(&'a mut handle);
     try_last!(handle.refresh_modules(), false);
     true
 }
 
 /// Refresh known threads.
 #[no_mangle]
-pub extern "C" fn pts_process_handle_refresh_threads<'a>(
-    handle: *mut pts_process_handle_t,
-) -> bool {
-    let pts_process_handle_t(ref mut handle) = *null_ck!(&'a mut handle);
+pub extern "C" fn pts_process_handle_refresh_threads<'a>(handle: *mut ProcessHandle) -> bool {
+    let ProcessHandle(ref mut handle) = *null_ck!(&'a mut handle);
     try_last!(handle.refresh_threads(), false);
     true
 }
@@ -70,34 +66,28 @@ pub extern "C" fn pts_process_handle_refresh_threads<'a>(
 ///
 /// If the process handle has no name, returns 0.
 #[no_mangle]
-pub extern "C" fn pts_process_handle_name<'a>(
-    handle: *const pts_process_handle_t,
-    name: *mut pts_string_t,
-) {
+pub extern "C" fn pts_process_handle_name<'a>(handle: *const ProcessHandle, name: *mut StringT) {
     let name = null_ck!(&'a mut name);
 
-    let pts_process_handle_t(ref handle) = *null_ck!(&'a handle);
+    let ProcessHandle(ref handle) = *null_ck!(&'a handle);
 
     if let Some(n) = handle.name.as_ref() {
-        *name = pts_string_t::new(n.to_string());
+        *name = StringT::new(n.to_string());
     } else {
-        *name = pts_string_t::empty();
+        *name = StringT::empty();
     }
 }
 
 /// Access a readable process identifier for the handle.
 #[no_mangle]
-pub extern "C" fn pts_process_handle_pid<'a>(
-    handle: *const pts_process_handle_t,
-    pid: *mut pts_string_t,
-) {
-    let pts_process_handle_t(ref handle) = *null_ck!(&'a handle);
+pub extern "C" fn pts_process_handle_pid<'a>(handle: *const ProcessHandle, pid: *mut StringT) {
+    let ProcessHandle(ref handle) = *null_ck!(&'a handle);
     let pid = null_ck!(&'a mut pid);
-    *pid = pts_string_t::new(handle.process.process_id().to_string());
+    *pid = StringT::new(handle.process.process_id().to_string());
 }
 
 /// Close and free the process handle.
 #[no_mangle]
-pub extern "C" fn pts_process_handle_free(handle: *mut pts_process_handle_t) {
+pub extern "C" fn pts_process_handle_free(handle: *mut ProcessHandle) {
     free!(handle);
 }

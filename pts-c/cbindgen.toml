@@ -1,2 +1,54 @@
 include_guard = "ptscan_h"
 language = "C++"
+header = '''
+#ifndef _PTS_DEFINES
+#define _PTS_DEFINES
+#include <cstdint>
+
+typedef uint8_t pts_i128[8];
+typedef uint8_t pts_u128[8];
+#endif // _PTS_DEFINES
+'''
+
+[parse]
+parse_deps = true
+include = ["ptscan"]
+
+[export]
+prefix = "pts_"
+item_types = ["constants", "globals", "enums", "structs", "unions", "typedefs", "opaque", "functions"]
+
+[export.rename]
+"Value" = "value_t"
+"Values" = "values_t"
+"StringT" = "string_t"
+"Watch" = "watch_t"
+"Scan" = "scan_t"
+"Token" = "token_t"
+"Pointer" = "pointer_t"
+"ProcessHandle" = "process_handle_t"
+"ThreadPool" = "thread_pool_t"
+"SystemProcessesIter" = "system_processes_iter_t"
+"ScanResult" = "scan_result_t"
+"ScanResultsIter" = "scan_results_iter_t"
+"ProcessId" = "process_id_t"
+"Error" = "error_t"
+"Filter" = "filter_t"
+"ScanProgress" = "scan_progress_t"
+"ScanProgressReportFn" = "scan_progress_report_fn"
+"U128_Body" = "u128_body"
+"I128_Body" = "i128_body"
+"U64_Body" = "u64_body"
+"I64_Body" = "i64_body"
+"U32_Body" = "u32_body"
+"I32_Body" = "i32_body"
+"U16_Body" = "u16_body"
+"I16_Body" = "i16_body"
+"U8_Body" = "u8_body"
+"I8_Body" = "i8_body"
+
+[struct]
+rename_fields = "SnakeCase"
+
+[enum]
+rename_variants = "SnakeCase"

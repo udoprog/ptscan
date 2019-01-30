@@ -1,17 +1,17 @@
-use crate::string::pts_string_t;
+use crate::string::StringT;
 use std::{cell::RefCell, ptr};
 
 thread_local!(pub(crate) static LAST_ERROR: RefCell<Option<failure::Error>> = RefCell::new(None));
 
-pub struct pts_error_t(failure::Error);
+pub struct Error(failure::Error);
 
 /// Returns the last error raised in this thread.
 ///
 /// Returns NULL if no error was raised.
 #[no_mangle]
-pub extern "C" fn pts_error_last<'a>() -> *const pts_error_t {
+pub extern "C" fn pts_error_last<'a>() -> *const Error {
     match LAST_ERROR.with(|e| e.borrow_mut().take()) {
-        Some(e) => into_ptr!(pts_error_t(e)),
+        Some(e) => into_ptr!(Error(e)),
         None => ptr::null(),
     }
 }
@@ -20,11 +20,11 @@ pub extern "C" fn pts_error_last<'a>() -> *const pts_error_t {
 ///
 /// Returns the number of bytes copied.
 #[no_mangle]
-pub extern "C" fn pts_error_message<'a>(error: *const pts_error_t, message: *mut pts_string_t) {
+pub extern "C" fn pts_error_message<'a>(error: *const Error, message: *mut StringT) {
     use std::fmt::Write;
 
     let message = null_ck!(&'a mut message);
-    let pts_error_t(ref e) = *null_ck!(&'a error);
+    let Error(ref e) = *null_ck!(&'a error);
 
     let mut m = String::new();
 
@@ -38,5 +38,5 @@ pub extern "C" fn pts_error_message<'a>(error: *const pts_error_t, message: *mut
         try_last!(writeln!(&mut m, "Caused by: {}", cause), ());
     }
 
-    *message = pts_string_t::new(m);
+    *message = StringT::new(m);
 }

@@ -2,7 +2,6 @@ TARGET = pts-qt
 TEMPLATE = app
 
 LIBS += $$PWD/../target/release/ptscan_c.lib
-LIBS += $$PWD/../pts-cpp/release/pts-cpp.lib
 LIBS += -lws2_32 -lpsapi -lkernel32 -ladvapi32 -luserenv -lntdll -ldbghelp
 
 QT += core gui concurrent
@@ -39,3 +38,29 @@ FORMS += \
     scanresults.ui \
     editaddress.ui \
     editfilter.ui
+
+HEADERS += \
+    $$PWD/../pts-cpp/pts/Exception.h \
+    $$PWD/../pts-cpp/pts/Filter.h \
+    $$PWD/../pts-cpp/pts/Pointer.h \
+    $$PWD/../pts-cpp/pts/ProcessHandle.h \
+    $$PWD/../pts-cpp/pts/Scan.h \
+    $$PWD/../pts-cpp/pts/String.h \
+    $$PWD/../pts-cpp/pts/System.h \
+    $$PWD/../pts-cpp/pts/ThreadPool.h \
+    $$PWD/../pts-cpp/pts/Token.h \
+    $$PWD/../pts-cpp/pts/Values.h \
+    $$PWD/../pts-cpp/pts/Watch.h
+
+SOURCES += \
+    $$PWD/../pts-cpp/pts/Exception.cpp \
+    $$PWD/../pts-cpp/pts/Filter.cpp \
+    $$PWD/../pts-cpp/pts/Pointer.cpp \
+    $$PWD/../pts-cpp/pts/ProcessHandle.cpp \
+    $$PWD/../pts-cpp/pts/Scan.cpp \
+    $$PWD/../pts-cpp/pts/String.cpp \
+    $$PWD/../pts-cpp/pts/System.cpp \
+    $$PWD/../pts-cpp/pts/ThreadPool.cpp \
+    $$PWD/../pts-cpp/pts/Token.cpp \
+    $$PWD/../pts-cpp/pts/Values.cpp \
+    $$PWD/../pts-cpp/pts/Watch.cpp

@@ -1,35 +1,32 @@
 use crate::{
-    filter::pts_filter_t, process_handle::pts_process_handle_t, pts_thread_pool_t, pts_token_t,
-    string::pts_string_t, values::pts_values_t, watch::pts_watch_t,
+    filter::Filter, process_handle::ProcessHandle, string::StringT, values::Values, watch::Watch,
+    ThreadPool, Token,
 };
 use std::{mem, os::raw::c_void, ptr};
 
 /// A scan keeping track of results scanned from memory.
-pub struct pts_scan_t(ptscan::scan::Scan);
+pub struct Scan(ptscan::scan::Scan);
 
 /// Creates and returns a new scan.
 #[no_mangle]
-pub extern "C" fn pts_scan_new<'a>(thread_pool: *const pts_thread_pool_t) -> *mut pts_scan_t {
-    let pts_thread_pool_t(ref thread_pool) = *null_ck!(&'a thread_pool);
-    into_ptr!(pts_scan_t(ptscan::scan::Scan::new(thread_pool).aligned()))
+pub extern "C" fn pts_scan_new<'a>(thread_pool: *const ThreadPool) -> *mut Scan {
+    let ThreadPool(ref thread_pool) = *null_ck!(&'a thread_pool);
+    into_ptr!(Scan(ptscan::scan::Scan::new(thread_pool).aligned()))
 }
 
 /// Close and free the scan.
 #[no_mangle]
-pub extern "C" fn pts_scan_free(scan: *mut pts_scan_t) {
+pub extern "C" fn pts_scan_free(scan: *mut Scan) {
     free!(scan);
 }
 
 /// Access the scan result at the given offset.
 #[no_mangle]
-pub extern "C" fn pts_scan_result_at<'a>(
-    scan: *const pts_scan_t,
-    offset: usize,
-) -> *const pts_scan_result_t {
-    let pts_scan_t(ref scan) = *null_ck!(&'a scan);
+pub extern "C" fn pts_scan_result_at<'a>(scan: *const Scan, offset: usize) -> *const ScanResult {
+    let Scan(ref scan) = *null_ck!(&'a scan);
 
     match scan.results.get(offset) {
-        Some(result) => result as *const _ as *const pts_scan_result_t,
+        Some(result) => result as *const _ as *const ScanResult,
         None => ptr::null(),
     }
 }
@@ -37,17 +34,17 @@ pub extern "C" fn pts_scan_result_at<'a>(
 /// Convert the scan result into a watch.
 #[no_mangle]
 pub extern "C" fn pts_scan_result_as_watch<'a>(
-    result: *const pts_scan_result_t,
-    handle: *const pts_process_handle_t,
-) -> *mut pts_watch_t {
-    let pts_scan_result_t(ref result) = *null_ck!(&'a result);
+    result: *const ScanResult,
+    handle: *const ProcessHandle,
+) -> *mut Watch {
+    let ScanResult(ref result) = *null_ck!(&'a result);
     let handle = null_opt!(&'a handle).map(|h| &h.0);
     let watch = try_last!(result.as_watch(handle), ptr::null_mut());
-    into_ptr!(pts_watch_t(watch))
+    into_ptr!(Watch(watch))
 }
 
 /// An iterator over scan results.
-pub struct pts_scan_results_iter_t(std::slice::Iter<'static, ptscan::scan::ScanResult>);
+pub struct ScanResultsIter(std::slice::Iter<'static, ptscan::scan::ScanResult>);
 
 /// Create an iterator over the results of a scan.
 ///
@@ -55,12 +52,10 @@ pub struct pts_scan_results_iter_t(std::slice::Iter<'static, ptscan::scan::ScanR
 ///
 /// Modifying a collection while an iterate is open results in undefined behavior.
 #[no_mangle]
-pub extern "C" fn pts_scan_results_iter<'a>(
-    scan: *const pts_scan_t,
-) -> *mut pts_scan_results_iter_t {
-    let pts_scan_t(ref scan) = *null_ck!(&'a scan);
+pub extern "C" fn pts_scan_results_iter<'a>(scan: *const Scan) -> *mut ScanResultsIter {
+    let Scan(ref scan) = *null_ck!(&'a scan);
 
-    into_ptr!(pts_scan_results_iter_t(unsafe {
+    into_ptr!(ScanResultsIter(unsafe {
         mem::transmute(scan.results.iter())
     }))
 }
@@ -69,38 +64,36 @@ pub extern "C" fn pts_scan_results_iter<'a>(
 ///
 /// If no more elements are available NULL is returned.
 #[no_mangle]
-pub extern "C" fn pts_scan_results_next<'a>(
-    iter: *mut pts_scan_results_iter_t,
-) -> *const pts_scan_result_t {
-    let pts_scan_results_iter_t(ref mut iter) = *null_ck!(&'a mut iter);
+pub extern "C" fn pts_scan_results_next<'a>(iter: *mut ScanResultsIter) -> *const ScanResult {
+    let ScanResultsIter(ref mut iter) = *null_ck!(&'a mut iter);
 
     match iter.next() {
-        Some(next) => next as *const _ as *const pts_scan_result_t,
+        Some(next) => next as *const _ as *const ScanResult,
         None => ptr::null_mut(),
     }
 }
 
 /// Free the scan results iterator.
 #[no_mangle]
-pub extern "C" fn pts_scan_results_free(scan_results: *mut pts_scan_results_iter_t) {
-    free!(scan_results);
+pub extern "C" fn pts_scan_results_free(pts_scan_results: *mut ScanResultsIter) {
+    free!(pts_scan_results);
 }
 
 /// A single scan result.
-pub struct pts_scan_result_t(ptscan::scan::ScanResult);
+pub struct ScanResult(ptscan::scan::ScanResult);
 
 /// Access a readable process identifier for the handle.
 #[no_mangle]
 pub extern "C" fn pts_scan_result_address<'a>(
-    result: *const pts_scan_result_t,
-    handle: *const pts_process_handle_t,
-    out: *mut pts_string_t,
+    result: *const ScanResult,
+    handle: *const ProcessHandle,
+    out: *mut StringT,
 ) {
-    let pts_scan_result_t(ref result) = *null_ck!(&'a result);
+    let ScanResult(ref result) = *null_ck!(&'a result);
     let handle = null_opt!(&'a handle).map(|r| &r.0);
     let out = null_ck!(&'a mut out);
 
-    *out = pts_string_t::new(match handle {
+    *out = StringT::new(match handle {
         Some(handle) => result.address_display(handle).to_string(),
         None => result.address.to_string(),
     });
@@ -108,13 +101,10 @@ pub extern "C" fn pts_scan_result_address<'a>(
 
 /// Access the value for the scan result.
 #[no_mangle]
-pub extern "C" fn pts_scan_result_value<'a>(
-    result: *const pts_scan_result_t,
-    out: *mut pts_string_t,
-) {
-    let pts_scan_result_t(ref result) = *null_ck!(&'a result);
+pub extern "C" fn pts_scan_result_value<'a>(result: *const ScanResult, out: *mut StringT) {
+    let ScanResult(ref result) = *null_ck!(&'a result);
     let out = null_ck!(&'a mut out);
-    *out = pts_string_t::new(result.value.to_string());
+    *out = StringT::new(result.value.to_string());
 }
 
 /// Create an iterator over the results of a scan.
@@ -123,33 +113,33 @@ pub extern "C" fn pts_scan_result_value<'a>(
 ///
 /// Modifying a collection while an iterate is open results in undefined behavior.
 #[no_mangle]
-pub extern "C" fn pts_scan_count<'a>(scan: *const pts_scan_t) -> usize {
+pub extern "C" fn pts_scan_count<'a>(scan: *const Scan) -> usize {
     null_ck!(&'a scan).0.results.len()
 }
 
-type pts_scan_progress_report_fn = fn(*mut c_void, usize);
+type ScanProgressReportFn = fn(*mut c_void, usize);
 
 #[repr(C)]
-pub struct pts_scan_progress_t {
+pub struct ScanProgress {
     /// Called to indicate that the process is in progress.
-    report: pts_scan_progress_report_fn,
+    report: ScanProgressReportFn,
 }
 
 /// Creates and returns a new scan.
 #[no_mangle]
 pub extern "C" fn pts_scan_scan<'a>(
-    scan: *mut pts_scan_t,
-    handle: *const pts_process_handle_t,
-    filter: *const pts_filter_t,
-    cancel: *const pts_token_t,
-    progress: *const pts_scan_progress_t,
+    scan: *mut Scan,
+    handle: *const ProcessHandle,
+    filter: *const Filter,
+    cancel: *const Token,
+    progress: *const ScanProgress,
     data: *mut c_void,
 ) -> bool {
-    let pts_scan_t(ref mut scan) = *null_ck!(&'a mut scan);
-    let pts_process_handle_t(ref handle) = *null_ck!(&'a handle);
-    let pts_filter_t(ref filter) = *null_ck!(&'a filter);
+    let Scan(ref mut scan) = *null_ck!(&'a mut scan);
+    let ProcessHandle(ref handle) = *null_ck!(&'a handle);
+    let Filter(ref filter) = *null_ck!(&'a filter);
     let cancel = null_opt!(&'a cancel).map(|t| &t.0);
-    let pts_scan_progress_t { report } = *null_ck!(&'a progress);
+    let ScanProgress { report } = *null_ck!(&'a progress);
 
     let progress = RawProgress { data, report };
 
@@ -173,18 +163,18 @@ pub extern "C" fn pts_scan_scan<'a>(
 /// Creates and returns a new scan.
 #[no_mangle]
 pub extern "C" fn pts_scan_refresh<'a>(
-    scan: *const pts_scan_t,
-    handle: *const pts_process_handle_t,
-    values: *mut pts_values_t,
-    cancel: *const pts_token_t,
-    progress: *const pts_scan_progress_t,
+    scan: *const Scan,
+    handle: *const ProcessHandle,
+    values: *mut Values,
+    cancel: *const Token,
+    progress: *const ScanProgress,
     data: *mut c_void,
 ) -> bool {
-    let pts_scan_t(ref scan) = *null_ck!(&'a scan);
-    let pts_process_handle_t(ref handle) = *null_ck!(&'a handle);
-    let pts_values_t(ref mut values) = *null_ck!(&'a mut values);
+    let Scan(ref scan) = *null_ck!(&'a scan);
+    let ProcessHandle(ref handle) = *null_ck!(&'a handle);
+    let Values(ref mut values) = *null_ck!(&'a mut values);
     let cancel = null_opt!(&'a cancel).map(|t| &t.0);
-    let pts_scan_progress_t { report } = *null_ck!(&'a progress);
+    let ScanProgress { report } = *null_ck!(&'a progress);
 
     let progress = RawProgress { data, report };
 
@@ -199,7 +189,7 @@ pub extern "C" fn pts_scan_refresh<'a>(
 /// A reporter implementation that adapts a raw reporter.
 pub struct RawProgress {
     data: *mut c_void,
-    report: pts_scan_progress_report_fn,
+    report: ScanProgressReportFn,
 }
 
 unsafe impl Send for RawProgress {}

@@ -69,7 +69,7 @@ macro_rules! free {
 
 /// Helper macro to handle errors.
 ///
-/// Any raised error will be stored in thread-local memory and can be accessed using the corresponding pts_error_*
+/// Any raised error will be stored in thread-local memory and can be accessed using the corresponding error_*
 /// functions.
 macro_rules! try_last {
     ($expr:expr, $err:expr) => {

@@ -1,5 +1,5 @@
 use hashbrown::HashMap;
-use ptscan::{filter, scan, Address, Process, ProcessHandle, Token};
+use ptscan::{filter, scan, Address, Process, ProcessHandle, Token, Type, Value};
 use std::{io, sync::Arc};
 
 static HELP: &'static str = include_str!("help.md");
@@ -193,7 +193,7 @@ where
 
                 for result in &mut scan.results {
                     if result.address == address {
-                        result.value = scan::Value::None;
+                        result.value = Value::None;
                     }
                 }
 
@@ -464,7 +464,7 @@ where
                 let ty = if command.len() > 1 {
                     str::parse(command[1])?
                 } else {
-                    scan::Type::I32
+                    Type::I32
                 };
 
                 let address = str::parse(command[0])?;
@@ -568,7 +568,7 @@ where
             failure::bail!("expected: <op> <value>");
         }
 
-        let value: scan::Value = str::parse(rest[1])?;
+        let value: Value = str::parse(rest[1])?;
 
         let filter: Box<dyn filter::Filter> = match op {
             "eq" => Box::new(filter::Eq(value)),
@@ -611,9 +611,9 @@ pub enum Action {
     /// Delete the given address from the current scan.
     Del(Address),
     /// Add the given address with the given type.
-    Add(Address, scan::Type),
+    Add(Address, Type),
     /// Write the value at the given address.
-    Set(Address, scan::Value),
+    Set(Address, Value),
     /// List all scans.
     ScansList,
     /// Create a new scan with the given name.

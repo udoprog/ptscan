@@ -1,6 +1,6 @@
 [workspace]
 members = [
     "lib",
-    "c",
-    "tui"
+    "tui",
+    "pts-c"
 ]

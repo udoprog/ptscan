@@ -1,4 +1,4 @@
-use crate::scan::{Type, Value};
+use crate::{Type, Value};
 use std::{borrow::Cow, fmt, str};
 
 #[derive(Debug, err_derive::Error)]

@@ -1,6 +1,6 @@
 use std::{convert::TryFrom, ffi, fmt, io, ptr, sync::Arc};
 
-use crate::{module, scan, system, utils, Address, AddressRange, ProcessId, Size};
+use crate::{module, system, utils, Address, AddressRange, ProcessId, Size, Type, Value};
 
 use err_derive::Error;
 use ntapi::ntpsapi;
@@ -154,9 +154,9 @@ impl Process {
     pub fn read_memory_of_type(
         &self,
         address: Address,
-        ty: scan::Type,
+        ty: Type,
         buf: &mut [u8],
-    ) -> Result<scan::Value, io::Error> {
+    ) -> Result<Value, io::Error> {
         let size = ty.size();
         let bytes_read = self.read_process_memory(address, buf)?;
 

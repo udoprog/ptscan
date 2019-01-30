@@ -1,4 +1,4 @@
-use crate::scan::{ScanResult, Special, Type, Value};
+use crate::{scan::ScanResult, special::Special, Type, Value};
 use std::fmt;
 
 mod ast;

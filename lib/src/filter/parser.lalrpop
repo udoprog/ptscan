@@ -1,6 +1,6 @@
 // vim: ft=rust
 use crate::{
-    scan::Value,
+    Value,
     filter::{
         lexer::Token,
         ast::*

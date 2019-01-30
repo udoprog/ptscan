@@ -1,9 +1,6 @@
 //! Watch expression that watches a single location in memory.
 
-use crate::{
-    pointer::Pointer,
-    scan::{Type, Value},
-};
+use crate::{Pointer, Type, Value};
 
 #[derive(Debug)]
 pub struct Watch {

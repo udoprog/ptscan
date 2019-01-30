@@ -1,4 +1,4 @@
-use crate::{filter, scan::Value};
+use crate::{filter, Value};
 
 #[derive(Debug)]
 pub enum Expression {

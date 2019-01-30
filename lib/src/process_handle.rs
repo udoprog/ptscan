@@ -1,7 +1,8 @@
 //! High-level interface to processes.
 
 use crate::{
-    filter, process, scan, system, thread::Thread, Address, AddressRange, ProcessId, Size, ThreadId,
+    filter, process, scan, special::Special, system, thread::Thread, Address, AddressRange,
+    ProcessId, Size, ThreadId, Type, Value,
 };
 use failure::ResultExt;
 use std::{convert::TryFrom, fmt, io};
@@ -342,19 +343,19 @@ pub struct PointerFilter {
 }
 
 impl filter::Filter for PointerFilter {
-    fn types(&self, out: &mut Vec<scan::Type>) {
-        out.push(scan::Type::U64);
+    fn types(&self, out: &mut Vec<Type>) {
+        out.push(Type::U64);
     }
 
     fn size(&self) -> Option<usize> {
         Some(8)
     }
 
-    fn special(&self) -> Option<scan::Special> {
-        Some(scan::Special::NotZero)
+    fn special(&self) -> Option<Special> {
+        Some(Special::NotZero)
     }
 
-    fn test(&self, _: Option<&scan::ScanResult>, value: &scan::Value) -> bool {
+    fn test(&self, _: Option<&scan::ScanResult>, value: &Value) -> bool {
         let address = match value.as_address() {
             Ok(address) => address,
             Err(_) => return false,

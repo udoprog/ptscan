@@ -1,7 +1,8 @@
 use std::{ptr, vec};
 
 pub struct pts_system_processes_iter_t(vec::IntoIter<ptscan::ProcessId>);
-pub struct pts_process_id_t(ptscan::ProcessId);
+/// An opaque process identifier.
+pub struct pts_process_id_t(pub(crate) ptscan::ProcessId);
 
 /// Iterate over system processes. NULL is returned on errors.
 #[no_mangle]

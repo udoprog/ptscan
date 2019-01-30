@@ -14,9 +14,6 @@ pub mod system;
 pub mod values;
 pub mod watch;
 
-/// A opaque process identifier.
-pub struct pts_process_id_t(pub(crate) ptscan::ProcessId);
-
 /// A thread pool.
 pub struct pts_thread_pool_t(pub(crate) sync::Arc<rayon::ThreadPool>);
 

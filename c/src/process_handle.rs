@@ -1,4 +1,4 @@
-use crate::{pts_process_id_t, string::pts_string_t, utils};
+use crate::{string::pts_string_t, system::pts_process_id_t, utils};
 use std::{os::raw::c_char, ptr};
 
 /// Handle for a process.

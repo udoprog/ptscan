@@ -1,15 +1,7 @@
 use crate::string::StringT;
 
 /// A collection of scan values that can be populated through e.g. scan_refresh.
-pub struct Values(pub(crate) Vec<ptscan::Value>);
-
-/// Create a new collection of scan values.
-///
-/// The collection will be set to the given size.
-#[no_mangle]
-pub extern "C" fn pts_values_new<'a>(size: usize) -> *mut Values {
-    into_ptr!(Values(vec![ptscan::Value::None; size]))
-}
+pub struct Values(pub(crate) ptscan::Values);
 
 /// Get the value at the given position as a string.
 #[no_mangle]

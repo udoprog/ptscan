@@ -1,13 +1,11 @@
 //! A value in a memory location.
 
-/// Free the underlying string.
-#[no_mangle]
-pub extern "C" fn pts_test_value<'a>() -> ptscan::Value {
-    ptscan::Value::U32(32)
-}
+pub const VALUE_SIZE: usize = 24;
 
-/// Free the underlying string.
+#[repr(C)]
+pub struct Value([u8; VALUE_SIZE]);
+
 #[no_mangle]
-pub extern "C" fn pts_test_value2<'a>() -> ptscan::Value {
-    ptscan::Value::U32(32)
+pub extern "C" fn test_value() -> Value {
+    Value([0u8; VALUE_SIZE])
 }

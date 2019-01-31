@@ -1,4 +1,4 @@
-use crate::{scan::ScanResult, special::Special, Type, Value};
+use crate::{special::Special, values::ValueMut, Type, Value};
 use std::fmt;
 
 mod ast;
@@ -47,7 +47,7 @@ pub trait Filter: Send + Sync + fmt::Debug + fmt::Display {
     }
 
     /// Test the specified memory region.
-    fn test(&self, _: Option<&ScanResult>, _: &Value) -> bool;
+    fn test<'a>(&self, _: Option<ValueMut<'a>>, _: &Value) -> bool;
 }
 
 macro_rules! numeric_match {
@@ -83,7 +83,7 @@ impl Filter for Not {
         self.0.special().map(|s| s.invert())
     }
 
-    fn test(&self, last: Option<&ScanResult>, value: &Value) -> bool {
+    fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
         !self.0.test(last, value)
     }
 }
@@ -99,9 +99,9 @@ impl fmt::Display for Not {
 pub struct Dec;
 
 impl Filter for Dec {
-    fn test(&self, last: Option<&ScanResult>, value: &Value) -> bool {
+    fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
         match last {
-            Some(last) => Lt(last.value).test(None, value),
+            Some(last) => Lt(last.to_value()).test(None, value),
             None => false,
         }
     }
@@ -118,9 +118,9 @@ impl fmt::Display for Dec {
 pub struct Inc;
 
 impl Filter for Inc {
-    fn test(&self, last: Option<&ScanResult>, value: &Value) -> bool {
+    fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
         match last {
-            Some(last) => Gt(last.value).test(None, value),
+            Some(last) => Gt(last.to_value()).test(None, value),
             None => false,
         }
     }
@@ -137,9 +137,9 @@ impl fmt::Display for Inc {
 pub struct Changed;
 
 impl Filter for Changed {
-    fn test(&self, last: Option<&ScanResult>, value: &Value) -> bool {
+    fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
         match last {
-            Some(last) => !Eq(last.value).test(None, value),
+            Some(last) => !Eq(last.to_value()).test(None, value),
             None => false,
         }
     }
@@ -156,9 +156,9 @@ impl fmt::Display for Changed {
 pub struct Same;
 
 impl Filter for Same {
-    fn test(&self, last: Option<&ScanResult>, value: &Value) -> bool {
+    fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
         match last {
-            Some(last) => Eq(last.value).test(None, value),
+            Some(last) => Eq(last.to_value()).test(None, value),
             None => false,
         }
     }
@@ -210,7 +210,7 @@ impl Filter for Eq {
         })
     }
 
-    fn test(&self, _: Option<&ScanResult>, value: &Value) -> bool {
+    fn test<'a>(&self, _: Option<ValueMut<'a>>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a == b)
     }
 }
@@ -261,7 +261,7 @@ impl Filter for Neq {
         })
     }
 
-    fn test(&self, _: Option<&ScanResult>, value: &Value) -> bool {
+    fn test<'a>(&self, _: Option<ValueMut<'a>>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a != b)
     }
 }
@@ -301,7 +301,7 @@ impl Filter for Gt {
         Some(s)
     }
 
-    fn test(&self, _: Option<&ScanResult>, value: &Value) -> bool {
+    fn test<'a>(&self, _: Option<ValueMut<'a>>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a > b)
     }
 }
@@ -343,7 +343,7 @@ impl Filter for Gte {
         Some(s)
     }
 
-    fn test(&self, _: Option<&ScanResult>, value: &Value) -> bool {
+    fn test<'a>(&self, _: Option<ValueMut<'a>>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a >= b)
     }
 }
@@ -380,7 +380,7 @@ impl Filter for Lt {
         Some(s)
     }
 
-    fn test(&self, _: Option<&ScanResult>, value: &Value) -> bool {
+    fn test<'a>(&self, _: Option<ValueMut<'a>>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a < b)
     }
 }
@@ -417,7 +417,7 @@ impl Filter for Lte {
         Some(s)
     }
 
-    fn test(&self, _: Option<&ScanResult>, value: &Value) -> bool {
+    fn test<'a>(&self, _: Option<ValueMut<'a>>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a <= b)
     }
 }
@@ -465,7 +465,7 @@ impl Filter for All {
         self.0.iter().flat_map(|f| f.size()).max()
     }
 
-    fn test(&self, last: Option<&ScanResult>, value: &Value) -> bool {
+    fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
         self.0.iter().all(|p| p.test(last, value))
     }
 }
@@ -491,7 +491,7 @@ impl Filter for Any {
         self.0.iter().flat_map(|f| f.size()).max()
     }
 
-    fn test(&self, last: Option<&ScanResult>, value: &Value) -> bool {
+    fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
         self.0.iter().any(|p| p.test(last, value))
     }
 }

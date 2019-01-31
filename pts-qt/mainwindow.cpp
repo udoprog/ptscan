@@ -329,7 +329,7 @@ void MainWindow::updateCurrent()
         reporter.report = [](int percentage){
         };
 
-        auto values = std::make_shared<pts::Values>(pts::Values(100));
+        auto values = std::make_shared<pts::Values>(scanCurrent->values());
 
         try {
             scanCurrent->refresh(*processHandle, *values, *refreshToken, reporter);
@@ -387,5 +387,5 @@ void MainWindow::updateScanResults()
         results = std::make_optional(scanCurrent->results(100));
     }
 
-    scanResults->update(processHandle, results);
+    scanResults->update(processHandle, std::move(results));
 }

@@ -139,7 +139,7 @@ where
                 writeln!(self.w, "Scans:")?;
 
                 for (key, s) in &self.scans {
-                    writeln!(self.w, "{} - {} result(s)", key, s.results.len())?;
+                    writeln!(self.w, "{} - {} result(s)", key, s.len())?;
                 }
             }
             Action::ScansNew(name) => {
@@ -191,13 +191,8 @@ where
                     None => failure::bail!("no active scan"),
                 };
 
-                for result in &mut scan.results {
-                    if result.address == address {
-                        result.value = Value::None;
-                    }
-                }
-
-                scan.results.retain(|r| r.value.is_some());
+                panic!("TODO: cannot delete {} from {}", address, scan.len());
+                // scan.results.retain(|r| r.value.is_some());
             }
             Action::Add(address, ty) => {
                 let handle = match self.handle.as_ref() {
@@ -213,14 +208,14 @@ where
                 let mut buf = vec![0u8; ty.size()];
                 let value = handle.process.read_memory_of_type(address, ty, &mut buf)?;
 
-                scan.results.push(scan::ScanResult { address, value });
+                scan.push(scan::ScanResult { address, value });
             }
             Action::Scan(filter) => {
                 self.scan(&*filter, None)?;
             }
             Action::Reset => match self.scans.get_mut(&self.current_scan) {
                 Some(scan) => {
-                    scan.results.clear();
+                    scan.clear();
                     scan.initial = false;
                 }
                 None => writeln!(self.w, "no scan in use")?,
@@ -346,8 +341,8 @@ where
 
     /// Print the current state of the scan.
     fn print(&mut self, limit: Option<usize>) -> Result<(), failure::Error> {
-        let results = match self.scans.get(&self.current_scan) {
-            Some(scan) => &scan.results,
+        let scan = match self.scans.get(&self.current_scan) {
+            Some(scan) => scan,
             None => {
                 writeln!(self.w, "no scan in use")?;
                 return Ok(());
@@ -356,17 +351,13 @@ where
 
         let limit = limit.unwrap_or(DEFAULT_LIMIT);
 
-        if results.len() > limit {
-            writeln!(
-                self.w,
-                "found {} addresses (only showing 10)",
-                results.len()
-            )?;
+        if scan.len() > limit {
+            writeln!(self.w, "found {} addresses (only showing 10)", scan.len())?;
         } else {
-            writeln!(self.w, "found {} addresses", results.len())?;
+            writeln!(self.w, "found {} addresses", scan.len())?;
         };
 
-        for result in results.iter().take(limit) {
+        for result in scan.iter().take(limit) {
             if let Some(handle) = self.handle.as_ref() {
                 writeln!(
                     self.w,

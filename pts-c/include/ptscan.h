@@ -1,12 +1,3 @@
-#ifndef _PTS_DEFINES
-#define _PTS_DEFINES
-#include <cstdint>
-
-typedef uint8_t pts_i128[8];
-typedef uint8_t pts_u128[8];
-#endif // _PTS_DEFINES
-
-
 #ifndef ptscan_h
 #define ptscan_h
 
@@ -14,23 +5,23 @@ typedef uint8_t pts_u128[8];
 #include <cstdint>
 #include <cstdlib>
 
+static const uintptr_t pts_VALUE_SIZE = 24;
+
 struct pts_error_t;
 
 /// A filter.
 struct pts_filter_t;
 
-/// A pointer path.
-/// Each offset is applied and dereferenced on the base in a chain.
-/// The last step is dereferences as the pointee type.
+/// A pointer.
 struct pts_pointer_t;
 
-/// A handle for a process.
+/// Handle for a process.
 struct pts_process_handle_t;
 
 /// An opaque process identifier.
 struct pts_process_id_t;
 
-/// A scan responsible for finding results in memory.
+/// A scan keeping track of results scanned from memory.
 struct pts_scan_t;
 
 /// A single scan result.
@@ -47,11 +38,10 @@ struct pts_thread_pool_t;
 /// A token that can be used to indicate some condition.
 struct pts_token_t;
 
-/// A single dynamic literal value.
-struct pts_value_t;
-
+/// A collection of scan values that can be populated through e.g. scan_refresh.
 struct pts_values_t;
 
+/// An address being watched.
 struct pts_watch_t;
 
 struct pts_string_t {
@@ -65,6 +55,10 @@ using pts_scan_progress_report_fn = void(*)(void*, uintptr_t);
 struct pts_scan_progress_t {
   /// Called to indicate that the process is in progress.
   pts_scan_progress_report_fn report;
+};
+
+struct pts_value_t {
+  uint8_t _0[pts_VALUE_SIZE];
 };
 
 extern "C" {
@@ -158,7 +152,10 @@ pts_watch_t *pts_scan_result_as_watch(const pts_scan_result_t *result,
                                       const pts_process_handle_t *handle);
 
 /// Access the scan result at the given offset.
-const pts_scan_result_t *pts_scan_result_at(const pts_scan_t *scan, uintptr_t offset);
+pts_scan_result_t *pts_scan_result_at(const pts_scan_t *scan, uintptr_t offset);
+
+/// Free the scan results iterator.
+void pts_scan_result_free(pts_scan_result_t *scan_result);
 
 /// Access the value for the scan result.
 void pts_scan_result_value(const pts_scan_result_t *result, pts_string_t *out);
@@ -173,7 +170,7 @@ pts_scan_results_iter_t *pts_scan_results_iter(const pts_scan_t *scan);
 
 /// Walk the iterator one step.
 /// If no more elements are available NULL is returned.
-const pts_scan_result_t *pts_scan_results_next(pts_scan_results_iter_t *iter);
+pts_scan_result_t *pts_scan_results_next(pts_scan_results_iter_t *iter);
 
 /// Creates and returns a new scan.
 bool pts_scan_scan(pts_scan_t *scan,
@@ -182,6 +179,9 @@ bool pts_scan_scan(pts_scan_t *scan,
                    const pts_token_t *cancel,
                    const pts_scan_progress_t *progress,
                    void *data);
+
+/// Get a copy of the values contained in the scan.
+pts_values_t *pts_scan_values(const pts_scan_t *scan);
 
 /// Setup function that needs to be called to initialize the library.
 void pts_setup();
@@ -198,12 +198,6 @@ pts_system_processes_iter_t *pts_system_processes_iter();
 /// Walk the process iterator one step.
 /// At the end of the iteration NULL is returned.
 pts_process_id_t *pts_system_processes_next(pts_system_processes_iter_t *iter);
-
-/// Free the underlying string.
-pts_value_t pts_test_value();
-
-/// Free the underlying string.
-pts_value_t pts_test_value2();
 
 /// Close and free the thread pool.
 void pts_thread_pool_free(pts_thread_pool_t *thread_pool);
@@ -226,10 +220,6 @@ void pts_values_free(pts_values_t *values);
 
 /// Get the value at the given position as a string.
 uintptr_t pts_values_length(const pts_values_t *values);
-
-/// Create a new collection of scan values.
-/// The collection will be set to the given size.
-pts_values_t *pts_values_new(uintptr_t size);
 
 /// Get the value at the given position as a string.
 void pts_values_value_at(const pts_values_t *values, uintptr_t pos, pts_string_t *out);
@@ -254,6 +244,8 @@ pts_pointer_t *pts_watch_get_pointer(pts_watch_t *watch);
 
 /// Set the pointer of the watch using a clone of the provided pointer.
 void pts_watch_set_pointer(pts_watch_t *watch, const pts_pointer_t *pointer);
+
+pts_value_t test_value();
 
 } // extern "C"
 

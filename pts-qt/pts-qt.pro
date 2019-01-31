@@ -1,7 +1,14 @@
 TARGET = pts-qt
 TEMPLATE = app
 
-LIBS += $$PWD/../target/release/ptscan_c.lib
+CONFIG(release, debug|release) {
+  LIBS += $$PWD/../target/release/ptscan_c.lib
+}
+
+CONFIG(debug, debug|release) {
+  LIBS += $$PWD/../target/debug/ptscan_c.lib
+}
+
 LIBS += -lws2_32 -lpsapi -lkernel32 -ladvapi32 -luserenv -lntdll -ldbghelp
 
 QT += core gui concurrent

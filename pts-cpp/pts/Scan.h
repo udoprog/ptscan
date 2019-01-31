@@ -47,6 +47,9 @@ public:
 
     // Access the count of a scan.
     uintptr_t count();
+
+    // Return a copy of all values contained in the scan.
+    Values values();
 private:
     // NB: hold on to a reference of the thread pool since it's used by pts_scan_t.
     std::shared_ptr<ThreadPool> threadPool;
@@ -57,9 +60,10 @@ class ScanResult {
     friend class Scan;
 
 public:
-    ScanResult() = default;
-    ScanResult(const ScanResult &) = default;
-    ScanResult(ScanResult &&) = default;
+    ScanResult();
+    ScanResult(const ScanResult &) = delete;
+    ScanResult(ScanResult &&);
+    ~ScanResult();
 
     // Convert into a watch.
     // If there is a process handle available, the watch will be decorated with more information.
@@ -73,9 +77,9 @@ public:
     String value() const;
 
 private:
-    explicit ScanResult(const pts_scan_result_t* inner);
+    explicit ScanResult(pts_scan_result_t *inner);
 
-    const pts_scan_result_t *inner;
+    pts_scan_result_t *inner;
 };
 }
 

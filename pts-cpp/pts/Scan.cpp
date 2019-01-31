@@ -6,6 +6,8 @@
 #include <pts/Token.h>
 #include <pts/Watch.h>
 #include <pts/Values.h>
+#include <vector>
+#include <optional>
 
 namespace pts {
 Scan::Scan(std::shared_ptr<ThreadPool> threadPool, pts_scan_t* inner) :
@@ -76,11 +78,10 @@ std::vector<ScanResult> Scan::results(uintptr_t limit)
 {
     std::vector<ScanResult> out;
     pts_scan_results_iter_t *iter = pts_scan_results_iter(inner);
-
-    const pts_scan_result_t *next = nullptr;
+    pts_scan_result_t *next;
 
     while ((next = pts_scan_results_next(iter)) && limit > 0) {
-        out.push_back(ScanResult(next));
+        out.push_back(ScanResult{next});
         limit -= 1;
     }
 
@@ -90,8 +91,8 @@ std::vector<ScanResult> Scan::results(uintptr_t limit)
 
 std::optional<ScanResult> Scan::at(uintptr_t offset)
 {
-    if (auto result = pts_scan_result_at(inner, offset)) {
-        return std::make_optional(ScanResult{result});
+    if (auto next = pts_scan_result_at(inner, offset)) {
+        return std::make_optional(ScanResult{next});
     }
 
     return {};
@@ -102,9 +103,33 @@ uintptr_t Scan::count()
     return pts_scan_count(inner);
 }
 
-ScanResult::ScanResult(const pts_scan_result_t *inner) :
+Values Scan::values()
+{
+    return Values{pts_scan_values(inner)};
+}
+
+ScanResult::ScanResult(pts_scan_result_t *inner) :
     inner(inner)
 {
+}
+
+ScanResult::ScanResult() :
+    inner(nullptr)
+{
+}
+
+ScanResult::ScanResult(ScanResult &&other) :
+    inner(other.inner)
+{
+    other.inner = nullptr;
+}
+
+ScanResult::~ScanResult()
+{
+    if (inner) {
+        pts_scan_result_free(inner);
+        inner = nullptr;
+    }
 }
 
 std::shared_ptr<Watch> ScanResult::asWatch(std::shared_ptr<ProcessHandle> &handle)

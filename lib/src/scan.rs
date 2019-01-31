@@ -6,6 +6,7 @@ use crate::{
     process::{MemoryInformation, Process},
     special::Special,
     thread_buffers,
+    values::Values,
     watch::Watch,
     Location, ProcessHandle, Token, Type, Value,
 };
@@ -32,19 +33,55 @@ pub struct Scan {
     aligned: bool,
     /// If this scan has a set of initial results.
     pub initial: bool,
-    /// Current results in scan.
-    pub results: Vec<ScanResult>,
+    /// Addresses in the scan.
+    addresses: Vec<Address>,
+    /// Values in the scan.
+    pub values: Values,
 }
 
 impl Scan {
     /// Construct a new scan associated with a thread pool.
     pub fn new(thread_pool: &Arc<rayon::ThreadPool>) -> Self {
         Self {
-            results: Vec::new(),
             aligned: false,
             initial: false,
             thread_pool: Arc::clone(thread_pool),
+            addresses: Vec::new(),
+            values: Values::new(),
         }
+    }
+
+    /// Clear the scan.
+    pub fn clear(&mut self) {
+        self.addresses.clear();
+        self.values.clear();
+    }
+
+    /// Get the length of the current scan.
+    pub fn len(&self) -> usize {
+        self.addresses.len()
+    }
+
+    /// Get the result at the given location.
+    pub fn get(&self, index: usize) -> Option<ScanResult> {
+        let address = self.addresses.get(index)?;
+        let value = self.values.get(index)?;
+
+        Some(ScanResult {
+            address: *address,
+            value,
+        })
+    }
+
+    /// Push the given scan result.
+    pub fn push(&mut self, result: ScanResult) {
+        self.addresses.push(result.address);
+        self.values.push(result.value);
+    }
+
+    /// Create an iterator over the scan.
+    pub fn iter<'a>(&'a self) -> Iter<'a> {
+        Iter { scan: self, pos: 0 }
     }
 
     /// Only scan for values which are aligned.
@@ -59,7 +96,7 @@ impl Scan {
     pub fn refresh(
         &self,
         process: &Process,
-        values: &mut Vec<Value>,
+        output: &mut Values,
         cancel: Option<&Token>,
         progress: (impl Progress + Send),
     ) -> Result<(), failure::Error> {
@@ -70,11 +107,14 @@ impl Scan {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        let len = usize::min(self.results.len(), values.len());
+        let len = usize::min(self.addresses.len(), output.len());
 
         if len == 0 {
             return Ok(());
         }
+
+        let values = &self.values;
+        let addresses = &self.addresses;
 
         let buffers = thread_buffers::ThreadBuffers::new();
 
@@ -86,7 +126,12 @@ impl Scan {
 
                 let mut reporter = Reporter::new(progress, len, cancel);
 
-                for (result, v) in self.results.iter().zip(values) {
+                let it = values
+                    .iter()
+                    .zip(output.iter_mut())
+                    .zip(addresses.iter().cloned());
+
+                for ((value, mut output), address) in it {
                     let tx = tx.clone();
                     let buffers = &buffers;
 
@@ -97,11 +142,9 @@ impl Scan {
                         }
 
                         let mut work = || {
-                            let ty = result.value.ty();
+                            let ty = value.ty();
                             let mut buf = buffers.get_mut(ty.size())?;
-                            let value =
-                                process.read_memory_of_type(result.address, ty, &mut *buf)?;
-                            *v = value;
+                            output.set(process.read_memory_of_type(address, ty, &mut *buf)?);
                             Ok::<_, failure::Error>(())
                         };
 
@@ -151,12 +194,15 @@ impl Scan {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        if self.results.is_empty() {
+        if self.addresses.is_empty() {
             return Ok(());
         }
 
+        let values = &mut self.values;
+        let addresses = &self.addresses;
+
+        let len = self.addresses.len();
         let buffers = thread_buffers::ThreadBuffers::new();
-        let results = &mut self.results;
 
         let mut last_error = None;
 
@@ -164,9 +210,9 @@ impl Scan {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::sync_channel(1024);
 
-                let mut reporter = Reporter::new(progress, results.len(), cancel);
+                let mut reporter = Reporter::new(progress, len, cancel);
 
-                for result in results {
+                for (mut value, address) in values.iter_mut().zip(addresses.iter().cloned()) {
                     let tx = tx.clone();
                     let buffers = &buffers;
 
@@ -177,15 +223,14 @@ impl Scan {
                         }
 
                         let mut work = || {
-                            let ty = result.value.ty();
+                            let ty = value.ty();
                             let mut buf = buffers.get_mut(ty.size())?;
-                            let value =
-                                process.read_memory_of_type(result.address, ty, &mut *buf)?;
+                            let new_value = process.read_memory_of_type(address, ty, &mut *buf)?;
 
-                            if filter.test(Some(result), &value) {
-                                result.value = value;
+                            if filter.test(Some(value), &new_value) {
+                                value.set(new_value);
                             } else {
-                                result.value = Value::None;
+                                value.clear();
                             }
 
                             Ok::<_, failure::Error>(())
@@ -211,7 +256,26 @@ impl Scan {
             });
         });
 
-        self.results.retain(|v| v.value.is_some());
+        let mut addresses = Vec::new();
+        let mut values = Values::new();
+
+        for (v, address) in self
+            .values
+            .iter()
+            .into_iter()
+            .zip(self.addresses.iter().cloned())
+        {
+            let v = match v {
+                Value::None => continue,
+                v => v,
+            };
+
+            addresses.push(address);
+            values.push(v);
+        }
+
+        self.addresses = addresses;
+        self.values = values;
 
         if let Some(e) = last_error {
             return Err(e);
@@ -270,7 +334,8 @@ impl Scan {
         let buffers = thread_buffers::ThreadBuffers::new();
 
         let Scan {
-            ref mut results,
+            ref mut addresses,
+            ref mut values,
             aligned,
             ref thread_pool,
             ..
@@ -330,7 +395,10 @@ impl Scan {
                     match m {
                         // Scan result from a task.
                         TaskProgress::ScanResult(scan_result) => {
-                            results.push(scan_result);
+                            let ScanResult { address, value } = scan_result;
+
+                            addresses.push(address);
+                            values.push(value);
                         }
                         // Result from one task.
                         TaskProgress::Result(result) => {
@@ -574,6 +642,21 @@ impl ScanResult {
             value: self.value.clone(),
             ty: self.value.ty(),
         })
+    }
+}
+
+pub struct Iter<'a> {
+    scan: &'a Scan,
+    pos: usize,
+}
+
+impl<'a> Iterator for Iter<'a> {
+    type Item = ScanResult;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let result = self.scan.get(self.pos)?;
+        self.pos += 1;
+        Some(result)
     }
 }
 

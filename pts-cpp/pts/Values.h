@@ -11,7 +11,6 @@ class Values
 {
     friend class Scan;
 public:
-    Values(uintptr_t size);
     // NB: Do not copy to avoid sporadic de-allocations.
     Values(const Values&) = delete;
     Values(Values&&);
@@ -23,6 +22,8 @@ public:
     // Get the value at the given position as a string.
     String valueAt(uintptr_t pos) const;
 private:
+    Values(pts_values_t *);
+
     pts_values_t *inner;
 };
 }

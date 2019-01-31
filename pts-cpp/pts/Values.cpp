@@ -1,11 +1,6 @@
 #include <pts/Values.h>
 
 namespace pts {
-Values::Values(uintptr_t size)
-{
-    inner = pts_values_new(size);
-}
-
 Values::Values(Values &&other) :
     inner(other.inner)
 {
@@ -30,5 +25,10 @@ String Values::valueAt(uintptr_t pos) const
     String value;
     pts_values_value_at(inner, pos, value.ptr());
     return value;
+}
+
+Values::Values(pts_values_t *inner) :
+    inner(inner)
+{
 }
 }

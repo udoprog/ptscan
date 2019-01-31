@@ -4,8 +4,6 @@
 
 int main(int argc, char *argv[])
 {
-    qDebug() << sizeof(pts_value_t);
-
     pts_setup();
     qDebug() << QString("Loaded ptscan version: %1").arg(QString::fromLocal8Bit(pts_version()));
 

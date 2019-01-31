@@ -22,29 +22,17 @@ pub extern "C" fn pts_scan_free(scan: *mut Scan) {
 
 /// Access the scan result at the given offset.
 #[no_mangle]
-pub extern "C" fn pts_scan_result_at<'a>(scan: *const Scan, offset: usize) -> *const ScanResult {
+pub extern "C" fn pts_scan_result_at<'a>(scan: *const Scan, offset: usize) -> *mut ScanResult {
     let Scan(ref scan) = *null_ck!(&'a scan);
 
-    match scan.results.get(offset) {
-        Some(result) => result as *const _ as *const ScanResult,
-        None => ptr::null(),
+    match scan.get(offset) {
+        Some(result) => into_ptr!(ScanResult(result)),
+        None => ptr::null_mut(),
     }
 }
 
-/// Convert the scan result into a watch.
-#[no_mangle]
-pub extern "C" fn pts_scan_result_as_watch<'a>(
-    result: *const ScanResult,
-    handle: *const ProcessHandle,
-) -> *mut Watch {
-    let ScanResult(ref result) = *null_ck!(&'a result);
-    let handle = null_opt!(&'a handle).map(|h| &h.0);
-    let watch = try_last!(result.as_watch(handle), ptr::null_mut());
-    into_ptr!(Watch(watch))
-}
-
 /// An iterator over scan results.
-pub struct ScanResultsIter(std::slice::Iter<'static, ptscan::scan::ScanResult>);
+pub struct ScanResultsIter(ptscan::scan::Iter<'static>);
 
 /// Create an iterator over the results of a scan.
 ///
@@ -55,20 +43,18 @@ pub struct ScanResultsIter(std::slice::Iter<'static, ptscan::scan::ScanResult>);
 pub extern "C" fn pts_scan_results_iter<'a>(scan: *const Scan) -> *mut ScanResultsIter {
     let Scan(ref scan) = *null_ck!(&'a scan);
 
-    into_ptr!(ScanResultsIter(unsafe {
-        mem::transmute(scan.results.iter())
-    }))
+    into_ptr!(ScanResultsIter(unsafe { mem::transmute(scan.iter()) }))
 }
 
 /// Walk the iterator one step.
 ///
 /// If no more elements are available NULL is returned.
 #[no_mangle]
-pub extern "C" fn pts_scan_results_next<'a>(iter: *mut ScanResultsIter) -> *const ScanResult {
+pub extern "C" fn pts_scan_results_next<'a>(iter: *mut ScanResultsIter) -> *mut ScanResult {
     let ScanResultsIter(ref mut iter) = *null_ck!(&'a mut iter);
 
     match iter.next() {
-        Some(next) => next as *const _ as *const ScanResult,
+        Some(next) => into_ptr!(ScanResult(next)),
         None => ptr::null_mut(),
     }
 }
@@ -81,6 +67,18 @@ pub extern "C" fn pts_scan_results_free(pts_scan_results: *mut ScanResultsIter) 
 
 /// A single scan result.
 pub struct ScanResult(ptscan::scan::ScanResult);
+
+/// Convert the scan result into a watch.
+#[no_mangle]
+pub extern "C" fn pts_scan_result_as_watch<'a>(
+    result: *const ScanResult,
+    handle: *const ProcessHandle,
+) -> *mut Watch {
+    let ScanResult(ref result) = *null_ck!(&'a result);
+    let handle = null_opt!(&'a handle).map(|h| &h.0);
+    let watch = try_last!(result.as_watch(handle), ptr::null_mut());
+    into_ptr!(Watch(watch))
+}
 
 /// Access a readable process identifier for the handle.
 #[no_mangle]
@@ -107,6 +105,12 @@ pub extern "C" fn pts_scan_result_value<'a>(result: *const ScanResult, out: *mut
     *out = StringT::new(result.value.to_string());
 }
 
+/// Free the scan results iterator.
+#[no_mangle]
+pub extern "C" fn pts_scan_result_free(scan_result: *mut ScanResult) {
+    free!(scan_result);
+}
+
 /// Create an iterator over the results of a scan.
 ///
 /// # Safety
@@ -114,7 +118,7 @@ pub extern "C" fn pts_scan_result_value<'a>(result: *const ScanResult, out: *mut
 /// Modifying a collection while an iterate is open results in undefined behavior.
 #[no_mangle]
 pub extern "C" fn pts_scan_count<'a>(scan: *const Scan) -> usize {
-    null_ck!(&'a scan).0.results.len()
+    null_ck!(&'a scan).0.len()
 }
 
 type ScanProgressReportFn = fn(*mut c_void, usize);
@@ -184,6 +188,13 @@ pub extern "C" fn pts_scan_refresh<'a>(
     );
 
     true
+}
+
+/// Get a copy of the values contained in the scan.
+#[no_mangle]
+pub extern "C" fn pts_scan_values<'a>(scan: *const Scan) -> *mut Values {
+    let Scan(ref scan) = *null_ck!(&'a scan);
+    into_ptr!(Values(scan.values.clone()))
 }
 
 /// A reporter implementation that adapts a raw reporter.

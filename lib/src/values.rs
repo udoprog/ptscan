@@ -1,8 +1,11 @@
 //! Optimized storage for in-memory values.
 
 use crate::value::{Type, Value};
+use std::{iter, marker, ptr};
 
-#[derive(Default)]
+const MASK: u64 = 0x00_ff_ff_ff_ff_ff_ff_ffu64;
+
+#[derive(Clone, Default)]
 pub struct Values {
     // high byte = type
     // 56 bits = index in corresponding buffer.
@@ -19,12 +22,46 @@ impl Values {
         Values::default()
     }
 
+    /// Get the length of the values collection.
+    pub fn len(&self) -> usize {
+        self.index.len()
+    }
+
+    /// Clear the values collection.
+    pub fn clear(&mut self) {
+        self.index.clear();
+        self.buffer.clear();
+    }
+
+    /// A mutable reference to the underlying value.
+    ///
+    /// # Safety
+    ///
+    /// This is unsafe, the caller needs to make sure that the collection is not modified, and that multiple mutable
+    /// references are not active.
+    #[inline]
+    pub fn get_mut<'a>(&'a mut self, index: usize) -> Option<ValueMut<'a>> {
+        let index = match self.index.get_mut(index) {
+            Some(index) => index,
+            None => return None,
+        };
+
+        let idx = *index;
+        let ty = Type::from_byte((idx >> 56) as u8);
+        let i = (idx & MASK) as usize;
+        let ptr = self.buffer[i..].as_ptr() as *mut _;
+
+        Some(ValueMut {
+            index: index as *mut _,
+            ty,
+            ptr,
+            marker: marker::PhantomData,
+        })
+    }
+
     /// Get the index.
     #[inline]
-    pub fn get(&mut self, index: usize) -> Option<Value> {
-        use byteorder::{ByteOrder, NativeEndian};
-        use std::mem;
-
+    pub fn get(&self, index: usize) -> Option<Value> {
         macro_rules! define {
             (
                 $type:expr, $buf:expr,
@@ -35,7 +72,7 @@ impl Values {
                 Type::U8 => Some(Value::U8($buf[0])),
                 Type::I8 => Some(Value::I8($buf[0] as i8)),
                 $(Type::$member => {
-                    Some(Value::$member(NativeEndian::$read(&$buf[..mem::size_of::<$ty>()])))
+                    Some(Value::$member(unsafe { *($buf.as_ptr() as *const $ty) }))
                 },)*
                 }
             };
@@ -46,8 +83,7 @@ impl Values {
             None => return None,
         };
 
-        let i = (index & 0x00_ff_ff_ff_ff_ff_ff_ffu64) as usize;
-
+        let i = (index & MASK) as usize;
         let buf = &self.buffer[i..];
 
         define!(
@@ -64,9 +100,25 @@ impl Values {
         )
     }
 
+    /// Create an iterator over all values in collections.
+    pub fn iter<'a>(&'a self) -> Iter<'a> {
+        Iter {
+            values: self,
+            pos: 0,
+        }
+    }
+
+    /// Create a mutable iterator over all values.
+    pub fn iter_mut<'a>(&'a mut self) -> IterMut<'a> {
+        IterMut {
+            values: unsafe { ptr::NonNull::new_unchecked(self) },
+            pos: 0,
+            marker: marker::PhantomData,
+        }
+    }
+
     /// Push a single value.
     pub fn push(&mut self, value: Value) {
-        use byteorder::{ByteOrder, NativeEndian};
         use std::mem;
 
         macro_rules! define {
@@ -75,23 +127,14 @@ impl Values {
                 $(($ty:ty, $member:ident, $write:ident),)*
             ) => {
                 match $value {
-                Value::None => {
-                    self.index.push(0);
-                    return;
-                },
-                Value::U8(v) => {
-                    $buf.push(v);
-                    Type::U8 as u8
-                },
-                Value::I8(v) => {
-                    $buf.push(v as u8);
-                    Type::I8 as u8
-                },
+                Value::None => { self.index.push(0); return; },
+                Value::U8(v) => { $buf.push(v); Type::U8 as u8 },
+                Value::I8(v) => { $buf.push(v as u8); Type::I8 as u8 },
                 $(
                 Value::$member(v) => {
-                    let mut buf = &mut self.scratch[..mem::size_of::<$ty>()];
-                    NativeEndian::$write(&mut buf, v);
-                    $buf.extend(buf.iter().cloned());
+                    let o = self.scratch.as_mut_ptr() as *mut $ty;
+                    unsafe { *o = v };
+                    $buf.extend(&self.scratch[..mem::size_of::<$ty>()]);
                     Type::$member as u8
                 },
                 )*
@@ -101,7 +144,7 @@ impl Values {
 
         let i = self.buffer.len();
 
-        let t = define!(
+        let t = define! {
             value,
             self.buffer,
             (u16, U16, write_u16),
@@ -112,15 +155,165 @@ impl Values {
             (i64, I64, write_i64),
             (u128, U128, write_u128),
             (i128, I128, write_i128),
-        );
+        };
 
         let i = i as u64;
 
-        if i > 0x00_ff_ff_ff_ff_ff_ff_ffu64 {
+        if i > MASK {
             panic!("index out of range");
         }
 
         self.index.push(((t as u64) << 56) | i)
+    }
+}
+
+impl iter::Extend<Value> for Values {
+    fn extend<T>(&mut self, iter: T)
+    where
+        T: IntoIterator<Item = Value>,
+    {
+        for value in iter {
+            self.push(value);
+        }
+    }
+}
+
+/// A single dynamic literal value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ValueMut<'a> {
+    ty: Type,
+    index: *mut u64,
+    ptr: *mut u8,
+    marker: marker::PhantomData<&'a ()>,
+}
+
+unsafe impl<'a> Send for ValueMut<'a> {}
+
+impl<'a> ValueMut<'a> {
+    /// Convert into a value.
+    pub fn to_value(&self) -> Value {
+        macro_rules! define {
+            ($value:expr, $(($member:ident, $ty:ty),)*) => {
+                match $value {
+                    Type::None => Value::None,
+                    $(Type::$member => {
+                        Value::$member(*(self.ptr as *mut $ty))
+                    },)*
+                }
+            }
+        }
+
+        unsafe {
+            define! {
+                self.ty,
+                (U8, u8),
+                (I8, i8),
+                (U16, u16),
+                (I16, i16),
+                (U32, u32),
+                (I32, i32),
+                (U64, u64),
+                (I64, i64),
+                (U128, u128),
+                (I128, i128),
+            }
+        }
+    }
+
+    /// Set the given position with the given value.
+    pub fn set(&mut self, value: Value) {
+        macro_rules! define {
+            ($type:expr, $ptr:expr, $value:expr, $(($member:ident, $ty:ty),)*) => {
+                match ($type, $value) {
+                    $((Type::$member, Value::$member(v)) => {
+                        *($ptr as *mut $ty) = v;
+                    },)*
+                    _ => {
+                    }
+                }
+            }
+        }
+
+        unsafe {
+            define! {
+                self.ty, self.ptr, value,
+                (U8, u8),
+                (I8, i8),
+                (U16, u16),
+                (I16, i16),
+                (U32, u32),
+                (I32, i32),
+                (U64, u64),
+                (I64, i64),
+                (U128, u128),
+                (I128, i128),
+            }
+        }
+    }
+
+    /// Clear the value at the given location.
+    pub fn clear(&mut self) {
+        unsafe {
+            *self.index = (Type::None as u64) << 56;
+        }
+    }
+
+    /// Get the type of the value.
+    pub fn ty(&self) -> Type {
+        self.ty
+    }
+}
+
+impl<'a> IntoIterator for &'a mut Values {
+    type Item = ValueMut<'a>;
+    type IntoIter = IterMut<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
+impl<'a> IntoIterator for &'a Values {
+    type Item = Value;
+    type IntoIter = Iter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+pub struct Iter<'a> {
+    values: &'a Values,
+    pos: usize,
+}
+
+impl<'a> Iterator for Iter<'a> {
+    type Item = Value;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let value = self.values.get(self.pos)?;
+        self.pos += 1;
+        Some(value)
+    }
+}
+
+pub struct IterMut<'a> {
+    values: ptr::NonNull<Values>,
+    pos: usize,
+    marker: marker::PhantomData<&'a mut ()>,
+}
+
+impl<'a> Iterator for IterMut<'a> {
+    type Item = ValueMut<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match unsafe { &mut *self.values.as_ptr() }.get_mut(self.pos) {
+            Some(value) => {
+                self.pos += 1;
+                Some(value)
+            }
+            None => None,
+        }
     }
 }
 
@@ -133,28 +326,28 @@ mod tests {
     pub fn test_values() {
         let mut values = Values::new();
 
-        values.push(Value::U8(1));
-        values.push(Value::I8(2));
-        values.push(Value::U16(3));
-        values.push(Value::I16(4));
-        values.push(Value::U32(5));
-        values.push(Value::I32(6));
-        values.push(Value::U64(7));
-        values.push(Value::I64(8));
-        values.push(Value::U128(9));
-        values.push(Value::I128(10));
+        let expected = vec![
+            Value::None,
+            Value::U8(1),
+            Value::I8(2),
+            Value::U16(3),
+            Value::I16(4),
+            Value::U32(5),
+            Value::I32(6),
+            Value::U64(7),
+            Value::I64(8),
+            Value::U128(9),
+            Value::I128(10),
+        ];
 
-        assert_eq!(Some(Value::U8(1)), values.get(0));
-        assert_eq!(Some(Value::I8(2)), values.get(1));
-        assert_eq!(Some(Value::U16(3)), values.get(2));
-        assert_eq!(Some(Value::I16(4)), values.get(3));
-        assert_eq!(Some(Value::U32(5)), values.get(4));
-        assert_eq!(Some(Value::I32(6)), values.get(5));
-        assert_eq!(Some(Value::U64(7)), values.get(6));
-        assert_eq!(Some(Value::I64(8)), values.get(7));
-        assert_eq!(Some(Value::U128(9)), values.get(8));
-        assert_eq!(Some(Value::I128(10)), values.get(9));
+        values.extend(expected.iter().cloned());
 
-        assert_eq!(None, values.get(10));
+        for (i, v) in expected.iter().cloned().enumerate() {
+            assert_eq!(Some(v), values.get(i));
+        }
+
+        assert_eq!(None, values.get(expected.len() + 1));
+        assert_eq!(expected, values.iter().collect::<Vec<_>>());
+        assert_eq!(values.len(), expected.len());
     }
 }

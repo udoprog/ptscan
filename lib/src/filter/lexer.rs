@@ -371,7 +371,7 @@ impl<'a> Iterator for Lexer<'a> {
 #[cfg(test)]
 mod tests {
     use super::{Error, Lexer, Token};
-    use crate::scan::Value;
+    use crate::value::Value;
 
     fn tokenize(input: &str) -> Result<Vec<(usize, Token, usize)>, Error> {
         Lexer::new(input).collect::<Result<Vec<_>, _>>()

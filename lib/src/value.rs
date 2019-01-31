@@ -140,22 +140,51 @@ impl fmt::Display for Value {
     }
 }
 
+#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Type {
-    None,
-    U128,
-    I128,
-    U64,
-    I64,
-    U32,
-    I32,
-    U16,
-    I16,
-    U8,
-    I8,
+    None = 0u8,
+    U8 = 1u8,
+    I8 = 2u8,
+    U16 = 3u8,
+    I16 = 4u8,
+    U32 = 5u8,
+    I32 = 6u8,
+    U64 = 7u8,
+    I64 = 8u8,
+    U128 = 9u8,
+    I128 = 10u8,
 }
 
 impl Type {
+    /// Convert from byte.
+    pub fn from_byte(ty: u8) -> Type {
+        const U128: u8 = Type::U128 as u8;
+        const I128: u8 = Type::I128 as u8;
+        const U64: u8 = Type::U64 as u8;
+        const I64: u8 = Type::I64 as u8;
+        const U32: u8 = Type::U32 as u8;
+        const I32: u8 = Type::I32 as u8;
+        const U16: u8 = Type::U16 as u8;
+        const I16: u8 = Type::I16 as u8;
+        const U8: u8 = Type::U8 as u8;
+        const I8: u8 = Type::I8 as u8;
+
+        match ty {
+            U128 => Type::U128,
+            I128 => Type::I128,
+            U64 => Type::U64,
+            I64 => Type::I64,
+            U32 => Type::U32,
+            I32 => Type::I32,
+            U16 => Type::U16,
+            I16 => Type::I16,
+            U8 => Type::U8,
+            I8 => Type::I8,
+            _ => Type::None,
+        }
+    }
+
     /// Parse a string value of the type.
     pub fn parse(&self, input: &str) -> Result<Value, failure::Error> {
         use self::Type::*;

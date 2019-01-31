@@ -50,7 +50,6 @@ struct pts_token_t;
 /// A single dynamic literal value.
 struct pts_value_t;
 
-/// A collection of scan values that can be populated through e.g. scan_refresh.
 struct pts_values_t;
 
 struct pts_watch_t;

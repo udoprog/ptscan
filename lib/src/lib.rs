@@ -21,6 +21,7 @@ mod thread;
 mod thread_buffers;
 mod token;
 mod value;
+mod values;
 pub mod watch;
 
 pub type ProcessId = DWORD;
@@ -37,3 +38,4 @@ pub use self::thread::Thread;
 pub use self::token::Token;
 pub use self::utils::IteratorExtension;
 pub use self::value::{Type, Value};
+pub use self::values::Values;

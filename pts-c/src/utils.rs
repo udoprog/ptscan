@@ -8,6 +8,17 @@ pub(crate) fn constrain_mut<'a, T>(value: *mut T) -> &'a mut T {
     unsafe { &mut *value }
 }
 
+/// NULL check the argument and transmute it into an immediate reference.
+macro_rules! immediate_ck {
+    ($ty:ty, &$l:lifetime $expr:expr) => {
+        unsafe { mem::transmute::<_, &$l $ty>(null_ck!(&$l $expr)) }
+    };
+
+    ($ty:ty, &$l:lifetime mut $expr:expr) => {
+        unsafe { mem::transmute::<_, &$l mut $ty>(null_ck!(&$l mut $expr)) }
+    };
+}
+
 /// NULL check the given argument and convert into a reference with a bounded lifetime.
 macro_rules! null_ck {
     (&$l:lifetime mut $expr:expr) => {{

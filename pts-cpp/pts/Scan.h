@@ -60,10 +60,7 @@ class ScanResult {
     friend class Scan;
 
 public:
-    ScanResult();
-    ScanResult(const ScanResult &) = delete;
-    ScanResult(ScanResult &&);
-    ~ScanResult();
+    ScanResult(const ScanResult &) = default;
 
     // Convert into a watch.
     // If there is a process handle available, the watch will be decorated with more information.
@@ -77,9 +74,9 @@ public:
     String value() const;
 
 private:
-    explicit ScanResult(pts_scan_result_t *inner);
+    explicit ScanResult(pts_scan_result_t inner);
 
-    pts_scan_result_t *inner;
+    pts_scan_result_t inner;
 };
 }
 

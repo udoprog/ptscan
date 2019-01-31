@@ -2,7 +2,7 @@
 
 extern crate ptscan;
 
-use std::{mem, os::raw::c_char, ptr, sync};
+use std::{os::raw::c_char, ptr, sync};
 
 #[macro_use]
 mod utils;
@@ -31,7 +31,6 @@ pub extern "C" fn pts_version() -> *const c_char {
 /// Setup function that needs to be called to initialize the library.
 #[no_mangle]
 pub extern "C" fn pts_setup() {
-    assert_eq!(value::VALUE_SIZE, mem::size_of::<ptscan::Value>());
     // NB: needed to initialize eagerly initialized data.
     failure::format_err!("dummy error");
 }

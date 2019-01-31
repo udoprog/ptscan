@@ -78,9 +78,9 @@ std::vector<ScanResult> Scan::results(uintptr_t limit)
 {
     std::vector<ScanResult> out;
     pts_scan_results_iter_t *iter = pts_scan_results_iter(inner);
-    pts_scan_result_t *next;
+    pts_scan_result_t next;
 
-    while ((next = pts_scan_results_next(iter)) && limit > 0) {
+    while (pts_scan_results_next(iter, &next) && limit > 0) {
         out.push_back(ScanResult{next});
         limit -= 1;
     }
@@ -91,8 +91,10 @@ std::vector<ScanResult> Scan::results(uintptr_t limit)
 
 std::optional<ScanResult> Scan::at(uintptr_t offset)
 {
-    if (auto next = pts_scan_result_at(inner, offset)) {
-        return std::make_optional(ScanResult{next});
+    pts_scan_result_t result;
+
+    if (pts_scan_result_at(inner, offset, &result)) {
+        return std::make_optional(ScanResult{result});
     }
 
     return {};
@@ -108,28 +110,9 @@ Values Scan::values()
     return Values{pts_scan_values(inner)};
 }
 
-ScanResult::ScanResult(pts_scan_result_t *inner) :
+ScanResult::ScanResult(pts_scan_result_t inner) :
     inner(inner)
 {
-}
-
-ScanResult::ScanResult() :
-    inner(nullptr)
-{
-}
-
-ScanResult::ScanResult(ScanResult &&other) :
-    inner(other.inner)
-{
-    other.inner = nullptr;
-}
-
-ScanResult::~ScanResult()
-{
-    if (inner) {
-        pts_scan_result_free(inner);
-        inner = nullptr;
-    }
 }
 
 std::shared_ptr<Watch> ScanResult::asWatch(std::shared_ptr<ProcessHandle> &handle)
@@ -140,7 +123,7 @@ std::shared_ptr<Watch> ScanResult::asWatch(std::shared_ptr<ProcessHandle> &handl
         p = handle.get()->inner;
     }
 
-    auto watch = pts_scan_result_as_watch(inner, p);
+    auto watch = pts_scan_result_as_watch(&inner, p);
 
     if (!watch) {
         throw last_exception();
@@ -151,22 +134,21 @@ std::shared_ptr<Watch> ScanResult::asWatch(std::shared_ptr<ProcessHandle> &handl
 
 String ScanResult::address(const std::shared_ptr<ProcessHandle>& handle) const
 {
-    String display;
-
     pts_process_handle_t *p = nullptr;
 
     if (handle) {
         p = handle.get()->inner;
     }
 
-    pts_scan_result_address(inner, p, display.ptr());
+    String display;
+    pts_scan_result_address(&inner, p, display.ptr());
     return display;
 }
 
 String ScanResult::value() const
 {
     String value;
-    pts_scan_result_value(inner, value.ptr());
+    pts_scan_result_value(&inner, value.ptr());
     return value;
 }
 }

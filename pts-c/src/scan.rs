@@ -22,12 +22,20 @@ pub extern "C" fn pts_scan_free(scan: *mut Scan) {
 
 /// Access the scan result at the given offset.
 #[no_mangle]
-pub extern "C" fn pts_scan_result_at<'a>(scan: *const Scan, offset: usize) -> *mut ScanResult {
+pub extern "C" fn pts_scan_result_at<'a>(
+    scan: *const Scan,
+    offset: usize,
+    out: *mut ScanResult,
+) -> bool {
     let Scan(ref scan) = *null_ck!(&'a scan);
+    let out = immediate_ck!(ptscan::ScanResult, &'a mut out);
 
     match scan.get(offset) {
-        Some(result) => into_ptr!(ScanResult(result)),
-        None => ptr::null_mut(),
+        Some(result) => {
+            *out = result;
+            true
+        }
+        None => false,
     }
 }
 
@@ -50,12 +58,19 @@ pub extern "C" fn pts_scan_results_iter<'a>(scan: *const Scan) -> *mut ScanResul
 ///
 /// If no more elements are available NULL is returned.
 #[no_mangle]
-pub extern "C" fn pts_scan_results_next<'a>(iter: *mut ScanResultsIter) -> *mut ScanResult {
+pub extern "C" fn pts_scan_results_next<'a>(
+    iter: *mut ScanResultsIter,
+    out: *mut ScanResult,
+) -> bool {
     let ScanResultsIter(ref mut iter) = *null_ck!(&'a mut iter);
+    let out = null_ck!(&'a mut out);
 
     match iter.next() {
-        Some(next) => into_ptr!(ScanResult(next)),
-        None => ptr::null_mut(),
+        Some(next) => {
+            *out = unsafe { mem::transmute::<_, ScanResult>(next) };
+            true
+        }
+        None => false,
     }
 }
 
@@ -66,7 +81,9 @@ pub extern "C" fn pts_scan_results_free(pts_scan_results: *mut ScanResultsIter) 
 }
 
 /// A single scan result.
-pub struct ScanResult(ptscan::scan::ScanResult);
+/// NB: has to be the same size as `ptscan::ScanResult`.
+#[repr(C)]
+pub struct ScanResult([u8; 32]);
 
 /// Convert the scan result into a watch.
 #[no_mangle]
@@ -74,7 +91,7 @@ pub extern "C" fn pts_scan_result_as_watch<'a>(
     result: *const ScanResult,
     handle: *const ProcessHandle,
 ) -> *mut Watch {
-    let ScanResult(ref result) = *null_ck!(&'a result);
+    let result = immediate_ck!(ptscan::ScanResult, &'a result);
     let handle = null_opt!(&'a handle).map(|h| &h.0);
     let watch = try_last!(result.as_watch(handle), ptr::null_mut());
     into_ptr!(Watch(watch))
@@ -87,7 +104,7 @@ pub extern "C" fn pts_scan_result_address<'a>(
     handle: *const ProcessHandle,
     out: *mut StringT,
 ) {
-    let ScanResult(ref result) = *null_ck!(&'a result);
+    let result = immediate_ck!(ptscan::ScanResult, &'a result);
     let handle = null_opt!(&'a handle).map(|r| &r.0);
     let out = null_ck!(&'a mut out);
 
@@ -100,15 +117,9 @@ pub extern "C" fn pts_scan_result_address<'a>(
 /// Access the value for the scan result.
 #[no_mangle]
 pub extern "C" fn pts_scan_result_value<'a>(result: *const ScanResult, out: *mut StringT) {
-    let ScanResult(ref result) = *null_ck!(&'a result);
+    let result = immediate_ck!(ptscan::ScanResult, &'a result);
     let out = null_ck!(&'a mut out);
     *out = StringT::new(result.value.to_string());
-}
-
-/// Free the scan results iterator.
-#[no_mangle]
-pub extern "C" fn pts_scan_result_free(scan_result: *mut ScanResult) {
-    free!(scan_result);
 }
 
 /// Create an iterator over the results of a scan.

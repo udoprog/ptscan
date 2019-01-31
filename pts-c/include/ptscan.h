@@ -5,8 +5,6 @@
 #include <cstdint>
 #include <cstdlib>
 
-static const uintptr_t pts_VALUE_SIZE = 24;
-
 struct pts_error_t;
 
 /// A filter.
@@ -23,9 +21,6 @@ struct pts_process_id_t;
 
 /// A scan keeping track of results scanned from memory.
 struct pts_scan_t;
-
-/// A single scan result.
-struct pts_scan_result_t;
 
 /// An iterator over scan results.
 struct pts_scan_results_iter_t;
@@ -57,8 +52,15 @@ struct pts_scan_progress_t {
   pts_scan_progress_report_fn report;
 };
 
+/// A single scan result.
+/// NB: has to be the same size as `ptscan::ScanResult`.
+struct pts_scan_result_t {
+  uint8_t _0[32];
+};
+
+/// NB: has to be the same size as `ptscan::Value`.
 struct pts_value_t {
-  uint8_t _0[pts_VALUE_SIZE];
+  uint8_t _0[24];
 };
 
 extern "C" {
@@ -152,10 +154,7 @@ pts_watch_t *pts_scan_result_as_watch(const pts_scan_result_t *result,
                                       const pts_process_handle_t *handle);
 
 /// Access the scan result at the given offset.
-pts_scan_result_t *pts_scan_result_at(const pts_scan_t *scan, uintptr_t offset);
-
-/// Free the scan results iterator.
-void pts_scan_result_free(pts_scan_result_t *scan_result);
+bool pts_scan_result_at(const pts_scan_t *scan, uintptr_t offset, pts_scan_result_t *out);
 
 /// Access the value for the scan result.
 void pts_scan_result_value(const pts_scan_result_t *result, pts_string_t *out);
@@ -170,7 +169,7 @@ pts_scan_results_iter_t *pts_scan_results_iter(const pts_scan_t *scan);
 
 /// Walk the iterator one step.
 /// If no more elements are available NULL is returned.
-pts_scan_result_t *pts_scan_results_next(pts_scan_results_iter_t *iter);
+bool pts_scan_results_next(pts_scan_results_iter_t *iter, pts_scan_result_t *out);
 
 /// Creates and returns a new scan.
 bool pts_scan_scan(pts_scan_t *scan,

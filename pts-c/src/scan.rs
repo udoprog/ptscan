@@ -140,6 +140,14 @@ pub struct ScanProgress {
     report: ScanProgressReportFn,
 }
 
+impl ScanProgress {
+    /// Convert into a proper progress implementation.
+    pub fn as_progress(&self, data: *mut c_void) -> RawProgress {
+        let ScanProgress { report } = *self;
+        RawProgress { data, report }
+    }
+}
+
 /// Creates and returns a new scan.
 #[no_mangle]
 pub extern "C" fn pts_scan_scan<'a>(
@@ -154,9 +162,7 @@ pub extern "C" fn pts_scan_scan<'a>(
     let ProcessHandle(ref handle) = *null_ck!(&'a handle);
     let Filter(ref filter) = *null_ck!(&'a filter);
     let cancel = null_opt!(&'a cancel).map(|t| &t.0);
-    let ScanProgress { report } = *null_ck!(&'a progress);
-
-    let progress = RawProgress { data, report };
+    let progress = null_ck!(&'a progress).as_progress(data);
 
     if !scan.initial {
         scan.initial = true;
@@ -176,6 +182,7 @@ pub extern "C" fn pts_scan_scan<'a>(
 }
 
 /// Creates and returns a new scan.
+/// deprecated: use `pts_process_handle_read_memory`
 #[no_mangle]
 pub extern "C" fn pts_scan_refresh<'a>(
     scan: *const Scan,
@@ -189,12 +196,17 @@ pub extern "C" fn pts_scan_refresh<'a>(
     let ProcessHandle(ref handle) = *null_ck!(&'a handle);
     let Values(ref mut values) = *null_ck!(&'a mut values);
     let cancel = null_opt!(&'a cancel).map(|t| &t.0);
-    let ScanProgress { report } = *null_ck!(&'a progress);
-
-    let progress = RawProgress { data, report };
+    let progress = null_ck!(&'a progress).as_progress(data);
 
     try_last!(
-        scan.refresh(&handle.process, values, cancel, progress),
+        handle.read_memory(
+            &*scan.thread_pool,
+            &scan.addresses,
+            &scan.values,
+            values,
+            cancel,
+            progress
+        ),
         false
     );
 

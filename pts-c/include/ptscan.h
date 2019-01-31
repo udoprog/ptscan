@@ -5,6 +5,9 @@
 #include <cstdint>
 #include <cstdlib>
 
+/// A collection of addresses that can be populated.
+struct pts_Addresses;
+
 struct pts_error_t;
 
 /// A filter.
@@ -65,6 +68,15 @@ struct pts_value_t {
 
 extern "C" {
 
+/// Free the scan addresses.
+void pts_addresses_free(pts_Addresses *addresses);
+
+/// Get the value at the given position as a string.
+uintptr_t pts_addresses_length(const pts_Addresses *addresses);
+
+/// Get the value at the given position as a string.
+void pts_addresses_value_at(const pts_Addresses *addresses, uintptr_t pos, pts_string_t *out);
+
 /// Returns the last error raised in this thread.
 /// Returns NULL if no error was raised.
 const pts_error_t *pts_error_last();
@@ -119,6 +131,16 @@ bool pts_process_handle_open_by_name(const char *name,
 /// Access a readable process identifier for the handle.
 void pts_process_handle_pid(const pts_process_handle_t *handle, pts_string_t *pid);
 
+/// Read the given memory locations from the process.
+bool pts_process_handle_read_memory(const pts_process_handle_t *handle,
+                                    const pts_thread_pool_t *thread_pool,
+                                    const pts_Addresses *addresses,
+                                    const pts_values_t *values,
+                                    pts_values_t *output,
+                                    const pts_token_t *cancel,
+                                    const pts_scan_progress_t *progress,
+                                    void *data);
+
 /// Refresh known modules.
 bool pts_process_handle_refresh_modules(pts_process_handle_t *handle);
 
@@ -137,6 +159,7 @@ void pts_scan_free(pts_scan_t *scan);
 pts_scan_t *pts_scan_new(const pts_thread_pool_t *thread_pool);
 
 /// Creates and returns a new scan.
+/// deprecated: use `pts_process_handle_read_memory`
 bool pts_scan_refresh(const pts_scan_t *scan,
                       const pts_process_handle_t *handle,
                       pts_values_t *values,

@@ -1,5 +1,11 @@
-use crate::{string::StringT, system::ProcessId, utils};
-use std::{os::raw::c_char, ptr};
+use crate::{
+    addresses::Addresses, scan::ScanProgress, string::StringT, system::ProcessId, utils,
+    values::Values, ThreadPool, Token,
+};
+use std::{
+    os::raw::{c_char, c_void},
+    ptr,
+};
 
 /// Handle for a process.
 pub struct ProcessHandle(pub(crate) ptscan::ProcessHandle);
@@ -84,6 +90,34 @@ pub extern "C" fn pts_process_handle_pid<'a>(handle: *const ProcessHandle, pid: 
     let ProcessHandle(ref handle) = *null_ck!(&'a handle);
     let pid = null_ck!(&'a mut pid);
     *pid = StringT::new(handle.process.process_id().to_string());
+}
+
+/// Read the given memory locations from the process.
+#[no_mangle]
+pub extern "C" fn pts_process_handle_read_memory<'a>(
+    handle: *const ProcessHandle,
+    thread_pool: *const ThreadPool,
+    addresses: *const Addresses,
+    values: *const Values,
+    output: *mut Values,
+    cancel: *const Token,
+    progress: *const ScanProgress,
+    data: *mut c_void,
+) -> bool {
+    let ProcessHandle(ref handle) = *null_ck!(&'a handle);
+    let ThreadPool(ref thread_pool) = *null_ck!(&'a thread_pool);
+    let Addresses(ref addresses) = *null_ck!(&'a addresses);
+    let Values(ref values) = *null_ck!(&'a values);
+    let Values(ref mut output) = *null_ck!(&'a mut output);
+    let cancel = null_opt!(&'a cancel).map(|t| &t.0);
+    let progress = null_ck!(&'a progress).as_progress(data);
+
+    try_last!(
+        handle.read_memory(&*thread_pool, addresses, values, output, cancel, progress),
+        false
+    );
+
+    true
 }
 
 /// Close and free the process handle.

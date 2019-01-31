@@ -28,13 +28,13 @@ pub trait Progress {
 /// A scan responsible for finding results in memory.
 pub struct Scan {
     /// Thread pool this scan uses.
-    thread_pool: Arc<rayon::ThreadPool>,
+    pub thread_pool: Arc<rayon::ThreadPool>,
     /// Only scan for aligned values.
-    aligned: bool,
+    pub aligned: bool,
     /// If this scan has a set of initial results.
     pub initial: bool,
     /// Addresses in the scan.
-    addresses: Vec<Address>,
+    pub addresses: Vec<Address>,
     /// Values in the scan.
     pub values: Values,
 }
@@ -90,93 +90,6 @@ impl Scan {
             aligned: true,
             ..self
         }
-    }
-
-    /// Refresh current value for scan results.
-    pub fn refresh(
-        &self,
-        process: &Process,
-        output: &mut Values,
-        cancel: Option<&Token>,
-        progress: (impl Progress + Send),
-    ) -> Result<(), failure::Error> {
-        let mut local_cancel = None;
-
-        let cancel = match cancel {
-            Some(cancel) => cancel,
-            None => local_cancel.get_or_insert(Token::new()),
-        };
-
-        let len = usize::min(self.addresses.len(), output.len());
-
-        if len == 0 {
-            return Ok(());
-        }
-
-        let values = &self.values;
-        let addresses = &self.addresses;
-
-        let buffers = thread_buffers::ThreadBuffers::new();
-
-        let mut last_error = None;
-
-        self.thread_pool.install(|| {
-            rayon::scope(|s| {
-                let (tx, rx) = mpsc::sync_channel(1024);
-
-                let mut reporter = Reporter::new(progress, len, cancel);
-
-                let it = values
-                    .iter()
-                    .zip(output.iter_mut())
-                    .zip(addresses.iter().cloned());
-
-                for ((value, mut output), address) in it {
-                    let tx = tx.clone();
-                    let buffers = &buffers;
-
-                    s.spawn(move |_| {
-                        if cancel.test() {
-                            tx.send(Ok(())).expect("closed channel");
-                            return;
-                        }
-
-                        let mut work = || {
-                            let ty = value.ty();
-                            let mut buf = buffers.get_mut(ty.size())?;
-                            output.set(process.read_memory_of_type(address, ty, &mut *buf)?);
-                            Ok::<_, failure::Error>(())
-                        };
-
-                        tx.send(work()).expect("closed channel");
-                    });
-                }
-
-                while !reporter.is_done() {
-                    let m = rx.recv().expect("closed channel");
-
-                    if let Err(e) = reporter.tick() {
-                        last_error = Some(e);
-                        cancel.set();
-                    }
-
-                    if let Err(e) = m {
-                        last_error = Some(e);
-                        cancel.set();
-                    }
-                }
-            });
-        });
-
-        if let Some(e) = last_error {
-            return Err(e);
-        }
-
-        if cancel.test() {
-            return Err(failure::format_err!("scan cancelled"));
-        }
-
-        Ok(())
     }
 
     /// rescan a set of results.
@@ -553,6 +466,7 @@ pub struct Reporter<'token, P> {
 }
 
 impl<'token, P> Reporter<'token, P> {
+    /// Create a new reporter.
     pub fn new<'a>(progress: P, total: usize, token: &'a Token) -> Reporter<P> {
         let mut percentage = total / 100;
 

@@ -26,7 +26,7 @@ Pointer::~Pointer()
 String Pointer::display() const
 {
     pts::String display;
-    pts_pointer_display(inner, display.ptr());
+    pts_pointer_display(inner, &display.inner);
     return display;
 }
 

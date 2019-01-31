@@ -6,6 +6,7 @@
 #include <pts/Token.h>
 #include <pts/Watch.h>
 #include <pts/Values.h>
+#include <pts/Address.h>
 #include <vector>
 #include <optional>
 
@@ -132,23 +133,15 @@ std::shared_ptr<Watch> ScanResult::asWatch(std::shared_ptr<ProcessHandle> &handl
     return std::make_shared<Watch>(Watch{watch});
 }
 
-String ScanResult::address(const std::shared_ptr<ProcessHandle>& handle) const
+Address ScanResult::address() const
 {
-    pts_process_handle_t *p = nullptr;
-
-    if (handle) {
-        p = handle.get()->inner;
-    }
-
-    String display;
-    pts_scan_result_address(&inner, p, display.ptr());
-    return display;
+    return Address{pts_scan_result_address(&inner)};
 }
 
 String ScanResult::value() const
 {
     String value;
-    pts_scan_result_value(&inner, value.ptr());
+    pts_scan_result_value(&inner, &value.inner);
     return value;
 }
 }

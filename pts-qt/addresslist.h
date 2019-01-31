@@ -11,6 +11,7 @@ class EditAddress;
 namespace pts
 {
 class Watch;
+class ProcessHandle;
 }
 
 namespace Ui {
@@ -26,7 +27,7 @@ public:
     ~AddressList();
 
     // Add the given watch to the address list.
-    void addWatch(std::shared_ptr<pts::Watch> watch);
+    void addWatch(std::shared_ptr<pts::ProcessHandle> handle, std::shared_ptr<pts::Watch> watch);
 private:
     Ui::AddressList *ui;
     QStandardItemModel model;

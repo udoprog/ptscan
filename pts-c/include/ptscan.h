@@ -42,6 +42,11 @@ struct pts_values_t;
 /// An address being watched.
 struct pts_watch_t;
 
+/// NB: has to be the same size as `ptscan::Address`.
+struct pts_address_t {
+  uint8_t _0[8];
+};
+
 struct pts_string_t {
   char *ptr;
   uintptr_t len;
@@ -68,14 +73,19 @@ struct pts_value_t {
 
 extern "C" {
 
+/// Display the address as a string.
+void pts_address_display(const pts_address_t *address,
+                         const pts_process_handle_t *handle,
+                         pts_string_t *out);
+
+/// Get the value at the given position as a string.
+bool pts_addresses_at(const pts_Addresses *addresses, uintptr_t pos, pts_address_t *out);
+
 /// Free the scan addresses.
 void pts_addresses_free(pts_Addresses *addresses);
 
 /// Get the value at the given position as a string.
 uintptr_t pts_addresses_length(const pts_Addresses *addresses);
-
-/// Get the value at the given position as a string.
-void pts_addresses_value_at(const pts_Addresses *addresses, uintptr_t pos, pts_string_t *out);
 
 /// Returns the last error raised in this thread.
 /// Returns NULL if no error was raised.
@@ -141,6 +151,11 @@ bool pts_process_handle_read_memory(const pts_process_handle_t *handle,
                                     const pts_scan_progress_t *progress,
                                     void *data);
 
+/// Resolve a pointer.
+bool pts_process_handle_read_pointer(const pts_process_handle_t *handle,
+                                     const pts_pointer_t *pointer,
+                                     pts_address_t *out);
+
 /// Refresh known modules.
 bool pts_process_handle_refresh_modules(pts_process_handle_t *handle);
 
@@ -168,9 +183,7 @@ bool pts_scan_refresh(const pts_scan_t *scan,
                       void *data);
 
 /// Access a readable process identifier for the handle.
-void pts_scan_result_address(const pts_scan_result_t *result,
-                             const pts_process_handle_t *handle,
-                             pts_string_t *out);
+pts_address_t pts_scan_result_address(const pts_scan_result_t *result);
 
 /// Convert the scan result into a watch.
 pts_watch_t *pts_scan_result_as_watch(const pts_scan_result_t *result,
@@ -237,14 +250,16 @@ pts_token_t *pts_token_new();
 /// Set the token.
 void pts_token_set(const pts_token_t *token);
 
+void pts_value_display(const pts_value_t *value, pts_string_t *out);
+
+/// Get the value at the given position as a string.
+bool pts_values_at(const pts_values_t *values, uintptr_t pos, pts_value_t *out);
+
 /// Free the scan values.
 void pts_values_free(pts_values_t *values);
 
 /// Get the value at the given position as a string.
 uintptr_t pts_values_length(const pts_values_t *values);
-
-/// Get the value at the given position as a string.
-void pts_values_value_at(const pts_values_t *values, uintptr_t pos, pts_string_t *out);
 
 /// Get the current ptscan version.
 const char *pts_version();
@@ -255,9 +270,6 @@ void pts_watch_display_pointer(const pts_watch_t *watch, pts_string_t *out);
 /// Access a human-readable version of the watch type.
 void pts_watch_display_type(const pts_watch_t *watch, pts_string_t *out);
 
-/// Access a human-readable version of the watch value.
-void pts_watch_display_value(const pts_watch_t *watch, pts_string_t *out);
-
 /// Free the watch.
 void pts_watch_free(pts_watch_t *watch);
 
@@ -267,7 +279,8 @@ pts_pointer_t *pts_watch_get_pointer(pts_watch_t *watch);
 /// Set the pointer of the watch using a clone of the provided pointer.
 void pts_watch_set_pointer(pts_watch_t *watch, const pts_pointer_t *pointer);
 
-pts_value_t test_value();
+/// Access a copy of the value.
+pts_value_t pts_watch_value(const pts_watch_t *watch);
 
 } // extern "C"
 

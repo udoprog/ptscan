@@ -362,7 +362,7 @@ where
                 writeln!(
                     self.w,
                     "{} = {}",
-                    result.address_display(handle),
+                    result.address.display(handle),
                     result.value
                 )?;
             } else {

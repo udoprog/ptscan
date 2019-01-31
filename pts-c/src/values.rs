@@ -1,4 +1,4 @@
-use crate::string::StringT;
+use crate::value::Value;
 
 /// A collection of scan values that can be populated through e.g. scan_refresh.
 pub struct Values(pub(crate) ptscan::Values);
@@ -11,14 +11,16 @@ pub extern "C" fn pts_values_length<'a>(values: *const Values) -> usize {
 
 /// Get the value at the given position as a string.
 #[no_mangle]
-pub extern "C" fn pts_values_value_at<'a>(values: *const Values, pos: usize, out: *mut StringT) {
+pub extern "C" fn pts_values_at<'a>(values: *const Values, pos: usize, out: *mut Value) -> bool {
     let Values(ref values) = *null_ck!(&'a values);
-    let out = null_ck!(&'a mut out);
+    let out = immediate_ck!(ptscan::Value, &'a mut out);
 
-    *out = StringT::new(match values.get(pos) {
-        Some(value) => value.to_string(),
-        None => String::from(""),
-    });
+    if let Some(value) = values.get(pos) {
+        *out = value;
+        return true;
+    }
+
+    false
 }
 
 /// Free the scan values.

@@ -1,5 +1,7 @@
 //! Abstraction to help deal with virtual addresses.
 
+use crate::process_handle::{Location, ProcessHandle};
+
 use err_derive::Error;
 use std::{
     convert::{TryFrom, TryInto},
@@ -23,6 +25,14 @@ impl Address {
     /// Construct a new address.
     pub fn new(value: u64) -> Address {
         Address(value)
+    }
+
+    /// Add an offset in a checked manner.
+    pub fn checked_offset(self, offset: Offset) -> Option<Address> {
+        Some(Address(match offset {
+            Offset(Sign::Pos, o) => self.0.checked_add(o)?,
+            Offset(Sign::Neg, o) => self.0.checked_sub(o)?,
+        }))
     }
 
     /// Add an offset in a saturating manner.
@@ -74,6 +84,14 @@ impl Address {
         T: Convertible<Self, Error = io::Error>,
     {
         T::convert(self)
+    }
+
+    /// Display the address relative to the process handle.
+    pub fn display<'a>(&'a self, handle: &'a ProcessHandle) -> AddressDisplay<'a> {
+        AddressDisplay {
+            address: self,
+            handle,
+        }
     }
 
     /// Convert into usize.
@@ -230,6 +248,67 @@ impl<T> TryFrom<*const T> for Address {
 
     fn try_from(value: *const T) -> Result<Self, Self::Error> {
         Ok(Address((value as usize).try_into().map_err(into_io_error)?))
+    }
+}
+
+// An address displayed with a process handle.
+pub struct AddressDisplay<'a> {
+    address: &'a Address,
+    handle: &'a ProcessHandle,
+}
+
+impl<'a> fmt::Display for AddressDisplay<'a> {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let AddressDisplay { address, handle } = *self;
+
+        let location = handle
+            .find_location(*address)
+            .ok()
+            .unwrap_or(Location::None);
+
+        let offset = match location {
+            Location::Module(module) => match address.offset_of(module.range.base).ok() {
+                Some(offset) => {
+                    write!(fmt, "{}", module.name)?;
+                    offset
+                }
+                // TODO: handle error differently?
+                None => {
+                    write!(fmt, "{}", address)?;
+                    return Ok(());
+                }
+            },
+            Location::Thread(thread) => {
+                let base = thread
+                    .stack_exit
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or(thread.stack.base);
+
+                match address.offset_of(base).ok() {
+                    Some(offset) => {
+                        write!(fmt, "THREADSTACK{}", thread.id)?;
+                        offset
+                    }
+                    // TODO: handle error differently?
+                    None => {
+                        write!(fmt, "{}", address)?;
+                        return Ok(());
+                    }
+                }
+            }
+            Location::None => {
+                write!(fmt, "{}", address)?;
+                return Ok(());
+            }
+        };
+
+        match offset.sign() {
+            Sign::Pos => write!(fmt, " + {}", offset)?,
+            Sign::Neg => write!(fmt, " - {}", offset.abs())?,
+        }
+
+        Ok(())
     }
 }
 

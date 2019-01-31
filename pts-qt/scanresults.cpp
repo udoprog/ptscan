@@ -2,6 +2,7 @@
 #include "ui_scanresults.h"
 #include <pts/Scan.h>
 #include <pts/Values.h>
+#include <pts/Address.h>
 #include <QDebug>
 
 ScanResults::ScanResults(QWidget *parent) :
@@ -53,7 +54,15 @@ void ScanResults::updateCurrent(const std::shared_ptr<pts::Values> values)
             break;
         }
 
-        auto current = values->valueAt(index).toQString();
+        auto value = values->at(index);
+
+        if (!value) {
+            continue;
+        }
+
+        auto v = *value;
+
+        auto current = v.display().toQString();
         auto currentItem = model.item(index, 2);
 
         currentItem->setText(current);
@@ -76,7 +85,7 @@ void ScanResults::update(const std::shared_ptr<pts::ProcessHandle> &handle, std:
         for (auto const &result: *results) {
             QList<QStandardItem *> row;
 
-            auto address = new QStandardItem(result.address(handle).toQString());
+            auto address = new QStandardItem(result.address().display(handle).toQString());
             address->setEditable(false);
             row.push_back(address);
 

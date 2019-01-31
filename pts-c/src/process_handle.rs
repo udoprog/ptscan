@@ -1,6 +1,6 @@
 use crate::{
-    addresses::Addresses, scan::ScanProgress, string::StringT, system::ProcessId, utils,
-    values::Values, ThreadPool, Token,
+    address::Address, addresses::Addresses, pointer::Pointer, scan::ScanProgress, string::StringT,
+    system::ProcessId, utils, values::Values, ThreadPool, Token,
 };
 use std::{
     os::raw::{c_char, c_void},
@@ -118,6 +118,26 @@ pub extern "C" fn pts_process_handle_read_memory<'a>(
     );
 
     true
+}
+
+/// Resolve a pointer.
+#[no_mangle]
+pub extern "C" fn pts_process_handle_read_pointer<'a>(
+    handle: *const ProcessHandle,
+    pointer: *const Pointer,
+    out: *mut Address,
+) -> bool {
+    let ProcessHandle(ref handle) = *null_ck!(&'a handle);
+    let Pointer(ref pointer) = *null_ck!(&'a pointer);
+    let out = immediate_ck!(ptscan::Address, &'a mut out);
+
+    match handle.read_pointer(pointer) {
+        Some(address) => {
+            *out = address;
+            true
+        }
+        None => false,
+    }
 }
 
 /// Close and free the process handle.

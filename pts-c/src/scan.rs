@@ -1,6 +1,6 @@
 use crate::{
-    filter::Filter, process_handle::ProcessHandle, string::StringT, values::Values, watch::Watch,
-    ThreadPool, Token,
+    address::Address, filter::Filter, process_handle::ProcessHandle, string::StringT,
+    values::Values, watch::Watch, ThreadPool, Token,
 };
 use std::{mem, os::raw::c_void, ptr};
 
@@ -99,19 +99,9 @@ pub extern "C" fn pts_scan_result_as_watch<'a>(
 
 /// Access a readable process identifier for the handle.
 #[no_mangle]
-pub extern "C" fn pts_scan_result_address<'a>(
-    result: *const ScanResult,
-    handle: *const ProcessHandle,
-    out: *mut StringT,
-) {
+pub extern "C" fn pts_scan_result_address<'a>(result: *const ScanResult) -> Address {
     let result = immediate_ck!(ptscan::ScanResult, &'a result);
-    let handle = null_opt!(&'a handle).map(|r| &r.0);
-    let out = null_ck!(&'a mut out);
-
-    *out = StringT::new(match handle {
-        Some(handle) => result.address_display(handle).to_string(),
-        None => result.address.to_string(),
-    });
+    into_immediate!(result.address)
 }
 
 /// Access the value for the scan result.

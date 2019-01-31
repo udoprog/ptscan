@@ -3,6 +3,8 @@
 #include "ui_addresslist.h"
 #include <pts/Watch.h>
 #include <pts/Pointer.h>
+#include <pts/Address.h>
+#include <pts/ProcessHandle.h>
 #include <QMenu>
 #include <QDebug>
 #include <memory>
@@ -19,6 +21,7 @@ AddressList::AddressList(QWidget *parent) :
     ui->list->setModel(&model);
 
     QStringList headers;
+    headers.push_back("Pointer");
     headers.push_back("Address");
     headers.push_back("Type");
     headers.push_back("Value");
@@ -97,19 +100,33 @@ AddressList::~AddressList()
     delete editAddress;
 }
 
-void AddressList::addWatch(std::shared_ptr<pts::Watch> watch)
+void AddressList::addWatch(std::shared_ptr<pts::ProcessHandle> handle, std::shared_ptr<pts::Watch> watch)
 {
     QList<QStandardItem *> row;
 
-    auto pointer = new QStandardItem(watch->pointer()->display().toQString());
+    auto p = watch->pointer();
+
+    auto pointer = new QStandardItem(p->display().toQString());
     pointer->setEditable(false);
     row.push_back(pointer);
+
+    auto address = pts::Address();
+
+    if (handle) {
+        if (auto a = handle->readPointer(p)) {
+            address = *a;
+        }
+    }
+
+    auto addressItem = new QStandardItem(address.display(handle).toQString());
+    addressItem->setEditable(false);
+    row.push_back(addressItem);
 
     auto type = new QStandardItem(watch->type().toQString());
     type->setEditable(false);
     row.push_back(type);
 
-    auto value = new QStandardItem(watch->value().toQString());
+    auto value = new QStandardItem(watch->value().display().toQString());
     value->setEditable(false);
     row.push_back(value);
 

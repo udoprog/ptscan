@@ -186,7 +186,7 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
 
         if (auto result = scan->at(index.row())) {
             auto watch = result->asWatch(processHandle);
-            addressList->addWatch(watch);
+            addressList->addWatch(processHandle, watch);
         }
     });
 

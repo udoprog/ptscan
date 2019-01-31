@@ -1,6 +1,7 @@
 #include <pts/Watch.h>
 #include <pts/Pointer.h>
 #include <pts/Exception.h>
+#include <pts/Value.h>
 
 namespace pts
 {
@@ -39,17 +40,15 @@ std::shared_ptr<Pointer> Watch::pointer()
     return std::make_shared<Pointer>(Pointer(pointer));
 }
 
-String Watch::value()
+Value Watch::value()
 {
-    String out;
-    pts_watch_display_value(inner, out.ptr());
-    return out;
+    return Value{pts_watch_value(inner)};
 }
 
 String Watch::type()
 {
     String out;
-    pts_watch_display_type(inner, out.ptr());
+    pts_watch_display_type(inner, &out.inner);
     return out;
 }
 

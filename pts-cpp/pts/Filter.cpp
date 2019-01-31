@@ -26,7 +26,7 @@ Filter::~Filter()
 String Filter::display() const
 {
     pts::String display;
-    pts_filter_display(inner, display.ptr());
+    pts_filter_display(inner, &display.inner);
     return display;
 }
 

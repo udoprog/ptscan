@@ -1,4 +1,5 @@
 #include <pts/Values.h>
+#include <pts/Value.h>
 
 namespace pts {
 Values::Values(Values &&other) :
@@ -20,11 +21,15 @@ uintptr_t Values::length() const
     return pts_values_length(inner);
 }
 
-String Values::valueAt(uintptr_t pos) const
+std::optional<Value> Values::at(uintptr_t pos) const
 {
-    String value;
-    pts_values_value_at(inner, pos, value.ptr());
-    return value;
+    pts_value_t value;
+
+    if (pts_values_at(inner, pos, &value)) {
+        return std::make_optional(Value{value});
+    }
+
+    return {};
 }
 
 Values::Values(pts_values_t *inner) :

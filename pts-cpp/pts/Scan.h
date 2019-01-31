@@ -68,7 +68,7 @@ public:
     std::shared_ptr<Watch> asWatch(std::shared_ptr<ProcessHandle> &handle);
 
     // Display the scan result.
-    String address(const std::shared_ptr<ProcessHandle> &handle) const;
+    Address address() const;
 
     // Last scanned value.
     String value() const;

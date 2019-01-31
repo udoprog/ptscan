@@ -57,7 +57,9 @@ HEADERS += \
     $$PWD/../pts-cpp/pts/ThreadPool.h \
     $$PWD/../pts-cpp/pts/Token.h \
     $$PWD/../pts-cpp/pts/Values.h \
-    $$PWD/../pts-cpp/pts/Watch.h
+    $$PWD/../pts-cpp/pts/Watch.h \
+    $$PWD/../pts-cpp/pts/Value.h \
+    $$PWD/../pts-cpp/pts/Address.h
 
 SOURCES += \
     $$PWD/../pts-cpp/pts/Exception.cpp \
@@ -70,4 +72,6 @@ SOURCES += \
     $$PWD/../pts-cpp/pts/ThreadPool.cpp \
     $$PWD/../pts-cpp/pts/Token.cpp \
     $$PWD/../pts-cpp/pts/Values.cpp \
-    $$PWD/../pts-cpp/pts/Watch.cpp
+    $$PWD/../pts-cpp/pts/Watch.cpp \
+    $$PWD/../pts-cpp/pts/Value.cpp \
+    $$PWD/../pts-cpp/pts/Address.cpp

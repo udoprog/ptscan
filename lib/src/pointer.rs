@@ -43,8 +43,8 @@ impl fmt::Display for Base {
 /// The last step is dereferences as the pointee type.
 #[derive(Debug, Clone)]
 pub struct Pointer {
-    base: Base,
-    pub offsets: Vec<Offset>,
+    pub(crate) base: Base,
+    pub(crate) offsets: Vec<Offset>,
 }
 
 impl Pointer {
@@ -60,16 +60,7 @@ impl fmt::Display for Pointer {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.base, fmt)?;
 
-        let mut it = self.offsets.iter();
-
-        if let Some(o) = it.next() {
-            match o.sign() {
-                Sign::Pos => write!(fmt, " + {}", o)?,
-                Sign::Neg => write!(fmt, " - {}", o.abs())?,
-            }
-        }
-
-        while let Some(o) = it.next() {
+        for o in &self.offsets {
             write!(fmt, " -> {}", o)?;
         }
 

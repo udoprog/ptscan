@@ -1,7 +1,7 @@
 //! Predicates used for matching against memory.
 
 use crate::{
-    address::{Address, Sign, Size},
+    address::{Address, Size},
     filter, pointer,
     process::{MemoryInformation, Process},
     special::Special,
@@ -12,7 +12,7 @@ use crate::{
 };
 use std::{
     convert::TryFrom,
-    fmt, io,
+    io,
     sync::{mpsc, Arc},
 };
 
@@ -530,14 +530,6 @@ impl ScanResult {
         self.value.ty().size()
     }
 
-    /// An improved display implemented with a process handle.
-    pub fn address_display<'a>(&'a self, handle: &'a ProcessHandle) -> AddressDisplay<'a> {
-        AddressDisplay {
-            result: self,
-            handle,
-        }
-    }
-
     /// Buld a watch out of a scan result.
     pub fn as_watch(&self, handle: Option<&ProcessHandle>) -> Result<Watch, io::Error> {
         let base = match handle {
@@ -571,71 +563,5 @@ impl<'a> Iterator for Iter<'a> {
         let result = self.scan.get(self.pos)?;
         self.pos += 1;
         Some(result)
-    }
-}
-
-// A displayed scan result.
-pub struct AddressDisplay<'a> {
-    result: &'a ScanResult,
-    handle: &'a ProcessHandle,
-}
-
-impl<'a> fmt::Display for AddressDisplay<'a> {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let AddressDisplay {
-            ref handle,
-            ref result,
-        } = *self;
-
-        let ScanResult { address, .. } = *result;
-
-        let location = handle
-            .find_location(*address)
-            .ok()
-            .unwrap_or(Location::None);
-
-        let offset = match location {
-            Location::Module(module) => match address.offset_of(module.range.base).ok() {
-                Some(offset) => {
-                    write!(fmt, "{}", module.name)?;
-                    offset
-                }
-                // TODO: handle error differently?
-                None => {
-                    write!(fmt, "{}", address)?;
-                    return Ok(());
-                }
-            },
-            Location::Thread(thread) => {
-                let base = thread
-                    .stack_exit
-                    .as_ref()
-                    .cloned()
-                    .unwrap_or(thread.stack.base);
-
-                match address.offset_of(base).ok() {
-                    Some(offset) => {
-                        write!(fmt, "THREADSTACK{}", thread.id)?;
-                        offset
-                    }
-                    // TODO: handle error differently?
-                    None => {
-                        write!(fmt, "{}", address)?;
-                        return Ok(());
-                    }
-                }
-            }
-            Location::None => {
-                write!(fmt, "{}", address)?;
-                return Ok(());
-            }
-        };
-
-        match offset.sign() {
-            Sign::Pos => write!(fmt, " + {}", offset)?,
-            Sign::Neg => write!(fmt, " - {}", offset.abs())?,
-        }
-
-        Ok(())
     }
 }

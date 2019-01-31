@@ -1,7 +1,10 @@
 #ifndef PTS_VALUES_H
 #define PTS_VALUES_H
 
+#include <optional>
+
 #include <pts/String.h>
+#include <pts/Value.h>
 #include <ptscan.h>
 
 namespace pts {
@@ -10,6 +13,7 @@ class Scan;
 class Values
 {
     friend class Scan;
+
 public:
     // NB: Do not copy to avoid sporadic de-allocations.
     Values(const Values&) = delete;
@@ -20,9 +24,10 @@ public:
     uintptr_t length() const;
 
     // Get the value at the given position as a string.
-    String valueAt(uintptr_t pos) const;
+    std::optional<Value> at(uintptr_t pos) const;
+
 private:
-    Values(pts_values_t *);
+    explicit Values(pts_values_t *);
 
     pts_values_t *inner;
 };

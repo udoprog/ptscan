@@ -11,7 +11,25 @@
 #include <ptscan.h>
 
 namespace pts {
+class Filter;
+class Pointer;
+class ProcessHandle;
+class Value;
+class ScanResult;
+class Watch;
+class Address;
+
 class String {
+    friend class Filter;
+    friend class Pointer;
+    friend class ProcessHandle;
+    friend class Value;
+    friend class ScanResult;
+    friend class Watch;
+    friend class Address;
+
+    friend std::exception last_exception();
+
 public:
     // Construct a default empty string.
     String();
@@ -30,9 +48,6 @@ public:
 
     // Copies the string into a std::string.
     std::string string();
-
-    // Access the raw underlying pointer to interface with the C-api.
-    pts_string_t *ptr();
 private:
     pts_string_t inner;
 };

@@ -4,6 +4,7 @@
 #include <memory>
 
 #include <pts/String.h>
+#include <pts/Value.h>
 
 namespace pts {
 class ScanResult;
@@ -23,7 +24,7 @@ public:
     std::shared_ptr<Pointer> pointer();
 
     // Get the value of the watch as a string.
-    String value();
+    Value value();
 
     // Get the type of the watch as a string.
     String type();

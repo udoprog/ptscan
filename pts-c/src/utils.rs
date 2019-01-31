@@ -11,11 +11,11 @@ pub(crate) fn constrain_mut<'a, T>(value: *mut T) -> &'a mut T {
 /// NULL check the argument and transmute it into an immediate reference.
 macro_rules! immediate_ck {
     ($ty:ty, &$l:lifetime $expr:expr) => {
-        unsafe { mem::transmute::<_, &$l $ty>(null_ck!(&$l $expr)) }
+        unsafe { std::mem::transmute::<_, &$l $ty>(null_ck!(&$l $expr)) }
     };
 
     ($ty:ty, &$l:lifetime mut $expr:expr) => {
-        unsafe { mem::transmute::<_, &$l mut $ty>(null_ck!(&$l mut $expr)) }
+        unsafe { std::mem::transmute::<_, &$l mut $ty>(null_ck!(&$l mut $expr)) }
     };
 }
 
@@ -56,6 +56,13 @@ macro_rules! null_opt {
         } else {
             Some($crate::utils::$constrain_m::<$l, _>($expr))
         }
+    };
+}
+
+/// Convert an expression into an immediate value.
+macro_rules! into_immediate {
+    ($expr:expr) => {
+        unsafe { std::mem::transmute::<_, _>($expr) }
     };
 }
 

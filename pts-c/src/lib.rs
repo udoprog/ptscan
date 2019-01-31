@@ -6,6 +6,7 @@ use std::{os::raw::c_char, ptr, sync};
 
 #[macro_use]
 mod utils;
+pub mod address;
 pub mod addresses;
 pub mod error;
 pub mod filter;

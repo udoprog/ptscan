@@ -10,10 +10,12 @@
 namespace pts
 {
 class Watch;
+class ProcessHandle;
 
 class Pointer
 {
     friend class Watch;
+    friend class ProcessHandle;
 
 public:
     Pointer(const Pointer&) = delete;

@@ -11,7 +11,7 @@ std::exception last_exception()
    }
 
    String message;
-   pts_error_message(error, message.ptr());
+   pts_error_message(error, &message.inner);
    return std::exception(message.string().c_str());
 }
 }

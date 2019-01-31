@@ -2,6 +2,7 @@
 #include <pts/String.h>
 #include <pts/Exception.h>
 #include <pts/System.h>
+#include <pts/Address.h>
 
 namespace pts
 {
@@ -31,13 +32,13 @@ ProcessHandle::~ProcessHandle()
 
 String ProcessHandle::pid() {
     String pid;
-    pts_process_handle_pid(inner, pid.ptr());
+    pts_process_handle_pid(inner, &pid.inner);
     return pid;
 }
 
 String ProcessHandle::name() {
     String name;
-    pts_process_handle_name(inner, name.ptr());
+    pts_process_handle_name(inner, &name.inner);
     return name;
 }
 
@@ -65,5 +66,16 @@ std::shared_ptr<ProcessHandle> ProcessHandle::open(process_id pid)
     }
 
     return std::make_shared<ProcessHandle>(handle);
+}
+
+std::optional<Address> ProcessHandle::readPointer(const std::shared_ptr<Pointer> &pointer)
+{
+    Address address;
+
+    if (pts_process_handle_read_pointer(inner, pointer->inner, &address.inner)) {
+        return std::make_optional(address);
+    }
+
+    return {};
 }
 }

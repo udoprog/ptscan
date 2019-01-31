@@ -28,11 +28,6 @@ std::string String::string()
     return std::string(inner.ptr, inner.len);
 }
 
-pts_string_t *String::ptr()
-{
-    return &inner;
-}
-
 String::~String()
 {
     if (inner.ptr) {

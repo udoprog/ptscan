@@ -1,10 +1,18 @@
 //! High-level interface to processes.
 
 use crate::{
-    filter, process, scan, special::Special, system, thread::Thread, thread_buffers,
-    values::ValueMut, Address, AddressRange, ProcessId, Size, ThreadId, Token, Type, Value, Values,
+    filter,
+    pointer::{Base, Pointer},
+    process, scan,
+    special::Special,
+    system,
+    thread::Thread,
+    thread_buffers,
+    values::ValueMut,
+    Address, AddressRange, ProcessId, Size, ThreadId, Token, Type, Value, Values,
 };
 use failure::ResultExt;
+use hashbrown::HashMap;
 use std::{convert::TryFrom, fmt, io};
 use winapi::shared::winerror;
 
@@ -31,6 +39,8 @@ pub struct ProcessHandle {
     is_64bit: bool,
     /// Information about all loaded modules.
     pub modules: Vec<ModuleInfo>,
+    /// Module address by name.
+    pub modules_address: HashMap<String, Address>,
     /// The range at which we have found kernel32.dll (if present).
     kernel32: Option<AddressRange>,
     /// Threads.
@@ -70,6 +80,7 @@ impl ProcessHandle {
             process,
             is_64bit,
             modules: Vec::new(),
+            modules_address: HashMap::new(),
             kernel32: None,
             threads: Vec::new(),
         }))
@@ -129,6 +140,7 @@ impl ProcessHandle {
         use std::ffi::OsStr;
 
         let mut modules = Vec::with_capacity(self.modules.len());
+        let mut modules_address = HashMap::new();
 
         for module in self.process.modules()? {
             let module_name = module.name()?;
@@ -148,14 +160,16 @@ impl ProcessHandle {
                 self.kernel32 = Some(range.clone());
             }
 
-            modules.push(ModuleInfo {
-                name: module_name.to_string_lossy().to_string(),
-                range,
-            });
+            let name = module_name.to_string_lossy().to_string();
+
+            modules_address.insert(name.to_string(), range.base);
+
+            modules.push(ModuleInfo { name, range });
         }
 
         modules.sort_by_key(|m| m.range.base);
         self.modules = modules;
+        self.modules_address = modules_address;
         Ok(())
     }
 
@@ -274,6 +288,42 @@ impl ProcessHandle {
         }
 
         Ok(None)
+    }
+
+    /// Read an address. Returns None if the address resolves to NULL.
+    pub fn read_address(&self, address: Address) -> Option<Address> {
+        let mut buf = [0u8; 8];
+
+        // TODO: use dynamic address type.
+        let n = match self
+            .process
+            .read_memory_of_type(address, Type::U64, &mut buf)
+            .ok()?
+        {
+            Value::U64(0) => return None,
+            Value::U64(n) => n,
+            _ => return None,
+        };
+
+        Some(Address::new(n))
+    }
+
+    /// Read a pointer.
+    pub fn read_pointer(&self, pointer: &Pointer) -> Option<Address> {
+        let mut address = match pointer.base {
+            Base::Module(ref module, offset) => {
+                let address = self.modules_address.get(module)?;
+                address.checked_offset(offset)?
+            }
+            Base::Fixed(address) => address,
+        };
+
+        for o in &pointer.offsets {
+            address = self.read_address(address)?;
+            address = address.checked_offset(*o)?;
+        }
+
+        Some(address)
     }
 
     /// Read the value of many memory locations.

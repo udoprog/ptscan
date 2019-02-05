@@ -111,8 +111,8 @@ impl ProcessHandle {
         Ok(None)
     }
 
-    /// Build a filter that matches any pointers which points to valid memory.
-    pub fn pointer_filter(&self) -> Result<PointerFilter, io::Error> {
+    /// Build a matcher that matches any pointers which points to valid memory.
+    pub fn pointer_matcher(&self) -> Result<PointerMatcher, io::Error> {
         use crate::utils::IteratorExtension;
 
         let mut memory_regions = self
@@ -122,7 +122,7 @@ impl ProcessHandle {
             .collect::<Result<Vec<_>, _>>()?;
 
         memory_regions.sort_by_key(|m| m.range.base);
-        Ok(PointerFilter { memory_regions })
+        Ok(PointerMatcher { memory_regions })
     }
 
     /// Name of the process.
@@ -478,20 +478,12 @@ impl Decode for u32 {
 }
 
 #[derive(Debug)]
-pub struct PointerFilter {
+pub struct PointerMatcher {
     /// Sorted memory regions.
     memory_regions: Vec<process::MemoryInformation>,
 }
 
-impl filter::Filter for PointerFilter {
-    fn types(&self, out: &mut Vec<Type>) {
-        out.push(Type::U64);
-    }
-
-    fn size(&self) -> Option<usize> {
-        Some(8)
-    }
-
+impl filter::Matcher for PointerMatcher {
     fn special(&self) -> Option<Special> {
         Some(Special::NotZero)
     }
@@ -509,7 +501,7 @@ impl filter::Filter for PointerFilter {
     }
 }
 
-impl fmt::Display for PointerFilter {
+impl fmt::Display for PointerMatcher {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "pointer")
     }

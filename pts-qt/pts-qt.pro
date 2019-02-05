@@ -28,7 +28,8 @@ SOURCES += \
     addresslist.cpp \
     scanresults.cpp \
     editaddress.cpp \
-    editfilter.cpp
+    editfilter.cpp \
+    typecombobox.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -36,7 +37,8 @@ HEADERS += \
     addresslist.h \
     scanresults.h \
     editaddress.h \
-    editfilter.h
+    editfilter.h \
+    typecombobox.h
 
 FORMS += \
     mainwindow.ui \

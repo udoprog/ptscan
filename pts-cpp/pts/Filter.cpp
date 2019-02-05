@@ -1,5 +1,6 @@
 #include <pts/Filter.h>
 #include <pts/String.h>
+#include <pts/Value.h>
 #include <pts/Exception.h>
 
 namespace pts
@@ -23,6 +24,11 @@ Filter::~Filter()
     }
 }
 
+Type Filter::type() const
+{
+    return Type{pts_filter_type(inner)};
+}
+
 String Filter::display() const
 {
     pts::String display;
@@ -30,9 +36,9 @@ String Filter::display() const
     return display;
 }
 
-std::shared_ptr<Filter> Filter::parse(const std::string &input)
+std::shared_ptr<Filter> Filter::parse(const std::string &input, const Type &type)
 {
-    if (auto inner = pts_filter_parse(input.data(), input.size())) {
+    if (auto inner = pts_filter_parse(input.data(), input.size(), type.inner)) {
         return std::shared_ptr<Filter>(new Filter(inner));
     }
 

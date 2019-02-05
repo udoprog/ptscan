@@ -37,6 +37,11 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
 
     refreshTimer.start(REFRESH_TIMER);
 
+    QStringList headers;
+    headers.push_back("Filter");
+    headers.push_back("Type");
+
+    filtersModel.setHorizontalHeaderLabels(headers);
     ui->filtersList->setModel(&filtersModel);
     ui->errorBox->setVisible(false);
 
@@ -117,7 +122,7 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
         updateView();
     });
 
-    connect(ui->filtersList, &QListView::doubleClicked, this,
+    connect(ui->filtersList, &QTreeView::doubleClicked, this,
             [this](auto index)
     {
         if (!index.isValid()) {
@@ -188,15 +193,25 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
         }
 
         if (index.isValid()) {
-            filtersModel.itemFromIndex(index)->setText(filter->display().toQString());
+            filtersModel.item(index.row(), 0)->setText(filter->display().toQString());
+            filtersModel.item(index.row(), 1)->setText(filter->type().display().toQString());
             filters.insert(filters.begin() + index.row(), filter);
         } else {
+            QList<QStandardItem *> row;
+
             auto item = new QStandardItem(filter->display().toQString());
             item->setEditable(false);
-            filtersModel.appendRow(item);
+            row.push_back(item);
+
+            auto type = new QStandardItem(filter->type().display().toQString());
+            type->setEditable(false);
+            row.push_back(type);
+
+            filtersModel.appendRow(row);
             filters.push_back(filter);
         }
 
+        ui->filtersList->resizeColumnToContents(1);
         updateView();
     });
 

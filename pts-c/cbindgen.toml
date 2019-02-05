@@ -8,6 +8,7 @@ item_types = ["constants", "globals", "enums", "structs", "unions", "typedefs", 
 [export.rename]
 "Address" = "address_t"
 "Addresses" = "addresses_t"
+"Type" = "type_t"
 "Value" = "value_t"
 "Values" = "values_t"
 "StringT" = "string_t"

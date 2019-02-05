@@ -1,4 +1,5 @@
-use crate::{filter, Value};
+use crate::{filter, Type, Value};
+use num_bigint::BigInt;
 
 #[derive(Debug)]
 pub enum Expression {
@@ -11,17 +12,17 @@ pub enum Expression {
     /// A value that has decreased.
     Dec,
     /// Test that the value equals the expected value.
-    Eq(Value),
+    Eq(BigInt),
     /// Test that the value is not equal to the given value.
-    Neq(Value),
+    Neq(BigInt),
     /// Test that a value is less than or equal to another value.
-    Lte(Value),
+    Lte(BigInt),
     /// Test that a value is greater than or equal to another value.
-    Gte(Value),
+    Gte(BigInt),
     /// Test that a value is less than another value.
-    Lt(Value),
+    Lt(BigInt),
     /// Test that a value is greater than another value.
-    Gt(Value),
+    Gt(BigInt),
     /// Multiple expressions and:ed together.
     And(Vec<Expression>),
     /// Multiple expressions or:ed together.
@@ -29,37 +30,55 @@ pub enum Expression {
 }
 
 impl Expression {
-    /// Convert an expression into a filter.
-    pub fn into_filter(self) -> Result<Box<dyn filter::Filter>, failure::Error> {
+    /// Convert expression into a matcher.
+    pub fn into_matcher(self, ty: Type) -> Result<Box<filter::Matcher>, failure::Error> {
         use self::Expression::*;
 
-        let p: Box<dyn filter::Filter> = match self {
+        let matcher: Box<dyn filter::Matcher> = match self {
             Same => Box::new(filter::Same),
             Changed => Box::new(filter::Changed),
             Inc => Box::new(filter::Inc),
             Dec => Box::new(filter::Dec),
-            Eq(value) => Box::new(filter::Eq(value)),
-            Neq(value) => Box::new(filter::Neq(value)),
-            Lte(value) => Box::new(filter::Lte(value)),
-            Gte(value) => Box::new(filter::Gte(value)),
-            Lt(value) => Box::new(filter::Lt(value)),
-            Gt(value) => Box::new(filter::Gt(value)),
+            Eq(value) => {
+                let value = Value::from_big(value, ty)?;
+                Box::new(filter::Eq(value))
+            }
+            Neq(value) => {
+                let value = Value::from_big(value, ty)?;
+                Box::new(filter::Neq(value))
+            }
+            Lte(value) => {
+                let value = Value::from_big(value, ty)?;
+                Box::new(filter::Lte(value))
+            }
+            Gte(value) => {
+                let value = Value::from_big(value, ty)?;
+                Box::new(filter::Gte(value))
+            }
+            Lt(value) => {
+                let value = Value::from_big(value, ty)?;
+                Box::new(filter::Lt(value))
+            }
+            Gt(value) => {
+                let value = Value::from_big(value, ty)?;
+                Box::new(filter::Gt(value))
+            }
             And(expressions) => {
                 let filters = expressions
                     .into_iter()
-                    .map(Expression::into_filter)
+                    .map(|e| e.into_matcher(ty))
                     .collect::<Result<Vec<_>, _>>()?;
                 Box::new(filter::All::new(filters))
             }
             Or(expressions) => {
                 let filters = expressions
                     .into_iter()
-                    .map(Expression::into_filter)
+                    .map(|e| e.into_matcher(ty))
                     .collect::<Result<Vec<_>, _>>()?;
                 Box::new(filter::Any::new(filters))
             }
         };
 
-        Ok(p)
+        Ok(matcher)
     }
 }

@@ -1,33 +1,36 @@
 #include <iostream>
 
+#include <QComboBox>
 #include <QDebug>
 #include <QPushButton>
 
 #include <pts/Filter.h>
+#include <pts/Value.h>
 #include "editfilter.h"
+#include "typecombobox.h"
 #include "ui_editfilter.h"
 
 EditFilter::EditFilter(QWidget *parent) :
     QDialog(parent),
-    ui(new Ui::AddFilter)
+    ui(new Ui::EditFilter),
+    type(new TypeComboBox(this))
 {
     ui->setupUi(this);
     ui->error->hide();
     ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(false);
-    ui->addFilterLabel->hide();
-    ui->editFilterLabel->hide();
+    ui->typeLayout->addWidget(type);
 
     connect(ui->input, &QLineEdit::textChanged, this, [this](const QString& input) {
         std::string s = input.toUtf8().constData();
 
         try {
-            this->filter = pts::Filter::parse(s);
-            this->error = {};
-            this->updateView();
+            filter = pts::Filter::parse(s, type->currentType());
+            error = {};
         } catch(const std::exception &e) {
-            this->error = std::make_optional(e.what());
-            this->updateView();
+            error = std::make_optional(e.what());
         }
+
+        updateView();
     });
 }
 
@@ -50,8 +53,7 @@ void EditFilter::addFilter()
     this->filter = {};
     this->index = {};
     this->ui->input->setText("");
-    this->ui->addFilterLabel->show();
-    this->ui->editFilterLabel->hide();
+    this->ui->label->setText("Add Filter");
 }
 
 void EditFilter::editFilter(std::shared_ptr<pts::Filter> filter, QModelIndex index)
@@ -59,8 +61,7 @@ void EditFilter::editFilter(std::shared_ptr<pts::Filter> filter, QModelIndex ind
     this->filter = filter;
     this->index = index;
     this->ui->input->setText(filter->display().toQString());
-    this->ui->addFilterLabel->hide();
-    this->ui->editFilterLabel->show();
+    this->ui->label->setText("Edit Filter");
 }
 
 void EditFilter::updateView()

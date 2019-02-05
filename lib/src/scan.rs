@@ -96,7 +96,7 @@ impl Scan {
     pub fn rescan(
         &mut self,
         process: &Process,
-        filter: &(dyn filter::Filter),
+        filter: &filter::Filter,
         cancel: Option<&Token>,
         progress: (impl Progress + Send),
     ) -> Result<(), failure::Error> {
@@ -212,7 +212,7 @@ impl Scan {
     pub fn initial_scan(
         &mut self,
         process: &Process,
-        filter: &(dyn filter::Filter),
+        filter: &filter::Filter,
         cancel: Option<&Token>,
         progress: (impl Progress + Send),
     ) -> Result<(), failure::Error> {
@@ -225,18 +225,19 @@ impl Scan {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        let size = match filter.size() {
-            Some(size) => size,
-            None => {
+        let size = match filter.ty().size() {
+            0 => {
                 return Err(failure::format_err!(
-                    "can't perform initial scan with type-less filter"
+                    "can't perform initial scan with unsized filter"
                 ));
             }
+            size => size,
         };
 
-        let ty = filter
-            .ty()
-            .ok_or_else(|| failure::format_err!("no unique type in filter"))?;
+        let ty = match filter.ty() {
+            Type::None => failure::bail!("no unique type in filter"),
+            other => other,
+        };
 
         let buffer_size = 0x1000;
 
@@ -339,7 +340,7 @@ impl Scan {
             buffer_size: usize,
             size: usize,
             aligned: bool,
-            filter: &'a (dyn filter::Filter),
+            filter: &'a filter::Filter,
             special: Option<&'a Special>,
             ty: Type,
             cancel: &'a Token,

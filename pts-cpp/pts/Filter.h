@@ -5,6 +5,7 @@
 #include <string>
 
 #include <pts/String.h>
+#include <pts/Value.h>
 #include <ptscan.h>
 
 namespace pts
@@ -21,10 +22,13 @@ public:
     Filter(Filter&&);
     ~Filter();
 
+    // Return the type of a filter.
+    Type type() const;
+
     // Return a string which is a human-readable display of this filter.
     String display() const;
 
-    static std::shared_ptr<Filter> parse(const std::string &input);
+    static std::shared_ptr<Filter> parse(const std::string &input, const Type &type);
 private:
     // Inner reference to structure.
     pts_filter_t *inner;

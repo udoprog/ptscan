@@ -27,6 +27,8 @@ fixed-map = "0.6"
 hashbrown = "0.1.8"
 err-derive = "0.1"
 lalrpop-util = "0.16.3"
+num = {version = "0.2.0", features = ["i128"]}
+num-bigint = {version = "0.2.2", features = ["i128"]}
 
 [dependencies.winapi]
 version = "0.3"

@@ -53,6 +53,10 @@ struct pts_string_t {
   uintptr_t cap;
 };
 
+struct pts_type_t {
+  uint8_t _0;
+};
+
 using pts_scan_progress_report_fn = void(*)(void*, uintptr_t, uint64_t);
 
 struct pts_scan_progress_t {
@@ -101,9 +105,7 @@ const pts_error_t *pts_error_last();
 /// Returns the number of bytes copied.
 void pts_error_message(const pts_error_t *error, pts_string_t *message);
 
-/// Find a process by name.
-/// If a process cannot be found, *out is set to NULL.
-/// If an error is raised, false is returned and `error_last()` is updated accordingly.
+/// Display the filter as a string.
 void pts_filter_display(const pts_filter_t *filter, pts_string_t *display);
 
 /// Free a filter.
@@ -111,7 +113,10 @@ void pts_filter_free(pts_filter_t *filter);
 
 /// Parse a string as a filter.
 /// Returns NULL and sets error accordingly on failure.
-pts_filter_t *pts_filter_parse(const char *input, uintptr_t input_len);
+pts_filter_t *pts_filter_parse(const char *input, uintptr_t input_len, pts_type_t ty);
+
+/// Return the type of a filter.
+pts_type_t pts_filter_type(const pts_filter_t *filter);
 
 /// Find a process by name.
 /// If a process cannot be found, *out is set to NULL.
@@ -257,10 +262,20 @@ pts_token_t *pts_token_new();
 void pts_token_set(const pts_token_t *token);
 
 /// Export the value as a string.
+void pts_type_display(const pts_type_t *ty, pts_string_t *out);
+
+/// Export the value as a human-readable string.
+void pts_type_human_display(const pts_type_t *ty, pts_string_t *out);
+
+/// Parse a string as a filter.
+/// Returns NULL and sets error accordingly on failure.
+pts_type_t pts_type_parse(const char *input, uintptr_t input_len);
+
+/// Export the value as a string.
 void pts_value_display(const pts_value_t *value, pts_string_t *out);
 
 /// Export the type as a string.
-void pts_value_type(const pts_value_t *value, pts_string_t *out);
+pts_type_t pts_value_type(const pts_value_t *value);
 
 /// Get the value at the given position as a string.
 bool pts_values_at(const pts_values_t *values, uintptr_t pos, pts_value_t *out);

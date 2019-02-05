@@ -6,41 +6,43 @@ mod lexer;
 lalrpop_util::lalrpop_mod!(parser, "/filter/parser.rs");
 
 /// Parse a a string into a filter.
-pub fn parse(input: &str) -> Result<Box<Filter>, failure::Error> {
-    parser::OrParser::new()
+pub fn parse(input: &str, ty: Type) -> Result<Filter, failure::Error> {
+    let matcher = parser::OrParser::new()
         .parse(lexer::Lexer::new(input))?
-        .into_filter()
+        .into_matcher(ty)?;
+
+    Ok(Filter { ty, matcher })
 }
 
-pub trait Filter: Send + Sync + fmt::Debug + fmt::Display {
-    /// Extract one type from the filter.
-    fn ty(&self) -> Option<Type> {
-        let mut out = Vec::new();
-        self.types(&mut out);
+#[derive(Debug)]
+pub struct Filter {
+    ty: Type,
+    matcher: Box<Matcher>,
+}
 
-        let mut prev = None;
-
-        for o in out {
-            match prev.as_ref() {
-                Some(a) if *a != o => return None,
-                Some(_) => {}
-                None => {}
-            }
-
-            prev = Some(o);
-        }
-
-        prev
+impl Filter {
+    /// Get the type of the filter.
+    pub fn ty(&self) -> Type {
+        self.ty
     }
 
-    /// Collect all types used in the filter.
-    fn types(&self, _: &mut Vec<Type>) {}
-
-    /// The size in bytes of memory that must be fetched for this filter to operate.
-    fn size(&self) -> Option<usize> {
-        None
+    /// Get the matcher.
+    pub fn matcher(&self) -> &dyn Matcher {
+        &*self.matcher
     }
 
+    /// If the filter supports special (more efficient matching).
+    pub fn special(&self) -> Option<Special> {
+        self.matcher.special()
+    }
+
+    /// Test the specified memory region.
+    pub fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
+        self.matcher.test(last, value)
+    }
+}
+
+pub trait Matcher: Send + Sync + fmt::Debug + fmt::Display {
     /// If the filter supports special (more efficient matching).
     fn special(&self) -> Option<Special> {
         None
@@ -68,17 +70,9 @@ macro_rules! numeric_match {
 
 /// Only match values which are exactly equal.
 #[derive(Debug)]
-pub struct Not(Box<dyn Filter>);
+pub struct Not(Box<dyn Matcher>);
 
-impl Filter for Not {
-    fn types(&self, out: &mut Vec<Type>) {
-        self.0.types(out);
-    }
-
-    fn size(&self) -> Option<usize> {
-        self.0.size()
-    }
-
+impl Matcher for Not {
     fn special(&self) -> Option<Special> {
         self.0.special().map(|s| s.invert())
     }
@@ -98,7 +92,7 @@ impl fmt::Display for Not {
 #[derive(Debug, Clone)]
 pub struct Dec;
 
-impl Filter for Dec {
+impl Matcher for Dec {
     fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
         match last {
             Some(last) => Lt(last.to_value()).test(None, value),
@@ -117,7 +111,7 @@ impl fmt::Display for Dec {
 #[derive(Debug, Clone)]
 pub struct Inc;
 
-impl Filter for Inc {
+impl Matcher for Inc {
     fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
         match last {
             Some(last) => Gt(last.to_value()).test(None, value),
@@ -136,7 +130,7 @@ impl fmt::Display for Inc {
 #[derive(Debug, Clone)]
 pub struct Changed;
 
-impl Filter for Changed {
+impl Matcher for Changed {
     fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
         match last {
             Some(last) => !Eq(last.to_value()).test(None, value),
@@ -155,7 +149,7 @@ impl fmt::Display for Changed {
 #[derive(Debug, Clone)]
 pub struct Same;
 
-impl Filter for Same {
+impl Matcher for Same {
     fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
         match last {
             Some(last) => Eq(last.to_value()).test(None, value),
@@ -174,15 +168,7 @@ impl fmt::Display for Same {
 #[derive(Debug, Clone)]
 pub struct Eq(pub Value);
 
-impl Filter for Eq {
-    fn types(&self, out: &mut Vec<Type>) {
-        out.push(self.0.ty());
-    }
-
-    fn size(&self) -> Option<usize> {
-        Some(self.0.ty().size())
-    }
-
+impl Matcher for Eq {
     fn special(&self) -> Option<Special> {
         macro_rules! specials {
             ($(($field:ident, $ty:ident),)*) => {
@@ -217,7 +203,7 @@ impl Filter for Eq {
 
 impl fmt::Display for Eq {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "$value == {}", self.0)
+        write!(fmt, "value == {}", self.0)
     }
 }
 
@@ -225,15 +211,7 @@ impl fmt::Display for Eq {
 #[derive(Debug, Clone)]
 pub struct Neq(pub Value);
 
-impl Filter for Neq {
-    fn types(&self, out: &mut Vec<Type>) {
-        out.push(self.0.ty());
-    }
-
-    fn size(&self) -> Option<usize> {
-        Some(self.0.ty().size())
-    }
-
+impl Matcher for Neq {
     fn special(&self) -> Option<Special> {
         macro_rules! specials {
             ($(($field:ident, $ty:ident),)*) => {
@@ -268,7 +246,7 @@ impl Filter for Neq {
 
 impl fmt::Display for Neq {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "$value != {}", self.0)
+        write!(fmt, "value != {}", self.0)
     }
 }
 
@@ -276,15 +254,7 @@ impl fmt::Display for Neq {
 #[derive(Debug, Clone)]
 pub struct Gt(pub Value);
 
-impl Filter for Gt {
-    fn types(&self, out: &mut Vec<Type>) {
-        out.push(self.0.ty());
-    }
-
-    fn size(&self) -> Option<usize> {
-        Some(self.0.ty().size())
-    }
-
+impl Matcher for Gt {
     fn special(&self) -> Option<Special> {
         let s = match self.0 {
             Value::U128(..) | Value::U64(..) | Value::U32(..) | Value::U16(..) | Value::U8(..) => {
@@ -308,7 +278,7 @@ impl Filter for Gt {
 
 impl fmt::Display for Gt {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "$value > {}", self.0)
+        write!(fmt, "value > {}", self.0)
     }
 }
 
@@ -316,15 +286,7 @@ impl fmt::Display for Gt {
 #[derive(Debug, Clone)]
 pub struct Gte(pub Value);
 
-impl Filter for Gte {
-    fn types(&self, out: &mut Vec<Type>) {
-        out.push(self.0.ty());
-    }
-
-    fn size(&self) -> Option<usize> {
-        Some(self.0.ty().size())
-    }
-
+impl Matcher for Gte {
     fn special(&self) -> Option<Special> {
         let s = match self.0 {
             Value::U128(v) if v > 0 => Special::NotZero,
@@ -350,7 +312,7 @@ impl Filter for Gte {
 
 impl fmt::Display for Gte {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "$value >= {}", self.0)
+        write!(fmt, "value >= {}", self.0)
     }
 }
 
@@ -358,15 +320,7 @@ impl fmt::Display for Gte {
 #[derive(Debug, Clone)]
 pub struct Lt(pub Value);
 
-impl Filter for Lt {
-    fn types(&self, out: &mut Vec<Type>) {
-        out.push(self.0.ty());
-    }
-
-    fn size(&self) -> Option<usize> {
-        Some(self.0.ty().size())
-    }
-
+impl Matcher for Lt {
     fn special(&self) -> Option<Special> {
         let s = match self.0 {
             Value::U128(v) if v == 1 => Special::Zero,
@@ -387,7 +341,7 @@ impl Filter for Lt {
 
 impl fmt::Display for Lt {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "$value < {}", self.0)
+        write!(fmt, "value < {}", self.0)
     }
 }
 
@@ -395,15 +349,7 @@ impl fmt::Display for Lt {
 #[derive(Debug, Clone)]
 pub struct Lte(pub Value);
 
-impl Filter for Lte {
-    fn types(&self, out: &mut Vec<Type>) {
-        out.push(self.0.ty());
-    }
-
-    fn size(&self) -> Option<usize> {
-        Some(self.0.ty().size())
-    }
-
+impl Matcher for Lte {
     fn special(&self) -> Option<Special> {
         let s = match self.0 {
             Value::U128(v) if v == 0 => Special::Zero,
@@ -424,16 +370,16 @@ impl Filter for Lte {
 
 impl fmt::Display for Lte {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "$value <= {}", self.0)
+        write!(fmt, "value <= {}", self.0)
     }
 }
 
 /// Only matches when all nested filters match.
 #[derive(Debug)]
-pub struct All(Vec<Box<Filter>>);
+pub struct All(Vec<Box<Matcher>>);
 
 impl All {
-    pub fn new(filters: impl IntoIterator<Item = Box<Filter>>) -> Self {
+    pub fn new(filters: impl IntoIterator<Item = Box<Matcher>>) -> Self {
         All(filters.into_iter().collect())
     }
 }
@@ -454,17 +400,7 @@ impl fmt::Display for All {
     }
 }
 
-impl Filter for All {
-    fn types(&self, out: &mut Vec<Type>) {
-        for f in &self.0 {
-            f.types(out);
-        }
-    }
-
-    fn size(&self) -> Option<usize> {
-        self.0.iter().flat_map(|f| f.size()).max()
-    }
-
+impl Matcher for All {
     fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
         self.0.iter().all(|p| p.test(last, value))
     }
@@ -472,25 +408,15 @@ impl Filter for All {
 
 /// Only matches when any nested filter match.
 #[derive(Debug)]
-pub struct Any(Vec<Box<Filter>>);
+pub struct Any(Vec<Box<Matcher>>);
 
 impl Any {
-    pub fn new(filters: impl IntoIterator<Item = Box<Filter>>) -> Self {
+    pub fn new(filters: impl IntoIterator<Item = Box<Matcher>>) -> Self {
         Any(filters.into_iter().collect())
     }
 }
 
-impl Filter for Any {
-    fn types(&self, out: &mut Vec<Type>) {
-        for f in &self.0 {
-            f.types(out);
-        }
-    }
-
-    fn size(&self) -> Option<usize> {
-        self.0.iter().flat_map(|f| f.size()).max()
-    }
-
+impl Matcher for Any {
     fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
         self.0.iter().any(|p| p.test(last, value))
     }
@@ -520,11 +446,9 @@ mod tests {
     #[test]
     fn basic_parsing() -> Result<(), Box<error::Error>> {
         let parser = parser::OrParser::new();
-        let a = parser.parse(lexer::Lexer::new("$value == 1"))?;
-        let b = parser.parse(lexer::Lexer::new("$value == 1 and $value == 2"))?;
-        let c = parser.parse(lexer::Lexer::new(
-            "$value == 1 and $value == 2 or $value == 3",
-        ))?;
+        let a = parser.parse(lexer::Lexer::new("value == 1"))?;
+        let b = parser.parse(lexer::Lexer::new("value == 1 and value == 2"))?;
+        let c = parser.parse(lexer::Lexer::new("value == 1 and value == 2 or value == 3"))?;
 
         dbg!(a);
         dbg!(b);

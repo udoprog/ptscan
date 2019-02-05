@@ -1,4 +1,5 @@
 use crate::{address::Address, encode::Encode};
+use num_bigint::BigInt;
 use std::{error, fmt, mem, str};
 
 /// A single dynamic literal value.
@@ -24,6 +25,35 @@ impl Value {
             Value::None => false,
             _ => true,
         }
+    }
+
+    /// Convert from a big integer.
+    pub fn from_big(value: BigInt, ty: Type) -> Result<Self, failure::Error> {
+        use self::Type::*;
+        use num::ToPrimitive;
+
+        let out = match ty {
+            U8 => value.to_u8().map(Value::U8),
+            I8 => value.to_i8().map(Value::I8),
+            U16 => value.to_u16().map(Value::U16),
+            I16 => value.to_i16().map(Value::I16),
+            U32 => value.to_u32().map(Value::U32),
+            I32 => value.to_i32().map(Value::I32),
+            U64 => value.to_u64().map(Value::U64),
+            I64 => value.to_i64().map(Value::I64),
+            U128 => value.to_u128().map(Value::U128),
+            I128 => value.to_i128().map(Value::I128),
+            _ => return Ok(Value::None),
+        };
+
+        let out = out.ok_or_else(|| {
+            failure::format_err!(
+                "failed to convert number `{}`: out-of-range for type {}",
+                value,
+                ty,
+            )
+        })?;
+        Ok(out)
     }
 
     /// Try to treat the value as an address.
@@ -157,6 +187,23 @@ pub enum Type {
 }
 
 impl Type {
+    /// Convert from a string.
+    pub fn from_string(input: &str) -> Type {
+        match input {
+            "u8" => Type::U8,
+            "i8" => Type::I8,
+            "u16" => Type::U16,
+            "i16" => Type::I16,
+            "u32" => Type::U32,
+            "i32" => Type::I32,
+            "u64" => Type::U64,
+            "i64" => Type::I64,
+            "u128" => Type::U128,
+            "i128" => Type::I128,
+            _ => Type::None,
+        }
+    }
+
     /// Convert from byte.
     pub fn from_byte(ty: u8) -> Type {
         const U8: u8 = Type::U8 as u8;
@@ -265,6 +312,11 @@ impl Type {
             I128 => Value::I128(LittleEndian::read_i128(buf)),
         }
     }
+
+    /// Convert into a type which implements `fmt::Display` for a human-readable string.
+    pub fn human_display(&self) -> HumanDisplay {
+        HumanDisplay { ty: *self }
+    }
 }
 
 impl fmt::Display for Type {
@@ -319,5 +371,28 @@ impl error::Error for ParseTypeError {}
 impl fmt::Display for ParseTypeError {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "`{}` is not a valid", self.0)
+    }
+}
+
+/// A human display of a `Type`.
+pub struct HumanDisplay {
+    ty: Type,
+}
+
+impl fmt::Display for HumanDisplay {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.ty {
+            Type::None => write!(fmt, "none"),
+            Type::U8 => write!(fmt, "unsigned 8-bit number"),
+            Type::I8 => write!(fmt, "signed 8-bit number"),
+            Type::U16 => write!(fmt, "unsigned 16-bit number"),
+            Type::I16 => write!(fmt, "signed 16-bit number"),
+            Type::U32 => write!(fmt, "unsigned 32-bit number"),
+            Type::I32 => write!(fmt, "signed 32-bit number"),
+            Type::U64 => write!(fmt, "unsigned 64-bit number"),
+            Type::I64 => write!(fmt, "signed 64-bit number"),
+            Type::U128 => write!(fmt, "unsigned 128-bit number"),
+            Type::I128 => write!(fmt, "signed 128-bit number"),
+        }
     }
 }

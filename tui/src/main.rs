@@ -211,7 +211,7 @@ where
                 scan.push(scan::ScanResult { address, value });
             }
             Action::Scan(filter) => {
-                self.scan(&*filter, None)?;
+                self.scan(&filter, None)?;
             }
             Action::Reset => match self.scans.get_mut(&self.current_scan) {
                 Some(scan) => {
@@ -258,7 +258,7 @@ where
     /// Scan memory using the given filter and the currently selected scan.
     fn scan(
         &mut self,
-        filter: &(dyn filter::Filter),
+        filter: &filter::Filter,
         cancel: Option<&Token>,
     ) -> Result<(), failure::Error> {
         let handle = match self.handle.as_ref() {
@@ -464,11 +464,12 @@ where
             "s" | "scan" => {
                 let command = &command[1..];
 
-                if command.len() < 1 {
-                    failure::bail!("Usage: scan <filter>");
+                if command.len() < 2 {
+                    failure::bail!("Usage: scan <type> <filter>");
                 }
 
-                let filter = self.parse_predicate(command)?;
+                let ty = str::parse(command[0])?;
+                let filter = self.parse_filter(ty, &command[1..])?;
                 return Ok(Action::Scan(filter));
             }
             "ps" | "process" => return Ok(Action::Process),
@@ -534,43 +535,13 @@ where
     /// Parse the filter from commandline input.
     ///
     /// Note: only supports simple predicates for now.
-    pub fn parse_predicate(
+    pub fn parse_filter(
         &mut self,
+        ty: Type,
         rest: &[&str],
-    ) -> Result<Box<dyn filter::Filter>, failure::Error> {
-        let op = rest[0];
-
-        match op {
-            "pointer" => {
-                let handle = match self.handle.as_ref() {
-                    Some(handle) => handle,
-                    None => failure::bail!("not attached to a process"),
-                };
-
-                return Ok(Box::new(handle.pointer_filter()?));
-            }
-            "dec" | "smaller" => return Ok(Box::new(filter::Dec)),
-            "inc" | "bigger" => return Ok(Box::new(filter::Inc)),
-            "changed" => return Ok(Box::new(filter::Changed)),
-            _ => {}
-        }
-
-        if rest.len() < 2 {
-            failure::bail!("expected: <op> <value>");
-        }
-
-        let value: Value = str::parse(rest[1])?;
-
-        let filter: Box<dyn filter::Filter> = match op {
-            "eq" => Box::new(filter::Eq(value)),
-            "gt" => Box::new(filter::Gt(value)),
-            "gte" => Box::new(filter::Gte(value)),
-            "lt" => Box::new(filter::Lt(value)),
-            "lte" => Box::new(filter::Lte(value)),
-            other => failure::bail!("bad <op>: {}", other),
-        };
-
-        Ok(filter)
+    ) -> Result<filter::Filter, failure::Error> {
+        let rest = rest.join(" ");
+        filter::parse(&rest, ty)
     }
 
     /// Print help messages.
@@ -594,7 +565,7 @@ pub enum Action {
     /// Attach to a new, or re-attach to an old process.
     Attach(Option<String>),
     /// Initialize or refine the existing scan.
-    Scan(Box<dyn filter::Filter>),
+    Scan(filter::Filter),
     /// Reset the state of the scan.
     Reset,
     /// Print results from scan.

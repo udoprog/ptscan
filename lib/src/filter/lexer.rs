@@ -1,4 +1,4 @@
-use crate::{Type, Value};
+use num_bigint::BigInt;
 use std::{borrow::Cow, fmt, str};
 
 #[derive(Debug, err_derive::Error)]
@@ -16,7 +16,7 @@ pub enum Token {
     And,
     /// Or token.
     Or,
-    /// $value, references the value in memory.
+    /// value, references the value in memory.
     Value,
     /// changed keyword.
     Changed,
@@ -43,7 +43,7 @@ pub enum Token {
     /// `)`.
     CloseParen,
     /// A literal value, like `0x42`, or `128u32`.
-    Literal(Value),
+    Literal(BigInt),
 }
 
 impl fmt::Display for Token {
@@ -125,15 +125,6 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// Peek all characters in lookahead buffers.
-    pub fn peek3_chars(&self) -> (Option<char>, Option<char>, Option<char>) {
-        (
-            self.c1.as_ref().map(|(_, c)| *c),
-            self.c2.as_ref().map(|(_, c)| *c),
-            self.c3.as_ref().map(|(_, c)| *c),
-        )
-    }
-
     /// Get the current position of the iterator.
     /// Used for error handling.
     pub fn pos(&self) -> usize {
@@ -174,52 +165,13 @@ impl<'a> Lexer<'a> {
         Ok(self.buf.to_string())
     }
 
-    /// Scan a literal type.
-    pub fn scan_type(&mut self) -> Result<Type, Error> {
-        let result = match self.peek().map(|(_, c)| c) {
-            // Unsigned type.
-            Some('u') => {
-                self.step();
-
-                match self.peek3_chars() {
-                    (Some('8'), _, _) => Some((1, Type::U8)),
-                    (Some('1'), Some('6'), _) => Some((2, Type::U16)),
-                    (Some('3'), Some('2'), _) => Some((2, Type::U32)),
-                    (Some('6'), Some('4'), _) => Some((2, Type::U64)),
-                    (Some('1'), Some('2'), Some('8')) => Some((3, Type::U128)),
-                    _ => None,
-                }
-            }
-            // Signed type.
-            Some('i') => {
-                self.step();
-
-                match self.peek3_chars() {
-                    (Some('8'), _, _) => Some((1, Type::I8)),
-                    (Some('1'), Some('6'), _) => Some((2, Type::I16)),
-                    (Some('3'), Some('2'), _) => Some((2, Type::I32)),
-                    (Some('6'), Some('4'), _) => Some((2, Type::I64)),
-                    (Some('1'), Some('2'), Some('8')) => Some((3, Type::I128)),
-                    _ => None,
-                }
-            }
-            _ => None,
-        };
-
-        if let Some((w, ty)) = result {
-            self.step_n(w);
-            return Ok(ty);
-        }
-
-        return Err(self.err("expected type"));
-    }
-
     /// Scan an identifier.
-    pub fn scan_literal(&mut self) -> Result<Value, Error> {
+    pub fn scan_literal(&mut self) -> Result<BigInt, Error> {
+        use num::Num;
+
         self.buf.clear();
 
         let mut hex = false;
-        let mut ty = Type::I32;
 
         // test if we have a hex prefix
         if let Some((_, '0', 'x')) = self.peek2() {
@@ -235,11 +187,6 @@ impl<'a> Lexer<'a> {
 
             match c {
                 ' ' => break,
-                // type break.
-                'u' | 'i' => {
-                    ty = self.scan_type()?;
-                    break;
-                }
                 '0'..='9' => {
                     self.step();
                     self.buf.push(c);
@@ -249,15 +196,12 @@ impl<'a> Lexer<'a> {
         }
 
         let result = if hex {
-            ty.parse_hex(&self.buf)
+            BigInt::from_str_radix(&self.buf, 16)
         } else {
-            ty.parse(&self.buf)
+            BigInt::from_str_radix(&self.buf, 10)
         };
 
-        match result {
-            Ok(value) => Ok(value),
-            Err(_) => Err(self.err("invalid literal")),
-        }
+        Ok(result.map_err(|e| self.err(e.to_string()))?)
     }
 }
 
@@ -330,6 +274,7 @@ impl<'a> Iterator for Lexer<'a> {
                     let e = self.pos();
 
                     match ident.as_str() {
+                        "value" => return Some(Ok((s, Token::Value, e))),
                         "and" => return Some(Ok((s, Token::And, e))),
                         "or" => return Some(Ok((s, Token::Or, e))),
                         "same" => return Some(Ok((s, Token::Same, e))),
@@ -338,20 +283,6 @@ impl<'a> Iterator for Lexer<'a> {
                         "dec" => return Some(Ok((s, Token::Dec, e))),
                         other => {
                             return Some(Err(self.err(format!("unsupported keyword `{}`", other))));
-                        }
-                    }
-                }
-                '$' => {
-                    self.step();
-                    let ident = try_iter!(self.scan_ident());
-                    let e = self.pos();
-
-                    match ident.as_str() {
-                        "value" => return Some(Ok((s, Token::Value, e))),
-                        other => {
-                            return Some(Err(
-                                self.err(format!("unsupported identifier `{}`", other))
-                            ));
                         }
                     }
                 }
@@ -371,7 +302,7 @@ impl<'a> Iterator for Lexer<'a> {
 #[cfg(test)]
 mod tests {
     use super::{Error, Lexer, Token};
-    use crate::value::Value;
+    use num_bigint::BigInt;
 
     fn tokenize(input: &str) -> Result<Vec<(usize, Token, usize)>, Error> {
         Lexer::new(input).collect::<Result<Vec<_>, _>>()
@@ -381,24 +312,24 @@ mod tests {
     fn basic_expression() -> Result<(), Error> {
         assert_eq!(
             vec![
-                (0, Token::Value, 6),
-                (7, Token::Eq, 9),
-                (10, Token::Literal(Value::I32(42)), 12)
+                (0, Token::Value, 5),
+                (6, Token::Eq, 8),
+                (9, Token::Literal(BigInt::from(42)), 11)
             ],
-            tokenize("$value == 42")?
+            tokenize("value == 42")?
         );
 
         assert_eq!(
-            vec![(0, Token::Literal(Value::I32(66)), 4)],
+            vec![(0, Token::Literal(BigInt::from(66)), 4)],
             tokenize("0x42")?
         );
 
         assert_eq!(
             vec![
-                (0, Token::Literal(Value::U128(66)), 8),
-                (9, Token::Literal(Value::I128(83)), 15)
+                (0, Token::Literal(BigInt::from(66)), 4),
+                (5, Token::Literal(BigInt::from(83)), 7)
             ],
-            tokenize("0x42u128 83i128")?
+            tokenize("0x42 83")?
         );
 
         Ok(())

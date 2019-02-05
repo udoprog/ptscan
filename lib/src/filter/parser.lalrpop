@@ -1,11 +1,6 @@
 // vim: ft=rust
-use crate::{
-    Value,
-    filter::{
-        lexer::Token,
-        ast::*
-    }
-};
+use crate::{filter::{lexer::Token, ast::*}};
+use num_bigint::BigInt;
 
 grammar<'input>;
 
@@ -36,12 +31,12 @@ Filter: Expression = {
     same => Expression::Same,
     inc => Expression::Inc,
     dec => Expression::Dec,
-    "$value" "==" <value:literal> => Expression::Eq(value),
-    "$value" "!=" <value:literal> => Expression::Neq(value),
-    "$value" "<=" <value:literal> => Expression::Lte(value),
-    "$value" ">=" <value:literal> => Expression::Gte(value),
-    "$value" "<" <value:literal> => Expression::Lt(value),
-    "$value" ">" <value:literal> => Expression::Gt(value),
+    "value" "==" <value:number> => Expression::Eq(value),
+    "value" "!=" <value:number> => Expression::Neq(value),
+    "value" "<=" <value:number> => Expression::Lte(value),
+    "value" ">=" <value:number> => Expression::Gte(value),
+    "value" "<" <value:number> => Expression::Lt(value),
+    "value" ">" <value:number> => Expression::Gt(value),
 };
 
 extern {
@@ -49,7 +44,7 @@ extern {
     type Error = crate::filter::lexer::Error;
 
     enum Token {
-        "$value" => Token::Value,
+        "value" => Token::Value,
         changed => Token::Changed,
         same => Token::Same,
         inc => Token::Inc,
@@ -64,6 +59,6 @@ extern {
         ">" => Token::Gt,
         "(" => Token::OpenParen,
         ")" => Token::CloseParen,
-        literal => Token::Literal(<Value>),
+        number => Token::Literal(<BigInt>),
     }
 }

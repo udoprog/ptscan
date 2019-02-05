@@ -98,7 +98,7 @@ void ScanResults::update(const std::shared_ptr<pts::ProcessHandle> &handle, std:
 
             auto v = result.value();
 
-            auto type = new QStandardItem(v.type().toQString());
+            auto type = new QStandardItem(v.type().display().toQString());
             type->setEditable(false);
             row.push_back(type);
 
@@ -112,5 +112,8 @@ void ScanResults::update(const std::shared_ptr<pts::ProcessHandle> &handle, std:
 
             model.appendRow(row);
         }
+
+        ui->list->resizeColumnToContents(0);
+        ui->list->resizeColumnToContents(1);
     }
 }

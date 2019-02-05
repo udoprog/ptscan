@@ -139,6 +139,10 @@ void AddressList::addWatch(const std::shared_ptr<pts::ProcessHandle> &handle, st
 
     model.appendRow(row);
     watches.push_back(watch);
+
+    ui->list->resizeColumnToContents(0);
+    ui->list->resizeColumnToContents(1);
+    ui->list->resizeColumnToContents(2);
 }
 
 AddressInfo AddressList::info(const std::shared_ptr<pts::ProcessHandle> &handle) const

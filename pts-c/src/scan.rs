@@ -157,12 +157,12 @@ pub extern "C" fn pts_scan_scan<'a>(
         scan.initial = true;
 
         try_last!(
-            scan.initial_scan(&handle.process, &**filter, cancel, progress),
+            scan.initial_scan(&handle.process, filter, cancel, progress),
             false
         );
     } else {
         try_last!(
-            scan.rescan(&handle.process, &**filter, cancel, progress),
+            scan.rescan(&handle.process, filter, cancel, progress),
             false
         );
     }

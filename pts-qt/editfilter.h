@@ -1,17 +1,22 @@
-#ifndef ADDFILTER_H
-#define ADDFILTER_H
+#ifndef EDITFILTER_H
+#define EDITFILTER_H
 
 #include <optional>
 #include <memory>
 #include <string>
-#include <pts/Filter.h>
+#include <vector>
+#include <QStandardItemModel>
 
+#include <pts/Filter.h>
+#include <pts/Value.h>
 #include <QDialog>
 #include <QModelIndex>
 
 namespace Ui {
-class AddFilter;
+class EditFilter;
 }
+
+class TypeComboBox;
 
 class EditFilter : public QDialog
 {
@@ -29,7 +34,8 @@ public:
     // Indicate that we want to edit a filter through the dialog.
     void editFilter(std::shared_ptr<pts::Filter> filter, QModelIndex index);
 private:
-    Ui::AddFilter *ui;
+    Ui::EditFilter *ui;
+    TypeComboBox *type;
     std::optional<std::string> error;
     std::shared_ptr<pts::Filter> filter;
     QModelIndex index;
@@ -37,4 +43,4 @@ private:
     void updateView();
 };
 
-#endif // ADDFILTER_H
+#endif // EDITFILTER_H

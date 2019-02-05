@@ -9,6 +9,37 @@ namespace pts
 class Values;
 class Watch;
 class ScanResult;
+class Value;
+class Filter;
+
+class Type
+{
+    friend class Value;
+    friend class Filter;
+
+public:
+    Type();
+    // Parse the given string into a type.
+    static Type parse(const std::string &input);
+
+    // Display the value as a string.
+    String display() const;
+    // Display as a human-readable string.
+    String humanDisplay() const;
+private:
+    explicit Type(pts_type_t inner);
+    pts_type_t inner;
+};
+
+inline Type::Type(pts_type_t inner) :
+    inner(inner)
+{
+}
+
+inline Type::Type() :
+    inner(pts_type_t({0}))
+{
+}
 
 class Value
 {
@@ -17,12 +48,10 @@ class Value
     friend class ScanResult;
 
 public:
-    Value() = delete;
-    Value(const Value &) = default;
-    Value(Value &&) = default;
+    Value();
 
     // String conveying the type of the value.
-    String type();
+    Type type();
 
     // Display the value as a string.
     String display() const;
@@ -30,6 +59,16 @@ private:
     explicit Value(pts_value_t inner);
     pts_value_t inner;
 };
+
+inline Value::Value() :
+    inner(pts_value_t({0}))
+{
+}
+
+inline Value::Value(pts_value_t inner) :
+    inner(inner)
+{
+}
 }
 
 #endif // PTS_VALUE_H

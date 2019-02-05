@@ -18,6 +18,7 @@ class Value;
 class ScanResult;
 class Watch;
 class Address;
+class Type;
 
 class String {
     friend class Filter;
@@ -27,6 +28,7 @@ class String {
     friend class ScanResult;
     friend class Watch;
     friend class Address;
+    friend class Type;
 
     friend std::exception last_exception();
 

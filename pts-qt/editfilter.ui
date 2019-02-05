@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>AddFilter</class>
- <widget class="QDialog" name="AddFilter">
+ <class>EditFilter</class>
+ <widget class="QDialog" name="EditFilter">
   <property name="geometry">
    <rect>
     <x>0</x>
@@ -21,21 +21,17 @@
   </property>
   <layout class="QVBoxLayout" name="verticalLayout">
    <item>
-    <widget class="QLabel" name="addFilterLabel">
+    <widget class="QLabel" name="label">
      <property name="text">
       <string>Adding filter</string>
      </property>
     </widget>
    </item>
    <item>
-    <widget class="QLabel" name="editFilterLabel">
-     <property name="text">
-      <string>Editing filter</string>
-     </property>
-    </widget>
+    <widget class="QLineEdit" name="input"/>
    </item>
    <item>
-    <widget class="QLineEdit" name="input"/>
+    <layout class="QHBoxLayout" name="typeLayout"/>
    </item>
    <item>
     <widget class="QLabel" name="error">
@@ -74,7 +70,7 @@
   <connection>
    <sender>buttonBox</sender>
    <signal>accepted()</signal>
-   <receiver>AddFilter</receiver>
+   <receiver>EditFilter</receiver>
    <slot>accept()</slot>
    <hints>
     <hint type="sourcelabel">
@@ -90,7 +86,7 @@
   <connection>
    <sender>buttonBox</sender>
    <signal>rejected()</signal>
-   <receiver>AddFilter</receiver>
+   <receiver>EditFilter</receiver>
    <slot>reject()</slot>
    <hints>
     <hint type="sourcelabel">

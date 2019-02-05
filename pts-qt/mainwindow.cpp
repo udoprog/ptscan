@@ -20,13 +20,13 @@
 #include "ui_mainwindow.h"
 #include "addresslist.h"
 #include "scanresults.h"
+#include "filterlist.h"
 
 MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *parent) :
     QMainWindow(parent),
     threadPool(threadPool),
     ui(new Ui::MainWindow),
-    openProcess(new OpenProcess(this)),
-    editFilter(new EditFilter(this))
+    openProcess(new OpenProcess(this))
 {
     ui->setupUi(this);
     addressList = new AddressList(ui->addressListBox);
@@ -35,61 +35,29 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
     scanResults = new ScanResults(ui->scanResultsBox);
     ui->scanResultsBoxLayout->addWidget(scanResults);
 
+    filterList = new FilterList(ui->filtersBox);
+    ui->filtersBoxLayout->addWidget(filterList);
+
     refreshTimer.start(REFRESH_TIMER);
 
-    QStringList headers;
-    headers.push_back("Filter");
-    headers.push_back("Type");
-
-    filtersModel.setHorizontalHeaderLabels(headers);
-    ui->filtersList->setModel(&filtersModel);
     ui->errorBox->setVisible(false);
-
-    filtersContextMenu = new QMenu(ui->filtersList);
-    filtersContextMenu->addAction(ui->actionRemoveFilter);
-    ui->filtersList->setContextMenuPolicy(Qt::CustomContextMenu);
-
-    connect(ui->filtersList, &QAbstractItemView::clicked, this,
-            [this]()
-    {
-        updateView();
-    });
-
-    connect(ui->filtersList, &QAbstractItemView::customContextMenuRequested, this,
-            [this](const QPoint &pos)
-    {
-        auto index = ui->filtersList->indexAt(pos);
-
-        if (!index.isValid()) {
-            return;
-        }
-
-        filtersCurrentIndex = index;
-        filtersContextMenu->exec(ui->filtersList->viewport()->mapToGlobal(pos));
-        filtersCurrentIndex = {};
-    });
-
-    connect(ui->actionRemoveFilter, &QAction::triggered, this,
-            [this]()
-    {
-        auto index = filtersCurrentIndex;
-
-        if (!index.isValid()) {
-            return;
-        }
-
-        filters.erase(filters.begin() + index.row());
-        filtersModel.removeRow(index.row());
-        updateView();
-    });
 
     connect(&refreshTimer, &QTimer::timeout, this, &MainWindow::updateCurrent);
 
+    // performing a scan.
+    connect(this, &MainWindow::scanEnabled, ui->actionScan, &QAction::setEnabled);
+    connect(this, &MainWindow::scanEnabled, filterList, &FilterList::setScanEnabled);
+
+    // resetting a scan.
+    connect(this, &MainWindow::resetEnabled, ui->actionScanReset, &QAction::setEnabled);
+    connect(this, &MainWindow::resetEnabled, filterList, &FilterList::setResetEnabled);
+
     connect(ui->errorDismissButton, &QPushButton::clicked, ui->errorBox, &QGroupBox::hide);
-    connect(ui->scan, &QPushButton::clicked, ui->actionScan, &QAction::trigger);
+    connect(filterList, &FilterList::updateView, this, &MainWindow::updateView);
+    connect(filterList, &FilterList::scan, ui->actionScan, &QAction::trigger);
+    connect(filterList, &FilterList::scanReset, ui->actionScanReset, &QAction::trigger);
 
     addAction(ui->actionAddFilter);
-    addAction(ui->actionRemoveFilter);
     addAction(ui->actionScanCancel);
     addAction(ui->actionScan);
 
@@ -114,23 +82,10 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
         scan();
     });
 
-    connect(ui->scanReset, &QAbstractButton::pressed, ui->actionScanReset, &QAction::trigger);
-
     connect(ui->actionScanReset, &QAction::triggered, this, [this]() {
         scanCurrent.reset();
         updateScanResults();
         updateView();
-    });
-
-    connect(ui->filtersList, &QTreeView::doubleClicked, this,
-            [this](auto index)
-    {
-        if (!index.isValid()) {
-            return;
-        }
-
-        editFilter->editFilter(filters.at(index.row()), index);
-        editFilter->show();
     });
 
     connect(ui->actionAttach, &QAction::triggered, this,
@@ -152,15 +107,6 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
         updateView();
     });
 
-    connect(ui->actionAddFilter, &QAction::triggered, this,
-            [this]()
-    {
-        editFilter->addFilter();
-        editFilter->show();
-    });
-
-    connect(ui->addFilterButton, &QPushButton::pressed, ui->actionAddFilter, &QAction::trigger);
-
     connect(openProcess, &QDialog::accepted, this,
             [this]()
     {
@@ -179,39 +125,6 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
         handle->refreshModules();
         handle->refreshThreads();
         openProcess->clearList();
-        updateView();
-    });
-
-    connect(editFilter, &QDialog::accepted, this,
-            [this]()
-    {
-        auto index = editFilter->takeIndex();
-        auto filter = editFilter->takeFilter();
-
-        if (!filter) {
-            return;
-        }
-
-        if (index.isValid()) {
-            filtersModel.item(index.row(), 0)->setText(filter->display().toQString());
-            filtersModel.item(index.row(), 1)->setText(filter->type().display().toQString());
-            filters.insert(filters.begin() + index.row(), filter);
-        } else {
-            QList<QStandardItem *> row;
-
-            auto item = new QStandardItem(filter->display().toQString());
-            item->setEditable(false);
-            row.push_back(item);
-
-            auto type = new QStandardItem(filter->type().display().toQString());
-            type->setEditable(false);
-            row.push_back(type);
-
-            filtersModel.appendRow(row);
-            filters.push_back(filter);
-        }
-
-        ui->filtersList->resizeColumnToContents(1);
         updateView();
     });
 
@@ -237,7 +150,6 @@ MainWindow::~MainWindow()
 {
     delete ui;
     delete openProcess;
-    delete editFilter;
 }
 
 void MainWindow::scan()
@@ -249,20 +161,20 @@ void MainWindow::scan()
         return;
     }
 
-    auto index = ui->filtersList->currentIndex();
+    auto maybeFilter = filterList->currentFilter();
 
-    if (!index.isValid()) {
+    if (!maybeFilter) {
         addError("no filter selected");
         return;
     }
+
+    auto filter = *maybeFilter;
 
     ui->errorBox->hide();
     ui->errorText->clear();
     ui->scanProgress->setEnabled(true);
     ui->scanProgress->setValue(0);
 
-    auto row = uintptr_t(index.row());
-    auto filter = this->filters.at(row);
     auto threadPool = this->threadPool;
 
     auto scan = scanCurrent;
@@ -318,15 +230,9 @@ void MainWindow::updateView()
     ui->scanCancel->setEnabled(ui->actionScanCancel->isEnabled());
 
     // A scan is not in progress and a valid filter is selected.
-    ui->actionScan->setEnabled(!scanToken && ui->filtersList->currentIndex().isValid());
-    ui->scan->setEnabled(ui->actionScan->isEnabled());
-
-    // Can only reset a scan if one is loaded.
-    ui->actionScanReset->setEnabled(!!scanCurrent && !scanToken);
-    ui->scanReset->setEnabled(ui->actionScanReset->isEnabled());
-
-    // Can only remove if there are filters present.
-    ui->actionRemoveFilter->setEnabled(filtersModel.rowCount() > 0);
+    emit scanEnabled(!scanToken && !!filterList->currentFilter());
+    // Resetting the scan is possible when there is no scan in progress and there is a scan.
+    emit resetEnabled(!!scanCurrent && !scanToken);
 
     auto count = std::make_optional(0);
 

@@ -47,56 +47,7 @@
              <property name="title">
               <string>Filters</string>
              </property>
-             <layout class="QVBoxLayout" name="verticalLayout_3">
-              <item>
-               <widget class="QTreeView" name="filtersList">
-                <property name="contextMenuPolicy">
-                 <enum>Qt::ActionsContextMenu</enum>
-                </property>
-               </widget>
-              </item>
-              <item>
-               <layout class="QHBoxLayout" name="horizontalLayout">
-                <property name="topMargin">
-                 <number>0</number>
-                </property>
-                <item>
-                 <widget class="QPushButton" name="scanReset">
-                  <property name="text">
-                   <string>Reset</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <spacer name="horizontalSpacer">
-                  <property name="orientation">
-                   <enum>Qt::Horizontal</enum>
-                  </property>
-                  <property name="sizeHint" stdset="0">
-                   <size>
-                    <width>40</width>
-                    <height>20</height>
-                   </size>
-                  </property>
-                 </spacer>
-                </item>
-                <item>
-                 <widget class="QPushButton" name="scan">
-                  <property name="text">
-                   <string>Scan</string>
-                  </property>
-                 </widget>
-                </item>
-                <item>
-                 <widget class="QPushButton" name="addFilterButton">
-                  <property name="text">
-                   <string>Add</string>
-                  </property>
-                 </widget>
-                </item>
-               </layout>
-              </item>
-             </layout>
+             <layout class="QVBoxLayout" name="filtersBoxLayout"/>
             </widget>
            </item>
           </layout>
@@ -287,17 +238,6 @@
    </property>
    <property name="shortcut">
     <string>Ctrl+F</string>
-   </property>
-  </action>
-  <action name="actionRemoveFilter">
-   <property name="text">
-    <string>Remove Filter</string>
-   </property>
-   <property name="toolTip">
-    <string>Remove the selected filter</string>
-   </property>
-   <property name="shortcut">
-    <string>Del</string>
    </property>
   </action>
   <action name="actionScan">

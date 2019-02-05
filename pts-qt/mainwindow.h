@@ -14,9 +14,9 @@
 #include <pts/Token.h>
 
 class OpenProcess;
-class EditFilter;
 class AddressList;
 class ScanResults;
+class FilterList;
 
 namespace pts {
 class Values;
@@ -62,21 +62,20 @@ private slots:
     // Update the view because something interesting happened.
     void updateView();
 
+signals:
+    // Indicate if scan is enabled.
+    void scanEnabled(bool enabled);
+
+    // Indicate if reset is enabled.
+    void resetEnabled(bool enabled);
+
 private:
     std::shared_ptr<pts::ThreadPool> threadPool;
     Ui::MainWindow *ui;
     OpenProcess *openProcess;
-    EditFilter *editFilter;
     AddressList *addressList;
     ScanResults *scanResults;
-
-    // Model for rendering filters.
-    QStandardItemModel filtersModel;
-    // List of pts filters.
-    std::vector<std::shared_ptr<pts::Filter>> filters;
-    QMenu *filtersContextMenu;
-    // Current index that has activated the context menu.
-    QModelIndex filtersCurrentIndex;
+    FilterList *filterList;
 
     // Current process we are interacting with.
     std::shared_ptr<pts::ProcessHandle> handle;

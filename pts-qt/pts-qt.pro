@@ -29,7 +29,8 @@ SOURCES += \
     scanresults.cpp \
     editaddress.cpp \
     editfilter.cpp \
-    typecombobox.cpp
+    typecombobox.cpp \
+    filterlist.cpp
 
 HEADERS += \
     mainwindow.h \
@@ -38,7 +39,8 @@ HEADERS += \
     scanresults.h \
     editaddress.h \
     editfilter.h \
-    typecombobox.h
+    typecombobox.h \
+    filterlist.h
 
 FORMS += \
     mainwindow.ui \
@@ -46,7 +48,8 @@ FORMS += \
     addresslist.ui \
     scanresults.ui \
     editaddress.ui \
-    editfilter.ui
+    editfilter.ui \
+    filterlist.ui
 
 HEADERS += \
     ../pts-cpp/pts/Exception.h \

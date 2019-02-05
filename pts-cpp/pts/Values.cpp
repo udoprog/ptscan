@@ -42,6 +42,11 @@ void Values::push(Value value)
     pts_values_push(inner, value.inner);
 }
 
+Values Values::clone()
+{
+    return Values{pts_values_clone(inner)};
+}
+
 Values::Values(pts_values_t *inner) :
     inner(inner)
 {

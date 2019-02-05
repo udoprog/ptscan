@@ -2,6 +2,7 @@
 #define ADDRESSLIST_H
 
 #include <pts/Values.h>
+#include <pts/Addresses.h>
 #include <QStandardItemModel>
 #include <QWidget>
 
@@ -14,6 +15,14 @@ namespace pts
 class Watch;
 class ProcessHandle;
 }
+
+struct AddressInfo
+{
+    std::shared_ptr<pts::Values> existing;
+    std::shared_ptr<pts::Values> output;
+    std::shared_ptr<pts::Addresses> addresses;
+    std::vector<uintptr_t> indexes;
+};
 
 namespace Ui {
 class AddressList;
@@ -28,13 +37,13 @@ public:
     ~AddressList();
 
     // Add the given watch to the address list.
-    void addWatch(std::shared_ptr<pts::ProcessHandle> handle, std::shared_ptr<pts::Watch> watch);
+    void addWatch(const std::shared_ptr<pts::ProcessHandle> &handle, std::shared_ptr<pts::Watch> watch);
 
     // Get a collection of values corresponding to all watches.
-    pts::Values values() const;
+    AddressInfo info(const std::shared_ptr<pts::ProcessHandle> &handle) const;
 
     // Update the current values in address list.
-    void updateCurrent(const std::shared_ptr<pts::Values> &values);
+    void updateCurrent(const AddressInfo &info);
 private:
     Ui::AddressList *ui;
     QStandardItemModel model;

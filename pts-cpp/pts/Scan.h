@@ -34,10 +34,10 @@ public:
     static std::shared_ptr<Scan> create(std::shared_ptr<ThreadPool> threadPool);
 
     // Perform a scan.
-    void scan(ProcessHandle &handle, Filter &filter, Token &token, ScanReporter &reporter);
+    void scan(const std::shared_ptr<ProcessHandle> &handle, const std::shared_ptr<Filter> &filter, std::shared_ptr<Token> &token, ScanReporter &reporter);
 
     // Refresh the scan with value from the given handle.
-    void refresh(ProcessHandle &handle, std::shared_ptr<Values> &values, Token &token, ScanReporter &reporter);
+    void refresh(const std::shared_ptr<ProcessHandle> &handle, std::shared_ptr<Values> &values, std::shared_ptr<Token> &token, ScanReporter &reporter);
 
     // Access scan results.
     std::vector<ScanResult> results(uintptr_t limit);
@@ -71,7 +71,7 @@ public:
     Address address() const;
 
     // Last scanned value.
-    String value() const;
+    Value value() const;
 
 private:
     explicit ScanResult(pts_scan_result_t inner);

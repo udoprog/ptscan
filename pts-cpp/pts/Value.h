@@ -8,16 +8,21 @@ namespace pts
 {
 class Values;
 class Watch;
+class ScanResult;
 
 class Value
 {
-friend class Values;
-friend class Watch;
+    friend class Values;
+    friend class Watch;
+    friend class ScanResult;
 
 public:
     Value() = delete;
     Value(const Value &) = default;
     Value(Value &&) = default;
+
+    // String conveying the type of the value.
+    String type();
 
     // Display the value as a string.
     String display() const;

@@ -5,6 +5,7 @@
 #include <pts/Filter.h>
 #include <pts/Token.h>
 #include <pts/Watch.h>
+#include <pts/Value.h>
 #include <pts/Values.h>
 #include <pts/Address.h>
 #include <vector>
@@ -38,7 +39,7 @@ Scan::~Scan()
 
 std::shared_ptr<Scan> Scan::create(std::shared_ptr<ThreadPool> threadPool)
 {
-    pts_scan_t *inner = pts_scan_new(threadPool->ptr());
+    pts_scan_t *inner = pts_scan_new(threadPool->inner);
 
     if (inner == nullptr) {
         throw last_exception();
@@ -47,7 +48,12 @@ std::shared_ptr<Scan> Scan::create(std::shared_ptr<ThreadPool> threadPool)
     return std::make_shared<Scan>(Scan{threadPool, inner});
 }
 
-void Scan::scan(ProcessHandle &processHandle, Filter &filter, Token &token, ScanReporter &reporter)
+void Scan::scan(
+    const std::shared_ptr<ProcessHandle> &processHandle,
+    const std::shared_ptr<Filter> &filter,
+    std::shared_ptr<Token> &token,
+    ScanReporter &reporter
+)
 {
     pts_scan_progress_t progress {
         [](auto data, uintptr_t percentage, uint64_t count) {
@@ -56,12 +62,17 @@ void Scan::scan(ProcessHandle &processHandle, Filter &filter, Token &token, Scan
         },
     };
 
-    if (!pts_scan_scan(inner, processHandle.inner, filter.inner, token.inner, &progress, reinterpret_cast<void *>(&reporter))) {
+    if (!pts_scan_scan(inner, processHandle->inner, filter->inner, token->inner, &progress, reinterpret_cast<void *>(&reporter))) {
         throw last_exception();
     }
 }
 
-void Scan::refresh(ProcessHandle &processHandle, std::shared_ptr<Values> &values, Token &token, ScanReporter &reporter)
+void Scan::refresh(
+    const std::shared_ptr<ProcessHandle> &processHandle,
+    std::shared_ptr<Values> &values,
+    std::shared_ptr<Token> &token,
+    ScanReporter &reporter
+)
 {
     pts_scan_progress_t progress {
         [](auto data, uintptr_t percentage, uint64_t count) {
@@ -70,7 +81,7 @@ void Scan::refresh(ProcessHandle &processHandle, std::shared_ptr<Values> &values
         },
     };
 
-    if (!pts_scan_refresh(inner, processHandle.inner, values->inner, token.inner, &progress, reinterpret_cast<void *>(&reporter))) {
+    if (!pts_scan_refresh(inner, processHandle->inner, values->inner, token->inner, &progress, reinterpret_cast<void *>(&reporter))) {
         throw last_exception();
     }
 }
@@ -138,10 +149,8 @@ Address ScanResult::address() const
     return Address{pts_scan_result_address(&inner)};
 }
 
-String ScanResult::value() const
+Value ScanResult::value() const
 {
-    String value;
-    pts_scan_result_value(&inner, &value.inner);
-    return value;
+    return Value{pts_scan_result_value(&inner)};
 }
 }

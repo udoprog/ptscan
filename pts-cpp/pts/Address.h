@@ -10,12 +10,14 @@ class ProcessHandle;
 class Watch;
 class ScanResult;
 class ProcessHandle;
+class Addresses;
 
 class Address
 {
     friend class Watch;
     friend class ScanResult;
     friend class ProcessHandle;
+    friend class Addresses;
 
 public:
     Address();

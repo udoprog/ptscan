@@ -6,7 +6,7 @@
 #include <cstdlib>
 
 /// A collection of addresses that can be populated.
-struct pts_Addresses;
+struct pts_addresses_t;
 
 struct pts_error_t;
 
@@ -78,14 +78,20 @@ void pts_address_display(const pts_address_t *address,
                          const pts_process_handle_t *handle,
                          pts_string_t *out);
 
-/// Get the value at the given position as a string.
-bool pts_addresses_at(const pts_Addresses *addresses, uintptr_t pos, pts_address_t *out);
+/// Get the address at the given position as a string.
+bool pts_addresses_at(const pts_addresses_t *addresses, uintptr_t pos, pts_address_t *out);
 
 /// Free the scan addresses.
-void pts_addresses_free(pts_Addresses *addresses);
+void pts_addresses_free(pts_addresses_t *addresses);
 
-/// Get the value at the given position as a string.
-uintptr_t pts_addresses_length(const pts_Addresses *addresses);
+/// Get the address at the given position as a string.
+uintptr_t pts_addresses_length(const pts_addresses_t *addresses);
+
+/// Create a new addresss container.
+pts_addresses_t *pts_addresses_new();
+
+/// Push a address.
+void pts_addresses_push(pts_addresses_t *addresses, pts_address_t address);
 
 /// Returns the last error raised in this thread.
 /// Returns NULL if no error was raised.
@@ -144,7 +150,7 @@ void pts_process_handle_pid(const pts_process_handle_t *handle, pts_string_t *pi
 /// Read the given memory locations from the process.
 bool pts_process_handle_read_memory(const pts_process_handle_t *handle,
                                     const pts_thread_pool_t *thread_pool,
-                                    const pts_Addresses *addresses,
+                                    const pts_addresses_t *addresses,
                                     const pts_values_t *values,
                                     pts_values_t *output,
                                     const pts_token_t *cancel,
@@ -193,7 +199,7 @@ pts_watch_t *pts_scan_result_as_watch(const pts_scan_result_t *result,
 bool pts_scan_result_at(const pts_scan_t *scan, uintptr_t offset, pts_scan_result_t *out);
 
 /// Access the value for the scan result.
-void pts_scan_result_value(const pts_scan_result_t *result, pts_string_t *out);
+pts_value_t pts_scan_result_value(const pts_scan_result_t *result);
 
 /// Free the scan results iterator.
 void pts_scan_results_free(pts_scan_results_iter_t *pts_scan_results);
@@ -250,10 +256,17 @@ pts_token_t *pts_token_new();
 /// Set the token.
 void pts_token_set(const pts_token_t *token);
 
+/// Export the value as a string.
 void pts_value_display(const pts_value_t *value, pts_string_t *out);
+
+/// Export the type as a string.
+void pts_value_type(const pts_value_t *value, pts_string_t *out);
 
 /// Get the value at the given position as a string.
 bool pts_values_at(const pts_values_t *values, uintptr_t pos, pts_value_t *out);
+
+/// Clone the values collection.
+pts_values_t *pts_values_clone(const pts_values_t *values);
 
 /// Free the scan values.
 void pts_values_free(pts_values_t *values);

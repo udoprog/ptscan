@@ -9,10 +9,12 @@
 
 namespace pts {
 class Scan;
+class ProcessHandle;
 
 class Values
 {
     friend class Scan;
+    friend class ProcessHandle;
 
 public:
     Values();
@@ -29,6 +31,9 @@ public:
 
     // Push a value onto the collection.
     void push(Value value);
+
+    // Clone all values.
+    Values clone();
 
 private:
     explicit Values(pts_values_t *);

@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include <QApplication>
 #include <pts/ThreadPool.h>
+#include <QDebug>
 
 int main(int argc, char *argv[])
 {

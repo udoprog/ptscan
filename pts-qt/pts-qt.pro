@@ -47,31 +47,33 @@ FORMS += \
     editfilter.ui
 
 HEADERS += \
-    $$PWD/../pts-cpp/pts/Exception.h \
-    $$PWD/../pts-cpp/pts/Filter.h \
-    $$PWD/../pts-cpp/pts/Pointer.h \
-    $$PWD/../pts-cpp/pts/ProcessHandle.h \
-    $$PWD/../pts-cpp/pts/Scan.h \
-    $$PWD/../pts-cpp/pts/String.h \
-    $$PWD/../pts-cpp/pts/System.h \
-    $$PWD/../pts-cpp/pts/ThreadPool.h \
-    $$PWD/../pts-cpp/pts/Token.h \
-    $$PWD/../pts-cpp/pts/Values.h \
-    $$PWD/../pts-cpp/pts/Watch.h \
-    $$PWD/../pts-cpp/pts/Value.h \
-    $$PWD/../pts-cpp/pts/Address.h
+    ../pts-cpp/pts/Exception.h \
+    ../pts-cpp/pts/Filter.h \
+    ../pts-cpp/pts/Pointer.h \
+    ../pts-cpp/pts/ProcessHandle.h \
+    ../pts-cpp/pts/Scan.h \
+    ../pts-cpp/pts/String.h \
+    ../pts-cpp/pts/System.h \
+    ../pts-cpp/pts/ThreadPool.h \
+    ../pts-cpp/pts/Token.h \
+    ../pts-cpp/pts/Watch.h \
+    ../pts-cpp/pts/Value.h \
+    ../pts-cpp/pts/Values.h \
+    ../pts-cpp/pts/Address.h \
+    ../pts-cpp/pts/Addresses.h
 
 SOURCES += \
-    $$PWD/../pts-cpp/pts/Exception.cpp \
-    $$PWD/../pts-cpp/pts/Filter.cpp \
-    $$PWD/../pts-cpp/pts/Pointer.cpp \
-    $$PWD/../pts-cpp/pts/ProcessHandle.cpp \
-    $$PWD/../pts-cpp/pts/Scan.cpp \
-    $$PWD/../pts-cpp/pts/String.cpp \
-    $$PWD/../pts-cpp/pts/System.cpp \
-    $$PWD/../pts-cpp/pts/ThreadPool.cpp \
-    $$PWD/../pts-cpp/pts/Token.cpp \
-    $$PWD/../pts-cpp/pts/Values.cpp \
-    $$PWD/../pts-cpp/pts/Watch.cpp \
-    $$PWD/../pts-cpp/pts/Value.cpp \
-    $$PWD/../pts-cpp/pts/Address.cpp
+    ../pts-cpp/pts/Exception.cpp \
+    ../pts-cpp/pts/Filter.cpp \
+    ../pts-cpp/pts/Pointer.cpp \
+    ../pts-cpp/pts/ProcessHandle.cpp \
+    ../pts-cpp/pts/Scan.cpp \
+    ../pts-cpp/pts/String.cpp \
+    ../pts-cpp/pts/System.cpp \
+    ../pts-cpp/pts/ThreadPool.cpp \
+    ../pts-cpp/pts/Token.cpp \
+    ../pts-cpp/pts/Values.cpp \
+    ../pts-cpp/pts/Watch.cpp \
+    ../pts-cpp/pts/Value.cpp \
+    ../pts-cpp/pts/Address.cpp \
+    ../pts-cpp/pts/Addresses.cpp

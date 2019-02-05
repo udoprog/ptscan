@@ -29,14 +29,9 @@ ThreadPool::~ThreadPool()
 std::shared_ptr<ThreadPool> ThreadPool::create()
 {
     if (auto inner = pts_thread_pool_new()) {
-        return std::make_shared<ThreadPool>(inner);
+        return std::make_shared<ThreadPool>(ThreadPool{inner});
     }
 
     throw last_exception();
-}
-
-pts_thread_pool_t *ThreadPool::ptr()
-{
-    return inner;
 }
 }

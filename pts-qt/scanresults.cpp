@@ -14,6 +14,7 @@ ScanResults::ScanResults(QWidget *parent) :
 
     QStringList headers;
     headers.push_back("Address");
+    headers.push_back("Type");
     headers.push_back("Last Scan");
     headers.push_back("Current");
     model.setHorizontalHeaderLabels(headers);
@@ -68,11 +69,12 @@ void ScanResults::updateCurrent(const std::shared_ptr<pts::Values> &values)
         auto v = *value;
 
         auto current = v.display().toQString();
-        auto currentItem = model.item(index, 2);
+        auto currentItem = model.item(index, 3);
 
         currentItem->setText(current);
+        currentItem->setEditable(false);
 
-        auto last = model.item(index, 1)->text();
+        auto last = model.item(index, 2)->text();
 
         if (current != last) {
             currentItem->setForeground(Qt::red);
@@ -94,7 +96,13 @@ void ScanResults::update(const std::shared_ptr<pts::ProcessHandle> &handle, std:
             address->setEditable(false);
             row.push_back(address);
 
-            auto value = new QStandardItem(result.value().toQString());
+            auto v = result.value();
+
+            auto type = new QStandardItem(v.type().toQString());
+            type->setEditable(false);
+            row.push_back(type);
+
+            auto value = new QStandardItem(v.display().toQString());
             value->setEditable(false);
             row.push_back(value);
 

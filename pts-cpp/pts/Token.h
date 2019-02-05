@@ -6,8 +6,11 @@
 #include <ptscan.h>
 
 namespace pts {
+class ProcessHandle;
+
 class Token {
     friend class Scan;
+    friend class ProcessHandle;
 
 public:
     // Construct a default empty Token.

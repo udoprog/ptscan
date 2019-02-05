@@ -2,6 +2,13 @@
 
 namespace pts
 {
+String Value::type()
+{
+    String type;
+    pts_value_type(&inner, &type.inner);
+    return type;
+}
+
 String Value::display() const
 {
     String string;

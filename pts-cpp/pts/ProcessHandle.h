@@ -14,6 +14,11 @@ namespace pts
 class Scan;
 class ScanResult;
 class Address;
+class ThreadPool;
+class Addresses;
+class Values;
+class Token;
+class ScanReporter;
 
 class ProcessHandle {
     friend class Address;
@@ -41,6 +46,15 @@ public:
     void refreshModules();
     // Read the address of a pointer.
     std::optional<Address> readPointer(const std::shared_ptr<Pointer>& pointer);
+    // Read a segment of memory.
+    void readMemory(
+        const std::shared_ptr<ThreadPool> &threadPool,
+        const std::shared_ptr<Addresses> &addresses,
+        const std::shared_ptr<Values> &values,
+        std::shared_ptr<Values> &output,
+        std::shared_ptr<Token> &cancel,
+        ScanReporter &reporter
+    );
 
 private:
     pts_process_handle_t *inner;

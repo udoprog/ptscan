@@ -3,6 +3,11 @@
 #include <pts/Exception.h>
 #include <pts/System.h>
 #include <pts/Address.h>
+#include <pts/Scan.h>
+#include <pts/ThreadPool.h>
+#include <pts/Addresses.h>
+#include <pts/Values.h>
+#include <pts/Token.h>
 
 namespace pts
 {
@@ -77,5 +82,37 @@ std::optional<Address> ProcessHandle::readPointer(const std::shared_ptr<Pointer>
     }
 
     return {};
+}
+
+void ProcessHandle::readMemory(
+    const std::shared_ptr<ThreadPool> &threadPool,
+    const std::shared_ptr<Addresses> &addresses,
+    const std::shared_ptr<Values> &values,
+    std::shared_ptr<Values> &output,
+    std::shared_ptr<Token> &cancel,
+    ScanReporter &reporter
+)
+{
+    pts_scan_progress_t progress {
+        [](auto data, uintptr_t percentage, uint64_t count) {
+            auto d = reinterpret_cast<ScanReporter *>(data);
+            (d->report)(percentage, count);
+        },
+    };
+
+    auto result = pts_process_handle_read_memory(
+        inner,
+        threadPool->inner,
+        addresses->inner,
+        values->inner,
+        output->inner,
+        cancel->inner,
+        &progress,
+        reinterpret_cast<void *>(&reporter)
+    );
+
+    if (!result) {
+        throw last_exception();
+    }
 }
 }

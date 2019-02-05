@@ -6,19 +6,25 @@
 #include <ptscan.h>
 
 namespace pts {
+class ProcessHandle;
+class ThreadPool;
+class Scan;
+
 class ThreadPool {
+    friend class ProcessHandle;
+    friend class ThreadPool;
+    friend class Scan;
+
 public:
     ThreadPool();
-    ThreadPool(pts_thread_pool_t *inner);
     ThreadPool(const ThreadPool &) = delete;
     ThreadPool(ThreadPool &&);
     ~ThreadPool();
 
     // Construct a new thread pool.
     static std::shared_ptr<ThreadPool> create();
-
-    pts_thread_pool_t *ptr();
 private:
+    explicit ThreadPool(pts_thread_pool_t *inner);
 
     pts_thread_pool_t *inner;
 };

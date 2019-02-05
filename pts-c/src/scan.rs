@@ -1,6 +1,6 @@
 use crate::{
-    address::Address, filter::Filter, process_handle::ProcessHandle, string::StringT,
-    values::Values, watch::Watch, ThreadPool, Token,
+    address::Address, filter::Filter, process_handle::ProcessHandle, value::Value, values::Values,
+    watch::Watch, ThreadPool, Token,
 };
 use std::{mem, os::raw::c_void, ptr};
 
@@ -106,10 +106,9 @@ pub extern "C" fn pts_scan_result_address<'a>(result: *const ScanResult) -> Addr
 
 /// Access the value for the scan result.
 #[no_mangle]
-pub extern "C" fn pts_scan_result_value<'a>(result: *const ScanResult, out: *mut StringT) {
+pub extern "C" fn pts_scan_result_value<'a>(result: *const ScanResult) -> Value {
     let result = immediate_ck!(ptscan::ScanResult, &'a result);
-    let out = null_ck!(&'a mut out);
-    *out = StringT::new(result.value.to_string());
+    into_immediate!(result.value)
 }
 
 /// Create an iterator over the results of a scan.

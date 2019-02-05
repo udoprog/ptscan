@@ -2,6 +2,7 @@
 #include <pts/Pointer.h>
 #include <pts/Exception.h>
 #include <pts/Value.h>
+#include <pts/Address.h>
 
 namespace pts
 {

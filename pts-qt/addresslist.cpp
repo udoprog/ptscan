@@ -25,7 +25,6 @@ AddressList::AddressList(QWidget *parent) :
     headers.push_back("Address");
     headers.push_back("Type");
     headers.push_back("Value");
-    headers.push_back("Current Values");
     model.setHorizontalHeaderLabels(headers);
 
     ui->list->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -34,27 +33,31 @@ AddressList::AddressList(QWidget *parent) :
     menu->addAction(ui->actionDelete);
     auto currentItem = std::make_shared<QModelIndex>(QModelIndex());
 
-    connect(ui->list, &QAbstractItemView::doubleClicked, this, [this, currentItem](auto index) {
+    connect(ui->list, &QAbstractItemView::doubleClicked, this,
+            [this, currentItem](auto index)
+    {
         *currentItem = index;
         ui->actionEdit->trigger();
         *currentItem = {};
     });
 
-    connect(ui->list, &QAbstractItemView::customContextMenuRequested, this, [this, currentItem](const QPoint &pos) {
+    connect(ui->list, &QAbstractItemView::customContextMenuRequested, this,
+            [this, currentItem](const QPoint &pos)
+    {
         auto index = ui->list->indexAt(pos);
 
         if (!index.isValid()) {
             return;
         }
 
-        qDebug() << index;
-
         *currentItem = index;
         menu->exec(ui->list->viewport()->mapToGlobal(pos));
         *currentItem = {};
     });
 
-    connect(ui->actionEdit, &QAction::triggered, this, [this, currentItem]() {
+    connect(ui->actionEdit, &QAction::triggered, this,
+            [this, currentItem]()
+    {
         auto index = *currentItem;
 
         if (!index.isValid()) {
@@ -62,21 +65,24 @@ AddressList::AddressList(QWidget *parent) :
         }
 
         editAddress->setIndex(index);
-        editAddress->setWatch(watches.at(index.row()));
+        editAddress->setWatch(watches.at(uintptr_t(index.row())));
         editAddress->show();
     });
 
-    connect(ui->actionDelete, &QAction::triggered, this, [currentItem]() {
-        auto index = currentItem;
+    connect(ui->actionDelete, &QAction::triggered, this,
+            [this, currentItem]()
+    {
+        auto index = *currentItem;
 
-        if (!index->isValid()) {
-            return;
+        if (index.isValid()) {
+            model.removeRow(index.row());
+            watches.erase(watches.begin() + index.row());
         }
-
-        qDebug() << "delete" << *index;
     });
 
-    connect(editAddress, &QDialog::accepted, this, [this]() {
+    connect(editAddress, &QDialog::accepted, this,
+            [this]()
+    {
         auto index = editAddress->takeIndex();
 
         if (!index.isValid()) {
@@ -101,7 +107,7 @@ AddressList::~AddressList()
     delete editAddress;
 }
 
-void AddressList::addWatch(std::shared_ptr<pts::ProcessHandle> handle, std::shared_ptr<pts::Watch> watch)
+void AddressList::addWatch(const std::shared_ptr<pts::ProcessHandle> &handle, std::shared_ptr<pts::Watch> watch)
 {
     QList<QStandardItem *> row;
 
@@ -131,35 +137,50 @@ void AddressList::addWatch(std::shared_ptr<pts::ProcessHandle> handle, std::shar
     value->setEditable(false);
     row.push_back(value);
 
-    auto current = new QStandardItem(value->text());
-    current->setEditable(false);
-    row.push_back(current);
-
     model.appendRow(row);
     watches.push_back(watch);
 }
 
-pts::Values AddressList::values() const
+AddressInfo AddressList::info(const std::shared_ptr<pts::ProcessHandle> &handle) const
 {
     pts::Values values;
+    pts::Addresses addresses;
+    std::vector<uintptr_t> indexes;
 
-    for (auto const &v: watches) {
-        values.push(v->value());
+    uintptr_t index = 0;
+
+    if (handle) {
+        for (auto const &v: watches) {
+            auto p = v->pointer();
+
+            if (auto a = handle->readPointer(p)) {
+                addresses.push(*a);
+                values.push(v->value());
+                indexes.push_back(index);
+            }
+
+            index++;
+        }
     }
 
-    return values;
+    auto output = values.clone();
+
+    return AddressInfo{
+        std::make_shared<pts::Values>(std::move(values)),
+        std::make_shared<pts::Values>(std::move(output)),
+        std::make_shared<pts::Addresses>(std::move(addresses)),
+        indexes
+    };
 }
 
-void AddressList::updateCurrent(const std::shared_ptr<pts::Values> &values)
+void AddressList::updateCurrent(const AddressInfo &info)
 {
-    auto length = int(values->length());
-
-    for (int index = 0; index < length; index++) {
-        if (index >= model.rowCount()) {
+    for (auto const &index: info.indexes) {
+        if (index >= uintptr_t(model.rowCount())) {
             break;
         }
 
-        auto value = values->at(uintptr_t(index));
+        auto value = info.output->at(index);
 
         if (!value) {
             continue;
@@ -168,16 +189,7 @@ void AddressList::updateCurrent(const std::shared_ptr<pts::Values> &values)
         auto v = *value;
 
         auto current = v.display().toQString();
-        auto currentItem = model.item(index, 4);
-
+        auto currentItem = model.item(int(index), 3);
         currentItem->setText(current);
-
-        auto last = model.item(index, 3)->text();
-
-        if (current != last) {
-            currentItem->setForeground(Qt::red);
-        } else {
-            currentItem->setForeground(Qt::black);
-        }
     }
 }

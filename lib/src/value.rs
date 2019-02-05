@@ -126,16 +126,16 @@ impl fmt::Display for Value {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Value::None => write!(fmt, "none"),
-            Value::U8(value) => write!(fmt, "{}u8", value),
-            Value::I8(value) => write!(fmt, "{}i8", value),
-            Value::U16(value) => write!(fmt, "{}u16", value),
-            Value::I16(value) => write!(fmt, "{}i16", value),
-            Value::U32(value) => write!(fmt, "{}u32", value),
-            Value::I32(value) => write!(fmt, "{}i32", value),
-            Value::U64(value) => write!(fmt, "{}u64", value),
-            Value::I64(value) => write!(fmt, "{}i64", value),
-            Value::U128(value) => write!(fmt, "{}u128", value),
-            Value::I128(value) => write!(fmt, "{}i128", value),
+            Value::U8(value) => write!(fmt, "{}", value),
+            Value::I8(value) => write!(fmt, "{}", value),
+            Value::U16(value) => write!(fmt, "{}", value),
+            Value::I16(value) => write!(fmt, "{}", value),
+            Value::U32(value) => write!(fmt, "{}", value),
+            Value::I32(value) => write!(fmt, "{}", value),
+            Value::U64(value) => write!(fmt, "{}", value),
+            Value::I64(value) => write!(fmt, "{}", value),
+            Value::U128(value) => write!(fmt, "{}", value),
+            Value::I128(value) => write!(fmt, "{}", value),
         }
     }
 }

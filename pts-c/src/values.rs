@@ -36,6 +36,13 @@ pub extern "C" fn pts_values_at<'a>(values: *const Values, pos: usize, out: *mut
     false
 }
 
+/// Clone the values collection.
+#[no_mangle]
+pub extern "C" fn pts_values_clone<'a>(values: *const Values) -> *mut Values {
+    let Values(ref values) = *null_ck!(&'a values);
+    into_ptr!(Values(values.clone()))
+}
+
 /// Free the scan values.
 #[no_mangle]
 pub extern "C" fn pts_values_free<'a>(values: *mut Values) {

@@ -5,7 +5,7 @@
 
 #include <QMainWindow>
 #include <QStandardItemModel>
-#include <QFuture>
+#include <QTimer>
 
 #include <pts/System.h>
 #include <pts/ThreadPool.h>
@@ -37,7 +37,7 @@ public:
     // The number of items to display.
     const uintptr_t DISPLAY_LENGTH = 100;
     // Refresh rate in milliseconds for values.
-    const uintptr_t REFRESH_TIMER = 500;
+    const int REFRESH_TIMER = 500;
 
 public slots:
     // Fire off a scan.
@@ -79,7 +79,7 @@ private:
     QModelIndex filtersCurrentIndex;
 
     // Current process we are interacting with.
-    std::shared_ptr<pts::ProcessHandle> processHandle;
+    std::shared_ptr<pts::ProcessHandle> handle;
 
     // A scan that is in progress.
     std::shared_ptr<pts::Token> scanToken;
@@ -88,7 +88,7 @@ private:
     std::shared_ptr<pts::Token> refreshToken;
 
     // A timer to refresh current values.
-    QTimer *refreshTimer;
+    QTimer refreshTimer;
 };
 
 #endif // MAINWINDOW_H

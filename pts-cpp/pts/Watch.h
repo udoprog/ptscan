@@ -5,6 +5,7 @@
 
 #include <pts/String.h>
 #include <pts/Value.h>
+#include <pts/Address.h>
 
 namespace pts {
 class ScanResult;

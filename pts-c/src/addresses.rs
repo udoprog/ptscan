@@ -3,13 +3,26 @@ use crate::address::Address;
 /// A collection of addresses that can be populated.
 pub struct Addresses(pub(crate) Vec<ptscan::Address>);
 
-/// Get the value at the given position as a string.
+/// Create a new addresss container.
+#[no_mangle]
+pub extern "C" fn pts_addresses_new<'a>() -> *mut Addresses {
+    into_ptr!(Addresses(Vec::new()))
+}
+
+/// Push a address.
+#[no_mangle]
+pub extern "C" fn pts_addresses_push<'a>(addresses: *mut Addresses, address: Address) {
+    let Addresses(ref mut addresses) = *null_ck!(&'a mut addresses);
+    addresses.push(immediate_ck!(ptscan::Address, address));
+}
+
+/// Get the address at the given position as a string.
 #[no_mangle]
 pub extern "C" fn pts_addresses_length<'a>(addresses: *const Addresses) -> usize {
     null_ck!(&'a addresses).0.len()
 }
 
-/// Get the value at the given position as a string.
+/// Get the address at the given position as a string.
 #[no_mangle]
 pub extern "C" fn pts_addresses_at<'a>(
     addresses: *const Addresses,

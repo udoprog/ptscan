@@ -137,7 +137,7 @@ impl<T> Convertible<Address> for *const T {
 
 impl fmt::Display for Address {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "0x{:X}", self.0)
+        write!(fmt, "{:X}", self.0)
     }
 }
 
@@ -361,7 +361,7 @@ impl Size {
 
 impl fmt::Display for Size {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "0x{:X}", self.0)
+        write!(fmt, "{:X}", self.0)
     }
 }
 

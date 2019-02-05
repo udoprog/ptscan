@@ -42,6 +42,11 @@ void Values::push(Value value)
     pts_values_push(inner, value.inner);
 }
 
+void Values::pushType(Type type)
+{
+    pts_values_push_type(inner, type.inner);
+}
+
 Values Values::clone()
 {
     return Values{pts_values_clone(inner)};

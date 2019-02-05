@@ -98,7 +98,6 @@ pub extern "C" fn pts_process_handle_read_memory<'a>(
     handle: *const ProcessHandle,
     thread_pool: *const ThreadPool,
     addresses: *const Addresses,
-    values: *const Values,
     output: *mut Values,
     cancel: *const Token,
     progress: *const ScanProgress,
@@ -107,13 +106,12 @@ pub extern "C" fn pts_process_handle_read_memory<'a>(
     let ProcessHandle(ref handle) = *null_ck!(&'a handle);
     let ThreadPool(ref thread_pool) = *null_ck!(&'a thread_pool);
     let Addresses(ref addresses) = *null_ck!(&'a addresses);
-    let Values(ref values) = *null_ck!(&'a values);
     let Values(ref mut output) = *null_ck!(&'a mut output);
     let cancel = null_opt!(&'a cancel).map(|t| &t.0);
     let progress = null_ck!(&'a progress).as_progress(data);
 
     try_last!(
-        handle.read_memory(&*thread_pool, addresses, values, output, cancel, progress),
+        handle.read_memory(&*thread_pool, addresses, output, cancel, progress),
         false
     );
 

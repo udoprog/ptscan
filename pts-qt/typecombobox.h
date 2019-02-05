@@ -23,6 +23,10 @@ signals:
     // Signal that a new type has been selected.
     void typeSelected(pts::Type type);
 
+public slots:
+    // Set the type for this box.
+    void setType(pts::Type type);
+
 private:
     std::vector<pts::Type> all;
     // Model for types.

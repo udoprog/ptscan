@@ -36,11 +36,11 @@ public:
 private:
     Ui::EditFilter *ui;
     TypeComboBox *type;
-    std::optional<std::string> error;
     std::shared_ptr<pts::Filter> filter;
     QModelIndex index;
 
-    void updateView();
+public slots:
+    void update();
 };
 
 #endif // EDITFILTER_H

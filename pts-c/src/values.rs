@@ -1,4 +1,4 @@
-use crate::value::Value;
+use crate::value::{Type, Value};
 
 /// A collection of scan values that can be populated through e.g. scan_refresh.
 pub struct Values(pub(crate) ptscan::Values);
@@ -14,6 +14,14 @@ pub extern "C" fn pts_values_new<'a>() -> *mut Values {
 pub extern "C" fn pts_values_push<'a>(values: *mut Values, value: Value) {
     let Values(ref mut values) = *null_ck!(&'a mut values);
     values.push(immediate_ck!(ptscan::Value, value));
+}
+
+/// Push a type.
+/// The pushed value will be the type-default of the specified type.
+#[no_mangle]
+pub extern "C" fn pts_values_push_type<'a>(values: *mut Values, ty: Type) {
+    let Values(ref mut values) = *null_ck!(&'a mut values);
+    values.push_type(immediate_ck!(ptscan::Type, ty));
 }
 
 /// Get the value at the given position as a string.

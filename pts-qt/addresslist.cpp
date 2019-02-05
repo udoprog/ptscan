@@ -12,8 +12,6 @@
 AddressList::AddressList(QWidget *parent) :
     QWidget(parent),
     ui(new Ui::AddressList),
-    model(),
-    watches(),
     editAddress(new EditAddress(this)),
     menu(new QMenu())
 {
@@ -55,9 +53,7 @@ AddressList::AddressList(QWidget *parent) :
         *currentItem = {};
     });
 
-    connect(ui->actionEdit, &QAction::triggered, this,
-            [this, currentItem]()
-    {
+    connect(ui->actionEdit, &QAction::triggered, this, [this, currentItem]() {
         auto index = *currentItem;
 
         if (!index.isValid()) {
@@ -80,9 +76,7 @@ AddressList::AddressList(QWidget *parent) :
         }
     });
 
-    connect(editAddress, &QDialog::accepted, this,
-            [this]()
-    {
+    connect(editAddress, &QDialog::accepted, this, [this]() {
         auto index = editAddress->takeIndex();
 
         if (!index.isValid()) {
@@ -90,12 +84,22 @@ AddressList::AddressList(QWidget *parent) :
             return;
         }
 
-        auto item = model.itemFromIndex(index);
-        auto watch = watches.at(index.row());
+        auto watch = watches.at(uintptr_t(index.row()));
 
         if (auto pointer = editAddress->takePointer()) {
             watch->setPointer(pointer);
-            item->setText(pointer->display().toQString());
+        }
+
+        watch->setType(editAddress->takeType());
+
+        {
+            auto item = model.item(index.row(), 0);
+            item->setText(watch->pointer()->display().toQString());
+        }
+
+        {
+            auto item = model.item(index.row(), 2);
+            item->setText(watch->type().display().toQString());
         }
     });
 }
@@ -129,7 +133,7 @@ void AddressList::addWatch(const std::shared_ptr<pts::ProcessHandle> &handle, st
     addressItem->setEditable(false);
     row.push_back(addressItem);
 
-    auto type = new QStandardItem(watch->type().toQString());
+    auto type = new QStandardItem(watch->type().display().toQString());
     type->setEditable(false);
     row.push_back(type);
 
@@ -147,19 +151,19 @@ void AddressList::addWatch(const std::shared_ptr<pts::ProcessHandle> &handle, st
 
 AddressInfo AddressList::info(const std::shared_ptr<pts::ProcessHandle> &handle) const
 {
-    pts::Values values;
+    pts::Values output;
     pts::Addresses addresses;
     std::vector<uintptr_t> indexes;
 
     uintptr_t index = 0;
 
     if (handle) {
-        for (auto const &v: watches) {
-            auto p = v->pointer();
+        for (auto const &w: watches) {
+            auto p = w->pointer();
 
             if (auto a = handle->readPointer(p)) {
                 addresses.push(*a);
-                values.push(v->value());
+                output.pushType(w->type());
                 indexes.push_back(index);
             }
 
@@ -167,10 +171,7 @@ AddressInfo AddressList::info(const std::shared_ptr<pts::ProcessHandle> &handle)
         }
     }
 
-    auto output = values.clone();
-
     return AddressInfo{
-        std::make_shared<pts::Values>(std::move(values)),
         std::make_shared<pts::Values>(std::move(output)),
         std::make_shared<pts::Addresses>(std::move(addresses)),
         indexes

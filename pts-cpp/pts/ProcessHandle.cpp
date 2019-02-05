@@ -87,7 +87,6 @@ std::optional<Address> ProcessHandle::readPointer(const std::shared_ptr<Pointer>
 void ProcessHandle::readMemory(
     const std::shared_ptr<ThreadPool> &threadPool,
     const std::shared_ptr<Addresses> &addresses,
-    const std::shared_ptr<Values> &values,
     std::shared_ptr<Values> &output,
     std::shared_ptr<Token> &cancel,
     ScanReporter &reporter
@@ -104,7 +103,6 @@ void ProcessHandle::readMemory(
         inner,
         threadPool->inner,
         addresses->inner,
-        values->inner,
         output->inner,
         cancel->inner,
         &progress,

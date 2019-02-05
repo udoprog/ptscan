@@ -204,6 +204,25 @@ impl Type {
         }
     }
 
+    /// Initialize a default value of the given type.
+    pub fn default(&self) -> Value {
+        use self::Type::*;
+
+        match *self {
+            None => Value::None,
+            U8 => Value::U8(Default::default()),
+            I8 => Value::I8(Default::default()),
+            U16 => Value::U16(Default::default()),
+            I16 => Value::I16(Default::default()),
+            U32 => Value::U32(Default::default()),
+            I32 => Value::I32(Default::default()),
+            U64 => Value::U64(Default::default()),
+            I64 => Value::I64(Default::default()),
+            U128 => Value::U128(Default::default()),
+            I128 => Value::I128(Default::default()),
+        }
+    }
+
     /// Convert from byte.
     pub fn from_byte(ty: u8) -> Type {
         const U8: u8 = Type::U8 as u8;

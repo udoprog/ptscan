@@ -18,7 +18,6 @@ class ProcessHandle;
 
 struct AddressInfo
 {
-    std::shared_ptr<pts::Values> existing;
     std::shared_ptr<pts::Values> output;
     std::shared_ptr<pts::Addresses> addresses;
     std::vector<uintptr_t> indexes;
@@ -46,10 +45,10 @@ public:
     void updateCurrent(const AddressInfo &info);
 private:
     Ui::AddressList *ui;
-    QStandardItemModel model;
-    std::vector<std::shared_ptr<pts::Watch>> watches;
     EditAddress *editAddress;
     QMenu *menu;
+    QStandardItemModel model;
+    std::vector<std::shared_ptr<pts::Watch>> watches;
 };
 
 #endif // ADDRESSLIST_H

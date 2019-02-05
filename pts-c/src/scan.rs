@@ -191,7 +191,6 @@ pub extern "C" fn pts_scan_refresh<'a>(
         handle.read_memory(
             &*scan.thread_pool,
             &scan.addresses,
-            &scan.values,
             values,
             cancel,
             progress

@@ -47,3 +47,17 @@ std::vector<pts::Type> TypeComboBox::allTypes()
     types.push_back(pts::Type::parse("i128"));
     return types;
 }
+
+void TypeComboBox::setType(pts::Type type)
+{
+    int index = 0;
+
+    for (const pts::Type &t: all) {
+        if (t == type) {
+            this->setCurrentIndex(index);
+            return;
+        }
+
+        index++;
+    }
+}

@@ -46,15 +46,18 @@ Value Watch::value()
     return Value{pts_watch_value(inner)};
 }
 
-String Watch::type()
+Type Watch::type()
 {
-    String out;
-    pts_watch_display_type(inner, &out.inner);
-    return out;
+    return Type{pts_watch_type(inner)};
 }
 
 void Watch::setPointer(const std::shared_ptr<Pointer> pointer)
 {
     pts_watch_set_pointer(inner, pointer->inner);
+}
+
+void Watch::setType(const Type type)
+{
+    pts_watch_set_type(inner, type.inner);
 }
 }

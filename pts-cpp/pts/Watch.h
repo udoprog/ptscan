@@ -28,9 +28,13 @@ public:
     Value value();
 
     // Get the type of the watch as a string.
-    String type();
+    Type type();
 
+    // Set the pointer of the watch.
     void setPointer(const std::shared_ptr<Pointer> pointer);
+
+    // Set the type of the watch.
+    void setType(const Type type);
 private:
     Watch(pts_watch_t *inner);
 

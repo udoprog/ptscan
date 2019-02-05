@@ -14,8 +14,14 @@ class Filter;
 
 class Type
 {
+    friend class Values;
     friend class Value;
     friend class Filter;
+    friend class Watch;
+
+    friend bool operator==(const Type &lhs, const Type& rhs) {
+        return lhs.inner._0 == rhs.inner._0;
+    }
 
 public:
     Type();

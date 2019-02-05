@@ -1,4 +1,8 @@
-use crate::{pointer::Pointer, string::StringT, value::Value};
+use crate::{
+    pointer::Pointer,
+    string::StringT,
+    value::{Type, Value},
+};
 
 /// An address being watched.
 pub struct Watch(pub(crate) ptscan::watch::Watch);
@@ -19,6 +23,13 @@ pub extern "C" fn pts_watch_set_pointer<'a>(watch: *mut Watch, pointer: *const P
     watch.pointer = pointer.clone();
 }
 
+/// Set the type of the pointer.
+#[no_mangle]
+pub extern "C" fn pts_watch_set_type<'a>(watch: *mut Watch, ty: Type) {
+    let Watch(ref mut watch) = *null_ck!(&'a mut watch);
+    watch.ty = immediate_ck!(ptscan::Type, ty);
+}
+
 /// Get a clone of the pointer used by the watch.
 #[no_mangle]
 pub extern "C" fn pts_watch_get_pointer<'a>(watch: *mut Watch) -> *mut Pointer {
@@ -35,10 +46,9 @@ pub extern "C" fn pts_watch_value<'a>(watch: *const Watch) -> Value {
 
 /// Access a human-readable version of the watch type.
 #[no_mangle]
-pub extern "C" fn pts_watch_display_type<'a>(watch: *const Watch, out: *mut StringT) {
+pub extern "C" fn pts_watch_type<'a>(watch: *const Watch) -> Type {
     let Watch(ref watch) = *null_ck!(&'a watch);
-    let out = null_ck!(&'a mut out);
-    *out = StringT::new(format!("{}", watch.ty));
+    into_immediate!(watch.ty)
 }
 
 /// Free the watch.

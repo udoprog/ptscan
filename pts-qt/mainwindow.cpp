@@ -290,7 +290,6 @@ void MainWindow::updateCurrent()
             handle->readMemory(
                 threadPool,
                 info.addresses,
-                info.existing,
                 info.output,
                 refreshToken,
                 reporter

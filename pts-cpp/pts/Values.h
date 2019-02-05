@@ -32,6 +32,10 @@ public:
     // Push a value onto the collection.
     void push(Value value);
 
+    // Push a type onto the collection.
+    // The pushed value will be the type-default value of the corresponding type.
+    void pushType(Type type);
+
     // Clone all values.
     Values clone();
 

@@ -156,7 +156,6 @@ void pts_process_handle_pid(const pts_process_handle_t *handle, pts_string_t *pi
 bool pts_process_handle_read_memory(const pts_process_handle_t *handle,
                                     const pts_thread_pool_t *thread_pool,
                                     const pts_addresses_t *addresses,
-                                    const pts_values_t *values,
                                     pts_values_t *output,
                                     const pts_token_t *cancel,
                                     const pts_scan_progress_t *progress,
@@ -295,14 +294,15 @@ pts_values_t *pts_values_new();
 /// Push a value.
 void pts_values_push(pts_values_t *values, pts_value_t value);
 
+/// Push a type.
+/// The pushed value will be the type-default of the specified type.
+void pts_values_push_type(pts_values_t *values, pts_type_t ty);
+
 /// Get the current ptscan version.
 const char *pts_version();
 
 /// Access a human-readable version of the pointer.
 void pts_watch_display_pointer(const pts_watch_t *watch, pts_string_t *out);
-
-/// Access a human-readable version of the watch type.
-void pts_watch_display_type(const pts_watch_t *watch, pts_string_t *out);
 
 /// Free the watch.
 void pts_watch_free(pts_watch_t *watch);
@@ -312,6 +312,12 @@ pts_pointer_t *pts_watch_get_pointer(pts_watch_t *watch);
 
 /// Set the pointer of the watch using a clone of the provided pointer.
 void pts_watch_set_pointer(pts_watch_t *watch, const pts_pointer_t *pointer);
+
+/// Set the type of the pointer.
+void pts_watch_set_type(pts_watch_t *watch, pts_type_t ty);
+
+/// Access a human-readable version of the watch type.
+pts_type_t pts_watch_type(const pts_watch_t *watch);
 
 /// Access a copy of the value.
 pts_value_t pts_watch_value(const pts_watch_t *watch);

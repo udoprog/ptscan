@@ -154,6 +154,12 @@ impl Values {
         }
     }
 
+    /// Push the given type onto the collection.
+    /// The pushed value will be the zero-value of that type.
+    pub fn push_type(&mut self, ty: Type) {
+        self.push(ty.default());
+    }
+
     /// Push a single value.
     pub fn push(&mut self, value: Value) {
         use std::mem;

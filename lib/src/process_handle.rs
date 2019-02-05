@@ -331,7 +331,6 @@ impl ProcessHandle {
         &self,
         thread_pool: &rayon::ThreadPool,
         addresses: &[Address],
-        existing: &Values,
         output: &mut Values,
         cancel: Option<&Token>,
         progress: (impl scan::Progress + Send),
@@ -345,7 +344,7 @@ impl ProcessHandle {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        let len = usize::min(usize::min(addresses.len(), output.len()), existing.len());
+        let len = usize::min(addresses.len(), output.len());
 
         if len == 0 {
             return Ok(());
@@ -361,12 +360,9 @@ impl ProcessHandle {
 
                 let mut reporter = scan::Reporter::new(progress, len, cancel, &mut last_error);
 
-                let it = existing
-                    .iter()
-                    .zip(output.iter_mut())
-                    .zip(addresses.iter().cloned());
+                let it = output.iter_mut().zip(addresses.iter().cloned());
 
-                for ((value, mut output), address) in it {
+                for (mut output, address) in it {
                     let tx = tx.clone();
                     let buffers = &buffers;
 
@@ -377,7 +373,7 @@ impl ProcessHandle {
                         }
 
                         let mut work = || {
-                            let ty = value.ty();
+                            let ty = output.ty();
                             let mut buf = buffers.get_mut(ty.size())?;
 
                             let c = match output

@@ -3,6 +3,7 @@
 
 #include <QDialog>
 #include <QModelIndex>
+#include <pts/Value.h>
 
 namespace pts {
 class Watch;
@@ -13,6 +14,8 @@ namespace Ui {
 class EditAddress;
 }
 
+class TypeComboBox;
+
 class EditAddress : public QDialog
 {
     Q_OBJECT
@@ -21,7 +24,7 @@ public:
     explicit EditAddress(QWidget *parent = nullptr);
     ~EditAddress();
 
-    static std::vector<uintptr_t> widths();
+    // Set a watch.
     void setWatch(std::shared_ptr<pts::Watch> watch);
     // Set the index being edited (if any).
     void setIndex(QModelIndex index);
@@ -29,13 +32,19 @@ public:
     QModelIndex takeIndex();
     // Take the updated pointer.
     std::shared_ptr<pts::Pointer> takePointer();
+    // Take type that has been set.
+    pts::Type takeType();
+
+signals:
+    // Update view to reflect internal model.
+    void update();
+
 private:
     Ui::EditAddress *ui;
+    TypeComboBox *type;
     QModelIndex index;
     std::shared_ptr<pts::Pointer> pointer;
     QString error;
-    // Update view to reflect internal model.
-    void updateView();
 };
 
 #endif // EDITADDRESS_H

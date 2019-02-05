@@ -50,7 +50,6 @@ public:
     void readMemory(
         const std::shared_ptr<ThreadPool> &threadPool,
         const std::shared_ptr<Addresses> &addresses,
-        const std::shared_ptr<Values> &values,
         std::shared_ptr<Values> &output,
         std::shared_ptr<Token> &cancel,
         ScanReporter &reporter

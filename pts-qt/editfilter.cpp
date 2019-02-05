@@ -20,18 +20,8 @@ EditFilter::EditFilter(QWidget *parent) :
     ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(false);
     ui->typeLayout->addWidget(type);
 
-    connect(ui->input, &QLineEdit::textChanged, this, [this](const QString& input) {
-        std::string s = input.toUtf8().constData();
-
-        try {
-            filter = pts::Filter::parse(s, type->currentType());
-            error = {};
-        } catch(const std::exception &e) {
-            error = std::make_optional(e.what());
-        }
-
-        updateView();
-    });
+    connect(type, &TypeComboBox::typeSelected, this, &EditFilter::update);
+    connect(ui->input, &QLineEdit::textChanged, this, &EditFilter::update);
 }
 
 std::shared_ptr<pts::Filter> EditFilter::takeFilter()
@@ -50,30 +40,34 @@ QModelIndex EditFilter::takeIndex()
 
 void EditFilter::addFilter()
 {
-    this->filter = {};
-    this->index = {};
-    this->ui->input->setText("");
-    this->ui->label->setText("Add Filter");
+    filter = {};
+    index = {};
+    ui->input->setText("");
+    ui->label->setText("Add Filter");
 }
 
 void EditFilter::editFilter(std::shared_ptr<pts::Filter> filter, QModelIndex index)
 {
     this->filter = filter;
     this->index = index;
-    this->ui->input->setText(filter->display().toQString());
-    this->ui->label->setText("Edit Filter");
+    ui->input->setText(filter->display().toQString());
+    ui->label->setText("Edit Filter");
 }
 
-void EditFilter::updateView()
+void EditFilter::update()
 {
-    if (auto error = this->error) {
-        this->ui->error->setText(QString::fromStdString(*error));
-        this->ui->error->show();
-        ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(false);
-    } else {
-        this->ui->error->hide();
-        ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(true);
+    std::string s = ui->input->text().toUtf8().constData();
+    bool error = false;
+
+    try {
+        filter = pts::Filter::parse(s, type->currentType());
+    } catch(const std::exception &e) {
+        this->ui->error->setText(e.what());
+        error = true;
     }
+
+    ui->buttonBox->button(QDialogButtonBox::Ok)->setEnabled(!error);
+    ui->error->setVisible(!!error);
 }
 
 EditFilter::~EditFilter()

@@ -14,23 +14,23 @@ pub fn parse(input: &str) -> Result<Box<Filter>, failure::Error> {
 
 pub trait Filter: Send + Sync + fmt::Debug + fmt::Display {
     /// Extract one type from the filter.
-    fn ty(&self) -> Result<Type, failure::Error> {
-        use std::collections::HashSet;
-
+    fn ty(&self) -> Option<Type> {
         let mut out = Vec::new();
         self.types(&mut out);
-        let out = out.into_iter().collect::<HashSet<_>>();
 
-        if out.len() > 1 {
-            failure::bail!("more than one type is used in the filter");
-        }
+        let mut prev = None;
 
-        match out.into_iter().next() {
-            Some(ty) => Ok(ty),
-            None => {
-                failure::bail!("filter does not have any type information");
+        for o in out {
+            match prev.as_ref() {
+                Some(a) if *a != o => return None,
+                Some(_) => {}
+                None => {}
             }
+
+            prev = Some(o);
         }
+
+        prev
     }
 
     /// Collect all types used in the filter.

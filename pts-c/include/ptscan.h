@@ -53,7 +53,7 @@ struct pts_string_t {
   uintptr_t cap;
 };
 
-using pts_scan_progress_report_fn = void(*)(void*, uintptr_t);
+using pts_scan_progress_report_fn = void(*)(void*, uintptr_t, uint64_t);
 
 struct pts_scan_progress_t {
   /// Called to indicate that the process is in progress.
@@ -216,7 +216,7 @@ bool pts_scan_scan(pts_scan_t *scan,
                    void *data);
 
 /// Get a copy of the values contained in the scan.
-pts_values_t *pts_scan_values(const pts_scan_t *scan);
+pts_values_t *pts_scan_values(const pts_scan_t *scan, uintptr_t limit);
 
 /// Setup function that needs to be called to initialize the library.
 void pts_setup();
@@ -260,6 +260,12 @@ void pts_values_free(pts_values_t *values);
 
 /// Get the value at the given position as a string.
 uintptr_t pts_values_length(const pts_values_t *values);
+
+/// Create a new values container.
+pts_values_t *pts_values_new();
+
+/// Push a value.
+void pts_values_push(pts_values_t *values, pts_value_t value);
 
 /// Get the current ptscan version.
 const char *pts_version();

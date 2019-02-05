@@ -12,12 +12,15 @@
 #include <pts/Filter.h>
 #include <pts/ProcessHandle.h>
 #include <pts/Token.h>
-#include <pts/Values.h>
 
 class OpenProcess;
 class EditFilter;
 class AddressList;
 class ScanResults;
+
+namespace pts {
+class Values;
+}
 
 namespace Ui {
 class MainWindow;
@@ -31,6 +34,11 @@ public:
     explicit MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *parent = nullptr);
     ~MainWindow();
 
+    // The number of items to display.
+    const uintptr_t DISPLAY_LENGTH = 100;
+    // Refresh rate in milliseconds for values.
+    const uintptr_t REFRESH_TIMER = 500;
+
 public slots:
     // Fire off a scan.
     void scan();
@@ -39,13 +47,10 @@ public slots:
     void addError(QString message);
 
     // Report that a scan progress has progressed.
-    void scanProgress(int percentage);
+    void scanProgress(int percentage, uint64_t count);
 
     // Report that a scan progress has completed.
     void scanDone(bool interrupted);
-
-    // Report that a refresh has completed.
-    void refreshDone();
 
     // Update existing scan results.
     void updateScanResults();
@@ -61,11 +66,9 @@ private:
     std::shared_ptr<pts::ThreadPool> threadPool;
     Ui::MainWindow *ui;
     OpenProcess *openProcess;
-    EditFilter *addFilter;
+    EditFilter *editFilter;
     AddressList *addressList;
     ScanResults *scanResults;
-    // Buffer of up-to-date values.
-    std::shared_ptr<pts::Values> scanValues;
 
     // Model for rendering filters.
     QStandardItemModel filtersModel;

@@ -122,7 +122,7 @@ pub extern "C" fn pts_scan_count<'a>(scan: *const Scan) -> usize {
     null_ck!(&'a scan).0.len()
 }
 
-type ScanProgressReportFn = fn(*mut c_void, usize);
+type ScanProgressReportFn = fn(*mut c_void, usize, u64);
 
 #[repr(C)]
 pub struct ScanProgress {
@@ -205,9 +205,10 @@ pub extern "C" fn pts_scan_refresh<'a>(
 
 /// Get a copy of the values contained in the scan.
 #[no_mangle]
-pub extern "C" fn pts_scan_values<'a>(scan: *const Scan) -> *mut Values {
+pub extern "C" fn pts_scan_values<'a>(scan: *const Scan, limit: usize) -> *mut Values {
     let Scan(ref scan) = *null_ck!(&'a scan);
-    into_ptr!(Values(scan.values.clone()))
+    let end = usize::min(scan.values.len(), limit);
+    into_ptr!(Values(scan.values.clone_slice(0, end)))
 }
 
 /// A reporter implementation that adapts a raw reporter.
@@ -224,8 +225,8 @@ impl ptscan::scan::Progress for RawProgress {
         Ok(())
     }
 
-    fn report(&mut self, percentage: usize) -> Result<(), failure::Error> {
-        (self.report)(self.data, percentage);
+    fn report(&mut self, percentage: usize, count: u64) -> Result<(), failure::Error> {
+        (self.report)(self.data, percentage, count);
         Ok(())
     }
 }

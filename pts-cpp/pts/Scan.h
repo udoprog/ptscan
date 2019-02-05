@@ -19,7 +19,7 @@ class Values;
 
 class ScanReporter {
 public:
-    std::function<void(uintptr_t)> report;
+    std::function<void(uintptr_t, uint64_t)> report;
 };
 
 class Scan
@@ -37,7 +37,7 @@ public:
     void scan(ProcessHandle &handle, Filter &filter, Token &token, ScanReporter &reporter);
 
     // Refresh the scan with value from the given handle.
-    void refresh(ProcessHandle &handle, Values &values, Token &token, ScanReporter &reporter);
+    void refresh(ProcessHandle &handle, std::shared_ptr<Values> &values, Token &token, ScanReporter &reporter);
 
     // Access scan results.
     std::vector<ScanResult> results(uintptr_t limit);
@@ -49,7 +49,7 @@ public:
     uintptr_t count();
 
     // Return a copy of all values contained in the scan.
-    Values values();
+    Values values(uintptr_t limit) const;
 private:
     // NB: hold on to a reference of the thread pool since it's used by pts_scan_t.
     std::shared_ptr<ThreadPool> threadPool;

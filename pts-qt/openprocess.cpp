@@ -2,6 +2,7 @@
 
 #include <QStringListModel>
 #include <QList>
+#include <QDebug>
 #include <pts/System.h>
 #include <pts/ProcessHandle.h>
 
@@ -21,18 +22,22 @@ OpenProcess::OpenProcess(QWidget *parent) :
     headers.push_back("Name");
     model->setHorizontalHeaderLabels(headers);
 
-    connect(ui->list, &QAbstractItemView::clicked, this, &OpenProcess::clicked);
+    connect(this, &QDialog::accepted, this, [this]() {
+        auto index = ui->list->currentIndex();
+
+        if (!index.isValid()) {
+            return;
+        }
+
+        auto row = uintptr_t(index.row());
+        selected = handles.at(row);
+    });
 }
 
 OpenProcess::~OpenProcess()
 {
     delete model;
     delete ui;
-}
-
-void OpenProcess::clicked(const QModelIndex &index)
-{
-    selected = handles.at(index.row());
 }
 
 void OpenProcess::clearList()

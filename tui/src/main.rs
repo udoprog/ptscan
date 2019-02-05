@@ -54,14 +54,14 @@ where
         Ok(())
     }
 
-    fn report(&mut self, percentage: usize) -> Result<(), failure::Error> {
+    fn report(&mut self, percentage: usize, count: u64) -> Result<(), failure::Error> {
         use std::iter;
 
         write!(self.out, "\r")?;
         self.out.flush()?;
 
         let repr = iter::repeat('#').take(percentage / 10).collect::<String>();
-        write!(self.out, "{}: {}%", repr, percentage)?;
+        write!(self.out, "{}: {}% ({} results)", repr, percentage, count)?;
         self.out.flush()?;
 
         Ok(())

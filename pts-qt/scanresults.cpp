@@ -28,6 +28,11 @@ ScanResults::~ScanResults()
     delete ui;
 }
 
+void ScanResults::setIntermediateCount(uint64_t count)
+{
+    ui->count->setText(QString("%1 (in progress)").arg(count));
+}
+
 void ScanResults::setCount(std::optional<uintptr_t> count)
 {
     if (count) {
@@ -45,16 +50,16 @@ void ScanResults::setCount(std::optional<uintptr_t> count)
     }
 }
 
-void ScanResults::updateCurrent(const std::shared_ptr<pts::Values> values)
+void ScanResults::updateCurrent(const std::shared_ptr<pts::Values> &values)
 {
-    auto length = values->length();
+    auto length = int(values->length());
 
     for (int index = 0; index < length; index++) {
         if (index >= model.rowCount()) {
             break;
         }
 
-        auto value = values->at(index);
+        auto value = values->at(uintptr_t(index));
 
         if (!value) {
             continue;

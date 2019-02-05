@@ -24,7 +24,7 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
     threadPool(threadPool),
     ui(new Ui::MainWindow),
     openProcess(new OpenProcess(this)),
-    addFilter(new EditFilter(this)),
+    editFilter(new EditFilter(this)),
     refreshTimer(new QTimer())
 {
     ui->setupUi(this);
@@ -34,7 +34,7 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
     scanResults = new ScanResults(ui->scanResultsBox);
     ui->scanResultsBoxLayout->addWidget(scanResults);
 
-    refreshTimer->start(100);
+    refreshTimer->start(REFRESH_TIMER);
 
     ui->filtersList->setModel(&filtersModel);
     ui->errorBox->setVisible(false);
@@ -42,6 +42,10 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
     filtersContextMenu = new QMenu(ui->filtersList);
     filtersContextMenu->addAction(ui->actionRemoveFilter);
     ui->filtersList->setContextMenuPolicy(Qt::CustomContextMenu);
+
+    connect(ui->filtersList, &QAbstractItemView::clicked, this, [this]() {
+        updateView();
+    });
 
     connect(ui->filtersList, &QAbstractItemView::customContextMenuRequested, this, [this](const QPoint &pos) {
         auto index = ui->filtersList->indexAt(pos);
@@ -102,17 +106,13 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
         updateView();
     });
 
-    connect(ui->filtersList, &QListView::clicked, this, [this]() {
-        updateView();
-    });
-
     connect(ui->filtersList, &QListView::doubleClicked, this, [this](auto index) {
         if (!index.isValid()) {
             return;
         }
 
-        addFilter->editFilter(filters.at(index.row()), index);
-        addFilter->show();
+        editFilter->editFilter(filters.at(index.row()), index);
+        editFilter->show();
     });
 
     connect(ui->actionAttach, &QAction::triggered, this, [this]() {
@@ -131,8 +131,8 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
     });
 
     connect(ui->actionAddFilter, &QAction::triggered, this, [this]() {
-        addFilter->addFilter();
-        addFilter->show();
+        editFilter->addFilter();
+        editFilter->show();
     });
 
     connect(ui->addFilterButton, &QPushButton::pressed, ui->actionAddFilter, &QAction::trigger);
@@ -156,9 +156,9 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
         updateView();
     });
 
-    connect(addFilter, &QDialog::accepted, this, [this]() {
-        auto index = addFilter->takeIndex();
-        auto filter = addFilter->takeFilter();
+    connect(editFilter, &QDialog::accepted, this, [this]() {
+        auto index = editFilter->takeIndex();
+        auto filter = editFilter->takeFilter();
 
         if (!filter) {
             return;
@@ -220,7 +220,8 @@ void MainWindow::scan()
     ui->scanProgress->setEnabled(true);
     ui->scanProgress->setValue(0);
 
-    auto filter = this->filters.at(index.row());
+    auto row = uintptr_t(index.row());
+    auto filter = this->filters.at(row);
     auto threadPool = this->threadPool;
 
     auto scan = scanCurrent;
@@ -234,8 +235,10 @@ void MainWindow::scan()
     QtConcurrent::run([this, processHandle, filter, scan]() {
         pts::ScanReporter reporter;
 
-        reporter.report = [this](int percentage){
-            QMetaObject::invokeMethod(this, "scanProgress", Qt::QueuedConnection, Q_ARG(int, percentage));
+        reporter.report = [this](int percentage, uint64_t count){
+            QMetaObject::invokeMethod(this, [this, percentage, count]() {
+                scanProgress(percentage, count);
+            }, Qt::QueuedConnection);
         };
 
         auto token = scanToken;
@@ -246,7 +249,10 @@ void MainWindow::scan()
         } catch(const std::exception &e) {
             ok = false;
             QString message(e.what());
-            QMetaObject::invokeMethod(this, "addError", Qt::QueuedConnection, Q_ARG(QString, message));
+
+            QMetaObject::invokeMethod(this, [this, message] {
+                addError(message);
+            }, Qt::QueuedConnection);
         }
 
         // set the current scan if there is none, and the new scan was successful.
@@ -254,7 +260,9 @@ void MainWindow::scan()
             scanCurrent = scan;
         }
 
-        QMetaObject::invokeMethod(this, "scanDone", Qt::QueuedConnection, Q_ARG(bool, ok));
+        QMetaObject::invokeMethod(this, [this, ok]() {
+            scanDone(ok);
+        }, Qt::QueuedConnection);
     });
 
     updateView();
@@ -326,20 +334,32 @@ void MainWindow::updateCurrent()
     QtConcurrent::run([this, scanCurrent, processHandle]() {
         pts::ScanReporter reporter;
 
-        reporter.report = [](int percentage){
+        reporter.report = [](int percentage, uint64_t count){
         };
 
-        auto values = std::make_shared<pts::Values>(scanCurrent->values());
+        auto addressListValues = std::make_shared<pts::Values>(addressList->values());
 
         try {
-            scanCurrent->refresh(*processHandle, *values, *refreshToken, reporter);
+            scanCurrent->refresh(*processHandle, addressListValues, *refreshToken, reporter);
         } catch(const std::exception &e) {
             qDebug() << "failed to refresh" << e.what();
         }
 
-        scanValues = values;
+        auto scanValues = std::make_shared<pts::Values>(scanCurrent->values(DISPLAY_LENGTH));
+
+        try {
+            scanCurrent->refresh(*processHandle, scanValues, *refreshToken, reporter);
+        } catch(const std::exception &e) {
+            qDebug() << "failed to refresh" << e.what();
+        }
+
         refreshToken.reset();
-        QMetaObject::invokeMethod(this, "refreshDone", Qt::QueuedConnection);
+
+        QMetaObject::invokeMethod(this, [this, addressListValues, scanValues]() {
+            addressList->updateCurrent(addressListValues);
+            scanResults->updateCurrent(scanValues);
+            updateView();
+        }, Qt::QueuedConnection);
     });
 }
 
@@ -349,25 +369,16 @@ void MainWindow::addError(QString message)
     ui->errorBox->show();
 }
 
-void MainWindow::refreshDone()
-{
-    if (scanValues) {
-        scanResults->updateCurrent(this->scanValues);
-        scanValues.reset();
-    }
-
-    updateView();
-}
-
-void MainWindow::scanProgress(int percentage)
+void MainWindow::scanProgress(int percentage, uint64_t count)
 {
     ui->scanProgress->setValue(percentage);
+    scanResults->setIntermediateCount(count);
 }
 
 void MainWindow::scanDone(bool ok)
 {
     if (ok) {
-        ui->scanProgress->setValue(100);
+        ui->scanProgress->setValue(DISPLAY_LENGTH);
     } else {
         ui->scanProgress->setValue(0);
     }
@@ -384,7 +395,7 @@ void MainWindow::updateScanResults()
     std::optional<std::vector<pts::ScanResult>> results = {};
 
     if (scanCurrent) {
-        results = std::make_optional(scanCurrent->results(100));
+        results = std::make_optional(scanCurrent->results(DISPLAY_LENGTH));
     }
 
     scanResults->update(processHandle, std::move(results));

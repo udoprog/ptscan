@@ -17,6 +17,10 @@ macro_rules! immediate_ck {
     ($ty:ty, &$l:lifetime mut $expr:expr) => {
         unsafe { std::mem::transmute::<_, &$l mut $ty>(null_ck!(&$l mut $expr)) }
     };
+
+    ($ty:ty, $expr:expr) => {
+        unsafe { std::mem::transmute::<_, $ty>($expr) }
+    };
 }
 
 /// NULL check the given argument and convert into a reference with a bounded lifetime.

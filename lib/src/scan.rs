@@ -22,7 +22,7 @@ pub trait Progress {
     fn report_bytes(&mut self, bytes: usize) -> Result<(), failure::Error>;
 
     /// Report that the process has progresses to the given percentage.
-    fn report(&mut self, percentage: usize) -> Result<(), failure::Error>;
+    fn report(&mut self, percentage: usize, results: u64) -> Result<(), failure::Error>;
 }
 
 /// A scan responsible for finding results in memory.
@@ -123,7 +123,7 @@ impl Scan {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::sync_channel(1024);
 
-                let mut reporter = Reporter::new(progress, len, cancel);
+                let mut reporter = Reporter::new(progress, len, cancel, &mut last_error);
 
                 for (mut value, address) in values.iter_mut().zip(addresses.iter().cloned()) {
                     let tx = tx.clone();
@@ -153,18 +153,12 @@ impl Scan {
                     });
                 }
 
+                let mut results = 0u64;
+
                 while !reporter.is_done() {
-                    let m = rx.recv().expect("closed channel");
-
-                    if let Err(e) = reporter.tick() {
-                        last_error = Some(e);
-                        cancel.set();
-                    }
-
-                    if let Err(e) = m {
-                        last_error = Some(e);
-                        cancel.set();
-                    }
+                    results += 1;
+                    reporter.eval(rx.recv().expect("closed channel"));
+                    reporter.tick(results);
                 }
             });
         });
@@ -240,7 +234,9 @@ impl Scan {
             }
         };
 
-        let scan_type = filter.ty()?;
+        let ty = filter
+            .ty()
+            .ok_or_else(|| failure::format_err!("no unique type in filter"))?;
 
         let buffer_size = 0x1000;
 
@@ -265,16 +261,12 @@ impl Scan {
                 let mut bytes = 0usize;
 
                 for region in process.virtual_memory_regions().only_relevant() {
-                    bytes += region
-                        .as_ref()
-                        .map_err(|_| ())
-                        .and_then(|r| r.range.size.into_usize().map_err(|_| ()))
-                        .unwrap_or(0);
+                    let region = region?;
+                    bytes += region.range.size.into_usize()?;
 
                     total += 1;
-                    let mut tx = tx.clone();
 
-                    let task = Task {
+                    let mut task = Task {
                         buffers: &buffers,
                         process,
                         region,
@@ -283,24 +275,21 @@ impl Scan {
                         aligned,
                         filter,
                         special: special.as_ref(),
-                        scan_type,
+                        ty,
                         cancel: &cancel,
+                        tx: tx.clone(),
                     };
 
                     s.spawn(move |_| {
-                        let result = task.work(&mut tx);
-
-                        tx.send(TaskProgress::Result(result))
-                            .expect("channel send failed");
+                        task.guarded_work();
                     });
                 }
 
-                let mut reporter = Reporter::new(progress, total, cancel);
+                let mut reporter = Reporter::new(progress, total, cancel, &mut last_error);
 
-                if let Err(e) = reporter.report_bytes(bytes) {
-                    last_error = Some(e);
-                    cancel.set();
-                }
+                reporter.report_bytes(bytes);
+
+                let mut results = 0u64;
 
                 while !reporter.is_done() {
                     let m = rx.recv().expect("closed channel");
@@ -315,20 +304,18 @@ impl Scan {
                         }
                         // Result from one task.
                         TaskProgress::Result(result) => {
-                            if let Err(e) = result {
-                                last_error = Some(e);
-                                cancel.set();
+                            if let Some(r) = reporter.eval(result) {
+                                results += r;
                             }
 
-                            if let Err(e) = reporter.tick() {
-                                last_error = Some(e);
-                                cancel.set();
-                            }
+                            reporter.tick(results);
                         }
                     }
                 }
+
+                Ok::<(), failure::Error>(())
             })
-        });
+        })?;
 
         if let Some(e) = last_error {
             return Err(e);
@@ -341,119 +328,107 @@ impl Scan {
         return Ok(());
 
         enum TaskProgress {
-            Result(Result<(), failure::Error>),
+            Result(Result<u64, failure::Error>),
             ScanResult(ScanResult),
         }
 
         struct Task<'a> {
             buffers: &'a thread_buffers::ThreadBuffers,
             process: &'a Process,
-            region: Result<MemoryInformation, io::Error>,
+            region: MemoryInformation,
             buffer_size: usize,
             size: usize,
             aligned: bool,
             filter: &'a (dyn filter::Filter),
             special: Option<&'a Special>,
-            scan_type: Type,
+            ty: Type,
             cancel: &'a Token,
+            tx: mpsc::SyncSender<TaskProgress>,
         }
 
         impl<'a> Task<'a> {
-            fn emit(
-                tx: &mut mpsc::SyncSender<TaskProgress>,
+            /// Emit a single result.
+            fn emit_result(
+                &mut self,
                 loc: &Address,
                 offset: usize,
                 value: Value,
             ) -> Result<(), failure::Error> {
                 let address = loc.add(Size::try_from(offset)?)?;
-
                 let scan_result = ScanResult { address, value };
-
-                tx.send(TaskProgress::ScanResult(scan_result))?;
+                self.tx.send(TaskProgress::ScanResult(scan_result))?;
                 Ok(())
             }
 
-            fn work(self, tx: &mut mpsc::SyncSender<TaskProgress>) -> Result<(), failure::Error> {
-                let Task {
-                    buffers,
-                    process,
-                    region,
-                    buffer_size,
-                    size,
-                    aligned,
-                    filter,
-                    special,
-                    scan_type,
-                    cancel,
-                    ..
-                } = self;
+            /// Perform the work in a guarded context.
+            fn guarded_work(&mut self) {
+                let r = TaskProgress::Result(self.work());
+                self.tx.send(r).expect("closed channel");
+            }
 
-                let region = region?;
-                let range = region.range;
-                let len = range.size.into_usize()?;
+            /// Internal work implementation.
+            fn work(&mut self) -> Result<u64, failure::Error> {
+                let region_base = self.region.range.base;
+                let region_size = self.region.range.size.into_usize()?;
 
                 let mut start = 0;
+                let mut count = 0u64;
 
-                while start < len && !cancel.test() {
-                    let len = usize::min(buffer_size, len - start);
-                    let loc = range.base.add(Size::try_from(start)?)?;
+                while start < region_size && !self.cancel.test() {
+                    let len = usize::min(self.buffer_size, region_size - start);
+                    let loc = region_base.add(Size::try_from(start)?)?;
 
                     // length of the buffer we need to read process memory.
-                    let mut buf = buffers.get_mut(len)?;
+                    let mut buf = self.buffers.get_mut(len)?;
                     let buf = &mut *buf;
 
                     // TODO: figure out why we are trying to read invalid memory region sometimes.
-                    if let Err(_) = process.read_process_memory(loc, buf) {
+                    if let Err(_) = self.process.read_process_memory(loc, buf) {
                         continue;
                     }
 
                     let mut n = 0;
-                    let end = buf.len() - size;
+                    let end = buf.len() - self.size;
 
-                    while n < end && !cancel.test() {
-                        let w = &buf[n..(n + size)];
+                    while n < end {
+                        let w = &buf[n..(n + self.size)];
 
-                        // A special, more efficient kind of matching is available.
-                        if let Some(special) = special {
-                            if let Some(result) = special.test(w) {
-                                if result {
-                                    let value = scan_type.decode(w);
-                                    Self::emit(tx, &loc, n, value)?;
+                        match self.special.and_then(|s| s.test(w)) {
+                            // A special, more efficient kind of matching is available.
+                            Some(true) => {
+                                let value = self.ty.decode(w);
+                                count += 1;
+                                self.emit_result(&loc, n, value)?;
+                            }
+                            // special match is negative.
+                            Some(false) => {}
+                            None => {
+                                let value = self.ty.decode(w);
+
+                                if self.filter.test(None, &value) {
+                                    count += 1;
+                                    self.emit_result(&loc, n, value)?;
                                 }
-
-                                if aligned {
-                                    n += size;
-                                } else {
-                                    n += 1;
-                                }
-
-                                continue;
                             }
                         }
 
-                        let value = scan_type.decode(w);
-
-                        if filter.test(None, &value) {
-                            Self::emit(tx, &loc, n, value)?;
-                        }
-
-                        if aligned {
-                            n += size;
+                        if self.aligned {
+                            n += self.size;
                         } else {
                             n += 1;
                         }
                     }
 
-                    start += buffer_size;
+                    start += self.buffer_size;
                 }
 
-                Ok(())
+                Ok(count)
             }
         }
     }
 }
 
-pub struct Reporter<'token, P> {
+pub struct Reporter<'token, 'err, P> {
     progress: P,
     /// Current progress.
     current: usize,
@@ -463,11 +438,18 @@ pub struct Reporter<'token, P> {
     total: usize,
     /// Whether to report progress or not.
     token: &'token Token,
+    /// Last error captured from the progress.
+    last_err: &'err mut Option<failure::Error>,
 }
 
-impl<'token, P> Reporter<'token, P> {
+impl<'token, 'err, P> Reporter<'token, 'err, P> {
     /// Create a new reporter.
-    pub fn new<'a>(progress: P, total: usize, token: &'a Token) -> Reporter<P> {
+    pub fn new(
+        progress: P,
+        total: usize,
+        token: &'token Token,
+        last_err: &'err mut Option<failure::Error>,
+    ) -> Reporter<'token, 'err, P> {
         let mut percentage = total / 100;
 
         if percentage <= 0 {
@@ -480,36 +462,53 @@ impl<'token, P> Reporter<'token, P> {
             percentage,
             total,
             token,
+            last_err,
         }
     }
 
-    // Report a number of bytes.
-    pub fn report_bytes(&mut self, bytes: usize) -> Result<(), failure::Error>
+    /// Evaluate the given result.
+    pub fn eval<T>(&mut self, result: Result<T, failure::Error>) -> Option<T> {
+        match result {
+            Ok(value) => Some(value),
+            Err(e) => {
+                self.token.set();
+                *self.last_err = Some(e);
+                None
+            }
+        }
+    }
+
+    /// Report a number of bytes.
+    pub fn report_bytes(&mut self, bytes: usize)
     where
         P: Progress,
     {
-        self.progress.report_bytes(bytes)
+        if let Err(e) = self.progress.report_bytes(bytes) {
+            *self.last_err = Some(e);
+            self.token.set();
+        }
     }
 
-    // Tick a single task.
-    pub fn tick(&mut self) -> Result<(), failure::Error>
+    /// Tick a single task.
+    pub fn tick(&mut self, results: u64)
     where
         P: Progress,
     {
         self.current += 1;
 
-        if self.token.test() {
-            return Ok(());
+        if self.token.test() || self.current % self.percentage != 0 {
+            return;
         }
 
-        if self.current % self.percentage == 0 {
-            return self.progress.report((self.current * 100) / self.total);
-        }
+        let p = (self.current * 100) / self.total;
 
-        Ok(())
+        if let Err(e) = self.progress.report(p, results) {
+            *self.last_err = Some(e);
+            self.token.set();
+        }
     }
 
-    // Are we done?
+    /// Are we done?
     pub fn is_done(&self) -> bool {
         self.current >= self.total
     }

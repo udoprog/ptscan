@@ -2,6 +2,11 @@
 #include <pts/Value.h>
 
 namespace pts {
+Values::Values() :
+    inner(pts_values_new())
+{
+}
+
 Values::Values(Values &&other) :
     inner(other.inner)
 {
@@ -30,6 +35,11 @@ std::optional<Value> Values::at(uintptr_t pos) const
     }
 
     return {};
+}
+
+void Values::push(Value value)
+{
+    pts_values_push(inner, value.inner);
 }
 
 Values::Values(pts_values_t *inner) :

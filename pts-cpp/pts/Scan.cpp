@@ -50,9 +50,9 @@ std::shared_ptr<Scan> Scan::create(std::shared_ptr<ThreadPool> threadPool)
 void Scan::scan(ProcessHandle &processHandle, Filter &filter, Token &token, ScanReporter &reporter)
 {
     pts_scan_progress_t progress {
-        [](auto data, uintptr_t percentage) {
+        [](auto data, uintptr_t percentage, uint64_t count) {
             auto d = reinterpret_cast<ScanReporter *>(data);
-            (d->report)(percentage);
+            (d->report)(percentage, count);
         },
     };
 
@@ -61,16 +61,16 @@ void Scan::scan(ProcessHandle &processHandle, Filter &filter, Token &token, Scan
     }
 }
 
-void Scan::refresh(ProcessHandle &processHandle, Values &values, Token &token, ScanReporter &reporter)
+void Scan::refresh(ProcessHandle &processHandle, std::shared_ptr<Values> &values, Token &token, ScanReporter &reporter)
 {
     pts_scan_progress_t progress {
-        [](auto data, uintptr_t percentage) {
+        [](auto data, uintptr_t percentage, uint64_t count) {
             auto d = reinterpret_cast<ScanReporter *>(data);
-            (d->report)(percentage);
+            (d->report)(percentage, count);
         },
     };
 
-    if (!pts_scan_refresh(inner, processHandle.inner, values.inner, token.inner, &progress, reinterpret_cast<void *>(&reporter))) {
+    if (!pts_scan_refresh(inner, processHandle.inner, values->inner, token.inner, &progress, reinterpret_cast<void *>(&reporter))) {
         throw last_exception();
     }
 }
@@ -106,9 +106,9 @@ uintptr_t Scan::count()
     return pts_scan_count(inner);
 }
 
-Values Scan::values()
+Values Scan::values(uintptr_t limit) const
 {
-    return Values{pts_scan_values(inner)};
+    return Values{pts_scan_values(inner, limit)};
 }
 
 ScanResult::ScanResult(pts_scan_result_t inner) :

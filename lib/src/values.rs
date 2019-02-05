@@ -5,6 +5,14 @@ use std::{iter, marker, ptr};
 
 const MASK: u64 = 0x00_ff_ff_ff_ff_ff_ff_ffu64;
 
+/// Decode the given index.
+#[inline]
+fn decode_index(index: u64) -> (Type, usize) {
+    let ty = Type::from_byte((index >> 56) as u8);
+    let i = (index & MASK) as usize;
+    (ty, i)
+}
+
 #[derive(Clone, Default)]
 pub struct Values {
     // high byte = type
@@ -31,6 +39,35 @@ impl Values {
     pub fn clear(&mut self) {
         self.index.clear();
         self.buffer.clear();
+    }
+
+    /// Clone a slice of available values.
+    pub fn clone_slice(&self, start: usize, end: usize) -> Self {
+        let len = self.index.len();
+        assert!(start <= len, "start out of bounds `{} <= {}`", start, len);
+        assert!(end <= len, "end out of bounds `{} <= {}`", end, len);
+
+        let s = match self.index.get(start) {
+            Some(s) => *s,
+            None => return Values::default(),
+        };
+
+        let (start_ty, s) = decode_index(s);
+        let s = s.saturating_sub(start_ty.size());
+
+        let e = match end.checked_sub(1).and_then(|e| self.index.get(e)) {
+            Some(e) => *e,
+            None => return Values::default(),
+        };
+
+        let (end_ty, e) = decode_index(e);
+        let e = e.saturating_add(end_ty.size());
+
+        Values {
+            index: self.index[start..end].to_vec(),
+            buffer: self.buffer[s..e].to_vec(),
+            scratch: Default::default(),
+        }
     }
 
     /// A mutable reference to the underlying value.
@@ -83,11 +120,11 @@ impl Values {
             None => return None,
         };
 
-        let i = (index & MASK) as usize;
+        let (ty, i) = decode_index(index);
         let buf = &self.buffer[i..];
 
         define!(
-            Type::from_byte((index >> 56) as u8),
+            ty,
             buf,
             (u16, U16, read_u16),
             (i16, I16, read_i16),
@@ -221,7 +258,7 @@ impl<'a> ValueMut<'a> {
     }
 
     /// Set the given position with the given value.
-    pub fn set(&mut self, value: Value) {
+    pub fn set(&mut self, value: Value) -> bool {
         macro_rules! define {
             ($type:expr, $ptr:expr, $value:expr, $(($member:ident, $ty:ty),)*) => {
                 match ($type, $value) {
@@ -229,6 +266,7 @@ impl<'a> ValueMut<'a> {
                         *($ptr as *mut $ty) = v;
                     },)*
                     _ => {
+                        return false;
                     }
                 }
             }
@@ -249,6 +287,8 @@ impl<'a> ValueMut<'a> {
                 (I128, i128),
             }
         }
+
+        true
     }
 
     /// Clear the value at the given location.
@@ -349,5 +389,27 @@ mod tests {
         assert_eq!(None, values.get(expected.len() + 1));
         assert_eq!(expected, values.iter().collect::<Vec<_>>());
         assert_eq!(values.len(), expected.len());
+
+        let len = expected.len();
+
+        assert_eq!(
+            expected[3..8].to_vec(),
+            values.clone_slice(3, 8).iter().collect::<Vec<_>>()
+        );
+
+        assert_eq!(
+            expected[3..3].to_vec(),
+            values.clone_slice(3, 3).iter().collect::<Vec<_>>()
+        );
+
+        assert_eq!(
+            expected[0..0].to_vec(),
+            values.clone_slice(0, 0).iter().collect::<Vec<_>>()
+        );
+
+        assert_eq!(
+            expected,
+            values.clone_slice(0, len).iter().collect::<Vec<_>>()
+        );
     }
 }

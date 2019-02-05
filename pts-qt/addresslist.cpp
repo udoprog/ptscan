@@ -25,6 +25,7 @@ AddressList::AddressList(QWidget *parent) :
     headers.push_back("Address");
     headers.push_back("Type");
     headers.push_back("Value");
+    headers.push_back("Current Values");
     model.setHorizontalHeaderLabels(headers);
 
     ui->list->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -130,6 +131,53 @@ void AddressList::addWatch(std::shared_ptr<pts::ProcessHandle> handle, std::shar
     value->setEditable(false);
     row.push_back(value);
 
+    auto current = new QStandardItem(value->text());
+    current->setEditable(false);
+    row.push_back(current);
+
     model.appendRow(row);
     watches.push_back(watch);
+}
+
+pts::Values AddressList::values() const
+{
+    pts::Values values;
+
+    for (auto const &v: watches) {
+        values.push(v->value());
+    }
+
+    return values;
+}
+
+void AddressList::updateCurrent(const std::shared_ptr<pts::Values> &values)
+{
+    auto length = int(values->length());
+
+    for (int index = 0; index < length; index++) {
+        if (index >= model.rowCount()) {
+            break;
+        }
+
+        auto value = values->at(uintptr_t(index));
+
+        if (!value) {
+            continue;
+        }
+
+        auto v = *value;
+
+        auto current = v.display().toQString();
+        auto currentItem = model.item(index, 4);
+
+        currentItem->setText(current);
+
+        auto last = model.item(index, 3)->text();
+
+        if (current != last) {
+            currentItem->setForeground(Qt::red);
+        } else {
+            currentItem->setForeground(Qt::black);
+        }
+    }
 }

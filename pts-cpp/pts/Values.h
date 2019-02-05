@@ -15,6 +15,7 @@ class Values
     friend class Scan;
 
 public:
+    Values();
     // NB: Do not copy to avoid sporadic de-allocations.
     Values(const Values&) = delete;
     Values(Values&&);
@@ -25,6 +26,9 @@ public:
 
     // Get the value at the given position as a string.
     std::optional<Value> at(uintptr_t pos) const;
+
+    // Push a value onto the collection.
+    void push(Value value);
 
 private:
     explicit Values(pts_values_t *);

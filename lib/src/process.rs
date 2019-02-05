@@ -170,8 +170,14 @@ impl Process {
     /// Read a 64-bit memory region as a little endian unsigned integer.
     pub fn read_u64(&self, address: Address) -> Result<u64, io::Error> {
         use byteorder::{ByteOrder, LittleEndian};
-        let mut out = [0u8; 8];
-        self.read_process_memory(address, &mut out)?;
+        use std::mem;
+        let mut out = [0u8; mem::size_of::<u64>()];
+        let read = self.read_process_memory(address, &mut out)?;
+
+        if read != mem::size_of::<u64>() {
+            return Err(io::Error::new(io::ErrorKind::Other, "incomplete read"));
+        }
+
         Ok(LittleEndian::read_u64(&out))
     }
 

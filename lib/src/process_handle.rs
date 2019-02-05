@@ -359,7 +359,7 @@ impl ProcessHandle {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::sync_channel(1024);
 
-                let mut reporter = scan::Reporter::new(progress, len, cancel);
+                let mut reporter = scan::Reporter::new(progress, len, cancel, &mut last_error);
 
                 let it = existing
                     .iter()
@@ -372,33 +372,36 @@ impl ProcessHandle {
 
                     s.spawn(move |_| {
                         if cancel.test() {
-                            tx.send(Ok(())).expect("closed channel");
+                            tx.send(Ok(0u64)).expect("closed channel");
                             return;
                         }
 
                         let mut work = || {
                             let ty = value.ty();
                             let mut buf = buffers.get_mut(ty.size())?;
-                            output.set(self.process.read_memory_of_type(address, ty, &mut *buf)?);
-                            Ok::<_, failure::Error>(())
+
+                            let c = match output
+                                .set(self.process.read_memory_of_type(address, ty, &mut *buf)?)
+                            {
+                                true => 1u64,
+                                false => 0u64,
+                            };
+
+                            Ok::<_, failure::Error>(c)
                         };
 
                         tx.send(work()).expect("closed channel");
                     });
                 }
 
+                let mut count = 0u64;
+
                 while !reporter.is_done() {
-                    let m = rx.recv().expect("closed channel");
-
-                    if let Err(e) = reporter.tick() {
-                        last_error = Some(e);
-                        cancel.set();
+                    if let Some(c) = reporter.eval(rx.recv().expect("closed channel")) {
+                        count += c;
                     }
 
-                    if let Err(e) = m {
-                        last_error = Some(e);
-                        cancel.set();
-                    }
+                    reporter.tick(count);
                 }
             });
         });

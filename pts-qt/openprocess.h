@@ -26,9 +26,6 @@ public:
     // Take the selected value from the prompt.
     std::shared_ptr<pts::ProcessHandle> takeSelected();
 
-public slots:
-    void clicked(const QModelIndex &index);
-
 private:
     Ui::OpenProcess *ui;
     QStandardItemModel *model;

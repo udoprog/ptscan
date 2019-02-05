@@ -1,6 +1,7 @@
 #ifndef ADDRESSLIST_H
 #define ADDRESSLIST_H
 
+#include <pts/Values.h>
 #include <QStandardItemModel>
 #include <QWidget>
 
@@ -28,6 +29,12 @@ public:
 
     // Add the given watch to the address list.
     void addWatch(std::shared_ptr<pts::ProcessHandle> handle, std::shared_ptr<pts::Watch> watch);
+
+    // Get a collection of values corresponding to all watches.
+    pts::Values values() const;
+
+    // Update the current values in address list.
+    void updateCurrent(const std::shared_ptr<pts::Values> &values);
 private:
     Ui::AddressList *ui;
     QStandardItemModel model;

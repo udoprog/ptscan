@@ -3,6 +3,19 @@ use crate::value::Value;
 /// A collection of scan values that can be populated through e.g. scan_refresh.
 pub struct Values(pub(crate) ptscan::Values);
 
+/// Create a new values container.
+#[no_mangle]
+pub extern "C" fn pts_values_new<'a>() -> *mut Values {
+    into_ptr!(Values(ptscan::Values::new()))
+}
+
+/// Push a value.
+#[no_mangle]
+pub extern "C" fn pts_values_push<'a>(values: *mut Values, value: Value) {
+    let Values(ref mut values) = *null_ck!(&'a mut values);
+    values.push(immediate_ck!(ptscan::Value, value));
+}
+
 /// Get the value at the given position as a string.
 #[no_mangle]
 pub extern "C" fn pts_values_length<'a>(values: *const Values) -> usize {

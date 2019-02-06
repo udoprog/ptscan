@@ -1,4 +1,4 @@
-use crate::value::{Type, Value};
+use crate::{r#type::Type, value::Value};
 
 /// A collection of scan values that can be populated through e.g. scan_refresh.
 pub struct Values(pub(crate) ptscan::Values);

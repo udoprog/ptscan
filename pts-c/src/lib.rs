@@ -15,6 +15,7 @@ pub mod process_handle;
 pub mod scan;
 pub mod string;
 pub mod system;
+pub mod r#type;
 pub mod value;
 pub mod values;
 pub mod watch;

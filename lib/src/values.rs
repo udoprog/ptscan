@@ -1,6 +1,6 @@
 //! Optimized storage for in-memory values.
 
-use crate::value::{Type, Value};
+use crate::{Type, Value};
 use std::{iter, marker, ptr};
 
 const MASK: u64 = 0x00_ff_ff_ff_ff_ff_ff_ffu64;

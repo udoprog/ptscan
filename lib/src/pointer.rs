@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn basic_parsing() -> Result<(), Box<error::Error>> {
-        dbg!(Pointer::parse("0xABCDEF")?);
+        dbg!(Pointer::parse("ABCDEF")?);
         dbg!(Pointer::parse("\"Steam.exe\" + 0F")?);
         dbg!(Pointer::parse("\"Steam.exe\" + 0F -> -FFAA")?);
         dbg!(Pointer::parse("\"Steam.exe\" - F0F -> -FFAA")?);

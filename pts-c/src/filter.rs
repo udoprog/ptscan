@@ -1,4 +1,4 @@
-use crate::{string::StringT, utils, value::Type};
+use crate::{r#type::Type, string::StringT, utils};
 use std::{os::raw::c_char, ptr};
 
 /// A filter.

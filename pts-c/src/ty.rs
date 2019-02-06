@@ -15,16 +15,16 @@ pub extern "C" fn pts_type_parse<'a>(input: *const c_char, input_len: usize) -> 
 
 /// Export the value as a string.
 #[no_mangle]
-pub extern "C" fn pts_type_display<'a>(ty: *const Type, out: *mut StringT) {
-    let ty = immediate_ck!(ptscan::Type, &'a ty);
+pub extern "C" fn pts_type_display<'a>(ty: Type, out: *mut StringT) {
+    let ty = immediate_ck!(ptscan::Type, ty);
     let out = null_ck!(&'a mut out);
     *out = StringT::new(ty.to_string());
 }
 
 /// Export the value as a human-readable string.
 #[no_mangle]
-pub extern "C" fn pts_type_human_display<'a>(ty: *const Type, out: *mut StringT) {
-    let ty = immediate_ck!(ptscan::Type, &'a ty);
+pub extern "C" fn pts_type_human_display<'a>(ty: Type, out: *mut StringT) {
+    let ty = immediate_ck!(ptscan::Type, ty);
     let out = null_ck!(&'a mut out);
     *out = StringT::new(ty.human_display().to_string());
 }

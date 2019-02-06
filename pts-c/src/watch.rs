@@ -1,4 +1,4 @@
-use crate::{pointer::Pointer, r#type::Type, string::StringT, value::Value};
+use crate::{pointer::Pointer, string::StringT, ty::Type, value::Value};
 
 /// An address being watched.
 pub struct Watch(pub(crate) ptscan::watch::Watch);

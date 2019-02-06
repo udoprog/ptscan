@@ -11,14 +11,14 @@ Type Type::parse(const std::string &input)
 String Type::display() const
 {
     String string;
-    pts_type_display(&inner, &string.inner);
+    pts_type_display(inner, &string.inner);
     return string;
 }
 
 String Type::humanDisplay() const
 {
     String string;
-    pts_type_human_display(&inner, &string.inner);
+    pts_type_human_display(inner, &string.inner);
     return string;
 }
 }

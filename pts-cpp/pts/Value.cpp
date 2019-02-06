@@ -5,13 +5,13 @@ namespace pts
 {
 Type Value::type()
 {
-    return Type{pts_value_type(&inner)};
+    return Type{pts_value_type(inner)};
 }
 
 String Value::display() const
 {
     String string;
-    pts_value_display(&inner, &string.inner);
+    pts_value_display(inner, &string.inner);
     return string;
 }
 }

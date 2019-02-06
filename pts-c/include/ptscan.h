@@ -53,6 +53,10 @@ struct pts_string_t {
   uintptr_t cap;
 };
 
+struct pts_type_t {
+  uint8_t _0;
+};
+
 using pts_scan_progress_report_fn = void(*)(void*, uintptr_t, uint64_t);
 
 struct pts_scan_progress_t {
@@ -257,10 +261,20 @@ pts_token_t *pts_token_new();
 void pts_token_set(const pts_token_t *token);
 
 /// Export the value as a string.
-void pts_value_display(const pts_value_t *value, pts_string_t *out);
+void pts_type_display(pts_type_t ty, pts_string_t *out);
+
+/// Export the value as a human-readable string.
+void pts_type_human_display(pts_type_t ty, pts_string_t *out);
+
+/// Parse a string as a filter.
+/// Returns NULL and sets error accordingly on failure.
+pts_type_t pts_type_parse(const char *input, uintptr_t input_len);
+
+/// Export the value as a string.
+void pts_value_display(pts_value_t value, pts_string_t *out);
 
 /// Export the type as a string.
-pts_type_t pts_value_type(const pts_value_t *value);
+pts_type_t pts_value_type(pts_value_t value);
 
 /// Get the value at the given position as a string.
 bool pts_values_at(const pts_values_t *values, uintptr_t pos, pts_value_t *out);

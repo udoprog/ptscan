@@ -5,8 +5,8 @@
 #include <pts/Pointer.h>
 #include <pts/Address.h>
 #include <pts/ProcessHandle.h>
+#include <pts/Type.h>
 #include <QMenu>
-#include <QDebug>
 #include <memory>
 
 AddressList::AddressList(QWidget *parent) :

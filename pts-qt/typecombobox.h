@@ -5,7 +5,7 @@
 
 #include <QComboBox>
 #include <QStandardItemModel>
-#include <pts/Value.h>
+#include <pts/Type.h>
 
 // A specialized combobox implementation for selecting a type.
 class TypeComboBox : public QComboBox

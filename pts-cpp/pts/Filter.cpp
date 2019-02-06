@@ -1,7 +1,7 @@
 #include <pts/Filter.h>
 #include <pts/String.h>
-#include <pts/Value.h>
 #include <pts/Exception.h>
+#include <pts/Type.h>
 
 namespace pts
 {

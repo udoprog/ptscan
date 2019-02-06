@@ -65,7 +65,8 @@ HEADERS += \
     ../pts-cpp/pts/Value.h \
     ../pts-cpp/pts/Values.h \
     ../pts-cpp/pts/Address.h \
-    ../pts-cpp/pts/Addresses.h
+    ../pts-cpp/pts/Addresses.h \
+    ../pts-cpp/pts/Type.h
 
 SOURCES += \
     ../pts-cpp/pts/Exception.cpp \
@@ -81,4 +82,5 @@ SOURCES += \
     ../pts-cpp/pts/Watch.cpp \
     ../pts-cpp/pts/Value.cpp \
     ../pts-cpp/pts/Address.cpp \
-    ../pts-cpp/pts/Addresses.cpp
+    ../pts-cpp/pts/Addresses.cpp \
+    ../pts-cpp/pts/Type.cpp

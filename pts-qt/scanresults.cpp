@@ -3,7 +3,7 @@
 #include <pts/Scan.h>
 #include <pts/Values.h>
 #include <pts/Address.h>
-#include <QDebug>
+#include <pts/Type.h>
 
 ScanResults::ScanResults(QWidget *parent) :
     QWidget(parent),

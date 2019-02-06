@@ -3,6 +3,7 @@
 #include <pts/Exception.h>
 #include <pts/Value.h>
 #include <pts/Address.h>
+#include <pts/Type.h>
 
 namespace pts
 {

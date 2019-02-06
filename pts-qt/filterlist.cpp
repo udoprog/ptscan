@@ -1,11 +1,14 @@
 #include "editfilter.h"
 #include "filterlist.h"
 #include "ui_filterlist.h"
+#include <pts/Type.h>
+#include <QMenu>
 
 FilterList::FilterList(QWidget *parent) :
     QWidget(parent),
     ui(new Ui::FilterList),
-    editFilter(new EditFilter(this))
+    editFilter(new EditFilter(this)),
+    model(new QStandardItemModel(this))
 {
     ui->setupUi(this);
 
@@ -13,8 +16,8 @@ FilterList::FilterList(QWidget *parent) :
     headers.push_back("Filter");
     headers.push_back("Type");
 
-    model.setHorizontalHeaderLabels(headers);
-    ui->list->setModel(&model);
+    model->setHorizontalHeaderLabels(headers);
+    ui->list->setModel(model);
 
     contextMenu = new QMenu(ui->list);
     contextMenu->addAction(ui->actionRemoveFilter);
@@ -48,7 +51,7 @@ FilterList::FilterList(QWidget *parent) :
 
         if (index.isValid()) {
             filters.erase(filters.begin() + index.row());
-            model.removeRow(index.row());
+            model->removeRow(index.row());
             emit updateView();
         }
     });
@@ -76,8 +79,8 @@ FilterList::FilterList(QWidget *parent) :
         }
 
         if (index.isValid()) {
-            model.item(index.row(), 0)->setText(filter->display().toQString());
-            model.item(index.row(), 1)->setText(filter->type().display().toQString());
+            model->item(index.row(), 0)->setText(filter->display().toQString());
+            model->item(index.row(), 1)->setText(filter->type().display().toQString());
             filters.insert(filters.begin() + index.row(), filter);
         } else {
             QList<QStandardItem *> row;
@@ -90,7 +93,7 @@ FilterList::FilterList(QWidget *parent) :
             type->setEditable(false);
             row.push_back(type);
 
-            model.appendRow(row);
+            model->appendRow(row);
             filters.push_back(filter);
         }
 
@@ -105,9 +108,11 @@ FilterList::~FilterList()
 {
     delete ui;
     delete editFilter;
+    delete contextMenu;
+    delete model;
 }
 
-std::optional<std::shared_ptr<pts::Filter> > FilterList::currentFilter()
+std::shared_ptr<pts::Filter> FilterList::currentFilter()
 {
     auto index = ui->list->currentIndex();
 
@@ -115,8 +120,7 @@ std::optional<std::shared_ptr<pts::Filter> > FilterList::currentFilter()
         return {};
     }
 
-    auto row = uintptr_t(index.row());
-    return std::make_optional(filters.at(row));
+    return filters.at(uintptr_t(index.row()));
 }
 
 void FilterList::setResetEnabled(bool enabled)

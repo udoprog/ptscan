@@ -161,14 +161,12 @@ void MainWindow::scan()
         return;
     }
 
-    auto maybeFilter = filterList->currentFilter();
+    auto filter = filterList->currentFilter();
 
-    if (!maybeFilter) {
+    if (!filter) {
         addError("no filter selected");
         return;
     }
-
-    auto filter = *maybeFilter;
 
     ui->errorBox->hide();
     ui->errorText->clear();

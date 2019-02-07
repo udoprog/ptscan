@@ -354,23 +354,37 @@ impl Process {
                         };
 
                         let mut work = move || {
-                            let ty = output.ty();
-                            let len = ty.size();
-                            let mut buf = buffers.get_mut(len)?;
-                            let read = self.read_process_memory(address, &mut *buf)?;
-
-                            if read != len {
-                                return Ok(0u64);
-                            }
-
                             let value = match filter {
                                 Some(filter) => {
+                                    let ty = filter.ty();
+                                    let len = ty.size();
+                                    let mut buf = buffers.get_mut(len)?;
+                                    let read = self.read_process_memory(address, &mut *buf)?;
+
+                                    if read != len {
+                                        return Ok(0u64);
+                                    }
+
                                     match filter.test(Some(&output.to_value()), &*buf) {
                                         Some(value) => value,
-                                        None => return Ok(0u64),
+                                        None => {
+                                            output.clear();
+                                            return Ok(0u64);
+                                        }
                                     }
                                 }
-                                None => ty.decode(&*buf),
+                                None => {
+                                    let ty = output.ty();
+                                    let len = ty.size();
+                                    let mut buf = buffers.get_mut(len)?;
+                                    let read = self.read_process_memory(address, &mut *buf)?;
+
+                                    if read != len {
+                                        return Ok(0u64);
+                                    }
+
+                                    ty.decode(&*buf)
+                                }
                             };
 
                             Ok(match output.set(value) {

@@ -99,6 +99,28 @@ impl Value {
         }
     }
 
+    /// Cast this value.
+    pub fn cast<T>(&self) -> Option<T>
+    where
+        T: Default + num::FromPrimitive,
+    {
+        use self::Value::*;
+
+        match *self {
+            None => Some(T::default()),
+            U8(value) => T::from_u8(value),
+            I8(value) => T::from_i8(value),
+            U16(value) => T::from_u16(value),
+            I16(value) => T::from_i16(value),
+            U32(value) => T::from_u32(value),
+            I32(value) => T::from_i32(value),
+            U64(value) => T::from_u64(value),
+            I64(value) => T::from_i64(value),
+            U128(value) => T::from_u128(value),
+            I128(value) => T::from_i128(value),
+        }
+    }
+
     /// Get the type of the value.
     pub fn ty(&self) -> Type {
         use self::Value::*;

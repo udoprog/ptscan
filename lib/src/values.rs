@@ -277,14 +277,23 @@ impl<'a> ValueMut<'a> {
     pub fn set(&mut self, value: Value) -> bool {
         macro_rules! define {
             ($buf:expr, $value:expr, $(($member:ident, $ty:ty),)*) => {
-                match (self.ty, $value) {
-                    $((Type::$member, Value::$member(v)) => {
+                match self.ty {
+                    $(Type::$member => {
                         assert_buffer!($buf, $ty);
-                        let buf = $buf.as_mut_ptr() as *mut $ty;
-                        unsafe { *buf = v };
+                        match $value.cast::<$ty>() {
+                            Some(val) => {
+                                let buf = $buf.as_mut_ptr() as *mut $ty;
+                                unsafe { *buf = val };
+                                true
+                            },
+                            None => {
+                                self.clear();
+                                false
+                            },
+                        }
                     },)*
                     _ => {
-                        return false;
+                        false
                     }
                 }
             }
@@ -303,8 +312,6 @@ impl<'a> ValueMut<'a> {
             (U128, u128),
             (I128, i128),
         }
-
-        true
     }
 
     /// Clear the value at the given location.

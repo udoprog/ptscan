@@ -128,7 +128,6 @@ impl Scan {
 
         self.addresses = addresses;
         self.values = values;
-
         Ok(())
     }
 

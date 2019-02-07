@@ -12,7 +12,7 @@ macro_rules! decode_buf {
             16 => byteorder::LittleEndian::read_u128($buf) as $ty,
             _ => return Value::None,
         }
-    }
+    };
 }
 
 #[repr(u8)]

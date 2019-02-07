@@ -1,6 +1,9 @@
 use std::{convert::TryFrom, ffi, fmt, io, ptr, sync::Arc};
 
-use crate::{module, system, utils, Address, AddressRange, ProcessId, Size, Type, Value};
+use crate::{
+    filter, module, scan, system, thread_buffers, utils, values::ValueMut, Address, AddressRange,
+    ProcessId, Size, Token, Type, Value, Values,
+};
 
 use err_derive::Error;
 use ntapi::ntpsapi;
@@ -293,6 +296,139 @@ impl Process {
 
         if status != 0 {
             return Err(io::Error::last_os_error());
+        }
+
+        Ok(())
+    }
+
+    /// Read the value of many memory locations.
+    pub fn read_memory(
+        &self,
+        thread_pool: &rayon::ThreadPool,
+        addresses: &[Address],
+        output: &mut Values,
+        cancel: Option<&Token>,
+        filter: Option<&filter::Filter>,
+        progress: (impl scan::Progress + Send),
+    ) -> Result<(), failure::Error> {
+        use std::sync::mpsc;
+
+        let mut local_cancel = None;
+
+        let cancel = match cancel {
+            Some(cancel) => cancel,
+            None => local_cancel.get_or_insert(Token::new()),
+        };
+
+        let len = usize::min(addresses.len(), output.len());
+
+        if len == 0 {
+            return Ok(());
+        }
+
+        let buffers = thread_buffers::ThreadBuffers::new();
+
+        let mut last_error = None;
+        let mut reporter = scan::Reporter::new(progress, len, cancel, &mut last_error);
+
+        // how many tasks to run in parallel.
+        let tasks = 0x100usize;
+
+        thread_pool.install(|| {
+            rayon::scope(|s| {
+                let (tx, rx) = mpsc::channel();
+                let (p_tx, p_rx) = crossbeam_channel::unbounded::<Option<(ValueMut, Address)>>();
+
+                for _ in 0..thread_pool.current_num_threads() {
+                    let tx = tx.clone();
+                    let p_rx = p_rx.clone();
+                    let buffers = &buffers;
+
+                    s.spawn(move |_| loop {
+                        let (mut output, address) = match p_rx.recv().expect("closed") {
+                            Some(task) => task,
+                            None => {
+                                tx.send(None).expect("closed");
+                                return;
+                            }
+                        };
+
+                        let mut work = move || {
+                            let ty = output.ty();
+                            let len = ty.size();
+                            let mut buf = buffers.get_mut(len)?;
+                            let read = self.read_process_memory(address, &mut *buf)?;
+
+                            if read != len {
+                                return Ok(0u64);
+                            }
+
+                            let value = match filter {
+                                Some(filter) => {
+                                    match filter.test(Some(&output.to_value()), &*buf) {
+                                        Some(value) => value,
+                                        None => return Ok(0u64),
+                                    }
+                                }
+                                None => ty.decode(&*buf),
+                            };
+
+                            Ok(match output.set(value) {
+                                true => 1u64,
+                                false => 0u64,
+                            })
+                        };
+
+                        tx.send(Some(work())).expect("closed");
+                    });
+                }
+
+                let mut it = output.iter_mut().zip(addresses.iter().cloned());
+
+                for (output, address) in (&mut it).take(tasks) {
+                    p_tx.send(Some((output, address))).expect("closed");
+                }
+
+                let mut count = 0u64;
+                let mut expected = thread_pool.current_num_threads();
+
+                while !reporter.is_done() {
+                    if cancel.test() {
+                        break;
+                    }
+
+                    let result = rx.recv().expect("closed").expect("sporadic none option");
+
+                    if let Some((output, address)) = it.next() {
+                        p_tx.send(Some((output, address))).expect("closed");
+                    }
+
+                    count += reporter.eval(result).unwrap_or_default();
+                    reporter.tick(count);
+                }
+
+                // send indicator for threads to go.
+                for _ in 0..thread_pool.current_num_threads() {
+                    p_tx.send(None).expect("closed");
+                }
+
+                // reap threads.
+                while expected > 0 {
+                    match rx.recv().expect("closed") {
+                        Some(result) => {
+                            count += reporter.eval(result).unwrap_or_default();
+                            reporter.tick(count);
+                        }
+                        None => {
+                            expected -= 1;
+                        }
+                    }
+                }
+            });
+        });
+
+        if let Some(e) = last_error {
+            return Err(e);
         }
 
         Ok(())

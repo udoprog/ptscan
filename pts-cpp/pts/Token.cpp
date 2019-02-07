@@ -17,11 +17,6 @@ void Token::set()
     pts_token_set(inner);
 }
 
-pts_token_t *Token::ptr()
-{
-    return inner;
-}
-
 Token::~Token()
 {
     if (inner) {

@@ -21,3 +21,4 @@
 
 * ~~Something wrong with scanning `$value == u128`.~~
   * Missed adding it to a numerical testing macro.
+* Handle when filter has different width for output.

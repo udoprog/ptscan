@@ -188,11 +188,12 @@ pub extern "C" fn pts_scan_refresh<'a>(
     let progress = null_ck!(&'a progress).as_progress(data);
 
     try_last!(
-        handle.read_memory(
+        handle.process.read_memory(
             &*scan.thread_pool,
             &scan.addresses,
             values,
             cancel,
+            None,
             progress
         ),
         false

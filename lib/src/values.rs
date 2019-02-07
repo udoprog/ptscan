@@ -1,9 +1,52 @@
 //! Optimized storage for in-memory values.
 
 use crate::{Type, Value};
-use std::{iter, marker, ptr};
+use std::{fmt, iter};
 
 const MASK: u64 = 0x00_ff_ff_ff_ff_ff_ff_ffu64;
+
+macro_rules! assert_buffer {
+    ($buf:expr, $type:ty) => {
+        assert!(
+            $buf.len() == std::mem::size_of::<$type>(),
+            "buffer size mismatch: {} (buffer) != {} (expected)",
+            $buf.len(),
+            std::mem::size_of::<$type>()
+        );
+    };
+}
+
+// Helper macro to decode a simple value.
+macro_rules! decode_value {
+    ($type:expr, $buf:expr) => {
+        decode_value!(@inner $type, $buf,
+            (u16, U16, read_u16),
+            (i16, I16, read_i16),
+            (u32, U32, read_u32),
+            (i32, I32, read_i32),
+            (u64, U64, read_u64),
+            (i64, I64, read_i64),
+            (u128, U128, read_u128),
+            (i128, I128, read_i128),
+        )
+    };
+
+    (
+        @inner $type:expr, $buf:expr,
+        $(($ty:ty, $member:ident, $read:ident),)*
+    ) => {
+        match $type {
+        Type::None => Value::None,
+        Type::U8 => Value::U8($buf[0]),
+        Type::I8 => Value::I8($buf[0] as i8),
+        $(Type::$member => {
+            assert_buffer!($buf, $ty);
+            let buf = $buf.as_ptr() as *const $ty;
+            Value::$member(unsafe { *buf })
+        },)*
+        }
+    };
+}
 
 /// Decode the given index.
 #[inline]
@@ -13,12 +56,25 @@ fn decode_index(index: u64) -> (Type, usize) {
     (ty, i)
 }
 
-#[derive(Clone, Default)]
+/// Encode an index.
+#[inline]
+fn encode_index(t: Type, i: usize) -> u64 {
+    let i = i as u64;
+
+    if i > MASK {
+        panic!("index out of range");
+    }
+
+    ((t as u64) << 56) | i
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct Values {
-    // high byte = type
-    // 56 bits = index in corresponding buffer.
+    /// Index into the buffer.
+    /// high byte = type
+    /// 56 bits = index in corresponding buffer.
     index: Vec<u64>,
-    /// buffer.
+    /// Buffer with raw data.
     buffer: Vec<u8>,
     /// Scratch buffer for writing new values.
     scratch: [u8; 16],
@@ -70,87 +126,28 @@ impl Values {
         }
     }
 
-    /// A mutable reference to the underlying value.
-    ///
-    /// # Safety
-    ///
-    /// This is unsafe, the caller needs to make sure that the collection is not modified, and that multiple mutable
-    /// references are not active.
-    #[inline]
-    pub fn get_mut<'a>(&'a mut self, index: usize) -> Option<ValueMut<'a>> {
-        let index = match self.index.get_mut(index) {
-            Some(index) => index,
-            None => return None,
-        };
-
-        let idx = *index;
-        let ty = Type::from_byte((idx >> 56) as u8);
-        let i = (idx & MASK) as usize;
-        let ptr = self.buffer[i..].as_ptr() as *mut _;
-
-        Some(ValueMut {
-            index: index as *mut _,
-            ty,
-            ptr,
-            marker: marker::PhantomData,
-        })
-    }
-
     /// Get the index.
     #[inline]
     pub fn get(&self, index: usize) -> Option<Value> {
-        macro_rules! define {
-            (
-                $type:expr, $buf:expr,
-                $(($ty:ty, $member:ident, $read:ident),)*
-            ) => {
-                match $type {
-                Type::None => Some(Value::None),
-                Type::U8 => Some(Value::U8($buf[0])),
-                Type::I8 => Some(Value::I8($buf[0] as i8)),
-                $(Type::$member => {
-                    Some(Value::$member(unsafe { *($buf.as_ptr() as *const $ty) }))
-                },)*
-                }
-            };
-        }
-
-        let index = match self.index.get(index) {
-            Some(index) => *index,
-            None => return None,
-        };
-
-        let (ty, i) = decode_index(index);
-        let buf = &self.buffer[i..];
-
-        define!(
-            ty,
-            buf,
-            (u16, U16, read_u16),
-            (i16, I16, read_i16),
-            (u32, U32, read_u32),
-            (i32, I32, read_i32),
-            (u64, U64, read_u64),
-            (i64, I64, read_i64),
-            (u128, U128, read_u128),
-            (i128, I128, read_i128),
-        )
+        let index = self.index.get(index)?;
+        let (ty, i) = decode_index(*index);
+        Some(decode_value!(ty, &self.buffer[i..(i + ty.size())]))
     }
 
     /// Create an iterator over all values in collections.
     pub fn iter<'a>(&'a self) -> Iter<'a> {
         Iter {
-            values: self,
-            pos: 0,
+            index: &self.index,
+            buffer: &self.buffer,
         }
     }
 
     /// Create a mutable iterator over all values.
     pub fn iter_mut<'a>(&'a mut self) -> IterMut<'a> {
         IterMut {
-            values: unsafe { ptr::NonNull::new_unchecked(self) },
+            index: &mut self.index,
+            buffer: &mut self.buffer,
             pos: 0,
-            marker: marker::PhantomData,
         }
     }
 
@@ -171,14 +168,14 @@ impl Values {
             ) => {
                 match $value {
                 Value::None => { self.index.push(0); return; },
-                Value::U8(v) => { $buf.push(v); Type::U8 as u8 },
-                Value::I8(v) => { $buf.push(v as u8); Type::I8 as u8 },
+                Value::U8(v) => { $buf.push(v); Type::U8 },
+                Value::I8(v) => { $buf.push(v as u8); Type::I8 },
                 $(
                 Value::$member(v) => {
                     let o = self.scratch.as_mut_ptr() as *mut $ty;
                     unsafe { *o = v };
                     $buf.extend(&self.scratch[..mem::size_of::<$ty>()]);
-                    Type::$member as u8
+                    Type::$member
                 },
                 )*
                 }
@@ -200,13 +197,29 @@ impl Values {
             (i128, I128, write_i128),
         };
 
-        let i = i as u64;
+        self.index.push(encode_index(t, i))
+    }
 
-        if i > MASK {
-            panic!("index out of range");
+    // Append the other values collection, the collection appended from will be cleared.
+    pub fn append(&mut self, values: &mut Self) {
+        let b = self.buffer.len();
+
+        for i in values.index.drain(..) {
+            let (t, i) = decode_index(i);
+
+            self.index.push(match t {
+                Type::None => 0,
+                other => encode_index(other, b + i),
+            });
         }
 
-        self.index.push(((t as u64) << 56) | i)
+        self.buffer.append(&mut values.buffer);
+    }
+}
+
+impl fmt::Debug for Values {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt.debug_list().entries(self.iter()).finish()
     }
 }
 
@@ -222,54 +235,53 @@ impl iter::Extend<Value> for Values {
 }
 
 /// A single dynamic literal value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct ValueMut<'a> {
     ty: Type,
-    index: *mut u64,
-    ptr: *mut u8,
-    marker: marker::PhantomData<&'a ()>,
+    index: &'a mut u64,
+    buffer: &'a mut [u8],
 }
-
-unsafe impl<'a> Send for ValueMut<'a> {}
 
 impl<'a> ValueMut<'a> {
     /// Convert into a value.
     pub fn to_value(&self) -> Value {
         macro_rules! define {
-            ($value:expr, $(($member:ident, $ty:ty),)*) => {
-                match $value {
+            ($buf:expr, $(($member:ident, $ty:ty),)*) => {
+                match self.ty {
                     Type::None => Value::None,
                     $(Type::$member => {
-                        Value::$member(*(self.ptr as *mut $ty))
+                        assert_buffer!($buf, $ty);
+                        let buf = $buf.as_ptr() as *const $ty;
+                        Value::$member(unsafe { *buf })
                     },)*
                 }
             }
         }
 
-        unsafe {
-            define! {
-                self.ty,
-                (U8, u8),
-                (I8, i8),
-                (U16, u16),
-                (I16, i16),
-                (U32, u32),
-                (I32, i32),
-                (U64, u64),
-                (I64, i64),
-                (U128, u128),
-                (I128, i128),
-            }
+        define! {
+            self.buffer,
+            (U8, u8),
+            (I8, i8),
+            (U16, u16),
+            (I16, i16),
+            (U32, u32),
+            (I32, i32),
+            (U64, u64),
+            (I64, i64),
+            (U128, u128),
+            (I128, i128),
         }
     }
 
     /// Set the given position with the given value.
     pub fn set(&mut self, value: Value) -> bool {
         macro_rules! define {
-            ($type:expr, $ptr:expr, $value:expr, $(($member:ident, $ty:ty),)*) => {
-                match ($type, $value) {
+            ($buf:expr, $value:expr, $(($member:ident, $ty:ty),)*) => {
+                match (self.ty, $value) {
                     $((Type::$member, Value::$member(v)) => {
-                        *($ptr as *mut $ty) = v;
+                        assert_buffer!($buf, $ty);
+                        let buf = $buf.as_mut_ptr() as *mut $ty;
+                        unsafe { *buf = v };
                     },)*
                     _ => {
                         return false;
@@ -278,20 +290,18 @@ impl<'a> ValueMut<'a> {
             }
         }
 
-        unsafe {
-            define! {
-                self.ty, self.ptr, value,
-                (U8, u8),
-                (I8, i8),
-                (U16, u16),
-                (I16, i16),
-                (U32, u32),
-                (I32, i32),
-                (U64, u64),
-                (I64, i64),
-                (U128, u128),
-                (I128, i128),
-            }
+        define! {
+            self.buffer, value,
+            (U8, u8),
+            (I8, i8),
+            (U16, u16),
+            (I16, i16),
+            (U32, u32),
+            (I32, i32),
+            (U64, u64),
+            (I64, i64),
+            (U128, u128),
+            (I128, i128),
         }
 
         true
@@ -299,9 +309,7 @@ impl<'a> ValueMut<'a> {
 
     /// Clear the value at the given location.
     pub fn clear(&mut self) {
-        unsafe {
-            *self.index = (Type::None as u64) << 56;
-        }
+        *self.index = (Type::None as u64) << 56;
     }
 
     /// Get the type of the value.
@@ -329,37 +337,61 @@ impl<'a> IntoIterator for &'a Values {
 }
 
 pub struct Iter<'a> {
-    values: &'a Values,
-    pos: usize,
+    index: &'a [u64],
+    buffer: &'a [u8],
 }
 
 impl<'a> Iterator for Iter<'a> {
     type Item = Value;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let value = self.values.get(self.pos)?;
-        self.pos += 1;
-        Some(value)
+        let (index, rest) = self.index.split_first()?;
+        self.index = rest;
+
+        let (ty, i) = decode_index(*index);
+        let len = ty.size();
+
+        let buffer = match len {
+            0 => &[],
+            len => &self.buffer[i..(i + len)],
+        };
+
+        Some(decode_value!(ty, buffer))
     }
 }
 
 pub struct IterMut<'a> {
-    values: ptr::NonNull<Values>,
+    index: &'a mut [u64],
+    buffer: &'a mut [u8],
     pos: usize,
-    marker: marker::PhantomData<&'a mut ()>,
 }
 
 impl<'a> Iterator for IterMut<'a> {
     type Item = ValueMut<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match unsafe { &mut *self.values.as_ptr() }.get_mut(self.pos) {
-            Some(value) => {
-                self.pos += 1;
-                Some(value)
+        use std::mem;
+
+        let (index, rest) = mem::replace(&mut self.index, &mut []).split_first_mut()?;
+        self.index = rest;
+
+        let (ty, i) = decode_index(*index);
+        let len = ty.size();
+
+        let buffer = match len {
+            0 => &mut [],
+            len => {
+                let offset = i - self.pos;
+                let (buffer, rest) =
+                    mem::replace(&mut self.buffer, &mut []).split_at_mut(offset + len);
+                let buffer = &mut buffer[offset..];
+                self.buffer = rest;
+                self.pos += offset + len;
+                buffer
             }
-            None => None,
-        }
+        };
+
+        Some(ValueMut { index, buffer, ty })
     }
 }
 
@@ -368,11 +400,8 @@ mod tests {
     use super::Values;
     use crate::value::Value;
 
-    #[test]
-    pub fn test_values() {
-        let mut values = Values::new();
-
-        let expected = vec![
+    fn expected() -> Vec<Value> {
+        vec![
             Value::None,
             Value::U8(1),
             Value::I8(2),
@@ -384,38 +413,96 @@ mod tests {
             Value::I64(8),
             Value::U128(9),
             Value::I128(10),
-        ];
+        ]
+    }
 
-        values.extend(expected.iter().cloned());
+    #[test]
+    pub fn test_iter() {
+        let mut a = Values::new();
+        a.extend(expected());
 
-        for (i, v) in expected.iter().cloned().enumerate() {
-            assert_eq!(Some(v), values.get(i));
+        for (a, b) in a.iter().zip(expected()) {
+            assert_eq!(a, b);
+        }
+    }
+
+    #[test]
+    pub fn test_extend() {
+        let mut a = Values::new();
+
+        for v in expected() {
+            a.push(v);
         }
 
-        assert_eq!(None, values.get(expected.len() + 1));
-        assert_eq!(expected, values.iter().collect::<Vec<_>>());
-        assert_eq!(values.len(), expected.len());
+        let mut b = Values::new();
+        b.extend(expected());
+
+        assert_eq!(a, b);
+        assert_eq!(expected(), a.iter().collect::<Vec<_>>());
+        assert_eq!(expected(), b.iter().collect::<Vec<_>>());
+    }
+
+    #[test]
+    pub fn test_append() {
+        let mut a = Values::new();
+        let mut expected = expected();
+
+        a.extend(expected.iter().cloned());
+        a.append(&mut a.clone());
+        expected.extend(expected.iter().cloned().collect::<Vec<_>>());
+        assert_eq!(expected, a.iter().collect::<Vec<_>>());
+    }
+
+    #[test]
+    pub fn test_values() {
+        let mut a = Values::new();
+        let expected = expected();
+
+        a.extend(expected.iter().cloned());
+
+        for (i, v) in expected.iter().cloned().enumerate() {
+            assert_eq!(Some(v), a.get(i));
+        }
+
+        assert_eq!(None, a.get(expected.len() + 1));
+        assert_eq!(expected, a.iter().collect::<Vec<_>>());
+        assert_eq!(a.len(), expected.len());
 
         let len = expected.len();
 
         assert_eq!(
             expected[3..8].to_vec(),
-            values.clone_slice(3, 8).iter().collect::<Vec<_>>()
+            a.clone_slice(3, 8).iter().collect::<Vec<_>>()
         );
 
         assert_eq!(
             expected[3..3].to_vec(),
-            values.clone_slice(3, 3).iter().collect::<Vec<_>>()
+            a.clone_slice(3, 3).iter().collect::<Vec<_>>()
         );
 
         assert_eq!(
             expected[0..0].to_vec(),
-            values.clone_slice(0, 0).iter().collect::<Vec<_>>()
+            a.clone_slice(0, 0).iter().collect::<Vec<_>>()
         );
 
-        assert_eq!(
-            expected,
-            values.clone_slice(0, len).iter().collect::<Vec<_>>()
-        );
+        assert_eq!(expected, a.clone_slice(0, len).iter().collect::<Vec<_>>());
+    }
+
+    #[test]
+    pub fn test_iter_mut() {
+        let mut a = Values::new();
+        let expected = expected();
+        a.extend(expected.iter().cloned());
+
+        for mut v in a.iter_mut() {
+            v.clear();
+        }
+
+        let expected = expected
+            .into_iter()
+            .map(|_| Value::None)
+            .collect::<Vec<_>>();
+
+        assert_eq!(expected, a.iter().collect::<Vec<_>>());
     }
 }

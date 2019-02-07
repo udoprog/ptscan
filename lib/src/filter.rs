@@ -1,4 +1,4 @@
-use crate::{special::Special, values::ValueMut, Type, Value};
+use crate::{special::Special, Type, Value};
 use std::fmt;
 
 mod ast;
@@ -11,12 +11,19 @@ pub fn parse(input: &str, ty: Type) -> Result<Filter, failure::Error> {
         .parse(lexer::Lexer::new(input))?
         .into_matcher(ty)?;
 
-    Ok(Filter { ty, matcher })
+    let special = matcher.special();
+
+    Ok(Filter {
+        ty,
+        special,
+        matcher,
+    })
 }
 
 #[derive(Debug)]
 pub struct Filter {
     ty: Type,
+    special: Option<Special>,
     matcher: Box<Matcher>,
 }
 
@@ -31,14 +38,23 @@ impl Filter {
         &*self.matcher
     }
 
-    /// If the filter supports special (more efficient matching).
-    pub fn special(&self) -> Option<Special> {
-        self.matcher.special()
-    }
+    /// Test the given bytes against this filter.
+    pub fn test(&self, last: Option<&Value>, bytes: &[u8]) -> Option<Value> {
+        match self.special.as_ref().and_then(|s| s.test(bytes)) {
+            // A special, more efficient kind of matching is available.
+            Some(true) => Some(self.ty.decode(bytes)),
+            // special match is negative.
+            Some(false) => None,
+            None => {
+                let value = self.ty.decode(bytes);
 
-    /// Test the specified memory region.
-    pub fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
-        self.matcher.test(last, value)
+                if self.matcher.test(last, &value) {
+                    Some(value)
+                } else {
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -49,7 +65,7 @@ pub trait Matcher: Send + Sync + fmt::Debug + fmt::Display {
     }
 
     /// Test the specified memory region.
-    fn test<'a>(&self, _: Option<ValueMut<'a>>, _: &Value) -> bool;
+    fn test<'a>(&self, _: Option<&Value>, _: &Value) -> bool;
 }
 
 macro_rules! numeric_match {
@@ -77,7 +93,7 @@ impl Matcher for Not {
         self.0.special().map(|s| s.invert())
     }
 
-    fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
+    fn test<'a>(&self, last: Option<&Value>, value: &Value) -> bool {
         !self.0.test(last, value)
     }
 }
@@ -93,9 +109,9 @@ impl fmt::Display for Not {
 pub struct Dec;
 
 impl Matcher for Dec {
-    fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
+    fn test<'a>(&self, last: Option<&Value>, value: &Value) -> bool {
         match last {
-            Some(last) => Lt(last.to_value()).test(None, value),
+            Some(last) => Lt(*last).test(None, value),
             None => false,
         }
     }
@@ -112,9 +128,9 @@ impl fmt::Display for Dec {
 pub struct Inc;
 
 impl Matcher for Inc {
-    fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
+    fn test<'a>(&self, last: Option<&Value>, value: &Value) -> bool {
         match last {
-            Some(last) => Gt(last.to_value()).test(None, value),
+            Some(last) => Gt(*last).test(None, value),
             None => false,
         }
     }
@@ -131,9 +147,9 @@ impl fmt::Display for Inc {
 pub struct Changed;
 
 impl Matcher for Changed {
-    fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
+    fn test<'a>(&self, last: Option<&Value>, value: &Value) -> bool {
         match last {
-            Some(last) => !Eq(last.to_value()).test(None, value),
+            Some(last) => !Eq(*last).test(None, value),
             None => false,
         }
     }
@@ -150,9 +166,9 @@ impl fmt::Display for Changed {
 pub struct Same;
 
 impl Matcher for Same {
-    fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
+    fn test<'a>(&self, last: Option<&Value>, value: &Value) -> bool {
         match last {
-            Some(last) => Eq(last.to_value()).test(None, value),
+            Some(last) => Eq(*last).test(None, value),
             None => false,
         }
     }
@@ -196,7 +212,7 @@ impl Matcher for Eq {
         })
     }
 
-    fn test<'a>(&self, _: Option<ValueMut<'a>>, value: &Value) -> bool {
+    fn test<'a>(&self, _: Option<&Value>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a == b)
     }
 }
@@ -239,7 +255,7 @@ impl Matcher for Neq {
         })
     }
 
-    fn test<'a>(&self, _: Option<ValueMut<'a>>, value: &Value) -> bool {
+    fn test<'a>(&self, _: Option<&Value>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a != b)
     }
 }
@@ -271,7 +287,7 @@ impl Matcher for Gt {
         Some(s)
     }
 
-    fn test<'a>(&self, _: Option<ValueMut<'a>>, value: &Value) -> bool {
+    fn test<'a>(&self, _: Option<&Value>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a > b)
     }
 }
@@ -305,7 +321,7 @@ impl Matcher for Gte {
         Some(s)
     }
 
-    fn test<'a>(&self, _: Option<ValueMut<'a>>, value: &Value) -> bool {
+    fn test<'a>(&self, _: Option<&Value>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a >= b)
     }
 }
@@ -334,7 +350,7 @@ impl Matcher for Lt {
         Some(s)
     }
 
-    fn test<'a>(&self, _: Option<ValueMut<'a>>, value: &Value) -> bool {
+    fn test<'a>(&self, _: Option<&Value>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a < b)
     }
 }
@@ -363,7 +379,7 @@ impl Matcher for Lte {
         Some(s)
     }
 
-    fn test<'a>(&self, _: Option<ValueMut<'a>>, value: &Value) -> bool {
+    fn test<'a>(&self, _: Option<&Value>, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a <= b)
     }
 }
@@ -401,7 +417,7 @@ impl fmt::Display for All {
 }
 
 impl Matcher for All {
-    fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
+    fn test<'a>(&self, last: Option<&Value>, value: &Value) -> bool {
         self.0.iter().all(|p| p.test(last, value))
     }
 }
@@ -417,7 +433,7 @@ impl Any {
 }
 
 impl Matcher for Any {
-    fn test<'a>(&self, last: Option<ValueMut<'a>>, value: &Value) -> bool {
+    fn test<'a>(&self, last: Option<&Value>, value: &Value) -> bool {
         self.0.iter().any(|p| p.test(last, value))
     }
 }

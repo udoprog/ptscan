@@ -111,7 +111,9 @@ pub extern "C" fn pts_process_handle_read_memory<'a>(
     let progress = null_ck!(&'a progress).as_progress(data);
 
     try_last!(
-        handle.read_memory(&*thread_pool, addresses, output, cancel, progress),
+        handle
+            .process
+            .read_memory(&*thread_pool, addresses, output, cancel, None, progress),
         false
     );
 

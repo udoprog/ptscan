@@ -29,6 +29,7 @@ err-derive = "0.1"
 lalrpop-util = "0.16.3"
 num = {version = "0.2.0", features = ["i128"]}
 num-bigint = {version = "0.2.2", features = ["i128"]}
+crossbeam-channel = "0.3.8"
 
 [dependencies.winapi]
 version = "0.3"

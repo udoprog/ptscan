@@ -3,13 +3,11 @@
 use crate::{
     filter,
     pointer::{Base, Pointer},
-    process, scan,
+    process,
     special::Special,
     system,
     thread::Thread,
-    thread_buffers,
-    values::ValueMut,
-    Address, AddressRange, ProcessId, Size, ThreadId, Token, Type, Value, Values,
+    Address, AddressRange, ProcessId, Size, ThreadId, Type, Value,
 };
 use failure::ResultExt;
 use hashbrown::HashMap;
@@ -325,93 +323,6 @@ impl ProcessHandle {
 
         Some(address)
     }
-
-    /// Read the value of many memory locations.
-    pub fn read_memory(
-        &self,
-        thread_pool: &rayon::ThreadPool,
-        addresses: &[Address],
-        output: &mut Values,
-        cancel: Option<&Token>,
-        progress: (impl scan::Progress + Send),
-    ) -> Result<(), failure::Error> {
-        use std::sync::mpsc;
-
-        let mut local_cancel = None;
-
-        let cancel = match cancel {
-            Some(cancel) => cancel,
-            None => local_cancel.get_or_insert(Token::new()),
-        };
-
-        let len = usize::min(addresses.len(), output.len());
-
-        if len == 0 {
-            return Ok(());
-        }
-
-        let buffers = thread_buffers::ThreadBuffers::new();
-
-        let mut last_error = None;
-
-        thread_pool.install(|| {
-            rayon::scope(|s| {
-                let (tx, rx) = mpsc::sync_channel(1024);
-
-                let mut reporter = scan::Reporter::new(progress, len, cancel, &mut last_error);
-
-                let it = output.iter_mut().zip(addresses.iter().cloned());
-
-                for (mut output, address) in it {
-                    let tx = tx.clone();
-                    let buffers = &buffers;
-
-                    s.spawn(move |_| {
-                        if cancel.test() {
-                            tx.send(Ok(0u64)).expect("closed channel");
-                            return;
-                        }
-
-                        let mut work = || {
-                            let ty = output.ty();
-                            let mut buf = buffers.get_mut(ty.size())?;
-
-                            let c = match output
-                                .set(self.process.read_memory_of_type(address, ty, &mut *buf)?)
-                            {
-                                true => 1u64,
-                                false => 0u64,
-                            };
-
-                            Ok::<_, failure::Error>(c)
-                        };
-
-                        tx.send(work()).expect("closed channel");
-                    });
-                }
-
-                let mut count = 0u64;
-
-                while !reporter.is_done() {
-                    if let Some(c) = reporter.eval(rx.recv().expect("closed channel")) {
-                        count += c;
-                    }
-
-                    reporter.tick(count);
-                }
-            });
-        });
-
-        if let Some(e) = last_error {
-            return Err(e);
-        }
-
-        if cancel.test() {
-            return Err(failure::format_err!("scan cancelled"));
-        }
-
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -484,7 +395,7 @@ impl filter::Matcher for PointerMatcher {
         Some(Special::NotZero)
     }
 
-    fn test<'a>(&self, _: Option<ValueMut<'a>>, value: &Value) -> bool {
+    fn test<'a>(&self, _: Option<&Value>, value: &Value) -> bool {
         let address = match value.as_address() {
             Ok(address) => address,
             Err(_) => return false,

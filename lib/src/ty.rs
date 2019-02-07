@@ -1,6 +1,20 @@
 use crate::Value;
 use std::{error, fmt, mem, str};
 
+// Decode a buffer, and depending on its width decode it differently.
+macro_rules! decode_buf {
+    ($buf:expr, $ty:ty) => {
+        match $buf.len() {
+            1 => $buf[0] as $ty,
+            2 => byteorder::LittleEndian::read_u16($buf) as $ty,
+            4 => byteorder::LittleEndian::read_u32($buf) as $ty,
+            8 => byteorder::LittleEndian::read_u64($buf) as $ty,
+            16 => byteorder::LittleEndian::read_u128($buf) as $ty,
+            _ => return Value::None,
+        }
+    }
+}
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Type {
@@ -146,20 +160,20 @@ impl Type {
     /// Decode the given buffer into a value.
     pub fn decode(&self, buf: &[u8]) -> Value {
         use self::Type::*;
-        use byteorder::{ByteOrder, LittleEndian};
+        use byteorder::ByteOrder;
 
         match *self {
             None => Value::None,
-            U8 => Value::U8(buf[0]),
-            I8 => Value::I8(buf[0] as i8),
-            U16 => Value::U16(LittleEndian::read_u16(buf)),
-            I16 => Value::I16(LittleEndian::read_i16(buf)),
-            U32 => Value::U32(LittleEndian::read_u32(buf)),
-            I32 => Value::I32(LittleEndian::read_i32(buf)),
-            U64 => Value::U64(LittleEndian::read_u64(buf)),
-            I64 => Value::I64(LittleEndian::read_i64(buf)),
-            U128 => Value::U128(LittleEndian::read_u128(buf)),
-            I128 => Value::I128(LittleEndian::read_i128(buf)),
+            U8 => Value::U8(decode_buf!(buf, u8)),
+            I8 => Value::I8(decode_buf!(buf, i8)),
+            U16 => Value::U16(decode_buf!(buf, u16)),
+            I16 => Value::I16(decode_buf!(buf, i16)),
+            U32 => Value::U32(decode_buf!(buf, u32)),
+            I32 => Value::I32(decode_buf!(buf, i32)),
+            U64 => Value::U64(decode_buf!(buf, u64)),
+            I64 => Value::I64(decode_buf!(buf, i64)),
+            U128 => Value::U128(decode_buf!(buf, u128)),
+            I128 => Value::I128(decode_buf!(buf, i128)),
         }
     }
 

@@ -65,7 +65,6 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
             [this]()
     {
         if (scanToken) {
-            qDebug() << "cancelling";
             scanToken->set();
         }
     });
@@ -100,7 +99,7 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
     {
         if (scanToken) {
             scanToken->set();
-            scanToken.reset();
+            scanToken = {};
         }
 
         handle.reset();
@@ -112,7 +111,7 @@ MainWindow::MainWindow(std::shared_ptr<pts::ThreadPool> threadPool, QWidget *par
     {
         if (scanToken) {
             scanToken->set();
-            scanToken.reset();
+            scanToken = {};
         }
 
         auto selected = openProcess->takeSelected();
@@ -337,7 +336,7 @@ void MainWindow::scanDone(bool ok)
     ui->scanProgress->setEnabled(false);
 
     updateScanResults();
-    scanToken.reset();
+    scanToken = {};
     updateView();
 }
 

@@ -3,12 +3,11 @@
 use crate::{
     address::{Address, Size},
     filter, pointer,
-    process::{MemoryInformation, Process},
-    special::Special,
+    process::Process,
     thread_buffers,
     values::Values,
     watch::Watch,
-    Location, ProcessHandle, Token, Type, Value,
+    Location, ProcessHandle, Token, Value,
 };
 use std::{
     convert::TryFrom,
@@ -100,68 +99,14 @@ impl Scan {
         cancel: Option<&Token>,
         progress: (impl Progress + Send),
     ) -> Result<(), failure::Error> {
-        let mut local_cancel = None;
-
-        let cancel = match cancel {
-            Some(cancel) => cancel,
-            None => local_cancel.get_or_insert(Token::new()),
-        };
-
-        if self.addresses.is_empty() {
-            return Ok(());
-        }
-
-        let values = &mut self.values;
-        let addresses = &self.addresses;
-
-        let len = self.addresses.len();
-        let buffers = thread_buffers::ThreadBuffers::new();
-
-        let mut last_error = None;
-
-        self.thread_pool.install(|| {
-            rayon::scope(|s| {
-                let (tx, rx) = mpsc::sync_channel(1024);
-
-                let mut reporter = Reporter::new(progress, len, cancel, &mut last_error);
-
-                for (mut value, address) in values.iter_mut().zip(addresses.iter().cloned()) {
-                    let tx = tx.clone();
-                    let buffers = &buffers;
-
-                    s.spawn(move |_| {
-                        if cancel.test() {
-                            tx.send(Ok(())).expect("closed channel");
-                            return;
-                        }
-
-                        let mut work = || {
-                            let ty = value.ty();
-                            let mut buf = buffers.get_mut(ty.size())?;
-                            let new_value = process.read_memory_of_type(address, ty, &mut *buf)?;
-
-                            if filter.test(Some(value), &new_value) {
-                                value.set(new_value);
-                            } else {
-                                value.clear();
-                            }
-
-                            Ok::<_, failure::Error>(())
-                        };
-
-                        tx.send(work()).expect("closed channel");
-                    });
-                }
-
-                let mut results = 0u64;
-
-                while !reporter.is_done() {
-                    results += 1;
-                    reporter.eval(rx.recv().expect("closed channel"));
-                    reporter.tick(results);
-                }
-            });
-        });
+        process.read_memory(
+            &*self.thread_pool,
+            &self.addresses,
+            &mut self.values,
+            cancel,
+            Some(filter),
+            progress,
+        )?;
 
         let mut addresses = Vec::new();
         let mut values = Values::new();
@@ -183,14 +128,6 @@ impl Scan {
 
         self.addresses = addresses;
         self.values = values;
-
-        if let Some(e) = last_error {
-            return Err(e);
-        }
-
-        if cancel.test() {
-            return Err(failure::format_err!("scan cancelled"));
-        }
 
         Ok(())
     }
@@ -234,14 +171,7 @@ impl Scan {
             size => size,
         };
 
-        let ty = match filter.ty() {
-            Type::None => failure::bail!("no unique type in filter"),
-            other => other,
-        };
-
         let buffer_size = 0x1000;
-
-        let buffers = thread_buffers::ThreadBuffers::new();
 
         let Scan {
             ref mut addresses,
@@ -251,8 +181,11 @@ impl Scan {
             ..
         } = *self;
 
-        // if true, threads should stop working
-        let special = filter.special();
+        addresses.clear();
+        values.clear();
+
+        let buffers = thread_buffers::ThreadBuffers::new();
+
         let mut last_error = None;
 
         thread_pool.install(|| {
@@ -260,29 +193,67 @@ impl Scan {
                 let (tx, rx) = mpsc::sync_channel(1024);
                 let mut total = 0;
                 let mut bytes = 0usize;
+                let buffers = &buffers;
 
                 for region in process.virtual_memory_regions().only_relevant() {
                     let region = region?;
                     bytes += region.range.size.into_usize()?;
-
                     total += 1;
 
-                    let mut task = Task {
-                        buffers: &buffers,
-                        process,
-                        region,
-                        buffer_size,
-                        size,
-                        aligned,
-                        filter,
-                        special: special.as_ref(),
-                        ty,
-                        cancel: &cancel,
-                        tx: tx.clone(),
-                    };
+                    let region_base = region.range.base;
+                    let region_size = region.range.size.into_usize()?;
+                    let tx = tx.clone();
 
                     s.spawn(move |_| {
-                        task.guarded_work();
+                        let work = move || {
+                            let mut start = 0;
+
+                            let mut addresses = Vec::new();
+                            let mut values = Values::new();
+
+                            if cancel.test() {
+                                return Ok((addresses, values));
+                            }
+
+                            while start < region_size && !cancel.test() {
+                                let len = usize::min(buffer_size, region_size - start);
+                                let loc = region_base.add(Size::try_from(start)?)?;
+
+                                // length of the buffer we need to read process memory.
+                                let mut buf = buffers.get_mut(len)?;
+                                let buf = &mut *buf;
+
+                                // TODO: figure out why we are trying to read invalid memory region sometimes.
+                                if let Err(_) = process.read_process_memory(loc, buf) {
+                                    continue;
+                                }
+
+                                let mut n = 0;
+                                let end = buf.len() - size;
+
+                                while n < end {
+                                    let w = &buf[n..(n + size)];
+
+                                    if let Some(value) = filter.test(None, w) {
+                                        let n = Size::try_from(n)?;
+                                        addresses.push(loc.add(n)?);
+                                        values.push(value);
+                                    }
+
+                                    if aligned {
+                                        n += size;
+                                    } else {
+                                        n += 1;
+                                    }
+                                }
+
+                                start += buffer_size;
+                            }
+
+                            Ok::<_, failure::Error>((addresses, values))
+                        };
+
+                        tx.send(work()).expect("channel closed");
                     });
                 }
 
@@ -293,25 +264,15 @@ impl Scan {
                 let mut results = 0u64;
 
                 while !reporter.is_done() {
-                    let m = rx.recv().expect("closed channel");
+                    let result = rx.recv().expect("channel closed");
 
-                    match m {
-                        // Scan result from a task.
-                        TaskProgress::ScanResult(scan_result) => {
-                            let ScanResult { address, value } = scan_result;
-
-                            addresses.push(address);
-                            values.push(value);
-                        }
-                        // Result from one task.
-                        TaskProgress::Result(result) => {
-                            if let Some(r) = reporter.eval(result) {
-                                results += r;
-                            }
-
-                            reporter.tick(results);
-                        }
+                    if let Some((mut a, mut v)) = reporter.eval(result) {
+                        results += v.len() as u64;
+                        addresses.append(&mut a);
+                        values.append(&mut v);
                     }
+
+                    reporter.tick(results);
                 }
 
                 Ok::<(), failure::Error>(())
@@ -322,110 +283,7 @@ impl Scan {
             return Err(e);
         }
 
-        if cancel.test() {
-            return Err(failure::format_err!("scan cancelled"));
-        }
-
         return Ok(());
-
-        enum TaskProgress {
-            Result(Result<u64, failure::Error>),
-            ScanResult(ScanResult),
-        }
-
-        struct Task<'a> {
-            buffers: &'a thread_buffers::ThreadBuffers,
-            process: &'a Process,
-            region: MemoryInformation,
-            buffer_size: usize,
-            size: usize,
-            aligned: bool,
-            filter: &'a filter::Filter,
-            special: Option<&'a Special>,
-            ty: Type,
-            cancel: &'a Token,
-            tx: mpsc::SyncSender<TaskProgress>,
-        }
-
-        impl<'a> Task<'a> {
-            /// Emit a single result.
-            fn emit_result(
-                &mut self,
-                loc: &Address,
-                offset: usize,
-                value: Value,
-            ) -> Result<(), failure::Error> {
-                let address = loc.add(Size::try_from(offset)?)?;
-                let scan_result = ScanResult { address, value };
-                self.tx.send(TaskProgress::ScanResult(scan_result))?;
-                Ok(())
-            }
-
-            /// Perform the work in a guarded context.
-            fn guarded_work(&mut self) {
-                let r = TaskProgress::Result(self.work());
-                self.tx.send(r).expect("closed channel");
-            }
-
-            /// Internal work implementation.
-            fn work(&mut self) -> Result<u64, failure::Error> {
-                let region_base = self.region.range.base;
-                let region_size = self.region.range.size.into_usize()?;
-
-                let mut start = 0;
-                let mut count = 0u64;
-
-                while start < region_size && !self.cancel.test() {
-                    let len = usize::min(self.buffer_size, region_size - start);
-                    let loc = region_base.add(Size::try_from(start)?)?;
-
-                    // length of the buffer we need to read process memory.
-                    let mut buf = self.buffers.get_mut(len)?;
-                    let buf = &mut *buf;
-
-                    // TODO: figure out why we are trying to read invalid memory region sometimes.
-                    if let Err(_) = self.process.read_process_memory(loc, buf) {
-                        continue;
-                    }
-
-                    let mut n = 0;
-                    let end = buf.len() - self.size;
-
-                    while n < end {
-                        let w = &buf[n..(n + self.size)];
-
-                        match self.special.and_then(|s| s.test(w)) {
-                            // A special, more efficient kind of matching is available.
-                            Some(true) => {
-                                let value = self.ty.decode(w);
-                                count += 1;
-                                self.emit_result(&loc, n, value)?;
-                            }
-                            // special match is negative.
-                            Some(false) => {}
-                            None => {
-                                let value = self.ty.decode(w);
-
-                                if self.filter.test(None, &value) {
-                                    count += 1;
-                                    self.emit_result(&loc, n, value)?;
-                                }
-                            }
-                        }
-
-                        if self.aligned {
-                            n += self.size;
-                        } else {
-                            n += 1;
-                        }
-                    }
-
-                    start += self.buffer_size;
-                }
-
-                Ok(count)
-            }
-        }
     }
 }
 
@@ -497,15 +355,13 @@ impl<'token, 'err, P> Reporter<'token, 'err, P> {
     {
         self.current += 1;
 
-        if self.token.test() || self.current % self.percentage != 0 {
-            return;
-        }
+        if self.current % self.percentage == 0 {
+            let p = (self.current * 100) / self.total;
 
-        let p = (self.current * 100) / self.total;
-
-        if let Err(e) = self.progress.report(p, results) {
-            *self.last_err = Some(e);
-            self.token.set();
+            if let Err(e) = self.progress.report(p, results) {
+                *self.last_err = Some(e);
+                self.token.set();
+            }
         }
     }
 

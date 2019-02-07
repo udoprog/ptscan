@@ -113,7 +113,7 @@ pub extern "C" fn pts_process_handle_read_memory<'a>(
     try_last!(
         handle
             .process
-            .read_memory(&*thread_pool, addresses, output, cancel, None, progress),
+            .refresh_values(&*thread_pool, addresses, output, cancel, progress),
         false
     );
 

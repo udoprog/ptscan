@@ -39,14 +39,12 @@ impl<'a> Module<'a> {
 
         let mut out: psapi::MODULEINFO = unsafe { mem::zeroed() };
 
-        checked! {
-            psapi::GetModuleInformation(
-                **self.process.handle,
-                self.module,
-                &mut out as psapi::LPMODULEINFO,
-                mem::size_of::<psapi::MODULEINFO>() as DWORD,
-            )
-        };
+        checked!(psapi::GetModuleInformation(
+            **self.process.handle,
+            self.module,
+            &mut out as psapi::LPMODULEINFO,
+            mem::size_of::<psapi::MODULEINFO>() as DWORD,
+        ))?;
 
         Ok(ModuleInfo {
             base_of_dll: Address::try_from(out.lpBaseOfDll)?,

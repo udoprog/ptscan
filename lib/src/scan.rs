@@ -99,32 +99,19 @@ impl Scan {
         cancel: Option<&Token>,
         progress: (impl Progress + Send),
     ) -> Result<(), failure::Error> {
-        process.read_memory(
-            &*self.thread_pool,
-            &self.addresses,
-            &mut self.values,
-            cancel,
-            Some(filter),
-            progress,
-        )?;
-
         let mut addresses = Vec::new();
         let mut values = Values::new();
 
-        for (v, address) in self
-            .values
-            .iter()
-            .into_iter()
-            .zip(self.addresses.iter().cloned())
-        {
-            let v = match v {
-                Value::None => continue,
-                v => v,
-            };
-
-            addresses.push(address);
-            values.push(v);
-        }
+        process.rescan_values(
+            &*self.thread_pool,
+            &self.values,
+            &self.addresses,
+            &mut values,
+            &mut addresses,
+            filter,
+            cancel,
+            progress,
+        )?;
 
         self.addresses = addresses;
         self.values = values;

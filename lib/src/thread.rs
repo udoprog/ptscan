@@ -32,13 +32,11 @@ impl Thread {
     pub fn thread_selector_entry(&self, selector: DWORD) -> Result<winnt::LDT_ENTRY, io::Error> {
         let mut entry: winnt::LDT_ENTRY = unsafe { mem::zeroed() };
 
-        checked! {
-            winbase::GetThreadSelectorEntry(
-                **self.handle,
-                selector,
-                &mut entry as *mut _ as winbase::LPLDT_ENTRY,
-            )
-        };
+        checked!(winbase::GetThreadSelectorEntry(
+            **self.handle,
+            selector,
+            &mut entry as *mut _ as winbase::LPLDT_ENTRY,
+        ))?;
 
         Ok(entry)
     }
@@ -91,7 +89,7 @@ impl Thread {
         }
 
         let base = Address::try_from(thread_info.TebBaseAddress)?;
-        Ok(process.read::<T>(base)?)
+        Ok(unsafe { process.read::<T>(base)? })
     }
 
     /// Get the context for a thread.
@@ -101,9 +99,10 @@ impl Thread {
         let mut context: winnt::CONTEXT = unsafe { mem::zeroed() };
         context.ContextFlags = winnt::CONTEXT_SEGMENTS;
 
-        checked! {
-            processthreadsapi::GetThreadContext(**self.handle, &mut context as winnt::PCONTEXT)
-        };
+        checked!(processthreadsapi::GetThreadContext(
+            **self.handle,
+            &mut context as winnt::PCONTEXT
+        ))?;
 
         Ok(ThreadContext {
             thread: self,
@@ -139,7 +138,7 @@ impl ThreadContext<'_> {
                 + ((bytes.BaseHi as u32) << 0x18)
         })?;
 
-        let tib = process.read::<winnt::NT_TIB32>(address)?;
+        let tib = unsafe { process.read::<winnt::NT_TIB32>(address)? };
         let size =
             Address::try_from(tib.StackBase)?.size_from(Address::try_from(tib.StackLimit)?)?;
 

@@ -22,18 +22,10 @@ pub enum Error {
     BadRegionState(DWORD),
     #[error(display = "bad region type: {}", _0)]
     BadRegionType(DWORD),
-    #[error(
-        display = "read underflow, expected `{}` but got `{}`",
-        expected,
-        actual
-    )]
-    ReadUnderflow { expected: usize, actual: usize },
-    #[error(
-        display = "write underflow, expected `{}` but got `{}`",
-        expected,
-        actual
-    )]
-    WriteUnderflow { expected: usize, actual: usize },
+    #[error(display = "read underflow")]
+    ReadUnderflow,
+    #[error(display = "buffer too small")]
+    BufferOverflow,
 }
 
 /// A process handle.
@@ -79,21 +71,16 @@ impl Process {
     }
 
     /// Read the given structure from the given address.
-    pub fn read<T>(&self, address: Address) -> Result<T, io::Error> {
+    ///
+    /// This is unsafe since it reinteprets the given memory region as a type, which might not be correct.
+    pub unsafe fn read<T>(&self, address: Address) -> Result<T, io::Error> {
         use std::{mem, slice};
 
-        let mut out: T = unsafe { mem::zeroed() };
-        let expected = mem::size_of::<T>();
+        let mut out: T = mem::zeroed();
+        let buf = slice::from_raw_parts_mut(&mut out as *mut T as *mut u8, mem::size_of::<T>());
 
-        let actual = self.read_process_memory(address, unsafe {
-            slice::from_raw_parts_mut(&mut out as *mut T as *mut u8, mem::size_of::<T>())
-        })?;
-
-        if expected != actual {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                Error::ReadUnderflow { expected, actual },
-            ));
+        if !self.read_process_memory(address, buf)? {
+            return Err(io::Error::new(io::ErrorKind::Other, Error::ReadUnderflow));
         }
 
         Ok(out)
@@ -104,53 +91,52 @@ impl Process {
         &self,
         address: Address,
         buffer: &'a [u8],
-    ) -> Result<(), io::Error> {
-        let mut actual: SIZE_T = 0;
+    ) -> Result<bool, io::Error> {
+        let mut bytes_written: SIZE_T = 0;
 
-        checked! {
-            memoryapi::WriteProcessMemory(
-                **self.handle,
-                address.convert::<LPVOID>()?,
-                buffer.as_ptr() as LPCVOID,
-                buffer.len() as SIZE_T,
-                &mut actual as *mut SIZE_T,
-            )
-        };
+        let result = checked!(memoryapi::WriteProcessMemory(
+            **self.handle,
+            address.convert::<LPVOID>()?,
+            buffer.as_ptr() as LPCVOID,
+            buffer.len() as SIZE_T,
+            &mut bytes_written as *mut SIZE_T,
+        ));
 
-        let actual = actual as usize;
-
-        if actual != buffer.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                Error::WriteUnderflow {
-                    expected: buffer.len(),
-                    actual,
-                },
-            ));
+        match result {
+            Ok(()) => Ok(bytes_written == buffer.len()),
+            Err(ref e) if e.raw_os_error() == Some(winerror::ERROR_PARTIAL_COPY as i32) => {
+                Ok(false)
+            }
+            Err(e) => Err(e),
         }
-
-        Ok(())
     }
 
     /// Read process memory at the specified address.
+    ///
+    /// Returns `true` if the region was successfully read.
+    /// Returns `false` if there was not enough space in the region that we attempted to read.
     pub fn read_process_memory<'a>(
         &self,
         address: Address,
         buffer: &'a mut [u8],
-    ) -> Result<usize, io::Error> {
+    ) -> Result<bool, io::Error> {
         let mut bytes_read: SIZE_T = 0;
 
-        checked! {
-            memoryapi::ReadProcessMemory(
-                **self.handle,
-                address.convert::<LPCVOID>()?,
-                buffer.as_mut_ptr() as LPVOID,
-                buffer.len() as SIZE_T,
-                &mut bytes_read as *mut SIZE_T,
-            )
-        };
+        let result = checked!(memoryapi::ReadProcessMemory(
+            **self.handle,
+            address.convert::<LPCVOID>()?,
+            buffer.as_mut_ptr() as LPVOID,
+            buffer.len() as SIZE_T,
+            &mut bytes_read as *mut SIZE_T,
+        ));
 
-        Ok(bytes_read)
+        match result {
+            Ok(()) => Ok(bytes_read == buffer.len()),
+            Err(ref e) if e.raw_os_error() == Some(winerror::ERROR_PARTIAL_COPY as i32) => {
+                Ok(false)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Read process memory with the given type.
@@ -160,11 +146,12 @@ impl Process {
         ty: Type,
         buf: &mut [u8],
     ) -> Result<Value, io::Error> {
-        let size = ty.size();
-        let bytes_read = self.read_process_memory(address, buf)?;
+        if buf.len() != ty.size() {
+            return Err(io::Error::new(io::ErrorKind::Other, Error::BufferOverflow));
+        }
 
-        if bytes_read != size {
-            return Err(io::Error::new(io::ErrorKind::Other, "incomplete read"));
+        if !self.read_process_memory(address, buf)? {
+            return Err(io::Error::new(io::ErrorKind::Other, Error::ReadUnderflow));
         }
 
         Ok(ty.decode(buf))
@@ -173,12 +160,10 @@ impl Process {
     /// Read a 64-bit memory region as a little endian unsigned integer.
     pub fn read_u64(&self, address: Address) -> Result<u64, io::Error> {
         use byteorder::{ByteOrder, LittleEndian};
-        use std::mem;
-        let mut out = [0u8; mem::size_of::<u64>()];
-        let read = self.read_process_memory(address, &mut out)?;
+        let mut out = [0u8; std::mem::size_of::<u64>()];
 
-        if read != mem::size_of::<u64>() {
-            return Err(io::Error::new(io::ErrorKind::Other, "incomplete read"));
+        if !self.read_process_memory(address, &mut out)? {
+            return Err(io::Error::new(io::ErrorKind::Other, Error::ReadUnderflow));
         }
 
         Ok(LittleEndian::read_u64(&out))
@@ -190,7 +175,7 @@ impl Process {
         checked!(wow64apiset::IsWow64Process(
             **self.handle,
             &mut out as PBOOL
-        ));
+        ))?;
         Ok(out == TRUE)
     }
 
@@ -302,13 +287,169 @@ impl Process {
     }
 
     /// Read the value of many memory locations.
-    pub fn read_memory(
+    pub fn rescan_values(
+        &self,
+        thread_pool: &rayon::ThreadPool,
+        values: &Values,
+        addresses: &[Address],
+        values_output: &mut Values,
+        addresses_output: &mut Vec<Address>,
+        filter: &filter::Filter,
+        cancel: Option<&Token>,
+        progress: (impl scan::Progress + Send),
+    ) -> Result<(), failure::Error> {
+        use std::sync::mpsc;
+
+        let mut local_cancel = None;
+
+        let cancel = match cancel {
+            Some(cancel) => cancel,
+            None => local_cancel.get_or_insert(Token::new()),
+        };
+
+        let len = usize::min(values.len(), addresses.len());
+
+        if len == 0 {
+            return Ok(());
+        }
+
+        let buffers = thread_buffers::ThreadBuffers::new();
+
+        let mut last_error = None;
+        let mut reporter = scan::Reporter::new(progress, len, cancel, &mut last_error);
+
+        // how many tasks to run in parallel.
+        let tasks = 0x100usize;
+
+        thread_pool.install(|| {
+            rayon::scope(|s| {
+                let (tx, rx) = mpsc::channel::<Result<Task, failure::Error>>();
+                let (p_tx, p_rx) = crossbeam_channel::unbounded::<Option<(Value, Address)>>();
+
+                for _ in 0..thread_pool.current_num_threads() {
+                    let tx = tx.clone();
+                    let p_rx = p_rx.clone();
+                    let buffers = &buffers;
+
+                    s.spawn(move |_| {
+                        let mut values = Values::new();
+                        let mut addresses = Vec::new();
+
+                        loop {
+                            let (output, address) = match p_rx.recv().expect("closed") {
+                                Some(task) => task,
+                                None => {
+                                    tx.send(Ok(Task::Result(values, addresses)))
+                                        .expect("closed");
+                                    return;
+                                }
+                            };
+
+                            let mut work = || {
+                                let ty = filter.ty();
+                                let len = ty.size();
+                                let mut buf = buffers.get_mut(len)?;
+
+                                if !self.read_process_memory(address, &mut *buf)? {
+                                    return Ok(Task::Rejected);
+                                }
+
+                                if let Some(value) = filter.test(Some(&output), &*buf) {
+                                    values.push(value);
+                                    addresses.push(address);
+                                    return Ok(Task::Accepted);
+                                }
+
+                                Ok(Task::Rejected)
+                            };
+
+                            tx.send(work()).expect("closed");
+                        }
+                    });
+                }
+
+                let mut it = values.iter().zip(addresses.iter().cloned());
+
+                for (output, address) in (&mut it).take(tasks) {
+                    p_tx.send(Some((output, address))).expect("closed");
+                }
+
+                let mut count = 0u64;
+                let mut expected = thread_pool.current_num_threads();
+
+                while !reporter.is_done() {
+                    if cancel.test() {
+                        break;
+                    }
+
+                    let result = rx.recv().expect("closed");
+
+                    if let Some((output, address)) = it.next() {
+                        p_tx.send(Some((output, address))).expect("closed");
+                    }
+
+                    count += match reporter.eval(result).unwrap_or(Task::Rejected) {
+                        Task::Accepted => 1,
+                        Task::Rejected => 0,
+                        Task::Result(mut values, addresses) => {
+                            values_output.append(&mut values);
+                            addresses_output.extend(addresses);
+                            expected -= 1;
+                            continue;
+                        }
+                    };
+
+                    reporter.tick(count);
+                }
+
+                // send indicator for threads to go.
+                for _ in 0..thread_pool.current_num_threads() {
+                    p_tx.send(None).expect("closed");
+                }
+
+                // reap threads.
+                while expected > 0 {
+                    let result = rx.recv().expect("closed");
+
+                    count += match reporter.eval(result).unwrap_or(Task::Rejected) {
+                        Task::Accepted => 1,
+                        Task::Rejected => 0,
+                        Task::Result(mut values, addresses) => {
+                            values_output.append(&mut values);
+                            addresses_output.extend(addresses);
+                            expected -= 1;
+                            continue;
+                        }
+                    };
+
+                    reporter.tick(count);
+                }
+            });
+        });
+
+        if let Some(e) = last_error {
+            return Err(e);
+        }
+
+        return Ok(());
+
+        enum Task {
+            /// Address was accepted.
+            Accepted,
+            /// Address was rejected.
+            Rejected,
+            /// The result of a computation.
+            Result(Values, Vec<Address>),
+        }
+    }
+
+    /// Refresh a given set of existing values without a filter.
+    pub fn refresh_values(
         &self,
         thread_pool: &rayon::ThreadPool,
         addresses: &[Address],
         output: &mut Values,
         cancel: Option<&Token>,
-        filter: Option<&filter::Filter>,
         progress: (impl scan::Progress + Send),
     ) -> Result<(), failure::Error> {
         use std::sync::mpsc;
@@ -354,40 +495,15 @@ impl Process {
                         };
 
                         let mut work = move || {
-                            let value = match filter {
-                                Some(filter) => {
-                                    let ty = filter.ty();
-                                    let len = ty.size();
-                                    let mut buf = buffers.get_mut(len)?;
-                                    let read = self.read_process_memory(address, &mut *buf)?;
+                            let ty = output.ty();
+                            let len = ty.size();
+                            let mut buf = buffers.get_mut(len)?;
 
-                                    if read != len {
-                                        return Ok(0u64);
-                                    }
+                            if !self.read_process_memory(address, &mut *buf)? {
+                                return Ok(0u64);
+                            }
 
-                                    match filter.test(Some(&output.to_value()), &*buf) {
-                                        Some(value) => value,
-                                        None => {
-                                            output.clear();
-                                            return Ok(0u64);
-                                        }
-                                    }
-                                }
-                                None => {
-                                    let ty = output.ty();
-                                    let len = ty.size();
-                                    let mut buf = buffers.get_mut(len)?;
-                                    let read = self.read_process_memory(address, &mut *buf)?;
-
-                                    if read != len {
-                                        return Ok(0u64);
-                                    }
-
-                                    ty.decode(&*buf)
-                                }
-                            };
-
-                            Ok(match output.set(value) {
+                            Ok(match output.set(ty.decode(&*buf)) {
                                 true => 1u64,
                                 false => 0u64,
                             })

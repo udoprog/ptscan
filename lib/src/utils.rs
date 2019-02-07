@@ -12,11 +12,12 @@ use winapi::{
 
 /// Evaluate the checked expression.
 macro_rules! checked {
-    ($expr:expr) => {{
-        if unsafe { $expr } != winapi::shared::minwindef::TRUE {
-            return Err(std::io::Error::last_os_error());
+    ($expr:expr) => {
+        match unsafe { $expr } {
+            winapi::shared::minwindef::TRUE => Ok(()),
+            _ => Err(std::io::Error::last_os_error()),
         }
-    }};
+    };
 }
 
 /// Helper macro to handle fallible operations inside of a fallible iterator.

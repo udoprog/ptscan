@@ -9,7 +9,7 @@ pub(crate) fn constrain_mut<'a, T>(value: *mut T) -> &'a mut T {
 }
 
 /// NULL check the argument and transmute it into an immediate reference.
-macro_rules! immediate_ck {
+macro_rules! from_immediate {
     ($ty:ty, &$l:lifetime $expr:expr) => {
         unsafe { std::mem::transmute::<_, &$l $ty>(null_ck!(&$l $expr)) }
     };

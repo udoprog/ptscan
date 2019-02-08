@@ -13,7 +13,7 @@ pub extern "C" fn pts_values_new<'a>() -> *mut Values {
 #[no_mangle]
 pub extern "C" fn pts_values_push<'a>(values: *mut Values, value: Value) {
     let Values(ref mut values) = *null_ck!(&'a mut values);
-    values.push(immediate_ck!(ptscan::Value, value));
+    values.push(from_immediate!(ptscan::Value, value));
 }
 
 /// Push a type.
@@ -21,7 +21,7 @@ pub extern "C" fn pts_values_push<'a>(values: *mut Values, value: Value) {
 #[no_mangle]
 pub extern "C" fn pts_values_push_type<'a>(values: *mut Values, ty: Type) {
     let Values(ref mut values) = *null_ck!(&'a mut values);
-    values.push_type(immediate_ck!(ptscan::Type, ty));
+    values.push_type(from_immediate!(ptscan::Type, ty));
 }
 
 /// Get the value at the given position as a string.
@@ -34,7 +34,7 @@ pub extern "C" fn pts_values_length<'a>(values: *const Values) -> usize {
 #[no_mangle]
 pub extern "C" fn pts_values_at<'a>(values: *const Values, pos: usize, out: *mut Value) -> bool {
     let Values(ref values) = *null_ck!(&'a values);
-    let out = immediate_ck!(ptscan::Value, &'a mut out);
+    let out = from_immediate!(ptscan::Value, &'a mut out);
 
     if let Some(value) = values.get(pos) {
         *out = value;

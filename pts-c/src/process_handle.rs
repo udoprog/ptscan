@@ -129,7 +129,7 @@ pub extern "C" fn pts_process_handle_read_pointer<'a>(
 ) -> bool {
     let ProcessHandle(ref handle) = *null_ck!(&'a handle);
     let Pointer(ref pointer) = *null_ck!(&'a pointer);
-    let out = immediate_ck!(ptscan::Address, &'a mut out);
+    let out = from_immediate!(ptscan::Address, &'a mut out);
 
     match handle.read_pointer(pointer) {
         Some(address) => {

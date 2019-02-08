@@ -14,7 +14,7 @@ pub extern "C" fn pts_filter_parse<'a>(
     ty: Type,
 ) -> *mut Filter {
     let input = utils::lossy_string(input, input_len);
-    let ty = immediate_ck!(ptscan::Type, ty);
+    let ty = from_immediate!(ptscan::Type, ty);
     let res = ptscan::filter::parse(&input, ty);
     let filter = try_last!(res, ptr::null_mut());
     let out = into_ptr!(Filter(filter));
@@ -32,12 +32,12 @@ pub extern "C" fn pts_filter_free(filter: *mut Filter) {
 pub extern "C" fn pts_filter_display<'a>(filter: *const Filter, display: *mut StringT) {
     let Filter(ref filter) = *null_ck!(&'a filter);
     let display = null_ck!(&'a mut display);
-    *display = StringT::new(filter.matcher().to_string());
+    *display = StringT::new(filter.matcher.to_string());
 }
 
 /// Return the type of a filter.
 #[no_mangle]
 pub extern "C" fn pts_filter_type<'a>(filter: *const Filter) -> Type {
     let Filter(ref filter) = *null_ck!(&'a filter);
-    into_immediate!(filter.ty())
+    into_immediate!(filter.ty)
 }

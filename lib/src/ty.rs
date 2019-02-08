@@ -139,6 +139,7 @@ impl Type {
     }
 
     /// The size in-memory that a value has.
+    #[inline]
     pub fn size(&self) -> usize {
         use self::Type::*;
 

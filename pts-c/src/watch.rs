@@ -23,7 +23,7 @@ pub extern "C" fn pts_watch_set_pointer<'a>(watch: *mut Watch, pointer: *const P
 #[no_mangle]
 pub extern "C" fn pts_watch_set_type<'a>(watch: *mut Watch, ty: Type) {
     let Watch(ref mut watch) = *null_ck!(&'a mut watch);
-    watch.ty = immediate_ck!(ptscan::Type, ty);
+    watch.ty = from_immediate!(ptscan::Type, ty);
 }
 
 /// Get a clone of the pointer used by the watch.

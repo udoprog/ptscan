@@ -15,29 +15,19 @@ pub fn parse(input: &str, ty: Type) -> Result<Filter, failure::Error> {
 
     Ok(Filter {
         ty,
-        special,
         matcher,
+        special,
     })
 }
 
 #[derive(Debug)]
 pub struct Filter {
-    ty: Type,
+    pub ty: Type,
+    pub matcher: Box<Matcher>,
     special: Option<Special>,
-    matcher: Box<Matcher>,
 }
 
 impl Filter {
-    /// Get the type of the filter.
-    pub fn ty(&self) -> Type {
-        self.ty
-    }
-
-    /// Get the matcher.
-    pub fn matcher(&self) -> &dyn Matcher {
-        &*self.matcher
-    }
-
     /// Test the given bytes against this filter.
     pub fn test(&self, last: Option<&Value>, bytes: &[u8]) -> Option<Value> {
         match self.special.as_ref().and_then(|s| s.test(bytes)) {

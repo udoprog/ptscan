@@ -13,7 +13,7 @@ pub extern "C" fn pts_address_display<'a>(
     handle: *const ProcessHandle,
     out: *mut StringT,
 ) {
-    let address = immediate_ck!(ptscan::Address, &'a address);
+    let address = from_immediate!(ptscan::Address, &'a address);
     let handle = null_opt!(&'a handle).map(|r| &r.0);
     let out = null_ck!(&'a mut out);
 

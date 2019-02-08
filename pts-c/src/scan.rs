@@ -28,7 +28,7 @@ pub extern "C" fn pts_scan_result_at<'a>(
     out: *mut ScanResult,
 ) -> bool {
     let Scan(ref scan) = *null_ck!(&'a scan);
-    let out = immediate_ck!(ptscan::ScanResult, &'a mut out);
+    let out = from_immediate!(ptscan::ScanResult, &'a mut out);
 
     match scan.get(offset) {
         Some(result) => {
@@ -91,7 +91,7 @@ pub extern "C" fn pts_scan_result_as_watch<'a>(
     result: *const ScanResult,
     handle: *const ProcessHandle,
 ) -> *mut Watch {
-    let result = immediate_ck!(ptscan::ScanResult, &'a result);
+    let result = from_immediate!(ptscan::ScanResult, &'a result);
     let handle = null_opt!(&'a handle).map(|h| &h.0);
     let watch = try_last!(result.as_watch(handle), ptr::null_mut());
     into_ptr!(Watch(watch))
@@ -100,14 +100,14 @@ pub extern "C" fn pts_scan_result_as_watch<'a>(
 /// Access a readable process identifier for the handle.
 #[no_mangle]
 pub extern "C" fn pts_scan_result_address<'a>(result: *const ScanResult) -> Address {
-    let result = immediate_ck!(ptscan::ScanResult, &'a result);
+    let result = from_immediate!(ptscan::ScanResult, &'a result);
     into_immediate!(result.address)
 }
 
 /// Access the value for the scan result.
 #[no_mangle]
 pub extern "C" fn pts_scan_result_value<'a>(result: *const ScanResult) -> Value {
-    let result = immediate_ck!(ptscan::ScanResult, &'a result);
+    let result = from_immediate!(ptscan::ScanResult, &'a result);
     into_immediate!(result.value)
 }
 
@@ -154,12 +154,12 @@ pub extern "C" fn pts_scan_scan<'a>(
     let progress = null_ck!(&'a progress).as_progress(data);
 
     if !scan.initial {
-        scan.initial = true;
-
         try_last!(
             scan.initial_scan(&handle.process, filter, cancel, progress),
             false
         );
+
+        scan.initial = true;
     } else {
         try_last!(
             scan.rescan(&handle.process, filter, cancel, progress),

@@ -13,7 +13,7 @@ pub extern "C" fn pts_addresses_new<'a>() -> *mut Addresses {
 #[no_mangle]
 pub extern "C" fn pts_addresses_push<'a>(addresses: *mut Addresses, address: Address) {
     let Addresses(ref mut addresses) = *null_ck!(&'a mut addresses);
-    addresses.push(immediate_ck!(ptscan::Address, address));
+    addresses.push(from_immediate!(ptscan::Address, address));
 }
 
 /// Get the address at the given position as a string.
@@ -30,7 +30,7 @@ pub extern "C" fn pts_addresses_at<'a>(
     out: *mut Address,
 ) -> bool {
     let Addresses(ref addresses) = *null_ck!(&'a addresses);
-    let out = immediate_ck!(ptscan::Address, &'a mut out);
+    let out = from_immediate!(ptscan::Address, &'a mut out);
 
     if let Some(address) = addresses.get(pos) {
         *out = *address;

@@ -4,7 +4,6 @@ use crate::{
     address::{Address, Size},
     filter, pointer,
     process::Process,
-    thread_buffers,
     values::Values,
     watch::Watch,
     Location, ProcessHandle, Token, Value,
@@ -148,7 +147,7 @@ impl Scan {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        let size = match filter.ty().size() {
+        let size = match filter.ty.size() {
             0 => {
                 return Err(failure::format_err!(
                     "can't perform initial scan with unsized filter"
@@ -170,8 +169,6 @@ impl Scan {
         addresses.clear();
         values.clear();
 
-        let buffers = thread_buffers::ThreadBuffers::new();
-
         let mut last_error = None;
 
         thread_pool.install(|| {
@@ -179,7 +176,6 @@ impl Scan {
                 let (tx, rx) = mpsc::sync_channel(1024);
                 let mut total = 0;
                 let mut bytes = 0usize;
-                let buffers = &buffers;
 
                 for region in process.virtual_memory_regions().only_relevant() {
                     let region = region?;
@@ -196,18 +192,16 @@ impl Scan {
 
                             let mut addresses = Vec::new();
                             let mut values = Values::new();
+                            let mut buf = vec![0u8; buffer_size];
 
                             if cancel.test() {
                                 return Ok((addresses, values));
                             }
 
                             while start < region_size && !cancel.test() {
-                                let len = usize::min(buffer_size, region_size - start);
                                 let loc = region_base.add(Size::try_from(start)?)?;
-
-                                // length of the buffer we need to read process memory.
-                                let mut buf = buffers.get_mut(len)?;
-                                let buf = &mut *buf;
+                                let len = usize::min(buffer_size, region_size - start);
+                                let buf = &mut buf[..len];
 
                                 // TODO: figure out why we are trying to read invalid memory region sometimes.
                                 if let Err(_) = process.read_process_memory(loc, buf) {

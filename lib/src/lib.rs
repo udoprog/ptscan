@@ -18,7 +18,6 @@ pub mod scan;
 mod special;
 pub mod system;
 mod thread;
-mod thread_buffers;
 mod token;
 mod ty;
 mod value;

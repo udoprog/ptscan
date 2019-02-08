@@ -1,8 +1,8 @@
 use std::{convert::TryFrom, ffi, fmt, io, ptr, sync::Arc};
 
 use crate::{
-    filter, module, scan, system, thread_buffers, utils, values::ValueMut, Address, AddressRange,
-    ProcessId, Size, Token, Type, Value, Values,
+    filter, module, scan, system, utils, values::ValueMut, Address, AddressRange, ProcessId, Size,
+    Token, Type, Value, Values,
 };
 
 use err_derive::Error;
@@ -313,8 +313,6 @@ impl Process {
             return Ok(());
         }
 
-        let buffers = thread_buffers::ThreadBuffers::new();
-
         let mut last_error = None;
         let mut reporter = scan::Reporter::new(progress, len, cancel, &mut last_error);
 
@@ -329,11 +327,11 @@ impl Process {
                 for _ in 0..thread_pool.current_num_threads() {
                     let tx = tx.clone();
                     let p_rx = p_rx.clone();
-                    let buffers = &buffers;
 
                     s.spawn(move |_| {
                         let mut values = Values::new();
                         let mut addresses = Vec::new();
+                        let mut buf = vec![0u8; filter.ty.size()];
 
                         loop {
                             let (output, address) = match p_rx.recv().expect("closed") {
@@ -346,11 +344,7 @@ impl Process {
                             };
 
                             let mut work = || {
-                                let ty = filter.ty();
-                                let len = ty.size();
-                                let mut buf = buffers.get_mut(len)?;
-
-                                if !self.read_process_memory(address, &mut *buf)? {
+                                if !self.read_process_memory(address, &mut buf)? {
                                     return Ok(Task::Rejected);
                                 }
 
@@ -467,8 +461,6 @@ impl Process {
             return Ok(());
         }
 
-        let buffers = thread_buffers::ThreadBuffers::new();
-
         let mut last_error = None;
         let mut reporter = scan::Reporter::new(progress, len, cancel, &mut last_error);
 
@@ -483,7 +475,8 @@ impl Process {
                 for _ in 0..thread_pool.current_num_threads() {
                     let tx = tx.clone();
                     let p_rx = p_rx.clone();
-                    let buffers = &buffers;
+
+                    let mut buf = vec![0u8; 0x10];
 
                     s.spawn(move |_| loop {
                         let (mut output, address) = match p_rx.recv().expect("closed") {
@@ -494,16 +487,15 @@ impl Process {
                             }
                         };
 
-                        let mut work = move || {
-                            let ty = output.ty();
-                            let len = ty.size();
-                            let mut buf = buffers.get_mut(len)?;
+                        let ty = output.ty();
+                        let buf = &mut buf[..ty.size()];
 
-                            if !self.read_process_memory(address, &mut *buf)? {
+                        let mut work = move || {
+                            if !self.read_process_memory(address, buf)? {
                                 return Ok(0u64);
                             }
 
-                            Ok(match output.set(ty.decode(&*buf)) {
+                            Ok(match output.set(ty.decode(buf)) {
                                 true => 1u64,
                                 false => 0u64,
                             })

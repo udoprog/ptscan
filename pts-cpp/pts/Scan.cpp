@@ -1,3 +1,7 @@
+#include <vector>
+#include <optional>
+#include <iostream>
+
 #include <pts/Exception.h>
 #include <pts/Scan.h>
 #include <pts/ThreadPool.h>
@@ -8,8 +12,6 @@
 #include <pts/Value.h>
 #include <pts/Values.h>
 #include <pts/Address.h>
-#include <vector>
-#include <optional>
 
 namespace pts {
 Scan::Scan(std::shared_ptr<ThreadPool> threadPool, pts_scan_t* inner) :
@@ -48,8 +50,31 @@ std::shared_ptr<Scan> Scan::create(std::shared_ptr<ThreadPool> threadPool)
     return std::make_shared<Scan>(Scan{threadPool, inner});
 }
 
-void Scan::scan(
-    const std::shared_ptr<ProcessHandle> &processHandle,
+void Scan::initial(const std::shared_ptr<ProcessHandle> &handle, const std::shared_ptr<Filter> &filter, std::shared_ptr<Token> &token, ScanReporter &reporter)
+{
+    pts_scan_progress_t progress {
+        [](auto data, uintptr_t percentage, uint64_t count) {
+            auto d = reinterpret_cast<ScanReporter *>(data);
+            (d->report)(percentage, count);
+        },
+    };
+
+    auto ok = pts_scan_initial(
+        inner,
+        handle->inner,
+        filter->inner,
+        token->inner,
+        &progress,
+        reinterpret_cast<void *>(&reporter)
+    );
+
+    if (!ok) {
+        throw last_exception();
+    }
+}
+
+std::shared_ptr<Scan> Scan::scan(
+    const std::shared_ptr<ProcessHandle> &handle,
     const std::shared_ptr<Filter> &filter,
     std::shared_ptr<Token> &token,
     ScanReporter &reporter
@@ -62,9 +87,20 @@ void Scan::scan(
         },
     };
 
-    if (!pts_scan_scan(inner, processHandle->inner, filter->inner, token->inner, &progress, reinterpret_cast<void *>(&reporter))) {
+    auto scan = pts_scan_scan(
+        inner,
+        handle->inner,
+        filter->inner,
+        token->inner,
+        &progress,
+        reinterpret_cast<void *>(&reporter)
+    );
+
+    if (!scan) {
         throw last_exception();
     }
+
+    return std::make_shared<Scan>(Scan{threadPool, scan});
 }
 
 void Scan::refresh(

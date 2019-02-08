@@ -172,17 +172,9 @@ void MainWindow::scan()
     ui->scanProgress->setEnabled(true);
     ui->scanProgress->setValue(0);
 
-    auto threadPool = this->threadPool;
-
-    auto scan = scanCurrent;
-
-    if (!scan) {
-        scan = pts::Scan::create(threadPool);
-    }
-
     scanToken = std::shared_ptr<pts::Token>(new pts::Token());
 
-    QtConcurrent::run([this, handle, filter, scan]() {
+    QtConcurrent::run([this, handle, filter]() {
         pts::ScanReporter reporter;
 
         reporter.report = [this](int percentage, uint64_t count){
@@ -191,11 +183,18 @@ void MainWindow::scan()
             }, Qt::QueuedConnection);
         };
 
+        std::shared_ptr<pts::Scan> newScan = scanCurrent;
+
         auto token = scanToken;
         bool ok = true;
 
         try {
-            scan->scan(handle, filter, token, reporter);
+            if (newScan) {
+                newScan = newScan->scan(handle, filter, token, reporter);
+            } else {
+                newScan = pts::Scan::create(threadPool);
+                newScan->initial(handle, filter, token, reporter);
+            }
         } catch(const std::exception &e) {
             ok = false;
             QString message(e.what());
@@ -206,8 +205,8 @@ void MainWindow::scan()
         }
 
         // set the current scan if there is none, and the new scan was successful.
-        if (!scanCurrent && ok) {
-            scanCurrent = scan;
+        if (ok) {
+            scanCurrent = newScan;
         }
 
         QMetaObject::invokeMethod(this, [this, ok]() {

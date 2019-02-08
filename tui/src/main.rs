@@ -244,14 +244,17 @@ where
 
         self.handle = ProcessHandle::open_by_name(name)?;
 
-        if self.handle.is_none() {
-            writeln!(
-                self.w,
-                "not attached: could not find any process matching `{}`",
-                name
-            )?;
+        if let Some(handle) = self.handle.as_mut() {
+            handle.refresh_modules()?;
+            handle.refresh_threads()?;
+            return Ok(());
         }
 
+        writeln!(
+            self.w,
+            "not attached: could not find any process matching `{}`",
+            name
+        )?;
         Ok(())
     }
 
@@ -266,36 +269,29 @@ where
             None => failure::bail!("not attached to a process"),
         };
 
-        let scan = match self.scans.entry(self.current_scan.clone()) {
-            hashbrown::hash_map::Entry::Occupied(e) => e.into_mut(),
-            hashbrown::hash_map::Entry::Vacant(e) => e.insert(scan::Scan::new(&self.thread_pool)),
-        };
-
         if self.suspend {
             handle.process.suspend()?;
         }
 
-        // NB: defer unpacking the result until we have at least tried to resume the process.
-        let res = if !scan.initial {
-            let res = scan.initial_scan(
+        let res = match self.scans.get(&self.current_scan) {
+            Some(scan) => scan.scan(
                 &handle.process,
                 filter,
                 cancel,
                 SimpleProgress::new(&mut self.w),
-            );
+            ),
+            None => {
+                let mut scan = scan::Scan::new(&self.thread_pool);
 
-            if res.is_ok() {
-                scan.initial = true;
+                let res = scan.initial_scan(
+                    &handle.process,
+                    filter,
+                    cancel,
+                    SimpleProgress::new(&mut self.w),
+                );
+
+                res.map(move |()| scan)
             }
-
-            res
-        } else {
-            scan.rescan(
-                &handle.process,
-                filter,
-                cancel,
-                SimpleProgress::new(&mut self.w),
-            )
         };
 
         if self.suspend {
@@ -303,7 +299,7 @@ where
         }
 
         println!("");
-        res?;
+        self.scans.insert(self.current_scan.clone(), res?);
         self.print(None)?;
         Ok(())
     }
@@ -334,6 +330,12 @@ where
 
         for thread in &handle.threads {
             writeln!(self.w, "{:?}", thread)?;
+        }
+
+        writeln!(self.w, "Memory:")?;
+
+        for region in handle.process.virtual_memory_regions() {
+            writeln!(self.w, "{:?}", region?)?;
         }
 
         Ok(())

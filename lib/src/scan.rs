@@ -91,13 +91,13 @@ impl Scan {
     }
 
     /// rescan a set of results.
-    pub fn rescan(
-        &mut self,
+    pub fn scan(
+        &self,
         process: &Process,
         filter: &filter::Filter,
         cancel: Option<&Token>,
         progress: (impl Progress + Send),
-    ) -> Result<(), failure::Error> {
+    ) -> Result<Scan, failure::Error> {
         let mut addresses = Vec::new();
         let mut values = Values::new();
 
@@ -112,9 +112,13 @@ impl Scan {
             progress,
         )?;
 
-        self.addresses = addresses;
-        self.values = values;
-        Ok(())
+        Ok(Scan {
+            thread_pool: Arc::clone(&self.thread_pool),
+            aligned: self.aligned,
+            initial: false,
+            addresses,
+            values,
+        })
     }
 
     /// Scan for the given value in memory.

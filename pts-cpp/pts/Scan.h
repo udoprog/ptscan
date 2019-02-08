@@ -25,7 +25,6 @@ public:
 class Scan
 {
 public:
-    explicit Scan(std::shared_ptr<ThreadPool> threadPool, pts_scan_t* inner);
     Scan();
     Scan(const Scan &) = delete;
     Scan(Scan &&);
@@ -33,8 +32,22 @@ public:
 
     static std::shared_ptr<Scan> create(std::shared_ptr<ThreadPool> threadPool);
 
-    // Perform a scan.
-    void scan(const std::shared_ptr<ProcessHandle> &handle, const std::shared_ptr<Filter> &filter, std::shared_ptr<Token> &token, ScanReporter &reporter);
+    // Perform the initial scan.
+    void initial(
+        const std::shared_ptr<ProcessHandle> &handle,
+        const std::shared_ptr<Filter> &filter,
+        std::shared_ptr<Token> &token,
+        ScanReporter &reporter
+    );
+
+    // Perform an additional scan.
+    // Returns an updated scan.
+    std::shared_ptr<Scan> scan(
+        const std::shared_ptr<ProcessHandle> &handle,
+        const std::shared_ptr<Filter> &filter,
+        std::shared_ptr<Token> &token,
+        ScanReporter &reporter
+    );
 
     // Refresh the scan with value from the given handle.
     void refresh(const std::shared_ptr<ProcessHandle> &handle, std::shared_ptr<Values> &values, std::shared_ptr<Token> &token, ScanReporter &reporter);
@@ -51,6 +64,8 @@ public:
     // Return a copy of all values contained in the scan.
     Values values(uintptr_t limit) const;
 private:
+    explicit Scan(std::shared_ptr<ThreadPool> threadPool, pts_scan_t* inner);
+
     // NB: hold on to a reference of the thread pool since it's used by pts_scan_t.
     std::shared_ptr<ThreadPool> threadPool;
     pts_scan_t *inner;

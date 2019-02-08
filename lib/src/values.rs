@@ -1,20 +1,10 @@
 //! Optimized storage for in-memory values.
 
 use crate::{Type, Value};
+use byteorder::{ByteOrder, NativeEndian};
 use std::{fmt, iter};
 
 const MASK: u64 = 0x00_ff_ff_ff_ff_ff_ff_ffu64;
-
-macro_rules! assert_buffer {
-    ($buf:expr, $type:ty) => {
-        assert!(
-            $buf.len() == std::mem::size_of::<$type>(),
-            "buffer size mismatch: {} (buffer) != {} (expected)",
-            $buf.len(),
-            std::mem::size_of::<$type>()
-        );
-    };
-}
 
 // Helper macro to decode a simple value.
 macro_rules! decode_value {
@@ -40,9 +30,7 @@ macro_rules! decode_value {
         Type::U8 => Value::U8($buf[0]),
         Type::I8 => Value::I8($buf[0] as i8),
         $(Type::$member => {
-            assert_buffer!($buf, $ty);
-            let buf = $buf.as_ptr() as *const $ty;
-            Value::$member(unsafe { *buf })
+            Value::$member(NativeEndian::$read($buf))
         },)*
         }
     };
@@ -172,9 +160,9 @@ impl Values {
                 Value::I8(v) => { $buf.push(v as u8); Type::I8 },
                 $(
                 Value::$member(v) => {
-                    let o = self.scratch.as_mut_ptr() as *mut $ty;
-                    unsafe { *o = v };
-                    $buf.extend(&self.scratch[..mem::size_of::<$ty>()]);
+                    let buf = &mut self.scratch[..mem::size_of::<$ty>()];
+                    NativeEndian::$write(buf, v);
+                    $buf.extend(&*buf);
                     Type::$member
                 },
                 )*
@@ -246,44 +234,59 @@ impl<'a> ValueMut<'a> {
     /// Convert into a value.
     pub fn to_value(&self) -> Value {
         macro_rules! define {
-            ($buf:expr, $(($member:ident, $ty:ty),)*) => {
+            ($buf:expr, $(($ty:ty, $member:ident, $read:ident),)*) => {
                 match self.ty {
                     Type::None => Value::None,
-                    $(Type::$member => {
-                        assert_buffer!($buf, $ty);
-                        let buf = $buf.as_ptr() as *const $ty;
-                        Value::$member(unsafe { *buf })
-                    },)*
+                    Type::U8 => Value::U8($buf[0]),
+                    Type::I8 => Value::I8($buf[0] as i8),
+                    $(Type::$member => Value::$member(NativeEndian::$read($buf)),)*
                 }
             }
         }
 
         define! {
             self.buffer,
-            (U8, u8),
-            (I8, i8),
-            (U16, u16),
-            (I16, i16),
-            (U32, u32),
-            (I32, i32),
-            (U64, u64),
-            (I64, i64),
-            (U128, u128),
-            (I128, i128),
+            (u16, U16, read_u16),
+            (i16, I16, read_i16),
+            (u32, U32, read_u32),
+            (i32, I32, read_i32),
+            (u64, U64, read_u64),
+            (i64, I64, read_i64),
+            (u128, U128, read_u128),
+            (i128, I128, read_i128),
         }
     }
 
     /// Set the given position with the given value.
     pub fn set(&mut self, value: Value) -> bool {
         macro_rules! define {
-            ($buf:expr, $value:expr, $(($member:ident, $ty:ty),)*) => {
+            ($buf:expr, $value:expr, $(($ty:ty, $member:ident, $write:ident),)*) => {
                 match self.ty {
+                    Type::U8 => match $value.cast::<u8>() {
+                        Some(v) => {
+                            $buf[0] = v;
+                            true
+                        }
+                        None => {
+                            self.clear();
+                            false
+                        }
+                    },
+                    Type::I8 => match $value.cast::<u8>() {
+                        Some(v) => {
+                            $buf[0] = v as u8;
+                            true
+                        }
+                        None => {
+                            self.clear();
+                            false
+                        }
+                    },
                     $(Type::$member => {
-                        assert_buffer!($buf, $ty);
                         match $value.cast::<$ty>() {
                             Some(val) => {
-                                let buf = $buf.as_mut_ptr() as *mut $ty;
-                                unsafe { *buf = val };
+                                let buf = &mut $buf[..std::mem::size_of::<$ty>()];
+                                NativeEndian::$write(buf, val);
                                 true
                             },
                             None => {
@@ -301,16 +304,14 @@ impl<'a> ValueMut<'a> {
 
         define! {
             self.buffer, value,
-            (U8, u8),
-            (I8, i8),
-            (U16, u16),
-            (I16, i16),
-            (U32, u32),
-            (I32, i32),
-            (U64, u64),
-            (I64, i64),
-            (U128, u128),
-            (I128, i128),
+            (u16, U16, write_u16),
+            (i16, I16, write_i16),
+            (u32, U32, write_u32),
+            (i32, I32, write_i32),
+            (u64, U64, write_u64),
+            (i64, I64, write_i64),
+            (u128, U128, write_u128),
+            (i128, I128, write_i128),
         }
     }
 

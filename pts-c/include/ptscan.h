@@ -181,6 +181,14 @@ uintptr_t pts_scan_count(const pts_scan_t *scan);
 void pts_scan_free(pts_scan_t *scan);
 
 /// Creates and returns a new scan.
+bool pts_scan_initial(pts_scan_t *scan,
+                      const pts_process_handle_t *handle,
+                      const pts_filter_t *filter,
+                      const pts_token_t *cancel,
+                      const pts_scan_progress_t *progress,
+                      void *data);
+
+/// Creates and returns a new scan.
 pts_scan_t *pts_scan_new(const pts_thread_pool_t *thread_pool);
 
 /// Creates and returns a new scan.
@@ -217,13 +225,13 @@ pts_scan_results_iter_t *pts_scan_results_iter(const pts_scan_t *scan);
 /// If no more elements are available NULL is returned.
 bool pts_scan_results_next(pts_scan_results_iter_t *iter, pts_scan_result_t *out);
 
-/// Creates and returns a new scan.
-bool pts_scan_scan(pts_scan_t *scan,
-                   const pts_process_handle_t *handle,
-                   const pts_filter_t *filter,
-                   const pts_token_t *cancel,
-                   const pts_scan_progress_t *progress,
-                   void *data);
+/// Performs a new scan based on a previous scan.
+pts_scan_t *pts_scan_scan(const pts_scan_t *scan,
+                          const pts_process_handle_t *handle,
+                          const pts_filter_t *filter,
+                          const pts_token_t *cancel,
+                          const pts_scan_progress_t *progress,
+                          void *data);
 
 /// Get a copy of the values contained in the scan.
 pts_values_t *pts_scan_values(const pts_scan_t *scan, uintptr_t limit);

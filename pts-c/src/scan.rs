@@ -139,7 +139,7 @@ impl ScanProgress {
 
 /// Creates and returns a new scan.
 #[no_mangle]
-pub extern "C" fn pts_scan_scan<'a>(
+pub extern "C" fn pts_scan_initial<'a>(
     scan: *mut Scan,
     handle: *const ProcessHandle,
     filter: *const Filter,
@@ -153,21 +153,36 @@ pub extern "C" fn pts_scan_scan<'a>(
     let cancel = null_opt!(&'a cancel).map(|t| &t.0);
     let progress = null_ck!(&'a progress).as_progress(data);
 
-    if !scan.initial {
-        try_last!(
-            scan.initial_scan(&handle.process, filter, cancel, progress),
-            false
-        );
-
-        scan.initial = true;
-    } else {
-        try_last!(
-            scan.rescan(&handle.process, filter, cancel, progress),
-            false
-        );
-    }
+    try_last!(
+        scan.initial_scan(&handle.process, filter, cancel, progress),
+        false
+    );
 
     true
+}
+
+/// Performs a new scan based on a previous scan.
+#[no_mangle]
+pub extern "C" fn pts_scan_scan<'a>(
+    scan: *const Scan,
+    handle: *const ProcessHandle,
+    filter: *const Filter,
+    cancel: *const Token,
+    progress: *const ScanProgress,
+    data: *mut c_void,
+) -> *mut Scan {
+    let Scan(ref scan) = *null_ck!(&'a scan);
+    let ProcessHandle(ref handle) = *null_ck!(&'a handle);
+    let Filter(ref filter) = *null_ck!(&'a filter);
+    let cancel = null_opt!(&'a cancel).map(|t| &t.0);
+    let progress = null_ck!(&'a progress).as_progress(data);
+
+    let scan = try_last!(
+        scan.scan(&handle.process, filter, cancel, progress),
+        ptr::null_mut()
+    );
+
+    into_ptr!(Scan(scan))
 }
 
 /// Creates and returns a new scan.

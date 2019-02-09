@@ -78,7 +78,7 @@ std::shared_ptr<Scan> Scan::scan(
     const std::shared_ptr<Filter> &filter,
     std::shared_ptr<Token> &token,
     ScanReporter &reporter
-)
+) const
 {
     pts_scan_progress_t progress {
         [](auto data, uintptr_t percentage, uint64_t count) {

@@ -47,7 +47,7 @@ public:
         const std::shared_ptr<Filter> &filter,
         std::shared_ptr<Token> &token,
         ScanReporter &reporter
-    );
+    ) const;
 
     // Refresh the scan with value from the given handle.
     void refresh(const std::shared_ptr<ProcessHandle> &handle, std::shared_ptr<Values> &values, std::shared_ptr<Token> &token, ScanReporter &reporter);

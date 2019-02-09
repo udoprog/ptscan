@@ -174,7 +174,7 @@ void MainWindow::scan()
 
     scanToken = std::shared_ptr<pts::Token>(new pts::Token());
 
-    QtConcurrent::run([this, handle, filter]() {
+    QtConcurrent::run([this, handle, filter, scanCurrent = scanCurrent, scanToken = scanToken]() {
         pts::ScanReporter reporter;
 
         reporter.report = [this](int percentage, uint64_t count){
@@ -183,34 +183,29 @@ void MainWindow::scan()
             }, Qt::QueuedConnection);
         };
 
-        std::shared_ptr<pts::Scan> newScan = scanCurrent;
-
+        auto scan = scanCurrent;
         auto token = scanToken;
-        bool ok = true;
+        QString error;
 
         try {
-            if (newScan) {
-                newScan = newScan->scan(handle, filter, token, reporter);
+            if (scan) {
+                scan = scan->scan(handle, filter, token, reporter);
             } else {
-                newScan = pts::Scan::create(threadPool);
-                newScan->initial(handle, filter, token, reporter);
+                scan = pts::Scan::create(threadPool);
+                scan->initial(handle, filter, token, reporter);
             }
         } catch(const std::exception &e) {
-            ok = false;
-            QString message(e.what());
-
-            QMetaObject::invokeMethod(this, [this, message] {
-                addError(message);
-            }, Qt::QueuedConnection);
+            // reset pointer to indicate that scan failed.
+            scan = {};
+            error = e.what();
         }
 
-        // set the current scan if there is none, and the new scan was successful.
-        if (ok) {
-            scanCurrent = newScan;
-        }
+        QMetaObject::invokeMethod(this, [this, scan, error]() {
+            if (!error.isEmpty()) {
+                addError(error);
+            }
 
-        QMetaObject::invokeMethod(this, [this, ok]() {
-            scanDone(ok);
+            scanDone(scan);
         }, Qt::QueuedConnection);
     });
 
@@ -302,9 +297,8 @@ void MainWindow::updateCurrent()
             qDebug() << "failed to refresh" << e.what();
         }
 
-        refreshToken.reset();
-
         QMetaObject::invokeMethod(this, [this, info, scanValues]() {
+            refreshToken = {};
             addressList->updateCurrent(info);
             scanResults->updateCurrent(scanValues);
             updateView();
@@ -324,9 +318,9 @@ void MainWindow::scanProgress(int percentage, uint64_t count)
     scanResults->setIntermediateCount(count);
 }
 
-void MainWindow::scanDone(bool ok)
+void MainWindow::scanDone(std::shared_ptr<pts::Scan> scan)
 {
-    if (ok) {
+    if (scan) {
         ui->scanProgress->setValue(100);
     } else {
         ui->scanProgress->setValue(0);
@@ -334,6 +328,7 @@ void MainWindow::scanDone(bool ok)
 
     ui->scanProgress->setEnabled(false);
 
+    scanCurrent = scan;
     updateScanResults();
     scanToken = {};
     updateView();

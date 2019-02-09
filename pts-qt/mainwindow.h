@@ -50,7 +50,7 @@ public slots:
     void scanProgress(int percentage, uint64_t count);
 
     // Report that a scan progress has completed.
-    void scanDone(bool interrupted);
+    void scanDone(std::shared_ptr<pts::Scan> scan);
 
     // Update existing scan results.
     void updateScanResults();

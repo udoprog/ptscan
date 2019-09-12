@@ -31,7 +31,7 @@ pub enum Expression {
 
 impl Expression {
     /// Convert expression into a matcher.
-    pub fn into_matcher(self, ty: Type) -> Result<Box<filter::Matcher>, failure::Error> {
+    pub fn into_matcher(self, ty: Type) -> Result<Box<dyn filter::Matcher>, failure::Error> {
         use self::Expression::*;
 
         let matcher: Box<dyn filter::Matcher> = match self {

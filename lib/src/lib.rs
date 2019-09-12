@@ -1,4 +1,4 @@
-#![feature(try_from, alloc, raw_vec_internals)]
+#![feature(raw_vec_internals)]
 
 extern crate alloc;
 

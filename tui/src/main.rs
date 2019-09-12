@@ -148,7 +148,7 @@ where
                 }
 
                 self.scans
-                    .insert(name.clone(), scan::Scan::new(&self.thread_pool));
+                    .insert(name.clone(), scan::Scan::new(&self.thread_pool).aligned());
                 self.current_scan = name;
             }
             Action::ScansDel(name) => {
@@ -281,7 +281,7 @@ where
                 SimpleProgress::new(&mut self.w),
             ),
             None => {
-                let mut scan = scan::Scan::new(&self.thread_pool);
+                let mut scan = scan::Scan::new(&self.thread_pool).aligned();
 
                 let res = scan.initial_scan(
                     &handle.process,

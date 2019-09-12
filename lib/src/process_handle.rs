@@ -279,7 +279,7 @@ impl ProcessHandle {
             // TODO: make independent of host architecture (use u64).
             let ptr = Address::try_from(LittleEndian::read_u64(w))?;
 
-            if kernel32.contains(ptr)? {
+            if kernel32.contains(ptr) {
                 let address = Size::try_from(n * ptr_width.into_usize()?)?;
                 return Ok(Some(stack.base.add(address)?));
             }

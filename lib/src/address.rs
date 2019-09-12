@@ -4,6 +4,7 @@ use crate::process_handle::{Location, ProcessHandle};
 
 use err_derive::Error;
 use std::{
+    cmp,
     convert::{TryFrom, TryInto},
     error, fmt, io, str,
 };
@@ -132,6 +133,14 @@ impl<T> Convertible<Address> for *const T {
 
     fn convert(value: Address) -> Result<Self, Self::Error> {
         Ok(value.into_usize()? as *const T)
+    }
+}
+
+impl Convertible<Address> for usize {
+    type Error = io::Error;
+
+    fn convert(value: Address) -> Result<Self, Self::Error> {
+        Ok(value.into_usize()?)
     }
 }
 
@@ -326,6 +335,11 @@ impl Size {
         self.0
     }
 
+    /// Convert into offset.
+    pub fn into_offset(self) -> Offset {
+        Offset::new(Sign::Pos, self.0)
+    }
+
     /// Convert into u64.
     pub fn into_u64(self) -> Result<u64, io::Error> {
         Ok(self.0.try_into().map_err(into_io_error)?)
@@ -416,8 +430,8 @@ impl Offset {
         Offset(Sign::Pos, 0)
     }
 
-    /// Add two offsets together in a saturating manner.
     pub fn saturating_add(self, offset: Offset) -> Offset {
+        /// Add two offsets together in a saturating manner.
         use self::Sign::*;
 
         match (self, offset) {
@@ -467,15 +481,20 @@ impl fmt::Debug for Offset {
 }
 
 /// A helper structure to define a range of addresses.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct AddressRange {
     pub base: Address,
     pub size: Size,
 }
 
 impl AddressRange {
-    pub fn contains(&self, value: Address) -> Result<bool, io::Error> {
-        Ok(self.base <= value && value <= self.base.add(self.size)?)
+    /// Construct a new range.
+    pub fn new(base: Address, size: Size) -> Self {
+        Self { base, size }
+    }
+
+    pub fn contains(&self, value: Address) -> bool {
+        self.base <= value && value <= self.base.saturating_offset(self.size.into_offset())
     }
 
     /// Helper function to find which memory region a given address is contained in.
@@ -497,11 +516,26 @@ impl AddressRange {
             }
         };
 
-        if accessor(thing).contains(address)? {
+        if accessor(thing).contains(address) {
             return Ok(Some(thing));
         }
 
         Ok(None)
+    }
+
+    /// Compare how the address relates to the current range.
+    pub fn compare_ordering(&self, address: Address, size: Size) -> cmp::Ordering {
+        if self.base > address {
+            return cmp::Ordering::Greater;
+        }
+
+        if address.saturating_offset(size.into_offset())
+            > self.base.saturating_offset(self.size.into_offset())
+        {
+            return cmp::Ordering::Less;
+        }
+
+        cmp::Ordering::Equal
     }
 }
 

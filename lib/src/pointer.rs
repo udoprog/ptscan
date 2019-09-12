@@ -81,7 +81,7 @@ mod tests {
     use std::error;
 
     #[test]
-    fn basic_parsing() -> Result<(), Box<error::Error>> {
+    fn basic_parsing() -> Result<(), Box<dyn error::Error>> {
         dbg!(Pointer::parse("ABCDEF")?);
         dbg!(Pointer::parse("\"Steam.exe\" + 0F")?);
         dbg!(Pointer::parse("\"Steam.exe\" + 0F -> -FFAA")?);

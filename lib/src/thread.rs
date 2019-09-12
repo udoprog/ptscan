@@ -69,7 +69,6 @@ impl Thread {
         use ntapi::ntpsapi::{
             NtQueryInformationThread, ThreadBasicInformation, THREAD_BASIC_INFORMATION,
         };
-        use std::mem;
 
         let mut thread_info: THREAD_BASIC_INFORMATION = unsafe { mem::zeroed() };
         let mut length: DWORD = 0;
@@ -94,8 +93,6 @@ impl Thread {
 
     /// Get the context for a thread.
     pub fn get_context<'a>(&'a self) -> Result<ThreadContext<'a>, io::Error> {
-        use std::mem;
-
         let mut context: winnt::CONTEXT = unsafe { mem::zeroed() };
         context.ContextFlags = winnt::CONTEXT_SEGMENTS;
 

@@ -298,6 +298,7 @@ impl Process {
         cancel: Option<&Token>,
         progress: (impl scan::Progress + Send),
     ) -> Result<(), failure::Error> {
+        use crate::utils::IteratorExtension as _;
         use std::sync::mpsc;
 
         let mut local_cancel = None;
@@ -313,16 +314,26 @@ impl Process {
             return Ok(());
         }
 
+        let regions = self
+            .virtual_memory_regions()
+            .only_relevant()
+            .collect::<Result<Vec<MemoryInformation>, _>>()?;
+
         let mut last_error = None;
         let mut reporter = scan::Reporter::new(progress, len, cancel, &mut last_error);
 
+        let ty_size = Size::new(filter.ty.size() as u64);
+
         // how many tasks to run in parallel.
         let tasks = 0x100usize;
+        let buffer_size = 0x1000;
 
         thread_pool.install(|| {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<Result<Task, failure::Error>>();
-                let (p_tx, p_rx) = crossbeam_channel::unbounded::<Option<(Value, Address)>>();
+                let (p_tx, p_rx) = crossbeam_channel::unbounded::<
+                    Option<(Value, Address, Arc<Vec<u8>>, usize, usize)>,
+                >();
 
                 for _ in 0..thread_pool.current_num_threads() {
                     let tx = tx.clone();
@@ -331,11 +342,12 @@ impl Process {
                     s.spawn(move |_| {
                         let mut values = Values::new();
                         let mut addresses = Vec::new();
-                        let mut buf = vec![0u8; filter.ty.size()];
 
                         loop {
-                            let (output, address) = match p_rx.recv().expect("closed") {
-                                Some(task) => task,
+                            let (output, address, buf) = match p_rx.recv().expect("closed") {
+                                Some((output, address, buf, start, end)) => {
+                                    (output, address, &buf[start..end])
+                                }
                                 None => {
                                     tx.send(Ok(Task::Result(values, addresses)))
                                         .expect("closed");
@@ -344,11 +356,7 @@ impl Process {
                             };
 
                             let mut work = || {
-                                if !self.read_process_memory(address, &mut buf)? {
-                                    return Ok(Task::Rejected);
-                                }
-
-                                if let Some(value) = filter.test(Some(&output), &*buf) {
+                                if let Some(value) = filter.test(Some(&output), buf) {
                                     values.push(value);
                                     addresses.push(address);
                                     return Ok(Task::Accepted);
@@ -364,8 +372,56 @@ impl Process {
 
                 let mut it = values.iter().zip(addresses.iter().cloned());
 
+                let mut current_region = None::<&MemoryInformation>;
+                let mut current_buffer = None::<(AddressRange, Arc<Vec<u8>>)>;
+
+                let send_region = move |output: Value, address: Address| -> Result<(), io::Error> {
+                    let region = match &current_region {
+                        Some(region) if region.range.contains(address) => region,
+                        _ => {
+                            let region = match regions.binary_search_by(|region| {
+                                region.range.compare_ordering(address, ty_size)
+                            }) {
+                                Ok(index) => &regions[index],
+                                Err(_) => return Ok(()),
+                            };
+
+                            current_region.take();
+                            &**current_region.get_or_insert(region)
+                        }
+                    };
+
+                    let (buf, start, end) = match &current_buffer {
+                        Some((range, buf)) if range.contains(address) => {
+                            let (_, _, start, end) = calculate_buffer(
+                                address,
+                                filter.ty.size(),
+                                &region.range,
+                                buffer_size,
+                            )?;
+                            (Arc::clone(buf), start, end)
+                        }
+                        _ => {
+                            let (size, range, start, end) = calculate_buffer(
+                                address,
+                                filter.ty.size(),
+                                &region.range,
+                                buffer_size,
+                            )?;
+                            let buf = Arc::new(vec![0u8; size]);
+                            current_buffer.take();
+                            let (_e, buf) = current_buffer.get_or_insert((range, buf));
+                            (Arc::clone(buf), start, end)
+                        }
+                    };
+
+                    p_tx.send(Some((output, address, buf, start, end)))
+                        .expect("closed");
+                    Ok(())
+                };
+
                 for (output, address) in (&mut it).take(tasks) {
-                    p_tx.send(Some((output, address))).expect("closed");
+                    send_region(output, address)?;
                 }
 
                 let mut count = 0u64;
@@ -379,7 +435,7 @@ impl Process {
                     let result = rx.recv().expect("closed");
 
                     if let Some((output, address)) = it.next() {
-                        p_tx.send(Some((output, address))).expect("closed");
+                        send_region(output, address)?;
                     }
 
                     count += match reporter.eval(result).unwrap_or(Task::Rejected) {
@@ -418,8 +474,12 @@ impl Process {
 
                     reporter.tick(count);
                 }
-            });
-        });
+
+                Ok::<_, failure::Error>(())
+            })?;
+
+            Ok::<_, failure::Error>(())
+        })?;
 
         if let Some(e) = last_error {
             return Err(e);
@@ -434,6 +494,50 @@ impl Process {
             Rejected,
             /// The result of a computation.
             Result(Values, Vec<Address>),
+        }
+
+        fn calculate_buffer(
+            address: Address,
+            size: usize,
+            region_range: &AddressRange,
+            buffer_size: usize,
+        ) -> Result<(usize, AddressRange, usize, usize), io::Error> {
+            let start = address.convert::<usize>()?;
+            let end = start.saturating_add(size);
+
+            let mut current_size = buffer_size;
+
+            let mut range_start = start - start % current_size;
+            let mut range_end = range_start + current_size;
+
+            while range_end < end {
+                range_end += buffer_size;
+                current_size += buffer_size;
+            }
+
+            let range = AddressRange::new(
+                Address::new(range_start as u64),
+                Size::new(current_size as u64),
+            );
+
+            let min = region_range.base.convert::<usize>()?;
+            let max = region_range
+                .base
+                .add(region_range.size)?
+                .convert::<usize>()?;
+
+            if range_start < min {
+                range_start = min;
+            }
+
+            if range_end > max {
+                range_end = max;
+            }
+
+            let start = start - range_start;
+            let end = end - range_start;
+
+            Ok((current_size, range, start, end))
         }
     }
 

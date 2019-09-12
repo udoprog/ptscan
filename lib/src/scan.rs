@@ -142,7 +142,7 @@ impl Scan {
         cancel: Option<&Token>,
         progress: (impl Progress + Send),
     ) -> Result<(), failure::Error> {
-        use crate::utils::IteratorExtension;
+        use crate::utils::IteratorExtension as _;
 
         let mut local_cancel = None;
 

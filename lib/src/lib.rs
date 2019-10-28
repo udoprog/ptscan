@@ -1,7 +1,3 @@
-#![feature(try_from, alloc, raw_vec_internals)]
-
-extern crate alloc;
-
 use winapi::shared::minwindef::DWORD;
 
 #[macro_use]

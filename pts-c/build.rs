@@ -1,6 +1,6 @@
 use std::{env, error, path::PathBuf};
 
-fn main() -> Result<(), Box<error::Error>> {
+fn main() -> Result<(), Box<dyn error::Error>> {
     let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
 
     cbindgen::Builder::new()

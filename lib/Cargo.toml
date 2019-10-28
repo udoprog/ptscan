@@ -17,7 +17,7 @@ repository = "https://github.com/udoprog/ptscan"
 readme = "README.md"
 
 [dependencies]
-failure = "0.1.5"
+failure = "0.1.6"
 memoffset = "0.2"
 byteorder = "1.3"
 clap = "2.32"
@@ -32,7 +32,7 @@ num-bigint = {version = "0.2.2", features = ["i128"]}
 crossbeam-channel = "0.3.8"
 
 [dependencies.winapi]
-version = "0.3"
+version = "0.3.8"
 features = [
     "sysinfoapi",
     "wow64apiset",

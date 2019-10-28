@@ -23,7 +23,7 @@ pub fn parse(input: &str, ty: Type) -> Result<Filter, failure::Error> {
 #[derive(Debug)]
 pub struct Filter {
     pub ty: Type,
-    pub matcher: Box<Matcher>,
+    pub matcher: Box<dyn Matcher>,
     special: Option<Special>,
 }
 
@@ -382,10 +382,10 @@ impl fmt::Display for Lte {
 
 /// Only matches when all nested filters match.
 #[derive(Debug)]
-pub struct All(Vec<Box<Matcher>>);
+pub struct All(Vec<Box<dyn Matcher>>);
 
 impl All {
-    pub fn new(filters: impl IntoIterator<Item = Box<Matcher>>) -> Self {
+    pub fn new(filters: impl IntoIterator<Item = Box<dyn Matcher>>) -> Self {
         All(filters.into_iter().collect())
     }
 }
@@ -414,10 +414,10 @@ impl Matcher for All {
 
 /// Only matches when any nested filter match.
 #[derive(Debug)]
-pub struct Any(Vec<Box<Matcher>>);
+pub struct Any(Vec<Box<dyn Matcher>>);
 
 impl Any {
-    pub fn new(filters: impl IntoIterator<Item = Box<Matcher>>) -> Self {
+    pub fn new(filters: impl IntoIterator<Item = Box<dyn Matcher>>) -> Self {
         Any(filters.into_iter().collect())
     }
 }
@@ -450,7 +450,7 @@ mod tests {
     use std::error;
 
     #[test]
-    fn basic_parsing() -> Result<(), Box<error::Error>> {
+    fn basic_parsing() -> Result<(), Box<dyn error::Error>> {
         let parser = parser::OrParser::new();
         let a = parser.parse(lexer::Lexer::new("value == 1"))?;
         let b = parser.parse(lexer::Lexer::new("value == 1 and value == 2"))?;

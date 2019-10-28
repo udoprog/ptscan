@@ -1,5 +1,5 @@
 use hashbrown::HashMap;
-use ptscan::{filter, scan, Address, Process, ProcessHandle, Token, Type, Value};
+use ptscan::{filter, scan, Address, Process, ProcessHandle, Size, Token, Type, Value};
 use std::{io, sync::Arc};
 
 static HELP: &'static str = include_str!("help.md");
@@ -49,7 +49,7 @@ impl<W> scan::Progress for SimpleProgress<W>
 where
     W: io::Write,
 {
-    fn report_bytes(&mut self, _: usize) -> Result<(), failure::Error> {
+    fn report_bytes(&mut self, _: Size) -> Result<(), failure::Error> {
         // NB: do nothing
         Ok(())
     }

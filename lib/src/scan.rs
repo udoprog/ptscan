@@ -17,7 +17,7 @@ use std::{
 /// A trait to track the progress of processes.
 pub trait Progress {
     /// Report the total number of bytes to process.
-    fn report_bytes(&mut self, bytes: usize) -> Result<(), failure::Error>;
+    fn report_bytes(&mut self, bytes: Size) -> Result<(), failure::Error>;
 
     /// Report that the process has progresses to the given percentage.
     fn report(&mut self, percentage: usize, results: u64) -> Result<(), failure::Error>;
@@ -41,7 +41,7 @@ impl Scan {
     /// Construct a new scan associated with a thread pool.
     pub fn new(thread_pool: &Arc<rayon::ThreadPool>) -> Self {
         Self {
-            aligned: false,
+            aligned: true,
             initial: false,
             thread_pool: Arc::clone(thread_pool),
             addresses: Vec::new(),
@@ -160,7 +160,7 @@ impl Scan {
             size => size,
         };
 
-        let buffer_size = 0x1000;
+        let buffer_size = Size::new(0x10000);
 
         let Scan {
             ref mut addresses,
@@ -179,33 +179,33 @@ impl Scan {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::sync_channel(1024);
                 let mut total = 0;
-                let mut bytes = 0usize;
+                let mut bytes = Size::zero();
 
                 for region in process.virtual_memory_regions().only_relevant() {
                     let region = region?;
-                    bytes += region.range.size.into_usize()?;
+                    bytes += region.range.size;
                     total += 1;
 
                     let region_base = region.range.base;
-                    let region_size = region.range.size.into_usize()?;
+                    let region_size = region.range.size;
                     let tx = tx.clone();
 
                     s.spawn(move |_| {
                         let work = move || {
-                            let mut start = 0;
+                            let mut start = Size::zero();
 
                             let mut addresses = Vec::new();
                             let mut values = Values::new();
-                            let mut buf = vec![0u8; buffer_size];
+                            let mut buf = vec![0u8; buffer_size.as_usize()];
 
                             if cancel.test() {
                                 return Ok((addresses, values));
                             }
 
                             while start < region_size && !cancel.test() {
-                                let loc = region_base.add(Size::try_from(start)?)?;
-                                let len = usize::min(buffer_size, region_size - start);
-                                let buf = &mut buf[..len];
+                                let loc = region_base.add(start)?;
+                                let len = Size::min(buffer_size, region_size - start);
+                                let buf = &mut buf[..len.as_usize()];
 
                                 // TODO: figure out why we are trying to read invalid memory region sometimes.
                                 if let Err(_) = process.read_process_memory(loc, buf) {
@@ -322,7 +322,7 @@ impl<'token, 'err, P> Reporter<'token, 'err, P> {
     }
 
     /// Report a number of bytes.
-    pub fn report_bytes(&mut self, bytes: usize)
+    pub fn report_bytes(&mut self, bytes: Size)
     where
         P: Progress,
     {

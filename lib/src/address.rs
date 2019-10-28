@@ -5,7 +5,7 @@ use crate::process_handle::{Location, ProcessHandle};
 use err_derive::Error;
 use std::{
     convert::{TryFrom, TryInto},
-    error, fmt, io, str,
+    error, fmt, io, ops, str,
 };
 
 #[derive(Debug, Error)]
@@ -97,8 +97,8 @@ impl Address {
     /// Convert into usize.
     ///
     /// Internal function, use `convert` instead.
-    fn into_usize(self) -> Result<usize, io::Error> {
-        Ok(self.0.try_into().map_err(into_io_error)?)
+    fn as_usize(self) -> usize {
+        self.0.try_into().expect("usize conversion failed")
     }
 }
 
@@ -123,7 +123,7 @@ impl<T> Convertible<Address> for *mut T {
     type Error = io::Error;
 
     fn convert(value: Address) -> Result<Self, Self::Error> {
-        Ok(value.into_usize()? as *mut T)
+        Ok(value.as_usize() as *mut T)
     }
 }
 
@@ -131,7 +131,7 @@ impl<T> Convertible<Address> for *const T {
     type Error = io::Error;
 
     fn convert(value: Address) -> Result<Self, Self::Error> {
-        Ok(value.into_usize()? as *const T)
+        Ok(value.as_usize() as *const T)
     }
 }
 
@@ -312,13 +312,24 @@ impl<'a> fmt::Display for AddressDisplay<'a> {
     }
 }
 
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Default, PartialOrd, Ord, PartialEq, Eq, Hash)]
+#[repr(transparent)]
 pub struct Size(u64);
 
 impl Size {
     /// Construct a new size.
     pub fn new(value: u64) -> Size {
         Size(value)
+    }
+
+    /// Construct a zero-size.
+    pub fn zero() -> Size {
+        Size(0)
+    }
+
+    /// Treat Size as a usize.
+    pub fn as_usize(self) -> usize {
+        self.0.try_into().expect("usize conversion failed")
     }
 
     /// Convert into the inner type.
@@ -328,11 +339,6 @@ impl Size {
 
     /// Convert into u64.
     pub fn into_u64(self) -> Result<u64, io::Error> {
-        Ok(self.0.try_into().map_err(into_io_error)?)
-    }
-
-    /// Convert into usize.
-    pub fn into_usize(self) -> Result<usize, io::Error> {
         Ok(self.0.try_into().map_err(into_io_error)?)
     }
 
@@ -356,6 +362,10 @@ impl Size {
             .map_err(into_io_error)?;
 
         Ok(Size(sum))
+    }
+
+    pub fn min(a: Size, b: Size) -> Size {
+        Size(u64::min(a.0, b.0))
     }
 }
 
@@ -392,6 +402,20 @@ impl TryFrom<u32> for Size {
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         Ok(Size(value.try_into().map_err(into_io_error)?))
+    }
+}
+
+impl ops::Sub<Size> for Size {
+    type Output = Size;
+
+    fn sub(self, other: Size) -> Self::Output {
+        Size(self.0.checked_sub(other.0).expect("underflow"))
+    }
+}
+
+impl ops::AddAssign<Size> for Size {
+    fn add_assign(&mut self, other: Size) {
+        self.0.checked_add(other.0).expect("overflow");
     }
 }
 

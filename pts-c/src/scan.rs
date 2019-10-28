@@ -234,7 +234,7 @@ unsafe impl Send for RawProgress {}
 unsafe impl Sync for RawProgress {}
 
 impl ptscan::scan::Progress for RawProgress {
-    fn report_bytes(&mut self, _: usize) -> Result<(), failure::Error> {
+    fn report_bytes(&mut self, _: ptscan::Size) -> Result<(), failure::Error> {
         Ok(())
     }
 

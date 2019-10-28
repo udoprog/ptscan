@@ -259,7 +259,7 @@ impl ProcessHandle {
             Size::new(4)
         };
 
-        let mut buf = vec![0u8; stack.size.into_usize()?];
+        let mut buf = vec![0u8; stack.size.as_usize()];
         self.process.read_process_memory(stack.base, &mut buf)?;
 
         if !stack.base.is_aligned(ptr_width)? {
@@ -275,12 +275,12 @@ impl ProcessHandle {
             None => return Ok(None),
         };
 
-        for (n, w) in buf.chunks(ptr_width.into_usize()?).enumerate().rev() {
+        for (n, w) in buf.chunks(ptr_width.as_usize()).enumerate().rev() {
             // TODO: make independent of host architecture (use u64).
             let ptr = Address::try_from(LittleEndian::read_u64(w))?;
 
             if kernel32.contains(ptr)? {
-                let address = Size::try_from(n * ptr_width.into_usize()?)?;
+                let address = Size::try_from(n * ptr_width.as_usize())?;
                 return Ok(Some(stack.base.add(address)?));
             }
         }

@@ -1,5 +1,5 @@
-use crate::Value;
-use std::{error, fmt, mem, str};
+use crate::{error::Error, Value};
+use std::{fmt, mem, str};
 
 // Decode a buffer, and depending on its width decode it differently.
 macro_rules! decode_buf {
@@ -97,45 +97,45 @@ impl Type {
     }
 
     /// Parse a string value of the type.
-    pub fn parse(&self, input: &str) -> Result<Value, failure::Error> {
+    pub fn parse(&self, input: &str) -> Result<Value, Error> {
         use self::Type::*;
 
         let value = match *self {
-            None => failure::bail!("cannot parse none type"),
-            U8 => Value::U8(str::parse::<u8>(input)?),
-            I8 => Value::I8(str::parse::<i8>(input)?),
-            U16 => Value::U16(str::parse::<u16>(input)?),
-            I16 => Value::I16(str::parse::<i16>(input)?),
-            U32 => Value::U32(str::parse::<u32>(input)?),
-            I32 => Value::I32(str::parse::<i32>(input)?),
-            U64 => Value::U64(str::parse::<u64>(input)?),
-            I64 => Value::I64(str::parse::<i64>(input)?),
-            U128 => Value::U128(str::parse::<u128>(input)?),
-            I128 => Value::I128(str::parse::<i128>(input)?),
+            None => return Err(Error::TypeParseNone),
+            U8 => str::parse::<u8>(input).map(Value::U8),
+            I8 => str::parse::<i8>(input).map(Value::I8),
+            U16 => str::parse::<u16>(input).map(Value::U16),
+            I16 => str::parse::<i16>(input).map(Value::I16),
+            U32 => str::parse::<u32>(input).map(Value::U32),
+            I32 => str::parse::<i32>(input).map(Value::I32),
+            U64 => str::parse::<u64>(input).map(Value::U64),
+            I64 => str::parse::<i64>(input).map(Value::I64),
+            U128 => str::parse::<u128>(input).map(Value::U128),
+            I128 => str::parse::<i128>(input).map(Value::I128),
         };
 
-        Ok(value)
+        value.map_err(|_| Error::TypeParseError)
     }
 
     /// Parse a string as hex.
-    pub fn parse_hex(&self, input: &str) -> Result<Value, failure::Error> {
+    pub fn parse_hex(&self, input: &str) -> Result<Value, Error> {
         use self::Type::*;
 
         let value = match *self {
-            None => failure::bail!("cannot parse none type"),
-            U8 => Value::U8(u8::from_str_radix(input, 16)?),
-            I8 => Value::I8(i8::from_str_radix(input, 16)?),
-            U16 => Value::U16(u16::from_str_radix(input, 16)?),
-            I16 => Value::I16(i16::from_str_radix(input, 16)?),
-            U32 => Value::U32(u32::from_str_radix(input, 16)?),
-            I32 => Value::I32(i32::from_str_radix(input, 16)?),
-            U64 => Value::U64(u64::from_str_radix(input, 16)?),
-            I64 => Value::I64(i64::from_str_radix(input, 16)?),
-            U128 => Value::U128(u128::from_str_radix(input, 16)?),
-            I128 => Value::I128(i128::from_str_radix(input, 16)?),
+            None => return Err(Error::TypeParseNone),
+            U8 => u8::from_str_radix(input, 16).map(Value::U8),
+            I8 => i8::from_str_radix(input, 16).map(Value::I8),
+            U16 => u16::from_str_radix(input, 16).map(Value::U16),
+            I16 => i16::from_str_radix(input, 16).map(Value::I16),
+            U32 => u32::from_str_radix(input, 16).map(Value::U32),
+            I32 => i32::from_str_radix(input, 16).map(Value::I32),
+            U64 => u64::from_str_radix(input, 16).map(Value::U64),
+            I64 => i64::from_str_radix(input, 16).map(Value::I64),
+            U128 => u128::from_str_radix(input, 16).map(Value::U128),
+            I128 => i128::from_str_radix(input, 16).map(Value::I128),
         };
 
-        Ok(value)
+        value.map_err(|_| Error::TypeParseError)
     }
 
     /// The size in-memory that a value has.
@@ -207,7 +207,7 @@ impl fmt::Display for Type {
 }
 
 impl str::FromStr for Type {
-    type Err = ParseTypeError;
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let ty = match s {
@@ -221,21 +221,10 @@ impl str::FromStr for Type {
             "i64" => Type::I64,
             "u128" => Type::U128,
             "i128" => Type::I128,
-            other => return Err(ParseTypeError(other.to_string())),
+            other => return Err(Error::IllegalType(other.to_string())),
         };
 
         Ok(ty)
-    }
-}
-
-#[derive(Debug)]
-pub struct ParseTypeError(String);
-
-impl error::Error for ParseTypeError {}
-
-impl fmt::Display for ParseTypeError {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "`{}` is not a valid", self.0)
     }
 }
 

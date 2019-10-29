@@ -1,6 +1,6 @@
 use std::{convert::TryFrom, fmt, io, mem, sync::Arc};
 
-use crate::{process, utils, Address, AddressRange};
+use crate::{error::Error, process, utils, Address, AddressRange};
 
 use winapi::{
     shared::{
@@ -29,7 +29,7 @@ impl Thread {
     }
 
     /// Get the specified thread selector entry.
-    pub fn thread_selector_entry(&self, selector: DWORD) -> Result<winnt::LDT_ENTRY, io::Error> {
+    pub fn thread_selector_entry(&self, selector: DWORD) -> Result<winnt::LDT_ENTRY, Error> {
         let mut entry: winnt::LDT_ENTRY = unsafe { mem::zeroed() };
 
         checked!(winbase::GetThreadSelectorEntry(
@@ -42,7 +42,7 @@ impl Thread {
     }
 
     /// Open the specified thread by thread id with default options.
-    pub fn open(thread_id: ThreadId) -> Result<Thread, io::Error> {
+    pub fn open(thread_id: ThreadId) -> Result<Thread, Error> {
         Self::builder().query_information().build(thread_id)
     }
 
@@ -52,7 +52,7 @@ impl Thread {
     }
 
     /// Access the thread stack from a 64-bit process.
-    pub fn thread_stack(&self, process: &process::Process) -> Result<AddressRange, failure::Error> {
+    pub fn thread_stack(&self, process: &process::Process) -> Result<AddressRange, Error> {
         let tib = self.thread_teb::<winnt::NT_TIB64>(process)?;
 
         let stack_base = Address::try_from(tib.StackBase)?;
@@ -65,7 +65,7 @@ impl Thread {
     }
 
     /// Access the private address range of a thread to decode its stack.
-    fn thread_teb<T>(&self, process: &process::Process) -> Result<T, failure::Error> {
+    fn thread_teb<T>(&self, process: &process::Process) -> Result<T, Error> {
         use ntapi::ntpsapi::{
             NtQueryInformationThread, ThreadBasicInformation, THREAD_BASIC_INFORMATION,
         };
@@ -84,7 +84,7 @@ impl Thread {
         };
 
         if status != 0 {
-            failure::bail!("{}: failed to resolve address", status);
+            return Err(Error::ThreadTebError(status));
         }
 
         let base = Address::try_from(thread_info.TebBaseAddress)?;
@@ -92,7 +92,7 @@ impl Thread {
     }
 
     /// Get the context for a thread.
-    pub fn get_context<'a>(&'a self) -> Result<ThreadContext<'a>, io::Error> {
+    pub fn get_context<'a>(&'a self) -> Result<ThreadContext<'a>, Error> {
         let mut context: winnt::CONTEXT = unsafe { mem::zeroed() };
         context.ContextFlags = winnt::CONTEXT_SEGMENTS;
 
@@ -123,7 +123,7 @@ pub struct ThreadContext<'a> {
 
 impl ThreadContext<'_> {
     /// Find where the thread stack is located.
-    pub fn thread_stack(&self, process: &process::Process) -> Result<AddressRange, failure::Error> {
+    pub fn thread_stack(&self, process: &process::Process) -> Result<AddressRange, Error> {
         let entry = self
             .thread
             .thread_selector_entry(self.context.SegFs as DWORD)?;
@@ -193,13 +193,13 @@ impl OpenThreadBuilder {
     }
 
     /// Build the process handle.
-    pub fn build(self, thread_id: ThreadId) -> Result<Thread, io::Error> {
+    pub fn build(self, thread_id: ThreadId) -> Result<Thread, Error> {
         let handle = unsafe {
             processthreadsapi::OpenThread(self.desired_access, self.inherit_handles, thread_id)
         };
 
         if handle.is_null() {
-            return Err(io::Error::last_os_error());
+            return Err(Error::System(io::Error::last_os_error()));
         }
 
         let handle = Arc::new(utils::Handle::new(handle));

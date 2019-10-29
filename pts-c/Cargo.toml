@@ -21,8 +21,8 @@ crate-type = ["staticlib"]
 
 [dependencies]
 ptscan = {path = "../lib", version = "0.1.0"}
-failure = "0.1.5"
 rayon = "1.0.3"
+anyhow = "1.0.18"
 
 [build-dependencies]
 cbindgen = "0.7"

@@ -1,4 +1,5 @@
-use crate::{encode::Encode, Address, Type};
+use crate::{encode::Encode, error::Error, Address, Type};
+use anyhow::bail;
 use num_bigint::BigInt;
 use std::{fmt, str};
 
@@ -28,7 +29,7 @@ impl Value {
     }
 
     /// Convert from a big integer.
-    pub fn from_big(value: BigInt, ty: Type) -> Result<Self, failure::Error> {
+    pub fn from_big(value: BigInt, ty: Type) -> Result<Self, Error> {
         use self::Type::*;
         use num::ToPrimitive;
 
@@ -46,25 +47,19 @@ impl Value {
             _ => return Ok(Value::None),
         };
 
-        let out = out.ok_or_else(|| {
-            failure::format_err!(
-                "failed to convert number `{}`: out-of-range for type {}",
-                value,
-                ty,
-            )
-        })?;
+        let out = out.ok_or_else(|| Error::ConversionError(value, ty))?;
         Ok(out)
     }
 
     /// Try to treat the value as an address.
     ///
     /// Returns `None` if this is not possible (e.g. value out of range).
-    pub fn as_address(&self) -> Result<Address, failure::Error> {
+    pub fn as_address(&self) -> anyhow::Result<Address> {
         use self::Value::*;
         use std::convert::TryFrom;
 
         let out = match *self {
-            None => failure::bail!("nothing cannot be made into address"),
+            None => bail!("nothing cannot be made into address"),
             U8(value) => Address::try_from(value)?,
             I8(value) => Address::try_from(value)?,
             U16(value) => Address::try_from(value)?,
@@ -142,7 +137,7 @@ impl Value {
 }
 
 impl str::FromStr for Value {
-    type Err = failure::Error;
+    type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (hex, s) = if s.starts_with("0x") {
@@ -153,9 +148,7 @@ impl str::FromStr for Value {
 
         let mut it = s.split(|c| c == 'i' || c == 'u');
 
-        let base = it
-            .next()
-            .ok_or_else(|| failure::format_err!("missing numeric base"))?;
+        let base = it.next().ok_or_else(|| Error::ValueMissingBase)?;
 
         let (s, ty) = match it.next() {
             Some(suffix) => {

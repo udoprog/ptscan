@@ -1,6 +1,6 @@
-use std::{convert::TryFrom, ffi::OsString, fmt, io};
+use std::{convert::TryFrom, ffi::OsString, fmt};
 
-use crate::{process, Address, Size};
+use crate::{error::Error, process, Address, Size};
 
 use winapi::{
     shared::minwindef::{DWORD, HMODULE},
@@ -27,14 +27,14 @@ impl<'a> Module<'a> {
     }
 
     /// Get the name of the module.
-    pub fn name(&self) -> Result<OsString, io::Error> {
+    pub fn name(&self) -> Result<OsString, Error> {
         crate::utils::string(|buf, len| unsafe {
             psapi::GetModuleBaseNameW(**self.process.handle, self.module, buf, len)
         })
     }
 
     /// Get the information about the module.
-    pub fn info(&self) -> Result<ModuleInfo, io::Error> {
+    pub fn info(&self) -> Result<ModuleInfo, Error> {
         use std::mem;
 
         let mut out: psapi::MODULEINFO = unsafe { mem::zeroed() };

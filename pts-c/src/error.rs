@@ -1,9 +1,9 @@
 use crate::string::StringT;
 use std::{cell::RefCell, ptr};
 
-thread_local!(pub(crate) static LAST_ERROR: RefCell<Option<failure::Error>> = RefCell::new(None));
+thread_local!(pub(crate) static LAST_ERROR: RefCell<Option<anyhow::Error>> = RefCell::new(None));
 
-pub struct Error(failure::Error);
+pub struct Error(anyhow::Error);
 
 /// Returns the last error raised in this thread.
 ///
@@ -28,7 +28,7 @@ pub extern "C" fn pts_error_message<'a>(error: *const Error, message: *mut Strin
 
     let mut m = String::new();
 
-    let mut causes = e.iter_chain();
+    let mut causes = e.chain();
 
     if let Some(cause) = causes.next() {
         try_last!(writeln!(&mut m, "{}", cause), ());

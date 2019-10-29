@@ -70,7 +70,7 @@ impl fmt::Display for Pointer {
 
 impl Pointer {
     /// Parse a a string into a filter.
-    pub fn parse(input: &str) -> Result<Pointer, failure::Error> {
+    pub fn parse(input: &str) -> Result<Pointer, anyhow::Error> {
         Ok(self::parser::PointerParser::new().parse(lexer::Lexer::new(input))?)
     }
 }

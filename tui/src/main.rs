@@ -1,3 +1,6 @@
+#![feature(backtrace)]
+
+use anyhow::bail;
 use hashbrown::HashMap;
 use ptscan::{filter, scan, Address, Process, ProcessHandle, Size, Token, Type, Value};
 use std::{io, sync::Arc};
@@ -5,7 +8,7 @@ use std::{io, sync::Arc};
 static HELP: &'static str = include_str!("help.md");
 static DEFAULT_LIMIT: usize = 10;
 
-fn try_main() -> Result<(), failure::Error> {
+fn try_main() -> anyhow::Result<()> {
     let opts = ptscan::opts::opts();
     let thread_pool = Arc::new(rayon::ThreadPoolBuilder::new().build()?);
 
@@ -25,7 +28,7 @@ fn main() {
         eprintln!("{}", e);
         eprintln!("{}", e.backtrace());
 
-        for c in e.iter_chain().skip(1) {
+        for c in e.chain().skip(1) {
             eprintln!("Caused by: {}", c);
 
             if let Some(bt) = c.backtrace() {
@@ -49,12 +52,12 @@ impl<W> scan::Progress for SimpleProgress<W>
 where
     W: io::Write,
 {
-    fn report_bytes(&mut self, _: Size) -> Result<(), failure::Error> {
+    fn report_bytes(&mut self, _: Size) -> anyhow::Result<()> {
         // NB: do nothing
         Ok(())
     }
 
-    fn report(&mut self, percentage: usize, count: u64) -> Result<(), failure::Error> {
+    fn report(&mut self, percentage: usize, count: u64) -> anyhow::Result<()> {
         use std::iter;
 
         write!(self.out, "\r")?;
@@ -106,7 +109,7 @@ where
     }
 
     /// Run the application in a loop.
-    pub fn run(&mut self) -> Result<(), failure::Error> {
+    pub fn run(&mut self) -> anyhow::Result<()> {
         loop {
             write!(self.w, "ptscan> ")?;
             self.w.flush()?;
@@ -133,7 +136,7 @@ where
     }
 
     /// Returns a boolean indicating if the process should exit.
-    fn apply_action(&mut self, action: Action) -> Result<bool, failure::Error> {
+    fn apply_action(&mut self, action: Action) -> anyhow::Result<bool> {
         match action {
             Action::ScansList => {
                 writeln!(self.w, "Scans:")?;
@@ -144,7 +147,7 @@ where
             }
             Action::ScansNew(name) => {
                 if self.scans.contains_key(&name) {
-                    failure::bail!("there is already a scan named `{}`", name);
+                    bail!("there is already a scan named `{}`", name);
                 }
 
                 self.scans
@@ -153,7 +156,7 @@ where
             }
             Action::ScansDel(name) => {
                 if self.scans.remove(&name).is_none() {
-                    failure::bail!("no such scan `{}`", name);
+                    bail!("no such scan `{}`", name);
                 }
 
                 writeln!(self.w, "removed scan `{}`", name)?;
@@ -188,7 +191,7 @@ where
             Action::Del(address) => {
                 let scan = match self.scans.get_mut(&self.current_scan) {
                     Some(scan) => scan,
-                    None => failure::bail!("no active scan"),
+                    None => bail!("no active scan"),
                 };
 
                 panic!("TODO: cannot delete {} from {}", address, scan.len());
@@ -197,12 +200,12 @@ where
             Action::Add(address, ty) => {
                 let handle = match self.handle.as_ref() {
                     Some(handle) => handle,
-                    None => failure::bail!("not attached to a process"),
+                    None => bail!("not attached to a process"),
                 };
 
                 let scan = match self.scans.get_mut(&self.current_scan) {
                     Some(scan) => scan,
-                    None => failure::bail!("no active scan"),
+                    None => bail!("no active scan"),
                 };
 
                 let mut buf = vec![0u8; ty.size()];
@@ -223,7 +226,7 @@ where
             Action::Set(address, value) => {
                 let handle = match self.handle.as_ref() {
                     Some(handle) => handle,
-                    None => failure::bail!("not attached to a process"),
+                    None => bail!("not attached to a process"),
                 };
 
                 let mut buf = vec![0u8; value.ty().size()];
@@ -236,10 +239,10 @@ where
     }
 
     /// Try to attach to some process.
-    fn attach(&mut self) -> Result<(), failure::Error> {
+    fn attach(&mut self) -> anyhow::Result<()> {
         let name = match self.process_name.as_ref() {
             Some(name) => name,
-            None => failure::bail!("no process name to attach to"),
+            None => bail!("no process name to attach to"),
         };
 
         self.handle = ProcessHandle::open_by_name(name)?;
@@ -259,14 +262,10 @@ where
     }
 
     /// Scan memory using the given filter and the currently selected scan.
-    fn scan(
-        &mut self,
-        filter: &filter::Filter,
-        cancel: Option<&Token>,
-    ) -> Result<(), failure::Error> {
+    fn scan(&mut self, filter: &filter::Filter, cancel: Option<&Token>) -> anyhow::Result<()> {
         let handle = match self.handle.as_ref() {
             Some(handle) => handle,
-            None => failure::bail!("not attached to a process"),
+            None => bail!("not attached to a process"),
         };
 
         if self.suspend {
@@ -305,10 +304,10 @@ where
     }
 
     /// Print information on the current process, if any.
-    fn process(&mut self) -> Result<(), failure::Error> {
+    fn process(&mut self) -> anyhow::Result<()> {
         let handle = match self.handle.as_ref() {
             Some(handle) => handle,
-            None => failure::bail!("no process attached"),
+            None => bail!("no process attached"),
         };
 
         writeln!(
@@ -342,7 +341,7 @@ where
     }
 
     /// Print the current state of the scan.
-    fn print(&mut self, limit: Option<usize>) -> Result<(), failure::Error> {
+    fn print(&mut self, limit: Option<usize>) -> anyhow::Result<()> {
         let scan = match self.scans.get(&self.current_scan) {
             Some(scan) => scan,
             None => {
@@ -379,8 +378,8 @@ where
     pub fn with_scan(
         &mut self,
         handle: &ProcessHandle,
-        mut proc: impl FnMut(&mut scan::Scan, &Process, &mut W) -> Result<(), failure::Error>,
-    ) -> Result<(), failure::Error> {
+        mut proc: impl FnMut(&mut scan::Scan, &Process, &mut W) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
         let scan = match self.scans.get_mut(&self.current_scan) {
             Some(scan) => scan,
             None => return Ok(()),
@@ -399,7 +398,7 @@ where
         ret
     }
 
-    pub fn line(&mut self) -> Result<String, failure::Error> {
+    pub fn line(&mut self) -> anyhow::Result<String> {
         use std::io::{BufRead, BufReader};
 
         let mut line = String::new();
@@ -411,7 +410,7 @@ where
     }
 
     /// Convert a line into an action.
-    pub fn line_into_action(&mut self, line: &str) -> Result<Action, failure::Error> {
+    pub fn line_into_action(&mut self, line: &str) -> anyhow::Result<Action> {
         // NB: filter the entire command to remove empty stuff.
         let command = line
             .split(" ")
@@ -420,7 +419,7 @@ where
             .collect::<Vec<_>>();
 
         if command.len() == 0 {
-            failure::bail!("missing command");
+            bail!("missing command");
         }
 
         match command[0] {
@@ -441,7 +440,7 @@ where
                 let command = &command[1..];
 
                 if command.len() != 1 {
-                    failure::bail!("expected <address>");
+                    bail!("expected <address>");
                 }
 
                 let address = str::parse(command[0])?;
@@ -451,7 +450,7 @@ where
                 let command = &command[1..];
 
                 if command.len() < 1 {
-                    failure::bail!("expected <address>");
+                    bail!("expected <address>");
                 }
 
                 let ty = if command.len() > 1 {
@@ -467,7 +466,7 @@ where
                 let command = &command[1..];
 
                 if command.len() < 2 {
-                    failure::bail!("Usage: scan <type> <filter>");
+                    bail!("Usage: scan <type> <filter>");
                 }
 
                 let ty = str::parse(command[0])?;
@@ -493,7 +492,7 @@ where
                 let command = &command[1..];
 
                 if command.len() != 2 {
-                    failure::bail!("Usage: set <address> <value>");
+                    bail!("Usage: set <address> <value>");
                 }
 
                 let address = str::parse(command[0])?;
@@ -513,7 +512,7 @@ where
                         let command = &command[1..];
 
                         if command.len() != 1 {
-                            failure::bail!("missing <name>");
+                            bail!("missing <name>");
                         }
 
                         return Ok(Action::ScansNew(command[0].to_string()));
@@ -522,32 +521,28 @@ where
                         let command = &command[1..];
 
                         if command.len() != 1 {
-                            failure::bail!("missing <name>");
+                            bail!("missing <name>");
                         }
 
                         return Ok(Action::ScansDel(command[0].to_string()));
                     }
-                    other => failure::bail!("not a `scans` sub-command: {}", other),
+                    other => bail!("not a `scans` sub-command: {}", other),
                 }
             }
-            command => failure::bail!("no such command: {}", command),
+            command => bail!("no such command: {}", command),
         }
     }
 
     /// Parse the filter from commandline input.
     ///
     /// Note: only supports simple predicates for now.
-    pub fn parse_filter(
-        &mut self,
-        ty: Type,
-        rest: &[&str],
-    ) -> Result<filter::Filter, failure::Error> {
+    pub fn parse_filter(&mut self, ty: Type, rest: &[&str]) -> anyhow::Result<filter::Filter> {
         let rest = rest.join(" ");
         filter::parse(&rest, ty)
     }
 
     /// Print help messages.
-    pub fn print_help(w: &mut impl io::Write) -> Result<(), failure::Error> {
+    pub fn print_help(w: &mut impl io::Write) -> anyhow::Result<()> {
         for line in HELP.lines() {
             writeln!(w, "{}", line)?;
         }

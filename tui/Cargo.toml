@@ -19,8 +19,8 @@ readme = "README.md"
 [dependencies]
 ptscan = {path = "../lib", version = "0.1.0"}
 rayon = "1.0.3"
-failure = "0.1.5"
 hashbrown = "0.1.8"
+anyhow = "1.0.18"
 
 [build-dependencies]
 failure = "0.1"

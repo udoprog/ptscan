@@ -1,8 +1,9 @@
 use num_bigint::BigInt;
 use std::{borrow::Cow, fmt, str};
+use thiserror::Error;
 
-#[derive(Debug, err_derive::Error)]
-#[error(display = "{}", description)]
+#[derive(Debug, Error)]
+#[error("{}", description)]
 pub struct Error {
     /// Description of the error.
     description: Cow<'static, str>,

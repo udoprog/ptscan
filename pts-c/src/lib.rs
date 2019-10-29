@@ -35,7 +35,7 @@ pub extern "C" fn pts_version() -> *const c_char {
 #[no_mangle]
 pub extern "C" fn pts_setup() {
     // NB: needed to initialize eagerly initialized data.
-    failure::format_err!("dummy error");
+    anyhow::anyhow!("dummy error");
 }
 
 /// Create a new thread pool.

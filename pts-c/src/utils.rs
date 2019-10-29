@@ -99,7 +99,7 @@ macro_rules! try_last {
             Ok(value) => value,
             Err(e) => {
                 $crate::error::LAST_ERROR.with(|last_error| {
-                    *last_error.borrow_mut() = Some(failure::Error::from(e));
+                    *last_error.borrow_mut() = Some(anyhow::Error::from(e));
                 });
 
                 return $err;

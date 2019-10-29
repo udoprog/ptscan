@@ -2,7 +2,7 @@
 
 use std::{fmt, io};
 
-use crate::{utils, ProcessId, ThreadId};
+use crate::{error::Error, utils, ProcessId, ThreadId};
 
 use winapi::{
     shared::minwindef::{DWORD, FALSE},
@@ -10,20 +10,20 @@ use winapi::{
 };
 
 /// Enumerate all processes, returning their corresponding pids.
-pub fn processes() -> Result<Vec<ProcessId>, io::Error> {
+pub fn processes() -> Result<Vec<ProcessId>, Error> {
     utils::array(0x400, |buf, size, needed| unsafe {
         psapi::EnumProcesses(buf, size, needed)
     })
 }
 
 /// Enumerate all threads of the system.
-pub fn threads() -> Result<Threads, failure::Error> {
+pub fn threads() -> Result<Threads, Error> {
     use tlhelp32::{CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD};
 
     let handle = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
 
     if handle == handleapi::INVALID_HANDLE_VALUE {
-        return Err(failure::Error::from(io::Error::last_os_error()));
+        return Err(Error::System(io::Error::last_os_error()));
     }
 
     let handle = utils::Handle::new(handle);
@@ -35,7 +35,7 @@ pub fn threads() -> Result<Threads, failure::Error> {
 }
 
 /// Get general system information.
-pub fn info() -> Result<Info, failure::Error> {
+pub fn info() -> Result<Info, Error> {
     use std::mem;
     let mut out: sysinfoapi::SYSTEM_INFO = unsafe { mem::zeroed() };
     unsafe { sysinfoapi::GetNativeSystemInfo(&mut out as sysinfoapi::LPSYSTEM_INFO) };

@@ -4,6 +4,7 @@ use winapi::shared::minwindef::DWORD;
 mod utils;
 mod address;
 mod encode;
+mod error;
 pub mod filter;
 mod module;
 pub mod opts;
@@ -25,6 +26,7 @@ pub type ThreadId = DWORD;
 
 pub use self::address::{Address, AddressRange, Offset, Size};
 pub use self::encode::Encode;
+pub use self::error::Error;
 pub use self::module::Module;
 pub use self::pointer::Pointer;
 pub use self::process::{MemoryState, MemoryType, Process};

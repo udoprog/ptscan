@@ -6,7 +6,7 @@ mod lexer;
 lalrpop_util::lalrpop_mod!(parser, "/filter/parser.rs");
 
 /// Parse a a string into a filter.
-pub fn parse(input: &str, ty: Type) -> Result<Filter, failure::Error> {
+pub fn parse(input: &str, ty: Type) -> anyhow::Result<Filter> {
     let matcher = parser::OrParser::new()
         .parse(lexer::Lexer::new(input))?
         .into_matcher(ty)?;

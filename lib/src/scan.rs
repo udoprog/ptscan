@@ -2,25 +2,26 @@
 
 use crate::{
     address::{Address, Size},
+    error::Error,
     filter, pointer,
     process::Process,
     values::Values,
     watch::Watch,
     Location, ProcessHandle, Token, Value,
 };
+use anyhow::anyhow;
 use std::{
     convert::TryFrom,
-    io,
     sync::{mpsc, Arc},
 };
 
 /// A trait to track the progress of processes.
 pub trait Progress {
     /// Report the total number of bytes to process.
-    fn report_bytes(&mut self, bytes: Size) -> Result<(), failure::Error>;
+    fn report_bytes(&mut self, bytes: Size) -> anyhow::Result<()>;
 
     /// Report that the process has progresses to the given percentage.
-    fn report(&mut self, percentage: usize, results: u64) -> Result<(), failure::Error>;
+    fn report(&mut self, percentage: usize, results: u64) -> anyhow::Result<()>;
 }
 
 /// A scan responsible for finding results in memory.
@@ -97,7 +98,7 @@ impl Scan {
         filter: &filter::Filter,
         cancel: Option<&Token>,
         progress: (impl Progress + Send),
-    ) -> Result<Scan, failure::Error> {
+    ) -> Result<Scan, anyhow::Error> {
         let mut addresses = Vec::new();
         let mut values = Values::new();
 
@@ -141,7 +142,7 @@ impl Scan {
         filter: &filter::Filter,
         cancel: Option<&Token>,
         progress: (impl Progress + Send),
-    ) -> Result<(), failure::Error> {
+    ) -> anyhow::Result<()> {
         use crate::utils::IteratorExtension;
 
         let mut local_cancel = None;
@@ -153,9 +154,7 @@ impl Scan {
 
         let size = match filter.ty.size() {
             0 => {
-                return Err(failure::format_err!(
-                    "can't perform initial scan with unsized filter"
-                ));
+                return Err(anyhow!("can't perform initial scan with unsized filter"));
             }
             size => size,
         };
@@ -183,7 +182,7 @@ impl Scan {
 
                 for region in process.virtual_memory_regions().only_relevant() {
                     let region = region?;
-                    bytes += region.range.size;
+                    bytes.add_assign(region.range.size)?;
                     total += 1;
 
                     let region_base = region.range.base;
@@ -204,7 +203,7 @@ impl Scan {
 
                             while start < region_size && !cancel.test() {
                                 let loc = region_base.add(start)?;
-                                let len = Size::min(buffer_size, region_size - start);
+                                let len = Size::min(buffer_size, region_size.sub(start)?);
                                 let buf = &mut buf[..len.as_usize()];
 
                                 // TODO: figure out why we are trying to read invalid memory region sometimes.
@@ -231,10 +230,10 @@ impl Scan {
                                     }
                                 }
 
-                                start += buffer_size;
+                                start = start.add(buffer_size)?;
                             }
 
-                            Ok::<_, failure::Error>((addresses, values))
+                            Ok::<_, anyhow::Error>((addresses, values))
                         };
 
                         tx.send(work()).expect("channel closed");
@@ -259,7 +258,7 @@ impl Scan {
                     reporter.tick(results);
                 }
 
-                Ok::<(), failure::Error>(())
+                Ok::<(), anyhow::Error>(())
             })
         })?;
 
@@ -282,7 +281,7 @@ pub struct Reporter<'token, 'err, P> {
     /// Whether to report progress or not.
     token: &'token Token,
     /// Last error captured from the progress.
-    last_err: &'err mut Option<failure::Error>,
+    last_err: &'err mut Option<anyhow::Error>,
 }
 
 impl<'token, 'err, P> Reporter<'token, 'err, P> {
@@ -291,7 +290,7 @@ impl<'token, 'err, P> Reporter<'token, 'err, P> {
         progress: P,
         total: usize,
         token: &'token Token,
-        last_err: &'err mut Option<failure::Error>,
+        last_err: &'err mut Option<anyhow::Error>,
     ) -> Reporter<'token, 'err, P> {
         let mut percentage = total / 100;
 
@@ -310,7 +309,7 @@ impl<'token, 'err, P> Reporter<'token, 'err, P> {
     }
 
     /// Evaluate the given result.
-    pub fn eval<T>(&mut self, result: Result<T, failure::Error>) -> Option<T> {
+    pub fn eval<T>(&mut self, result: anyhow::Result<T>) -> Option<T> {
         match result {
             Ok(value) => Some(value),
             Err(e) => {
@@ -371,7 +370,7 @@ impl ScanResult {
     }
 
     /// Buld a watch out of a scan result.
-    pub fn as_watch(&self, handle: Option<&ProcessHandle>) -> Result<Watch, io::Error> {
+    pub fn as_watch(&self, handle: Option<&ProcessHandle>) -> Result<Watch, Error> {
         let base = match handle {
             Some(handle) => match handle.find_location(self.address)? {
                 Location::Module(module) => {

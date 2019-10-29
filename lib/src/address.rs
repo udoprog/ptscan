@@ -6,6 +6,7 @@ use crate::{
 };
 
 use std::{
+    cmp,
     convert::{TryFrom, TryInto},
     fmt, io, str,
 };
@@ -35,6 +36,13 @@ impl Address {
         })
     }
 
+    /// Add the given size in a saturating manner.
+    pub fn saturating_add(self, rhs: Size) -> Address {
+        let sum = self.0.saturating_add(rhs.0);
+
+        Address(sum)
+    }
+
     /// Performed a checked add with an address and a size.
     pub fn add(self, rhs: Size) -> Result<Address, Error> {
         let sum = self
@@ -43,6 +51,12 @@ impl Address {
             .ok_or_else(|| Error::AddressAdd(self, rhs))?;
 
         Ok(Address(sum))
+    }
+
+    /// Add a size to the current address.
+    pub fn add_assign(&mut self, rhs: Size) -> Result<(), Error> {
+        *self = self.add(rhs)?;
+        Ok(())
     }
 
     /// Find how far this address offsets another one.
@@ -91,7 +105,7 @@ impl Address {
     /// Convert into usize.
     ///
     /// Internal function, use `convert` instead.
-    fn as_usize(self) -> usize {
+    pub fn as_usize(self) -> usize {
         self.0.try_into().expect("usize conversion failed")
     }
 }
@@ -393,6 +407,18 @@ impl Size {
     }
 }
 
+impl From<u32> for Size {
+    fn from(value: u32) -> Self {
+        Self(value as u64)
+    }
+}
+
+impl From<u64> for Size {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
 impl fmt::Display for Size {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "{:X}", self.0)
@@ -410,22 +436,6 @@ impl TryFrom<usize> for Size {
 
     fn try_from(value: usize) -> Result<Self, Self::Error> {
         Ok(Size(value.try_into().map_err(|_| Error::SizeConversion)?))
-    }
-}
-
-impl TryFrom<u64> for Size {
-    type Error = Error;
-
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        Ok(Size(value.try_into()?))
-    }
-}
-
-impl TryFrom<u32> for Size {
-    type Error = Error;
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        Ok(Size(value.try_into()?))
     }
 }
 
@@ -501,7 +511,7 @@ impl fmt::Debug for Offset {
 }
 
 /// A helper structure to define a range of addresses.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AddressRange {
     pub base: Address,
     pub size: Size,
@@ -510,6 +520,19 @@ pub struct AddressRange {
 impl AddressRange {
     pub fn contains(&self, value: Address) -> Result<bool, Error> {
         Ok(self.base <= value && value <= self.base.add(self.size)?)
+    }
+
+    /// Compare where an address falls withing the current range.
+    pub fn address_cmp(&self, address: Address) -> cmp::Ordering {
+        if address < self.base {
+            return cmp::Ordering::Greater;
+        }
+
+        if address < self.base.saturating_add(self.size) {
+            return cmp::Ordering::Equal;
+        }
+
+        cmp::Ordering::Less
     }
 
     /// Helper function to find which memory region a given address is contained in.

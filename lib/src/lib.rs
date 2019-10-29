@@ -12,7 +12,6 @@ mod pointer;
 mod process;
 mod process_handle;
 pub mod scan;
-mod special;
 pub mod system;
 mod thread;
 mod token;

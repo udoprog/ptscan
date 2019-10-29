@@ -8,9 +8,8 @@ use crate::{
     watch::Watch,
     Location, ProcessHandle, Token, Value,
 };
-use anyhow::anyhow;
 use std::{
-    convert::TryFrom,
+    convert::TryInto,
     sync::{mpsc, Arc},
 };
 
@@ -160,8 +159,6 @@ impl Scan {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        let buffer_size = Size::new(0x10000);
-
         let Scan {
             ref mut addresses,
             ref mut values,
@@ -175,11 +172,15 @@ impl Scan {
 
         let mut last_error = None;
 
-        let size = filter
-            .size()
-            .ok_or_else(|| anyhow!("cannot perform initial scan on unsized filter"))?;
+        let size: Size = filter.ty.size().try_into()?;
 
-        let aligned = aligned.unwrap_or(filter.is_default_aligned());
+        let aligned = aligned.unwrap_or(filter.ty.is_default_aligned());
+
+        let session = process.session()?;
+        let session = &session;
+
+        let special = filter.special()?;
+        let special = special.as_ref();
 
         thread_pool.install(|| {
             rayon::scope(|s| {
@@ -192,52 +193,57 @@ impl Scan {
                     bytes.add_assign(region.range.size)?;
                     total += 1;
 
-                    let region_base = region.range.base;
-                    let region_size = region.range.size;
                     let tx = tx.clone();
 
                     s.spawn(move |_| {
                         let work = move || {
-                            let mut start = Size::zero();
-
                             let mut addresses = Vec::new();
                             let mut values = Vec::new();
-                            let mut buf = vec![0u8; buffer_size.as_usize()];
 
                             if cancel.test() {
                                 return Ok((addresses, values));
                             }
 
-                            while start < region_size && !cancel.test() {
-                                let loc = region_base.add(start)?;
-                                let len = Size::min(buffer_size, region_size.sub(start)?);
-                                let buf = &mut buf[..len.as_usize()];
+                            let mut current = match special {
+                                Some(special) => {
+                                    match session.next_address(
+                                        &region.range,
+                                        region.range.base,
+                                        special,
+                                    )? {
+                                        Some(address) => address,
+                                        None => return Ok((addresses, values)),
+                                    }
+                                }
+                                None => region.range.base,
+                            };
 
-                                // TODO: figure out why we are trying to read invalid memory region sometimes.
-                                if let Err(_) = process.read_process_memory(loc, buf) {
-                                    continue;
+                            let end = region.range.base.add(region.range.size)?;
+
+                            while current < end {
+                                let proxy = session.address_proxy(current);
+
+                                if filter.test(&Value::None, proxy)? {
+                                    addresses.push(current);
+                                    values.push(proxy.eval(filter.ty)?);
                                 }
 
-                                let mut n = 0;
-                                let end = buf.len() - size;
-
-                                while n < end {
-                                    let w = &buf[n..(n + size)];
-
-                                    if let Some(value) = filter.test(&Value::None, w) {
-                                        let n = Size::try_from(n)?;
-                                        addresses.push(loc.add(n)?);
-                                        values.push(value);
+                                if let Some(special) = special {
+                                    current = match session.next_address(
+                                        &region.range,
+                                        current.saturating_add(Size::new(1)),
+                                        special,
+                                    )? {
+                                        Some(address) => address,
+                                        None => break,
                                     }
-
+                                } else {
                                     if aligned {
-                                        n += size;
+                                        current.add_assign(size)?;
                                     } else {
-                                        n += 1;
+                                        current.add_assign(1u32.into())?;
                                     }
                                 }
-
-                                start = start.add(buffer_size)?;
                             }
 
                             Ok::<_, anyhow::Error>((addresses, values))

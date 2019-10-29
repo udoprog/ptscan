@@ -1,28 +1,27 @@
 use crate::{error::Error, Value};
 use std::{fmt, mem, str};
 
-#[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Type {
-    None = 0u8,
-    U8 = 1u8,
-    I8 = 2u8,
-    U16 = 3u8,
-    I16 = 4u8,
-    U32 = 5u8,
-    I32 = 6u8,
-    U64 = 7u8,
-    I64 = 8u8,
-    U128 = 9u8,
-    I128 = 10u8,
-    String = 11u8,
+    None,
+    U8,
+    I8,
+    U16,
+    I16,
+    U32,
+    I32,
+    U64,
+    I64,
+    U128,
+    I128,
+    String(usize),
 }
 
 impl Type {
     /// Indicates if this type is aligned by default or not.
     pub fn is_default_aligned(&self) -> bool {
         match self {
-            Self::String => false,
+            Self::String(..) => false,
             _ => true,
         }
     }
@@ -40,6 +39,7 @@ impl Type {
             "i64" => Type::I64,
             "u128" => Type::U128,
             "i128" => Type::I128,
+            "string" => Type::String(0x100),
             _ => Type::None,
         }
     }
@@ -48,7 +48,7 @@ impl Type {
     pub fn default(&self) -> Value {
         match *self {
             Self::None => Value::None,
-            Self::String => Value::String(Default::default()),
+            Self::String(..) => Value::String(Default::default()),
             Self::U8 => Value::U8(Default::default()),
             Self::I8 => Value::I8(Default::default()),
             Self::U16 => Value::U16(Default::default()),
@@ -62,39 +62,11 @@ impl Type {
         }
     }
 
-    /// Convert from byte.
-    pub fn from_byte(ty: u8) -> Type {
-        const U8: u8 = Type::U8 as u8;
-        const I8: u8 = Type::I8 as u8;
-        const U16: u8 = Type::U16 as u8;
-        const I16: u8 = Type::I16 as u8;
-        const U32: u8 = Type::U32 as u8;
-        const I32: u8 = Type::I32 as u8;
-        const U64: u8 = Type::U64 as u8;
-        const I64: u8 = Type::I64 as u8;
-        const U128: u8 = Type::U128 as u8;
-        const I128: u8 = Type::I128 as u8;
-
-        match ty {
-            U8 => Type::U8,
-            I8 => Type::I8,
-            U16 => Type::U16,
-            I16 => Type::I16,
-            U32 => Type::U32,
-            I32 => Type::I32,
-            U64 => Type::U64,
-            I64 => Type::I64,
-            U128 => Type::U128,
-            I128 => Type::I128,
-            _ => Type::None,
-        }
-    }
-
     /// Parse a string value of the type.
     pub fn parse(&self, input: &str) -> Result<Value, Error> {
         let value = match *self {
             Self::None => return Err(Error::TypeParseNone),
-            Self::String => return Err(Error::TypeParseString),
+            Self::String(..) => return Err(Error::TypeParseString),
             Self::U8 => str::parse::<u8>(input).map(Value::U8),
             Self::I8 => str::parse::<i8>(input).map(Value::I8),
             Self::U16 => str::parse::<u16>(input).map(Value::U16),
@@ -114,7 +86,7 @@ impl Type {
     pub fn parse_hex(&self, input: &str) -> Result<Value, Error> {
         let value = match *self {
             Self::None => return Err(Error::TypeParseNone),
-            Self::String => return Err(Error::TypeParseString),
+            Self::String(..) => return Err(Error::TypeParseString),
             Self::U8 => u8::from_str_radix(input, 16).map(Value::U8),
             Self::I8 => i8::from_str_radix(input, 16).map(Value::I8),
             Self::U16 => u16::from_str_radix(input, 16).map(Value::U16),
@@ -132,8 +104,8 @@ impl Type {
 
     /// The known in-memory size that a type has.
     #[inline]
-    pub fn size(&self) -> Option<usize> {
-        Some(match *self {
+    pub fn size(&self) -> usize {
+        match *self {
             Self::None => 0,
             Self::U8 => mem::size_of::<u8>(),
             Self::I8 => mem::size_of::<i8>(),
@@ -145,8 +117,8 @@ impl Type {
             Self::I64 => mem::size_of::<i64>(),
             Self::U128 => mem::size_of::<u128>(),
             Self::I128 => mem::size_of::<i128>(),
-            _ => return None,
-        })
+            Self::String(len) => len,
+        }
     }
 
     /// Decode the given buffer into a value.
@@ -169,11 +141,7 @@ impl Type {
 
         Ok(match *self {
             Self::None => Value::None,
-            Self::String => Value::String(
-                std::str::from_utf8(buf)
-                    .map_err(|_| Error::NonUtf8)?
-                    .to_owned(),
-            ),
+            Self::String(..) => Value::String(buf.to_vec()),
             Self::U8 => Value::U8(decode_buf!(buf, u8)),
             Self::I8 => Value::I8(decode_buf!(buf, i8)),
             Self::U16 => Value::U16(decode_buf!(buf, u16)),
@@ -195,21 +163,19 @@ impl Type {
 
 impl fmt::Display for Type {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use self::Type::*;
-
         let o = match *self {
-            None => "none",
-            U8 => "u8",
-            I8 => "i8",
-            U16 => "u16",
-            I16 => "i16",
-            U32 => "u32",
-            I32 => "i32",
-            U64 => "u64",
-            I64 => "i64",
-            U128 => "u128",
-            I128 => "i128",
-            String => "string",
+            Type::None => "?",
+            Type::U8 => "u8",
+            Type::I8 => "i8",
+            Type::U16 => "u16",
+            Type::I16 => "i16",
+            Type::U32 => "u32",
+            Type::I32 => "i32",
+            Type::U64 => "u64",
+            Type::I64 => "i64",
+            Type::U128 => "u128",
+            Type::I128 => "i128",
+            Type::String(len) => return write!(fmt, "string/{}", len),
         };
 
         o.fmt(fmt)
@@ -220,7 +186,14 @@ impl str::FromStr for Type {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let ty = match s {
+        let mut it = s.split('/');
+
+        let first = match it.next() {
+            Some(base) => base,
+            None => return Err(Error::TypeBadBase),
+        };
+
+        let ty = match first {
             "u8" => Type::U8,
             "i8" => Type::I8,
             "u16" => Type::U16,
@@ -231,7 +204,14 @@ impl str::FromStr for Type {
             "i64" => Type::I64,
             "u128" => Type::U128,
             "i128" => Type::I128,
-            "string" => Type::String,
+            "string" => {
+                let size = match it.next() {
+                    Some(size) => str::parse::<usize>(size).map_err(|_| Error::TypeBadSize)?,
+                    None => 0x100,
+                };
+
+                Type::String(size)
+            }
             other => return Err(Error::IllegalType(other.to_string())),
         };
 
@@ -258,7 +238,7 @@ impl fmt::Display for HumanDisplay {
             Type::I64 => write!(fmt, "signed 64-bit number"),
             Type::U128 => write!(fmt, "unsigned 128-bit number"),
             Type::I128 => write!(fmt, "signed 128-bit number"),
-            Type::String => write!(fmt, "utf-8-encoded string"),
+            Type::String(len) => write!(fmt, "utf-8-encoded string of length {}", len),
         }
     }
 }

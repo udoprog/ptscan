@@ -67,8 +67,13 @@ impl Encode for i8 {
 
 impl<'a> Encode for &'a str {
     fn encode(self, buffer: &mut [u8]) {
-        let source = self.as_bytes();
-        let len = usize::min(buffer.len(), source.len());
-        buffer[..len].clone_from_slice(&source[..len]);
+        self.as_bytes().encode(buffer)
+    }
+}
+
+impl<'a> Encode for &'a [u8] {
+    fn encode(self, buffer: &mut [u8]) {
+        let len = usize::min(buffer.len(), self.len());
+        buffer[..len].clone_from_slice(&self[..len]);
     }
 }

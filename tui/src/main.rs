@@ -230,14 +230,8 @@ where
                     None => bail!("no active scan"),
                 };
 
-                if let Some(size) = ty.size() {
-                    let mut buf = vec![0u8; size];
-                    let value = handle.process.read_memory_of_type(address, ty, &mut buf)?;
-
-                    scan.push(scan::ScanResult { address, value });
-                } else {
-                    bail!("cannot add unsized value to scan")
-                }
+                let value = handle.process.address_proxy(address).eval(ty)?;
+                scan.push(scan::ScanResult { address, value });
             }
             Action::Scan(filter) => {
                 self.scan(&filter, None)?;

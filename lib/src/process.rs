@@ -1,4 +1,4 @@
-use std::{convert::TryFrom, ffi, fmt, ptr, sync::Arc};
+use std::{cmp, convert::TryFrom, ffi, fmt, iter, ptr, slice, sync::Arc};
 
 use crate::{
     error::Error, filter, module, scan, system, utils, Address, AddressRange, ProcessId, Size,
@@ -6,6 +6,7 @@ use crate::{
 };
 
 use ntapi::ntpsapi;
+use parking_lot::RwLock;
 use winapi::{
     shared::{
         basetsd::SIZE_T,
@@ -14,6 +15,51 @@ use winapi::{
     },
     um::{memoryapi, processthreadsapi, psapi, winnt, wow64apiset},
 };
+
+pub struct Session<'a> {
+    process: &'a Process,
+    memory_cache: MemoryCache,
+}
+
+impl<'a> Session<'a> {
+    /// Construct an address proxy for the given address.
+    pub fn address_proxy(&'a self, address: Address) -> AddressProxy<'a> {
+        AddressProxy {
+            address,
+            process: self.process,
+            memory_cache: Some(&self.memory_cache),
+        }
+    }
+
+    /// Get the next address matching.
+    pub fn next_address(
+        &self,
+        region: &AddressRange,
+        address: Address,
+        special: &filter::Special,
+    ) -> anyhow::Result<Option<Address>> {
+        match special {
+            filter::Special::Bytes(bytes) => {
+                if bytes.is_empty() {
+                    return Ok(None);
+                }
+
+                let offset = address.as_usize() - region.base.as_usize();
+
+                return self.memory_cache.with_region(self.process, region, |data| {
+                    let first = bytes[0];
+
+                    let index = match memchr::memchr(first, &data[offset..]) {
+                        Some(index) => index,
+                        None => return Ok(None),
+                    };
+
+                    Ok(Some(address.saturating_add(Size::try_from(index)?)))
+                });
+            }
+        }
+    }
+}
 
 /// A process handle.
 #[derive(Clone)]
@@ -28,6 +74,30 @@ impl Process {
             desired_access: Default::default(),
             inherit_handles: FALSE,
         }
+    }
+
+    /// Construct an address proxy for the given address.
+    pub fn address_proxy(&self, address: Address) -> AddressProxy<'_> {
+        AddressProxy {
+            address,
+            process: self,
+            memory_cache: None,
+        }
+    }
+
+    /// Create a new cached session.
+    pub fn session<'a>(&'a self) -> Result<Session<'a>, Error> {
+        use crate::utils::IteratorExtension as _;
+
+        let regions = self
+            .virtual_memory_regions()
+            .only_relevant()
+            .collect::<Result<_, Error>>()?;
+
+        Ok(Session {
+            process: self,
+            memory_cache: MemoryCache::new(regions),
+        })
     }
 
     /// Get the name of the process.
@@ -61,7 +131,7 @@ impl Process {
     ///
     /// This is unsafe since it reinteprets the given memory region as a type, which might not be correct.
     pub unsafe fn read<T>(&self, address: Address) -> Result<T, Error> {
-        use std::{mem, slice};
+        use std::mem;
 
         let mut out: T = mem::zeroed();
         let buf = slice::from_raw_parts_mut(&mut out as *mut T as *mut u8, mem::size_of::<T>());
@@ -296,8 +366,6 @@ impl Process {
         // how many tasks to run in parallel.
         let tasks = 0x100usize;
 
-        let filter_size = filter.size();
-
         thread_pool.install(|| {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<Task>>();
@@ -310,7 +378,6 @@ impl Process {
                     s.spawn(move |_| {
                         let mut values = Vec::new();
                         let mut addresses = Vec::new();
-                        let mut buf = vec![0u8; filter_size.unwrap_or(32)];
 
                         loop {
                             let (value, address) = match p_rx.recv().expect("closed") {
@@ -323,24 +390,11 @@ impl Process {
                             };
 
                             let mut work = || {
-                                let needed = filter_size.unwrap_or_else(|| value.size());
+                                let address = self.address_proxy(address);
 
-                                if buf.len() < needed {
-                                    buf.extend(
-                                        std::iter::repeat(0u8)
-                                            .take(needed.saturating_sub(buf.len())),
-                                    );
-                                }
-
-                                let buf = &mut buf[..needed];
-
-                                if !self.read_process_memory(address, buf)? {
-                                    return Ok(Task::Rejected);
-                                }
-
-                                if let Some(value) = filter.test(value, &*buf) {
-                                    values.push(value);
-                                    addresses.push(address);
+                                if filter.test(value, address)? {
+                                    values.push(value.clone());
+                                    addresses.push(address.address);
                                     return Ok(Task::Accepted);
                                 }
 
@@ -561,6 +615,169 @@ impl Process {
     }
 }
 
+pub struct FindRegionsFor<'a> {
+    iter: slice::Iter<'a, MemoryInformation>,
+    end: Address,
+}
+
+impl<'a> Iterator for FindRegionsFor<'a> {
+    type Item = &'a MemoryInformation;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let region = match self.iter.next() {
+            Some(region) => region,
+            None => return None,
+        };
+
+        if self.end < region.range.base {
+            return None;
+        }
+
+        Some(region)
+    }
+}
+
+#[derive(Debug)]
+pub struct Regions {
+    regions: Vec<MemoryInformation>,
+}
+
+impl Regions {
+    /// Find the region for the given address.
+    pub fn find_region_for(&self, address: Address) -> Option<&AddressRange> {
+        match self.regions.binary_search_by(|m| m.address_cmp(address)) {
+            Ok(index) => Some(&self.regions[index].range),
+            Err(..) => None,
+        }
+    }
+}
+
+impl iter::FromIterator<MemoryInformation> for Regions {
+    fn from_iter<I: IntoIterator<Item = MemoryInformation>>(iter: I) -> Self {
+        let regions = iter.into_iter().collect();
+        Self { regions }
+    }
+}
+
+#[derive(Debug)]
+pub struct MemoryCache {
+    /// Underlying cache.
+    cache: RwLock<lru::LruCache<AddressRange, Vec<u8>>>,
+    /// Valid memory regions.
+    regions: Regions,
+}
+
+impl MemoryCache {
+    /// Construct a new cache out of the given process.
+    pub fn new(regions: Regions) -> Self {
+        Self {
+            cache: RwLock::new(lru::LruCache::new(0x1000)),
+            regions,
+        }
+    }
+
+    /// Read process memory.
+    pub fn read_process_memory(
+        &self,
+        process: &Process,
+        address: Address,
+        buf: &mut [u8],
+    ) -> anyhow::Result<bool> {
+        let region = match self.regions.find_region_for(address) {
+            Some(region) => region,
+            None => return Ok(false),
+        };
+
+        let s = address.as_usize() - region.base.as_usize();
+        let e = s.saturating_add(buf.len());
+
+        {
+            let cache = self.cache.read();
+
+            if let Some(data) = cache.peek(region) {
+                if e >= data.len() {
+                    return Ok(false);
+                }
+
+                buf.clone_from_slice(&data[s..e]);
+                return Ok(true);
+            }
+        }
+
+        let mut cache = self.cache.write();
+        let mut data = vec![0u8; region.size.as_usize()];
+
+        if !process.read_process_memory(region.base, &mut data)? {
+            return Ok(false);
+        }
+
+        buf.clone_from_slice(&data[s..e]);
+        cache.put(region.clone(), data);
+        Ok(true)
+    }
+
+    pub fn with_region<T, U>(
+        &self,
+        process: &Process,
+        region: &AddressRange,
+        handle: T,
+    ) -> anyhow::Result<Option<U>>
+    where
+        T: FnOnce(&[u8]) -> anyhow::Result<Option<U>>,
+    {
+        {
+            let cache = self.cache.read();
+
+            if let Some(data) = cache.peek(region) {
+                return handle(data);
+            }
+        }
+
+        let mut cache = self.cache.write();
+        let mut data = vec![0u8; region.size.as_usize()];
+
+        if !process.read_process_memory(region.base, &mut data)? {
+            return Ok(None);
+        }
+
+        let result = handle(&data);
+        cache.put(region.clone(), data);
+        Ok(result?)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AddressProxy<'a> {
+    address: Address,
+    process: &'a Process,
+    memory_cache: Option<&'a MemoryCache>,
+}
+
+impl AddressProxy<'_> {
+    /// Evaluate the location of the proxy.
+    pub fn eval(&self, ty: Type) -> anyhow::Result<Value> {
+        let mut buf = vec![0u8; ty.size()];
+
+        if let Some(memory_cache) = self.memory_cache {
+            if memory_cache.read_process_memory(self.process, self.address, &mut buf)? {
+                return Ok(match ty.decode(&buf) {
+                    Ok(value) => value,
+                    Err(..) => Value::None,
+                });
+            }
+        } else {
+            if self.process.read_process_memory(self.address, &mut buf)? {
+                return Ok(match ty.decode(&buf) {
+                    Ok(value) => value,
+                    Err(..) => Value::None,
+                });
+            }
+        }
+
+        Ok(Value::None)
+    }
+}
+
 impl fmt::Debug for Process {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("Process")
@@ -620,6 +837,7 @@ impl OpenProcessBuilder {
         }
 
         let handle = Arc::new(utils::Handle::new(handle));
+
         Ok(Process { process_id, handle })
     }
 }
@@ -700,6 +918,12 @@ pub struct MemoryInformation {
     pub state: MemoryState,
     pub ty: MemoryType,
     pub protect: fixed_map::Set<MemoryProtect>,
+}
+
+impl MemoryInformation {
+    pub fn address_cmp(&self, address: Address) -> cmp::Ordering {
+        self.range.address_cmp(address)
+    }
 }
 
 /// Iterator over virtual memory regions.

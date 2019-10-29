@@ -2,11 +2,8 @@
 
 use crate::{
     error::Error,
-    filter,
     pointer::{Base, Pointer},
-    process,
-    special::Special,
-    system,
+    process, system,
     thread::Thread,
     Address, AddressRange, ProcessId, Size, Type, Value,
 };
@@ -370,36 +367,32 @@ impl Decode for u32 {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PointerMatcher {
     /// Sorted memory regions.
     memory_regions: Vec<process::MemoryInformation>,
 }
 
-impl filter::Matcher for PointerMatcher {
-    fn special(&self) -> Option<Special> {
-        Some(Special::NotZero)
-    }
+impl PointerMatcher {
+    pub fn test(
+        &self,
+        _: Type,
+        _: &Value,
+        proxy: process::AddressProxy<'_>,
+    ) -> anyhow::Result<bool> {
+        let value = proxy.eval(Type::U64)?;
 
-    fn test<'a>(&self, _: &Value, value: &Value) -> bool {
-        let address = match value.as_address() {
-            Ok(address) => address,
-            Err(_) => return false,
+        let address = match value {
+            Value::U64(value) => Address::new(value),
+            _ => anyhow::bail!("bad value when decoding address"),
         };
 
-        match AddressRange::find_in_range(&self.memory_regions, |m| &m.range, address) {
-            Ok(Some(_)) => return true,
-            _ => return false,
-        }
-    }
-
-    fn size(&self) -> Option<usize> {
-        // TODO: use process information to determine the size of a pointer.
-        Some(8)
-    }
-
-    fn is_default_aligned(&self) -> Option<bool> {
-        Some(true)
+        Ok(
+            match AddressRange::find_in_range(&self.memory_regions, |m| &m.range, address) {
+                Ok(Some(_)) => true,
+                _ => false,
+            },
+        )
     }
 }
 

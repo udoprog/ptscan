@@ -48,7 +48,7 @@ impl<'a> Module<'a> {
 
         Ok(ModuleInfo {
             base_of_dll: Address::try_from(out.lpBaseOfDll)?,
-            size_of_image: Size::try_from(out.SizeOfImage)?,
+            size_of_image: Size::from(out.SizeOfImage),
             entry_point: Address::try_from(out.EntryPoint)?,
         })
     }

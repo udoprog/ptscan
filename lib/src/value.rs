@@ -1,4 +1,4 @@
-use crate::{encode::Encode, error::Error, filter::ast, Address, Type};
+use crate::{encode::Encode, error::Error, filter::ast::EscapeString, Address, Type};
 use anyhow::bail;
 use std::{fmt, mem, str};
 
@@ -16,7 +16,7 @@ pub enum Value {
     I64(i64),
     U128(u128),
     I128(i128),
-    String(String),
+    String(Vec<u8>),
 }
 
 impl Value {
@@ -34,29 +34,6 @@ impl Value {
             Self::String(..) => false,
             _ => true,
         }
-    }
-
-    /// Convert from a big integer.
-    pub fn from_ast(value: ast::Value, ty: Type) -> Result<Self, Error> {
-        use num::ToPrimitive;
-
-        let out = match (ty, &value) {
-            (Type::U8, ast::Value::Number(value)) => value.to_u8().map(Value::U8),
-            (Type::I8, ast::Value::Number(value)) => value.to_i8().map(Value::I8),
-            (Type::U16, ast::Value::Number(value)) => value.to_u16().map(Value::U16),
-            (Type::I16, ast::Value::Number(value)) => value.to_i16().map(Value::I16),
-            (Type::U32, ast::Value::Number(value)) => value.to_u32().map(Value::U32),
-            (Type::I32, ast::Value::Number(value)) => value.to_i32().map(Value::I32),
-            (Type::U64, ast::Value::Number(value)) => value.to_u64().map(Value::U64),
-            (Type::I64, ast::Value::Number(value)) => value.to_i64().map(Value::I64),
-            (Type::U128, ast::Value::Number(value)) => value.to_u128().map(Value::U128),
-            (Type::I128, ast::Value::Number(value)) => value.to_i128().map(Value::I128),
-            (Type::String, ast::Value::String(string)) => Some(Value::String(string.clone())),
-            _ => return Ok(Value::None),
-        };
-
-        let out = out.ok_or_else(|| Error::AstConversionError(value, ty))?;
-        Ok(out)
     }
 
     /// Try to treat the value as an address.
@@ -84,7 +61,7 @@ impl Value {
         Ok(out)
     }
 
-    /// Decode the given buffer into a value.
+    /// Encode the given buffer into a value.
     pub fn encode(&self, buf: &mut [u8]) {
         match self {
             Self::None => {}
@@ -140,7 +117,7 @@ impl Value {
             I64(..) => Type::I64,
             U128(..) => Type::U128,
             I128(..) => Type::I128,
-            String(..) => Type::String,
+            String(string) => Type::String(string.len()),
         }
     }
 
@@ -162,6 +139,28 @@ impl Value {
             I128(..) => mem::size_of::<i128>(),
             String(string) => string.len(),
         }
+    }
+
+    /// Convert from a big integer.
+    pub fn from_bigint(ty: Type, value: &num_bigint::BigInt) -> Result<Self, Error> {
+        use num::ToPrimitive;
+
+        let out = match ty {
+            Type::U8 => value.to_u8().map(Value::U8),
+            Type::I8 => value.to_i8().map(Value::I8),
+            Type::U16 => value.to_u16().map(Value::U16),
+            Type::I16 => value.to_i16().map(Value::I16),
+            Type::U32 => value.to_u32().map(Value::U32),
+            Type::I32 => value.to_i32().map(Value::I32),
+            Type::U64 => value.to_u64().map(Value::U64),
+            Type::I64 => value.to_i64().map(Value::I64),
+            Type::U128 => value.to_u128().map(Value::U128),
+            Type::I128 => value.to_i128().map(Value::I128),
+            _ => return Ok(Value::None),
+        };
+
+        let out = out.ok_or_else(|| Error::ValueNumberConversion(value.clone(), ty))?;
+        Ok(out)
     }
 }
 
@@ -210,31 +209,7 @@ impl fmt::Display for Value {
             Value::I64(value) => write!(fmt, "{}", value),
             Value::U128(value) => write!(fmt, "{}", value),
             Value::I128(value) => write!(fmt, "{}", value),
-            Value::String(string) => write!(fmt, "{}", EscapeString(string.as_str())),
+            Value::String(string) => write!(fmt, "{}", EscapeString(&*string)),
         }
-    }
-}
-
-struct EscapeString<'a>(&'a str);
-
-impl fmt::Display for EscapeString<'_> {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "\"")?;
-
-        for c in self.0.chars() {
-            match c {
-                '\\' => write!(fmt, "\\\\")?,
-                '"' => write!(fmt, "\\\"")?,
-                ' ' => write!(fmt, " ")?,
-                '\t' => write!(fmt, "\\t")?,
-                '\n' => write!(fmt, "\\n")?,
-                '\r' => write!(fmt, "\\r")?,
-                '\0' => write!(fmt, "\\0")?,
-                c => write!(fmt, "{}", c)?,
-            }
-        }
-
-        write!(fmt, "\"")?;
-        Ok(())
     }
 }

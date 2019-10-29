@@ -169,6 +169,7 @@ impl<'a> Lexer<'a> {
         let (_, escape) = self.peek().ok_or_else(|| self.err("unterminated escape"))?;
 
         let escaped = match escape {
+            '0' => '\0',
             'n' => '\n',
             'r' => '\r',
             't' => '\t',

@@ -1,4 +1,11 @@
-use crate::{special::Special, Type, Value};
+use self::ast::{Op, ValueExpr, ValueTrait};
+use crate::{
+    process::AddressProxy,
+    process_handle::PointerMatcher,
+    value::{self, Value},
+    Type,
+};
+use num_bigint::Sign;
 use std::fmt;
 
 pub mod ast;
@@ -9,131 +16,130 @@ lalrpop_util::lalrpop_mod!(parser, "/filter/parser.rs");
 pub fn parse(input: &str, ty: Type) -> anyhow::Result<Filter> {
     let matcher = parser::OrParser::new()
         .parse(lexer::Lexer::new(input))?
-        .into_matcher(ty)?;
+        .into_matcher(ty);
 
-    let special = matcher.special();
+    Ok(Filter { ty, matcher })
+}
 
-    Ok(Filter {
-        ty,
-        matcher,
-        special,
-    })
+pub enum Special {
+    Bytes(Vec<u8>),
 }
 
 #[derive(Debug)]
 pub struct Filter {
     pub ty: Type,
-    pub matcher: Box<dyn Matcher>,
-    special: Option<Special>,
+    pub matcher: Matcher,
 }
 
 impl Filter {
     /// Test the given bytes against this filter.
-    pub fn test(&self, last: &Value, bytes: &[u8]) -> Option<Value> {
-        match self.special.as_ref().and_then(|s| s.test(bytes)) {
-            // A special, more efficient kind of matching is available.
-            Some(true) => self.ty.decode(bytes).ok(),
-            // special match is negative.
-            Some(false) => None,
-            None => {
-                let value = self.ty.decode(bytes).ok()?;
+    pub fn test(&self, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+        Ok(self.matcher.test(self.ty, last, proxy)?)
+    }
 
-                if self.matcher.test(last, &value) {
-                    Some(value)
-                } else {
-                    None
-                }
-            }
+    /// Check if zero is a match to this filter.
+    pub fn is_zero_match(&self) -> bool {
+        self.matcher.is_zero_match()
+    }
+
+    pub fn special(&self) -> anyhow::Result<Option<Special>> {
+        self.matcher.special(self.ty)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Matcher {
+    Changed(Changed),
+    Same(Same),
+    Binary(Binary),
+    All(All),
+    Any(Any),
+    Inc(Inc),
+    Dec(Dec),
+    PointerMatcher(PointerMatcher),
+}
+
+impl Matcher {
+    /// Test the specified memory region.
+    fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+        match self {
+            Self::Changed(m) => m.test(ty, last, proxy),
+            Self::Same(m) => m.test(ty, last, proxy),
+            Self::Binary(m) => m.test(ty, last, proxy),
+            Self::All(m) => m.test(ty, last, proxy),
+            Self::Any(m) => m.test(ty, last, proxy),
+            Self::Inc(m) => m.test(ty, last, proxy),
+            Self::Dec(m) => m.test(ty, last, proxy),
+            Self::PointerMatcher(m) => m.test(ty, last, proxy),
         }
     }
 
-    /// The size required to match this filter.
-    pub fn size(&self) -> Option<usize> {
-        self.matcher.size().or_else(|| self.ty.size())
+    fn is_zero_match(&self) -> bool {
+        match self {
+            Self::Changed(..) => true,
+            Self::Same(..) => true,
+            Self::Binary(m) => m.is_zero_match(),
+            Self::All(m) => m.is_zero_match(),
+            Self::Any(m) => m.is_zero_match(),
+            Self::Inc(..) => true,
+            Self::Dec(..) => true,
+            Self::PointerMatcher(..) => true,
+        }
     }
 
-    /// Test if filter is aligned by default.
-    pub fn is_default_aligned(&self) -> bool {
-        self.ty.is_default_aligned()
+    /// Construct a special matcher.
+    fn special(&self, ty: Type) -> anyhow::Result<Option<Special>> {
+        match self {
+            Self::Binary(m) => m.special(ty),
+            _ => Ok(None),
+        }
     }
 }
 
-pub trait Matcher: Send + Sync + fmt::Debug + fmt::Display {
-    /// If the filter supports special (more efficient matching).
-    fn special(&self) -> Option<Special> {
-        None
+impl fmt::Display for Matcher {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Changed(m) => m.fmt(fmt),
+            Self::Same(m) => m.fmt(fmt),
+            Self::Binary(m) => m.fmt(fmt),
+            Self::All(m) => m.fmt(fmt),
+            Self::Any(m) => m.fmt(fmt),
+            Self::Inc(m) => m.fmt(fmt),
+            Self::Dec(m) => m.fmt(fmt),
+            Self::PointerMatcher(m) => m.fmt(fmt),
+        }
     }
-
-    /// Test the specified memory region.
-    fn test(&self, _: &Value, _: &Value) -> bool;
-
-    /// The size of buffer required to drive this matcher.
-    fn size(&self) -> Option<usize>;
-
-    /// Indicates if the matched for value can be aligned.
-    fn is_default_aligned(&self) -> Option<bool>;
 }
 
-macro_rules! numeric_match {
-    ($expr_a:expr, $expr_b:expr, $a:ident, $b:ident, $test:expr) => {
+macro_rules! value_match {
+    ($expr_a:expr, $expr_b:expr, $a:ident $op:tt $b:ident) => {
         match ($expr_a, $expr_b) {
-            (Value::U128($a), Value::U128($b)) => $test,
-            (Value::I128($a), Value::I128($b)) => $test,
-            (Value::U64($a), Value::U64($b)) => $test,
-            (Value::I64($a), Value::I64($b)) => $test,
-            (Value::U32($a), Value::U32($b)) => $test,
-            (Value::I32($a), Value::I32($b)) => $test,
-            (Value::U8($a), Value::U8($b)) => $test,
-            (Value::I8($a), Value::I8($b)) => $test,
-            (Value::String($a), Value::String($b)) => $test,
+            (Value::U128($a), Value::U128($b)) => $a $op $b,
+            (Value::I128($a), Value::I128($b)) => $a $op $b,
+            (Value::U64($a), Value::U64($b)) => $a $op $b,
+            (Value::I64($a), Value::I64($b)) => $a $op $b,
+            (Value::U32($a), Value::U32($b)) => $a $op $b,
+            (Value::I32($a), Value::I32($b)) => $a $op $b,
+            (Value::U8($a), Value::U8($b)) => $a $op $b,
+            (Value::I8($a), Value::I8($b)) => $a $op $b,
+            (Value::String($a), Value::String($b)) => {
+                let len = usize::min($a.len(), $b.len());
+                let $a = &$a[..len];
+                let $b = &$b[..len];
+                $a $op $b
+            },
             _ => false,
         }
     };
-}
-
-/// Only match values which are exactly equal.
-#[derive(Debug)]
-pub struct Not(Box<dyn Matcher>);
-
-impl Matcher for Not {
-    fn special(&self) -> Option<Special> {
-        self.0.special().map(|s| s.invert())
-    }
-
-    fn test(&self, last: &Value, value: &Value) -> bool {
-        !self.0.test(last, value)
-    }
-
-    fn size(&self) -> Option<usize> {
-        self.0.size()
-    }
-
-    fn is_default_aligned(&self) -> Option<bool> {
-        self.0.is_default_aligned()
-    }
-}
-
-impl fmt::Display for Not {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "!{}", self.0)
-    }
 }
 
 /// Match values which are smaller than before.
 #[derive(Debug, Clone)]
 pub struct Dec;
 
-impl Matcher for Dec {
-    fn test(&self, last: &Value, value: &Value) -> bool {
-        Lt(last.clone()).test(&Value::None, value)
-    }
-
-    fn size(&self) -> Option<usize> {
-        None
-    }
-
-    fn is_default_aligned(&self) -> Option<bool> {
-        None
+impl Dec {
+    fn test(&self, _: Type, _: &Value, _: AddressProxy<'_>) -> anyhow::Result<bool> {
+        Ok(false)
     }
 }
 
@@ -147,17 +153,9 @@ impl fmt::Display for Dec {
 #[derive(Debug, Clone)]
 pub struct Inc;
 
-impl Matcher for Inc {
-    fn test(&self, last: &Value, value: &Value) -> bool {
-        Gt(last.clone()).test(&Value::None, value)
-    }
-
-    fn size(&self) -> Option<usize> {
-        None
-    }
-
-    fn is_default_aligned(&self) -> Option<bool> {
-        None
+impl Inc {
+    fn test(&self, _: Type, _: &Value, _: AddressProxy<'_>) -> anyhow::Result<bool> {
+        Ok(false)
     }
 }
 
@@ -171,17 +169,9 @@ impl fmt::Display for Inc {
 #[derive(Debug, Clone)]
 pub struct Changed;
 
-impl Matcher for Changed {
-    fn test(&self, last: &Value, value: &Value) -> bool {
-        !Eq(last.clone()).test(&Value::None, value)
-    }
-
-    fn size(&self) -> Option<usize> {
-        None
-    }
-
-    fn is_default_aligned(&self) -> Option<bool> {
-        None
+impl Changed {
+    fn test(&self, _: Type, _: &Value, _: AddressProxy<'_>) -> anyhow::Result<bool> {
+        Ok(false)
     }
 }
 
@@ -195,17 +185,9 @@ impl fmt::Display for Changed {
 #[derive(Debug, Clone)]
 pub struct Same;
 
-impl Matcher for Same {
-    fn test(&self, last: &Value, value: &Value) -> bool {
-        Eq(last.clone()).test(&Value::None, value)
-    }
-
-    fn size(&self) -> Option<usize> {
-        None
-    }
-
-    fn is_default_aligned(&self) -> Option<bool> {
-        None
+impl Same {
+    fn test(&self, _: Type, _: &Value, _: AddressProxy<'_>) -> anyhow::Result<bool> {
+        Ok(false)
     }
 }
 
@@ -217,271 +199,96 @@ impl fmt::Display for Same {
 
 /// Only match values which are exactly equal.
 #[derive(Debug, Clone)]
-pub struct Eq(pub Value);
+pub struct Binary(Op, ValueExpr, ValueExpr);
 
-impl Matcher for Eq {
-    fn special(&self) -> Option<Special> {
-        macro_rules! specials {
-            ($(($field:ident, $ty:ident),)*) => {
-                match self.0 {
-                Value::None => return None,
-                Value::String(ref string) => Special::exact_string(string.as_str()),
-                $(Value::$field(v) => match v {
-                    0 => Special::Zero,
-                    o => Special::exact(o),
-                },)*
-                }
-            };
-        }
+impl Binary {
+    fn test(&self, ty: Type, _: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+        let Binary(op, lhs, rhs) = self;
 
-        Some(specials! {
-            (U128, u128),
-            (I128, i128),
-            (U64, u64),
-            (I64, i64),
-            (U32, u32),
-            (I32, i32),
-            (U16, u16),
-            (I16, i16),
-            (U8, u8),
-            (I8, i8),
+        let lhs = match lhs.eval(ty, proxy)? {
+            Value::None => return Ok(false),
+            lhs => lhs,
+        };
+
+        let rhs = match rhs.eval(ty, proxy)? {
+            Value::None => return Ok(false),
+            rhs => rhs,
+        };
+
+        Ok(match op {
+            Op::Eq => value_match!(lhs, rhs, a == b),
+            Op::Neq => value_match!(lhs, rhs, a != b),
+            Op::Lt => value_match!(lhs, rhs, a < b),
+            Op::Lte => value_match!(lhs, rhs, a <= b),
+            Op::Gt => value_match!(lhs, rhs, a > b),
+            Op::Gte => value_match!(lhs, rhs, a >= b),
         })
     }
 
-    fn test(&self, _: &Value, value: &Value) -> bool {
-        numeric_match!(value, &self.0, a, b, a == b)
-    }
+    fn special(&self, ty: Type) -> anyhow::Result<Option<Special>> {
+        use self::ValueExpr::*;
 
-    fn size(&self) -> Option<usize> {
-        Some(self.0.size())
-    }
+        let Binary(op, lhs, rhs) = self;
 
-    fn is_default_aligned(&self) -> Option<bool> {
-        Some(self.0.is_default_aligned())
-    }
-}
-
-impl fmt::Display for Eq {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "value == {}", self.0)
-    }
-}
-
-/// Only match values which are exactly equal.
-#[derive(Debug, Clone)]
-pub struct Neq(pub Value);
-
-impl Matcher for Neq {
-    fn special(&self) -> Option<Special> {
-        macro_rules! specials {
-            ($(($field:ident, $ty:ident),)*) => {
-                match self.0 {
-                Value::None => return None,
-                Value::String(ref string) => Special::not_exact(string.as_str()),
-                $(Value::$field(v) => match v {
-                    0 => Special::NotZero,
-                    o => Special::not_exact(o),
-                },)*
-                }
-            };
-        }
-
-        Some(specials! {
-            (U128, u128),
-            (I128, i128),
-            (U64, u64),
-            (I64, i64),
-            (U32, u32),
-            (I32, i32),
-            (U16, u16),
-            (I16, i16),
-            (U8, u8),
-            (I8, i8),
-        })
-    }
-
-    fn test(&self, _: &Value, value: &Value) -> bool {
-        numeric_match!(value, &self.0, a, b, a != b)
-    }
-
-    fn size(&self) -> Option<usize> {
-        Some(self.0.size())
-    }
-
-    fn is_default_aligned(&self) -> Option<bool> {
-        Some(self.0.is_default_aligned())
-    }
-}
-
-impl fmt::Display for Neq {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "value != {}", self.0)
-    }
-}
-
-/// Only match values which are greater than the specified value.
-#[derive(Debug, Clone)]
-pub struct Gt(pub Value);
-
-impl Matcher for Gt {
-    fn special(&self) -> Option<Special> {
-        let s = match self.0 {
-            Value::U128(..) | Value::U64(..) | Value::U32(..) | Value::U16(..) | Value::U8(..) => {
-                Special::NotZero
+        let bytes = match (op, lhs, rhs) {
+            (Op::Eq, String(string), Value) | (Op::Eq, Value, String(string)) => {
+                Some(value::Value::String(string.as_bytes().to_vec()))
             }
-            Value::I128(v) if v > 0 => Special::NotZero,
-            Value::I64(v) if v > 0 => Special::NotZero,
-            Value::I32(v) if v > 0 => Special::NotZero,
-            Value::I16(v) if v > 0 => Special::NotZero,
-            Value::I8(v) if v > 0 => Special::NotZero,
-            _ => return None,
+            (Op::Eq, Number(number), Value) | (Op::Eq, Value, Number(number)) => {
+                Some(value::Value::from_bigint(ty, number)?)
+            }
+            _ => None,
         };
 
-        Some(s)
+        if let Some(value) = bytes {
+            let mut buf = vec![0u8; value.size()];
+            value.encode(&mut buf);
+            return Ok(Some(Special::Bytes(buf)));
+        }
+
+        Ok(None)
     }
 
-    fn test(&self, _: &Value, value: &Value) -> bool {
-        numeric_match!(value, &self.0, a, b, a > b)
-    }
+    /// Test if the given binary expression is allowed to assume a zero value.
+    fn is_zero_match(&self) -> bool {
+        use self::Sign::*;
+        use self::ValueTrait::*;
 
-    fn size(&self) -> Option<usize> {
-        Some(self.0.size())
-    }
+        let Binary(op, lhs, rhs) = self;
 
-    fn is_default_aligned(&self) -> Option<bool> {
-        Some(self.0.is_default_aligned())
+        match (op, lhs.traits(), rhs.traits()) {
+            // any derefs must be done on a non-zero value.
+            (_, (Deref, _), _) | (_, _, (Deref, _)) => false,
+            (Op::Eq, (Value, _), (NonZero, _)) | (Op::Eq, (NonZero, _), (Value, _)) => false,
+            (Op::Neq, (Value, _), (Zero, _)) | (Op::Neq, (Zero, _), (Value, _)) => false,
+            (Op::Gte, (Value, _), (NonZero, Plus)) => false,
+            (Op::Lte, (Value, _), (NonZero, Minus)) => false,
+            (Op::Lt, (Value, _), (NonZero, Minus)) => false,
+            (Op::Lt, (Value, _), (Zero, _)) => false,
+            (Op::Gt, (Value, _), (NonZero, Plus)) => false,
+            (Op::Gt, (Value, _), (Zero, _)) => false,
+            _ => true,
+        }
     }
 }
 
-impl fmt::Display for Gt {
+impl fmt::Display for Binary {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "value > {}", self.0)
-    }
-}
-
-/// Only match values which are greater than or equal to the specified value.
-#[derive(Debug, Clone)]
-pub struct Gte(pub Value);
-
-impl Matcher for Gte {
-    fn special(&self) -> Option<Special> {
-        let s = match self.0 {
-            Value::U128(v) if v > 0 => Special::NotZero,
-            Value::U64(v) if v > 0 => Special::NotZero,
-            Value::U32(v) if v > 0 => Special::NotZero,
-            Value::U16(v) if v > 0 => Special::NotZero,
-            Value::U8(v) if v > 0 => Special::NotZero,
-            Value::I128(v) if v > 0 => Special::NotZero,
-            Value::I64(v) if v > 0 => Special::NotZero,
-            Value::I32(v) if v > 0 => Special::NotZero,
-            Value::I16(v) if v > 0 => Special::NotZero,
-            Value::I8(v) if v > 0 => Special::NotZero,
-            _ => return None,
-        };
-
-        Some(s)
-    }
-
-    fn test(&self, _: &Value, value: &Value) -> bool {
-        numeric_match!(value, &self.0, a, b, a >= b)
-    }
-
-    fn size(&self) -> Option<usize> {
-        Some(self.0.size())
-    }
-
-    fn is_default_aligned(&self) -> Option<bool> {
-        Some(self.0.is_default_aligned())
-    }
-}
-
-impl fmt::Display for Gte {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "value >= {}", self.0)
-    }
-}
-
-/// Only match values which are less than the specified value.
-#[derive(Debug, Clone)]
-pub struct Lt(pub Value);
-
-impl Matcher for Lt {
-    fn special(&self) -> Option<Special> {
-        let s = match self.0 {
-            Value::U128(v) if v == 1 => Special::Zero,
-            Value::U64(v) if v == 1 => Special::Zero,
-            Value::U32(v) if v == 1 => Special::Zero,
-            Value::U16(v) if v == 1 => Special::Zero,
-            Value::U8(v) if v == 1 => Special::Zero,
-            _ => return None,
-        };
-
-        Some(s)
-    }
-
-    fn test(&self, _: &Value, value: &Value) -> bool {
-        numeric_match!(value, &self.0, a, b, a < b)
-    }
-
-    fn size(&self) -> Option<usize> {
-        Some(self.0.size())
-    }
-
-    fn is_default_aligned(&self) -> Option<bool> {
-        Some(self.0.is_default_aligned())
-    }
-}
-
-impl fmt::Display for Lt {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "value < {}", self.0)
-    }
-}
-
-/// Only match values which are less than or equal to the specified value.
-#[derive(Debug, Clone)]
-pub struct Lte(pub Value);
-
-impl Matcher for Lte {
-    fn special(&self) -> Option<Special> {
-        let s = match self.0 {
-            Value::U128(v) if v == 0 => Special::Zero,
-            Value::U64(v) if v == 0 => Special::NotZero,
-            Value::U32(v) if v == 0 => Special::NotZero,
-            Value::U16(v) if v == 0 => Special::NotZero,
-            Value::U8(v) if v == 0 => Special::NotZero,
-            _ => return None,
-        };
-
-        Some(s)
-    }
-
-    fn test(&self, _: &Value, value: &Value) -> bool {
-        numeric_match!(value, &self.0, a, b, a <= b)
-    }
-
-    fn size(&self) -> Option<usize> {
-        Some(self.0.size())
-    }
-
-    fn is_default_aligned(&self) -> Option<bool> {
-        Some(self.0.is_default_aligned())
-    }
-}
-
-impl fmt::Display for Lte {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "value <= {}", self.0)
+        write!(fmt, "{1} {0} {2}", self.0, self.1, self.2)
     }
 }
 
 /// Only matches when all nested filters match.
-#[derive(Debug)]
-pub struct All(Vec<Box<dyn Matcher>>);
+#[derive(Debug, Clone)]
+pub struct All(Vec<Matcher>);
 
 impl All {
-    pub fn new(filters: impl IntoIterator<Item = Box<dyn Matcher>>) -> Self {
+    pub fn new(filters: impl IntoIterator<Item = Matcher>) -> Self {
         All(filters.into_iter().collect())
+    }
+
+    pub fn is_zero_match(&self) -> bool {
+        self.0.iter().any(|m| m.is_zero_match())
     }
 }
 
@@ -501,51 +308,29 @@ impl fmt::Display for All {
     }
 }
 
-impl Matcher for All {
-    fn test(&self, last: &Value, value: &Value) -> bool {
-        self.0.iter().all(|p| p.test(last, value))
-    }
-
-    fn size(&self) -> Option<usize> {
-        self.0.iter().flat_map(|w| w.size()).max()
-    }
-
-    fn is_default_aligned(&self) -> Option<bool> {
-        let mut it = self.0.iter().flat_map(|w| w.is_default_aligned());
-
-        match it.next() {
-            Some(aligned) => Some(aligned && it.all(|aligned| aligned)),
-            None => None,
-        }
+impl All {
+    fn test(&self, _: Type, _: &Value, _: AddressProxy<'_>) -> anyhow::Result<bool> {
+        Ok(false)
     }
 }
 
 /// Only matches when any nested filter match.
-#[derive(Debug)]
-pub struct Any(Vec<Box<dyn Matcher>>);
+#[derive(Debug, Clone)]
+pub struct Any(Vec<Matcher>);
 
 impl Any {
-    pub fn new(filters: impl IntoIterator<Item = Box<dyn Matcher>>) -> Self {
+    pub fn new(filters: impl IntoIterator<Item = Matcher>) -> Self {
         Any(filters.into_iter().collect())
+    }
+
+    pub fn is_zero_match(&self) -> bool {
+        self.0.iter().all(|m| m.is_zero_match())
     }
 }
 
-impl Matcher for Any {
-    fn test(&self, last: &Value, value: &Value) -> bool {
-        self.0.iter().any(|p| p.test(last, value))
-    }
-
-    fn size(&self) -> Option<usize> {
-        self.0.iter().flat_map(|w| w.size()).max()
-    }
-
-    fn is_default_aligned(&self) -> Option<bool> {
-        let mut it = self.0.iter().flat_map(|w| w.is_default_aligned());
-
-        match it.next() {
-            Some(aligned) => Some(aligned && it.all(|aligned| aligned)),
-            None => None,
-        }
+impl Any {
+    fn test(&self, _: Type, _: &Value, _: AddressProxy<'_>) -> anyhow::Result<bool> {
+        Ok(false)
     }
 }
 

@@ -26,9 +26,10 @@ And: Expression = {
     Filter,
 }
 
-Value: Value = {
-    <number:number> => Value::Number(number),
-    <string:"string"> => Value::String(string),
+ValueExpr: ValueExpr = {
+    "value" => ValueExpr::Value,
+    <number:number> => ValueExpr::Number(number),
+    <string:"string"> => ValueExpr::String(string),
 };
 
 Filter: Expression = {
@@ -36,12 +37,12 @@ Filter: Expression = {
     same => Expression::Same,
     inc => Expression::Inc,
     dec => Expression::Dec,
-    "value" "==" <value:Value> => Expression::Eq(value),
-    "value" "!=" <value:Value> => Expression::Neq(value),
-    "value" "<=" <value:Value> => Expression::Lte(value),
-    "value" ">=" <value:Value> => Expression::Gte(value),
-    "value" "<" <value:Value> => Expression::Lt(value),
-    "value" ">" <value:Value> => Expression::Gt(value),
+    <lhs:ValueExpr> "==" <rhs:ValueExpr> => Expression::Binary(Op::Eq, lhs, rhs),
+    <lhs:ValueExpr> "!=" <rhs:ValueExpr> => Expression::Binary(Op::Neq, lhs, rhs),
+    <lhs:ValueExpr> "<=" <rhs:ValueExpr> => Expression::Binary(Op::Lte, lhs, rhs),
+    <lhs:ValueExpr> ">=" <rhs:ValueExpr> => Expression::Binary(Op::Gte, lhs, rhs),
+    <lhs:ValueExpr> "<" <rhs:ValueExpr> => Expression::Binary(Op::Lt, lhs, rhs),
+    <lhs:ValueExpr> ">" <rhs:ValueExpr> => Expression::Binary(Op::Gt, lhs, rhs),
 };
 
 extern {

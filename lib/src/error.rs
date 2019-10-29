@@ -1,8 +1,8 @@
 use crate::{
     address::{Address, Size},
+    filter::ast,
     ProcessId, ThreadId, Type,
 };
-use num_bigint::BigInt;
 use std::io;
 use thiserror::Error;
 
@@ -10,8 +10,8 @@ use winapi::shared::{minwindef::DWORD, ntdef::NTSTATUS};
 
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("failed to convert number `{0}`: out-of-range for type {1}")]
-    ConversionError(BigInt, Type),
+    #[error("failed to convert ast `{0:?}`: out-of-range for type {1}")]
+    AstConversionError(ast::Value, Type),
     #[error("system error: {0}")]
     System(#[source] io::Error),
     #[error("address {0} is not based on {1}")]
@@ -52,8 +52,12 @@ pub enum Error {
     IllegalType(String),
     #[error("cannot parse None type")]
     TypeParseNone,
+    #[error("cannot parse string as a type")]
+    TypeParseString,
     #[error("failed to parse type")]
     TypeParseError,
+    #[error("failed to decode utf-8 string")]
+    NonUtf8,
     #[error("this error literally cannot happen")]
     Infallible,
 }

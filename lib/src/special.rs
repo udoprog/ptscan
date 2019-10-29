@@ -41,12 +41,19 @@ impl Special {
     }
 
     /// Set up an exact match for the given value.
+    pub fn exact_string(s: &str) -> Special {
+        Special::Exact {
+            buffer: s.as_bytes().to_vec(),
+        }
+    }
+
+    /// Set up an exact match for the given value.
     pub fn exact<T>(value: T) -> Special
     where
         T: Encode,
     {
         let mut buffer = vec![0u8; mem::size_of::<T>()];
-        T::encode(&mut buffer, value);
+        value.encode(&mut buffer);
         Special::Exact { buffer }
     }
 
@@ -56,7 +63,7 @@ impl Special {
         T: Encode,
     {
         let mut buffer = vec![0u8; mem::size_of::<T>()];
-        T::encode(&mut buffer, value);
+        value.encode(&mut buffer);
         Special::NotExact { buffer }
     }
 

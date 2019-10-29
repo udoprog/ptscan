@@ -45,6 +45,8 @@ pub enum Token {
     CloseParen,
     /// A literal value, like `0x42`, or `128u32`.
     Literal(BigInt),
+    /// A quoted string.
+    String(String),
 }
 
 impl fmt::Display for Token {
@@ -141,6 +143,84 @@ impl<'a> Lexer<'a> {
             description: description.into(),
             pos: self.pos(),
         }
+    }
+
+    // decode a sequence of 4 unicode characters
+    fn decode_unicode4(&mut self) -> Result<char, (&'static str, usize)> {
+        let mut res = 0u32;
+
+        for x in 0..4u32 {
+            let c = self
+                .peek()
+                .ok_or_else(|| ("expected digit", x as usize))?
+                .1
+                .to_string();
+            let c = u32::from_str_radix(&c, 16).map_err(|_| ("expected hex digit", x as usize))?;
+            res += c << (4 * (3 - x));
+            self.step();
+        }
+
+        Ok(::std::char::from_u32(res).ok_or_else(|| ("invalid character", 0usize))?)
+    }
+
+    fn scan_escape(&mut self) -> Result<char, Error> {
+        self.step();
+
+        let (_, escape) = self.peek().ok_or_else(|| self.err("unterminated escape"))?;
+
+        let escaped = match escape {
+            'n' => '\n',
+            'r' => '\r',
+            't' => '\t',
+            '\\' => '\\',
+            '\"' => '\"',
+            'u' => {
+                let seq_start = self.step_n(1);
+
+                let c = self
+                    .decode_unicode4()
+                    .map_err(|(description, offset)| Error {
+                        description: description.into(),
+                        pos: seq_start + offset,
+                    })?;
+
+                return Ok(c);
+            }
+            _ => {
+                return Err(self.err(
+                    "unrecognized escape, should be one of: \\\", \\n, \\r, \\t, \\\\, \
+                     or \\uXXXX",
+                ));
+            }
+        };
+
+        self.step();
+        return Ok(escaped);
+    }
+
+    /// Scan a string.
+    fn scan_string(&mut self) -> Result<String, Error> {
+        self.buf.clear();
+
+        self.step();
+
+        while let Some((_, c)) = self.peek() {
+            if c == '\\' {
+                let c = self.scan_escape()?;
+                self.buf.push(c);
+                continue;
+            }
+
+            if c == '"' {
+                self.step();
+                return Ok(self.buf.clone());
+            }
+
+            self.buf.push(c);
+            self.step();
+        }
+
+        Err(self.err("unterminated string"))
     }
 
     /// Scan an identifier.
@@ -269,6 +349,11 @@ impl<'a> Iterator for Lexer<'a> {
                     self.step();
                     let e = self.pos();
                     return Some(Ok((s, Token::CloseParen, e)));
+                }
+                '"' => {
+                    let string = try_iter!(self.scan_string());
+                    let e = self.pos();
+                    return Some(Ok((s, Token::String(string), e)));
                 }
                 'a'..='z' => {
                     let ident = try_iter!(self.scan_ident());

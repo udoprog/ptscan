@@ -1,20 +1,6 @@
 use crate::{error::Error, Value};
 use std::{fmt, mem, str};
 
-// Decode a buffer, and depending on its width decode it differently.
-macro_rules! decode_buf {
-    ($buf:expr, $ty:ty) => {
-        match $buf.len() {
-            1 => $buf[0] as $ty,
-            2 => byteorder::LittleEndian::read_u16($buf) as $ty,
-            4 => byteorder::LittleEndian::read_u32($buf) as $ty,
-            8 => byteorder::LittleEndian::read_u64($buf) as $ty,
-            16 => byteorder::LittleEndian::read_u128($buf) as $ty,
-            _ => return Value::None,
-        }
-    };
-}
-
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Type {
@@ -29,9 +15,18 @@ pub enum Type {
     I64 = 8u8,
     U128 = 9u8,
     I128 = 10u8,
+    String = 11u8,
 }
 
 impl Type {
+    /// Indicates if this type is aligned by default or not.
+    pub fn is_default_aligned(&self) -> bool {
+        match self {
+            Self::String => false,
+            _ => true,
+        }
+    }
+
     /// Convert from a string.
     pub fn from_string(input: &str) -> Type {
         match input {
@@ -51,20 +46,19 @@ impl Type {
 
     /// Initialize a default value of the given type.
     pub fn default(&self) -> Value {
-        use self::Type::*;
-
         match *self {
-            None => Value::None,
-            U8 => Value::U8(Default::default()),
-            I8 => Value::I8(Default::default()),
-            U16 => Value::U16(Default::default()),
-            I16 => Value::I16(Default::default()),
-            U32 => Value::U32(Default::default()),
-            I32 => Value::I32(Default::default()),
-            U64 => Value::U64(Default::default()),
-            I64 => Value::I64(Default::default()),
-            U128 => Value::U128(Default::default()),
-            I128 => Value::I128(Default::default()),
+            Self::None => Value::None,
+            Self::String => Value::String(Default::default()),
+            Self::U8 => Value::U8(Default::default()),
+            Self::I8 => Value::I8(Default::default()),
+            Self::U16 => Value::U16(Default::default()),
+            Self::I16 => Value::I16(Default::default()),
+            Self::U32 => Value::U32(Default::default()),
+            Self::I32 => Value::I32(Default::default()),
+            Self::U64 => Value::U64(Default::default()),
+            Self::I64 => Value::I64(Default::default()),
+            Self::U128 => Value::U128(Default::default()),
+            Self::I128 => Value::I128(Default::default()),
         }
     }
 
@@ -98,20 +92,19 @@ impl Type {
 
     /// Parse a string value of the type.
     pub fn parse(&self, input: &str) -> Result<Value, Error> {
-        use self::Type::*;
-
         let value = match *self {
-            None => return Err(Error::TypeParseNone),
-            U8 => str::parse::<u8>(input).map(Value::U8),
-            I8 => str::parse::<i8>(input).map(Value::I8),
-            U16 => str::parse::<u16>(input).map(Value::U16),
-            I16 => str::parse::<i16>(input).map(Value::I16),
-            U32 => str::parse::<u32>(input).map(Value::U32),
-            I32 => str::parse::<i32>(input).map(Value::I32),
-            U64 => str::parse::<u64>(input).map(Value::U64),
-            I64 => str::parse::<i64>(input).map(Value::I64),
-            U128 => str::parse::<u128>(input).map(Value::U128),
-            I128 => str::parse::<i128>(input).map(Value::I128),
+            Self::None => return Err(Error::TypeParseNone),
+            Self::String => return Err(Error::TypeParseString),
+            Self::U8 => str::parse::<u8>(input).map(Value::U8),
+            Self::I8 => str::parse::<i8>(input).map(Value::I8),
+            Self::U16 => str::parse::<u16>(input).map(Value::U16),
+            Self::I16 => str::parse::<i16>(input).map(Value::I16),
+            Self::U32 => str::parse::<u32>(input).map(Value::U32),
+            Self::I32 => str::parse::<i32>(input).map(Value::I32),
+            Self::U64 => str::parse::<u64>(input).map(Value::U64),
+            Self::I64 => str::parse::<i64>(input).map(Value::I64),
+            Self::U128 => str::parse::<u128>(input).map(Value::U128),
+            Self::I128 => str::parse::<i128>(input).map(Value::I128),
         };
 
         value.map_err(|_| Error::TypeParseError)
@@ -119,63 +112,79 @@ impl Type {
 
     /// Parse a string as hex.
     pub fn parse_hex(&self, input: &str) -> Result<Value, Error> {
-        use self::Type::*;
-
         let value = match *self {
-            None => return Err(Error::TypeParseNone),
-            U8 => u8::from_str_radix(input, 16).map(Value::U8),
-            I8 => i8::from_str_radix(input, 16).map(Value::I8),
-            U16 => u16::from_str_radix(input, 16).map(Value::U16),
-            I16 => i16::from_str_radix(input, 16).map(Value::I16),
-            U32 => u32::from_str_radix(input, 16).map(Value::U32),
-            I32 => i32::from_str_radix(input, 16).map(Value::I32),
-            U64 => u64::from_str_radix(input, 16).map(Value::U64),
-            I64 => i64::from_str_radix(input, 16).map(Value::I64),
-            U128 => u128::from_str_radix(input, 16).map(Value::U128),
-            I128 => i128::from_str_radix(input, 16).map(Value::I128),
+            Self::None => return Err(Error::TypeParseNone),
+            Self::String => return Err(Error::TypeParseString),
+            Self::U8 => u8::from_str_radix(input, 16).map(Value::U8),
+            Self::I8 => i8::from_str_radix(input, 16).map(Value::I8),
+            Self::U16 => u16::from_str_radix(input, 16).map(Value::U16),
+            Self::I16 => i16::from_str_radix(input, 16).map(Value::I16),
+            Self::U32 => u32::from_str_radix(input, 16).map(Value::U32),
+            Self::I32 => i32::from_str_radix(input, 16).map(Value::I32),
+            Self::U64 => u64::from_str_radix(input, 16).map(Value::U64),
+            Self::I64 => i64::from_str_radix(input, 16).map(Value::I64),
+            Self::U128 => u128::from_str_radix(input, 16).map(Value::U128),
+            Self::I128 => i128::from_str_radix(input, 16).map(Value::I128),
         };
 
         value.map_err(|_| Error::TypeParseError)
     }
 
-    /// The size in-memory that a value has.
+    /// The known in-memory size that a type has.
     #[inline]
-    pub fn size(&self) -> usize {
-        use self::Type::*;
-
-        match *self {
-            None => 0,
-            U8 => mem::size_of::<u8>(),
-            I8 => mem::size_of::<i8>(),
-            U16 => mem::size_of::<u16>(),
-            I16 => mem::size_of::<i16>(),
-            U32 => mem::size_of::<u32>(),
-            I32 => mem::size_of::<i32>(),
-            U64 => mem::size_of::<u64>(),
-            I64 => mem::size_of::<i64>(),
-            U128 => mem::size_of::<u128>(),
-            I128 => mem::size_of::<i128>(),
-        }
+    pub fn size(&self) -> Option<usize> {
+        Some(match *self {
+            Self::None => 0,
+            Self::U8 => mem::size_of::<u8>(),
+            Self::I8 => mem::size_of::<i8>(),
+            Self::U16 => mem::size_of::<u16>(),
+            Self::I16 => mem::size_of::<i16>(),
+            Self::U32 => mem::size_of::<u32>(),
+            Self::I32 => mem::size_of::<i32>(),
+            Self::U64 => mem::size_of::<u64>(),
+            Self::I64 => mem::size_of::<i64>(),
+            Self::U128 => mem::size_of::<u128>(),
+            Self::I128 => mem::size_of::<i128>(),
+            _ => return None,
+        })
     }
 
     /// Decode the given buffer into a value.
-    pub fn decode(&self, buf: &[u8]) -> Value {
-        use self::Type::*;
+    pub fn decode(&self, buf: &[u8]) -> Result<Value, Error> {
+        // Decode a buffer, and depending on its width decode it differently.
+        macro_rules! decode_buf {
+            ($buf:expr, $ty:ty) => {
+                match $buf.len() {
+                    1 => $buf[0] as $ty,
+                    2 => byteorder::LittleEndian::read_u16($buf) as $ty,
+                    4 => byteorder::LittleEndian::read_u32($buf) as $ty,
+                    8 => byteorder::LittleEndian::read_u64($buf) as $ty,
+                    16 => byteorder::LittleEndian::read_u128($buf) as $ty,
+                    _ => return Ok(Value::None),
+                }
+            };
+        }
+
         use byteorder::ByteOrder;
 
-        match *self {
-            None => Value::None,
-            U8 => Value::U8(decode_buf!(buf, u8)),
-            I8 => Value::I8(decode_buf!(buf, i8)),
-            U16 => Value::U16(decode_buf!(buf, u16)),
-            I16 => Value::I16(decode_buf!(buf, i16)),
-            U32 => Value::U32(decode_buf!(buf, u32)),
-            I32 => Value::I32(decode_buf!(buf, i32)),
-            U64 => Value::U64(decode_buf!(buf, u64)),
-            I64 => Value::I64(decode_buf!(buf, i64)),
-            U128 => Value::U128(decode_buf!(buf, u128)),
-            I128 => Value::I128(decode_buf!(buf, i128)),
-        }
+        Ok(match *self {
+            Self::None => Value::None,
+            Self::String => Value::String(
+                std::str::from_utf8(buf)
+                    .map_err(|_| Error::NonUtf8)?
+                    .to_owned(),
+            ),
+            Self::U8 => Value::U8(decode_buf!(buf, u8)),
+            Self::I8 => Value::I8(decode_buf!(buf, i8)),
+            Self::U16 => Value::U16(decode_buf!(buf, u16)),
+            Self::I16 => Value::I16(decode_buf!(buf, i16)),
+            Self::U32 => Value::U32(decode_buf!(buf, u32)),
+            Self::I32 => Value::I32(decode_buf!(buf, i32)),
+            Self::U64 => Value::U64(decode_buf!(buf, u64)),
+            Self::I64 => Value::I64(decode_buf!(buf, i64)),
+            Self::U128 => Value::U128(decode_buf!(buf, u128)),
+            Self::I128 => Value::I128(decode_buf!(buf, i128)),
+        })
     }
 
     /// Convert into a type which implements `fmt::Display` for a human-readable string.
@@ -200,6 +209,7 @@ impl fmt::Display for Type {
             I64 => "i64",
             U128 => "u128",
             I128 => "i128",
+            String => "string",
         };
 
         o.fmt(fmt)
@@ -221,6 +231,7 @@ impl str::FromStr for Type {
             "i64" => Type::I64,
             "u128" => Type::U128,
             "i128" => Type::I128,
+            "string" => Type::String,
             other => return Err(Error::IllegalType(other.to_string())),
         };
 
@@ -247,6 +258,7 @@ impl fmt::Display for HumanDisplay {
             Type::I64 => write!(fmt, "signed 64-bit number"),
             Type::U128 => write!(fmt, "unsigned 128-bit number"),
             Type::I128 => write!(fmt, "signed 128-bit number"),
+            Type::String => write!(fmt, "utf-8-encoded string"),
         }
     }
 }

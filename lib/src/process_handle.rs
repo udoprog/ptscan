@@ -381,7 +381,7 @@ impl filter::Matcher for PointerMatcher {
         Some(Special::NotZero)
     }
 
-    fn test<'a>(&self, _: Option<&Value>, value: &Value) -> bool {
+    fn test<'a>(&self, _: &Value, value: &Value) -> bool {
         let address = match value.as_address() {
             Ok(address) => address,
             Err(_) => return false,
@@ -391,6 +391,15 @@ impl filter::Matcher for PointerMatcher {
             Ok(Some(_)) => return true,
             _ => return false,
         }
+    }
+
+    fn size(&self) -> Option<usize> {
+        // TODO: use process information to determine the size of a pointer.
+        Some(8)
+    }
+
+    fn is_default_aligned(&self) -> Option<bool> {
+        Some(true)
     }
 }
 

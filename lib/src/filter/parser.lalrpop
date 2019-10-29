@@ -26,17 +26,22 @@ And: Expression = {
     Filter,
 }
 
+Value: Value = {
+    <number:number> => Value::Number(number),
+    <string:"string"> => Value::String(string),
+};
+
 Filter: Expression = {
     changed => Expression::Changed,
     same => Expression::Same,
     inc => Expression::Inc,
     dec => Expression::Dec,
-    "value" "==" <value:number> => Expression::Eq(value),
-    "value" "!=" <value:number> => Expression::Neq(value),
-    "value" "<=" <value:number> => Expression::Lte(value),
-    "value" ">=" <value:number> => Expression::Gte(value),
-    "value" "<" <value:number> => Expression::Lt(value),
-    "value" ">" <value:number> => Expression::Gt(value),
+    "value" "==" <value:Value> => Expression::Eq(value),
+    "value" "!=" <value:Value> => Expression::Neq(value),
+    "value" "<=" <value:Value> => Expression::Lte(value),
+    "value" ">=" <value:Value> => Expression::Gte(value),
+    "value" "<" <value:Value> => Expression::Lt(value),
+    "value" ">" <value:Value> => Expression::Gt(value),
 };
 
 extern {
@@ -60,5 +65,6 @@ extern {
         "(" => Token::OpenParen,
         ")" => Token::CloseParen,
         number => Token::Literal(<BigInt>),
+        "string" => Token::String(<String>),
     }
 }

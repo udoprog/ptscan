@@ -5,7 +5,6 @@ use crate::{
     error::Error,
     filter, pointer,
     process::Process,
-    values::Values,
     watch::Watch,
     Location, ProcessHandle, Token, Value,
 };
@@ -29,24 +28,37 @@ pub struct Scan {
     /// Thread pool this scan uses.
     pub thread_pool: Arc<rayon::ThreadPool>,
     /// Only scan for aligned values.
-    pub aligned: bool,
+    pub aligned: Option<bool>,
     /// If this scan has a set of initial results.
     pub initial: bool,
     /// Addresses in the scan.
     pub addresses: Vec<Address>,
     /// Values in the scan.
-    pub values: Values,
+    pub values: Vec<Value>,
 }
 
 impl Scan {
     /// Construct a new scan associated with a thread pool.
     pub fn new(thread_pool: &Arc<rayon::ThreadPool>) -> Self {
         Self {
-            aligned: true,
+            aligned: None,
             initial: false,
             thread_pool: Arc::clone(thread_pool),
             addresses: Vec::new(),
-            values: Values::new(),
+            values: Vec::new(),
+        }
+    }
+
+    /// Remove the given entry by address.
+    ///
+    /// Returns `true` if the address was removed, `false` otherwise.
+    pub fn remove_by_address(&mut self, address: Address) -> bool {
+        if let Some(index) = self.addresses.iter().position(|a| *a == address) {
+            self.addresses.swap_remove(index);
+            self.values.swap_remove(index);
+            true
+        } else {
+            false
         }
     }
 
@@ -62,20 +74,16 @@ impl Scan {
     }
 
     /// Get the result at the given location.
-    pub fn get(&self, index: usize) -> Option<ScanResult> {
-        let address = self.addresses.get(index)?;
-        let value = self.values.get(index)?;
-
-        Some(ScanResult {
-            address: *address,
-            value,
-        })
+    pub fn get<'a>(&'a self, index: usize) -> Option<ScanResult> {
+        let address = self.addresses.get(index).cloned()?;
+        let value = self.values.get(index).cloned()?;
+        Some(ScanResult { address, value })
     }
 
     /// Push the given scan result.
     pub fn push(&mut self, result: ScanResult) {
         self.addresses.push(result.address);
-        self.values.push(result.value);
+        self.values.push(result.value.clone());
     }
 
     /// Create an iterator over the scan.
@@ -86,7 +94,7 @@ impl Scan {
     /// Only scan for values which are aligned.
     pub fn aligned(self) -> Self {
         Self {
-            aligned: true,
+            aligned: Some(true),
             ..self
         }
     }
@@ -100,7 +108,7 @@ impl Scan {
         progress: (impl Progress + Send),
     ) -> Result<Scan, anyhow::Error> {
         let mut addresses = Vec::new();
-        let mut values = Values::new();
+        let mut values = Vec::new();
 
         process.rescan_values(
             &*self.thread_pool,
@@ -152,13 +160,6 @@ impl Scan {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        let size = match filter.ty.size() {
-            0 => {
-                return Err(anyhow!("can't perform initial scan with unsized filter"));
-            }
-            size => size,
-        };
-
         let buffer_size = Size::new(0x10000);
 
         let Scan {
@@ -173,6 +174,12 @@ impl Scan {
         values.clear();
 
         let mut last_error = None;
+
+        let size = filter
+            .size()
+            .ok_or_else(|| anyhow!("cannot perform initial scan on unsized filter"))?;
+
+        let aligned = aligned.unwrap_or(filter.is_default_aligned());
 
         thread_pool.install(|| {
             rayon::scope(|s| {
@@ -194,7 +201,7 @@ impl Scan {
                             let mut start = Size::zero();
 
                             let mut addresses = Vec::new();
-                            let mut values = Values::new();
+                            let mut values = Vec::new();
                             let mut buf = vec![0u8; buffer_size.as_usize()];
 
                             if cancel.test() {
@@ -217,7 +224,7 @@ impl Scan {
                                 while n < end {
                                     let w = &buf[n..(n + size)];
 
-                                    if let Some(value) = filter.test(None, w) {
+                                    if let Some(value) = filter.test(&Value::None, w) {
                                         let n = Size::try_from(n)?;
                                         addresses.push(loc.add(n)?);
                                         values.push(value);
@@ -364,11 +371,6 @@ pub struct ScanResult {
 }
 
 impl ScanResult {
-    /// The size in bytes of the scan result.
-    pub fn size(&self) -> usize {
-        self.value.ty().size()
-    }
-
     /// Buld a watch out of a scan result.
     pub fn as_watch(&self, handle: Option<&ProcessHandle>) -> Result<Watch, Error> {
         let base = match handle {

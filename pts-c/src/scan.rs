@@ -221,7 +221,7 @@ pub extern "C" fn pts_scan_refresh<'a>(
 pub extern "C" fn pts_scan_values<'a>(scan: *const Scan, limit: usize) -> *mut Values {
     let Scan(ref scan) = *null_ck!(&'a scan);
     let end = usize::min(scan.values.len(), limit);
-    into_ptr!(Values(scan.values.clone_slice(0, end)))
+    into_ptr!(Values(scan.values[..end].to_vec()))
 }
 
 /// A reporter implementation that adapts a raw reporter.

@@ -161,6 +161,13 @@ where
 
                 writeln!(self.w, "removed scan `{}`", name)?;
             }
+            Action::ScansSet(name) => {
+                if !self.scans.contains_key(&name) {
+                    bail!("there is no scan named `{}`", name);
+                }
+
+                self.current_scan = name;
+            }
             Action::Exit => {
                 return Ok(true);
             }
@@ -178,15 +185,31 @@ where
                 self.attach()?;
             }
             Action::Print(limit) => {
-                if let Some(_handle) = self.handle.as_ref() {
-                    if let Some(_scan) = self.scans.get_mut(&self.current_scan) {
-                        // TODO: rewrite to keep track of values separately.
-                        // scan.refresh(&handle.process, 100, None, SimpleProgress::new(&mut self.w))?;
-                        println!("");
+                let limit = limit.unwrap_or(DEFAULT_LIMIT);
+
+                let scan = match self.scans.get_mut(&self.current_scan) {
+                    Some(scan) => scan,
+                    None => {
+                        writeln!(self.w, "no scan in use")?;
+                        return Ok(false);
                     }
+                };
+
+                if let Some(handle) = self.handle.as_ref() {
+                    let len = usize::min(scan.values.len(), limit);
+
+                    handle.process.refresh_values(
+                        &self.thread_pool,
+                        &scan.addresses,
+                        &mut scan.values[..len],
+                        None,
+                        SimpleProgress::new(&mut self.w),
+                    )?;
+
+                    println!("");
                 }
 
-                self.print(limit)?;
+                Self::print(&mut self.w, self.handle.as_ref(), &*scan, limit)?;
             }
             Action::Del(address) => {
                 let scan = match self.scans.get_mut(&self.current_scan) {
@@ -194,8 +217,7 @@ where
                     None => bail!("no active scan"),
                 };
 
-                panic!("TODO: cannot delete {} from {}", address, scan.len());
-                // scan.results.retain(|r| r.value.is_some());
+                scan.remove_by_address(address);
             }
             Action::Add(address, ty) => {
                 let handle = match self.handle.as_ref() {
@@ -208,10 +230,14 @@ where
                     None => bail!("no active scan"),
                 };
 
-                let mut buf = vec![0u8; ty.size()];
-                let value = handle.process.read_memory_of_type(address, ty, &mut buf)?;
+                if let Some(size) = ty.size() {
+                    let mut buf = vec![0u8; size];
+                    let value = handle.process.read_memory_of_type(address, ty, &mut buf)?;
 
-                scan.push(scan::ScanResult { address, value });
+                    scan.push(scan::ScanResult { address, value });
+                } else {
+                    bail!("cannot add unsized value to scan")
+                }
             }
             Action::Scan(filter) => {
                 self.scan(&filter, None)?;
@@ -229,7 +255,7 @@ where
                     None => bail!("not attached to a process"),
                 };
 
-                let mut buf = vec![0u8; value.ty().size()];
+                let mut buf = vec![0u8; value.size()];
                 value.encode(&mut buf);
                 handle.process.write_process_memory(address, &buf)?;
             }
@@ -298,8 +324,10 @@ where
         }
 
         println!("");
-        self.scans.insert(self.current_scan.clone(), res?);
-        self.print(None)?;
+        let scan = res?;
+
+        Self::print(&mut self.w, self.handle.as_ref(), &scan, DEFAULT_LIMIT)?;
+        self.scans.insert(self.current_scan.clone(), scan);
         Ok(())
     }
 
@@ -341,33 +369,23 @@ where
     }
 
     /// Print the current state of the scan.
-    fn print(&mut self, limit: Option<usize>) -> anyhow::Result<()> {
-        let scan = match self.scans.get(&self.current_scan) {
-            Some(scan) => scan,
-            None => {
-                writeln!(self.w, "no scan in use")?;
-                return Ok(());
-            }
-        };
-
-        let limit = limit.unwrap_or(DEFAULT_LIMIT);
-
+    fn print(
+        w: &mut impl io::Write,
+        handle: Option<&ProcessHandle>,
+        scan: &ptscan::Scan,
+        limit: usize,
+    ) -> anyhow::Result<()> {
         if scan.len() > limit {
-            writeln!(self.w, "found {} addresses (only showing 10)", scan.len())?;
+            writeln!(w, "found {} addresses (only showing 10)", scan.len())?;
         } else {
-            writeln!(self.w, "found {} addresses", scan.len())?;
+            writeln!(w, "found {} addresses", scan.len())?;
         };
 
         for result in scan.iter().take(limit) {
-            if let Some(handle) = self.handle.as_ref() {
-                writeln!(
-                    self.w,
-                    "{} = {}",
-                    result.address.display(handle),
-                    result.value
-                )?;
+            if let Some(handle) = handle.as_ref() {
+                writeln!(w, "{} = {}", result.address.display(handle), result.value)?;
             } else {
-                writeln!(self.w, "{} = {}", result.address, result.value)?;
+                writeln!(w, "{} = {}", result.address, result.value)?;
             }
         }
 
@@ -526,6 +544,15 @@ where
 
                         return Ok(Action::ScansDel(command[0].to_string()));
                     }
+                    "set" => {
+                        let command = &command[1..];
+
+                        if command.len() != 1 {
+                            bail!("missing <name>");
+                        }
+
+                        return Ok(Action::ScansSet(command[0].to_string()));
+                    }
                     other => bail!("not a `scans` sub-command: {}", other),
                 }
             }
@@ -579,4 +606,6 @@ pub enum Action {
     ScansNew(String),
     /// Delete the scan with the given name.
     ScansDel(String),
+    /// Switch to the given scan.
+    ScansSet(String),
 }

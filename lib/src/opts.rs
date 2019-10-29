@@ -27,7 +27,8 @@ fn app() -> clap::App<'static, 'static> {
             clap::Arg::with_name("process")
                 .help("Only analyze processes matching the given name.")
                 .takes_value(true)
-                .long("process"),
+                .long("process")
+                .short("p"),
         )
         .arg(
             clap::Arg::with_name("suspend")

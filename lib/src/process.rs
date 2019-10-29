@@ -1,8 +1,8 @@
 use std::{convert::TryFrom, ffi, fmt, ptr, sync::Arc};
 
 use crate::{
-    error::Error, filter, module, scan, system, utils, values::ValueMut, Address, AddressRange,
-    ProcessId, Size, Token, Type, Value, Values,
+    error::Error, filter, module, scan, system, utils, Address, AddressRange, ProcessId, Size,
+    Token, Type, Value,
 };
 
 use ntapi::ntpsapi;
@@ -133,15 +133,11 @@ impl Process {
         ty: Type,
         buf: &mut [u8],
     ) -> Result<Value, Error> {
-        if buf.len() != ty.size() {
-            return Err(Error::BufferOverflow);
-        }
-
         if !self.read_process_memory(address, buf)? {
             return Err(Error::ReadUnderflow);
         }
 
-        Ok(ty.decode(buf))
+        Ok(ty.decode(buf)?)
     }
 
     /// Read a 64-bit memory region as a little endian unsigned integer.
@@ -271,9 +267,9 @@ impl Process {
     pub fn rescan_values(
         &self,
         thread_pool: &rayon::ThreadPool,
-        values: &Values,
+        values: &[Value],
         addresses: &[Address],
-        values_output: &mut Values,
+        values_output: &mut Vec<Value>,
         addresses_output: &mut Vec<Address>,
         filter: &filter::Filter,
         cancel: Option<&Token>,
@@ -300,22 +296,24 @@ impl Process {
         // how many tasks to run in parallel.
         let tasks = 0x100usize;
 
+        let filter_size = filter.size();
+
         thread_pool.install(|| {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<Task>>();
-                let (p_tx, p_rx) = crossbeam_channel::unbounded::<Option<(Value, Address)>>();
+                let (p_tx, p_rx) = crossbeam_channel::unbounded::<Option<(&Value, Address)>>();
 
                 for _ in 0..thread_pool.current_num_threads() {
                     let tx = tx.clone();
                     let p_rx = p_rx.clone();
 
                     s.spawn(move |_| {
-                        let mut values = Values::new();
+                        let mut values = Vec::new();
                         let mut addresses = Vec::new();
-                        let mut buf = vec![0u8; filter.ty.size()];
+                        let mut buf = vec![0u8; filter_size.unwrap_or(32)];
 
                         loop {
-                            let (output, address) = match p_rx.recv().expect("closed") {
+                            let (value, address) = match p_rx.recv().expect("closed") {
                                 Some(task) => task,
                                 None => {
                                     tx.send(Ok(Task::Result(values, addresses)))
@@ -325,11 +323,22 @@ impl Process {
                             };
 
                             let mut work = || {
-                                if !self.read_process_memory(address, &mut buf)? {
+                                let needed = filter_size.unwrap_or_else(|| value.size());
+
+                                if buf.len() < needed {
+                                    buf.extend(
+                                        std::iter::repeat(0u8)
+                                            .take(needed.saturating_sub(buf.len())),
+                                    );
+                                }
+
+                                let buf = &mut buf[..needed];
+
+                                if !self.read_process_memory(address, buf)? {
                                     return Ok(Task::Rejected);
                                 }
 
-                                if let Some(value) = filter.test(Some(&output), &*buf) {
+                                if let Some(value) = filter.test(value, &*buf) {
                                     values.push(value);
                                     addresses.push(address);
                                     return Ok(Task::Accepted);
@@ -399,8 +408,12 @@ impl Process {
 
                     reporter.tick(count);
                 }
-            });
-        });
+
+                Ok::<_, anyhow::Error>(())
+            })?;
+
+            Ok::<_, anyhow::Error>(())
+        })?;
 
         if let Some(e) = last_error {
             return Err(e);
@@ -414,7 +427,7 @@ impl Process {
             /// Address was rejected.
             Rejected,
             /// The result of a computation.
-            Result(Values, Vec<Address>),
+            Result(Vec<Value>, Vec<Address>),
         }
     }
 
@@ -423,7 +436,7 @@ impl Process {
         &self,
         thread_pool: &rayon::ThreadPool,
         addresses: &[Address],
-        output: &mut Values,
+        output: &mut [Value],
         cancel: Option<&Token>,
         progress: (impl scan::Progress + Send),
     ) -> anyhow::Result<()> {
@@ -451,7 +464,7 @@ impl Process {
         thread_pool.install(|| {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel();
-                let (p_tx, p_rx) = crossbeam_channel::unbounded::<Option<(ValueMut, Address)>>();
+                let (p_tx, p_rx) = crossbeam_channel::unbounded::<Option<(&mut Value, Address)>>();
 
                 for _ in 0..thread_pool.current_num_threads() {
                     let tx = tx.clone();
@@ -460,7 +473,7 @@ impl Process {
                     let mut buf = vec![0u8; 0x10];
 
                     s.spawn(move |_| loop {
-                        let (mut output, address) = match p_rx.recv().expect("closed") {
+                        let (output, address) = match p_rx.recv().expect("closed") {
                             Some(task) => task,
                             None => {
                                 tx.send(None).expect("closed");
@@ -469,17 +482,27 @@ impl Process {
                         };
 
                         let ty = output.ty();
-                        let buf = &mut buf[..ty.size()];
+                        let needed = output.size();
+
+                        if buf.len() < needed {
+                            buf.extend(
+                                std::iter::repeat(0u8).take(needed.saturating_sub(buf.len())),
+                            );
+                        }
+
+                        let buf = &mut buf[..needed];
 
                         let mut work = move || {
                             if !self.read_process_memory(address, buf)? {
                                 return Ok(0u64);
                             }
 
-                            Ok(match output.set(ty.decode(buf)) {
-                                true => 1u64,
-                                false => 0u64,
-                            })
+                            *output = match ty.decode(buf) {
+                                Ok(value) => value,
+                                Err(_) => Value::None,
+                            };
+
+                            Ok(1)
                         };
 
                         tx.send(Some(work())).expect("closed");

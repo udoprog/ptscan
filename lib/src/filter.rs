@@ -1,7 +1,7 @@
 use crate::{special::Special, Type, Value};
 use std::fmt;
 
-mod ast;
+pub mod ast;
 mod lexer;
 lalrpop_util::lalrpop_mod!(parser, "/filter/parser.rs");
 
@@ -29,14 +29,14 @@ pub struct Filter {
 
 impl Filter {
     /// Test the given bytes against this filter.
-    pub fn test(&self, last: Option<&Value>, bytes: &[u8]) -> Option<Value> {
+    pub fn test(&self, last: &Value, bytes: &[u8]) -> Option<Value> {
         match self.special.as_ref().and_then(|s| s.test(bytes)) {
             // A special, more efficient kind of matching is available.
-            Some(true) => Some(self.ty.decode(bytes)),
+            Some(true) => self.ty.decode(bytes).ok(),
             // special match is negative.
             Some(false) => None,
             None => {
-                let value = self.ty.decode(bytes);
+                let value = self.ty.decode(bytes).ok()?;
 
                 if self.matcher.test(last, &value) {
                     Some(value)
@@ -45,6 +45,16 @@ impl Filter {
                 }
             }
         }
+    }
+
+    /// The size required to match this filter.
+    pub fn size(&self) -> Option<usize> {
+        self.matcher.size().or_else(|| self.ty.size())
+    }
+
+    /// Test if filter is aligned by default.
+    pub fn is_default_aligned(&self) -> bool {
+        self.ty.is_default_aligned()
     }
 }
 
@@ -55,7 +65,13 @@ pub trait Matcher: Send + Sync + fmt::Debug + fmt::Display {
     }
 
     /// Test the specified memory region.
-    fn test<'a>(&self, _: Option<&Value>, _: &Value) -> bool;
+    fn test(&self, _: &Value, _: &Value) -> bool;
+
+    /// The size of buffer required to drive this matcher.
+    fn size(&self) -> Option<usize>;
+
+    /// Indicates if the matched for value can be aligned.
+    fn is_default_aligned(&self) -> Option<bool>;
 }
 
 macro_rules! numeric_match {
@@ -69,6 +85,7 @@ macro_rules! numeric_match {
             (Value::I32($a), Value::I32($b)) => $test,
             (Value::U8($a), Value::U8($b)) => $test,
             (Value::I8($a), Value::I8($b)) => $test,
+            (Value::String($a), Value::String($b)) => $test,
             _ => false,
         }
     };
@@ -83,8 +100,16 @@ impl Matcher for Not {
         self.0.special().map(|s| s.invert())
     }
 
-    fn test<'a>(&self, last: Option<&Value>, value: &Value) -> bool {
+    fn test(&self, last: &Value, value: &Value) -> bool {
         !self.0.test(last, value)
+    }
+
+    fn size(&self) -> Option<usize> {
+        self.0.size()
+    }
+
+    fn is_default_aligned(&self) -> Option<bool> {
+        self.0.is_default_aligned()
     }
 }
 
@@ -99,11 +124,16 @@ impl fmt::Display for Not {
 pub struct Dec;
 
 impl Matcher for Dec {
-    fn test<'a>(&self, last: Option<&Value>, value: &Value) -> bool {
-        match last {
-            Some(last) => Lt(*last).test(None, value),
-            None => false,
-        }
+    fn test(&self, last: &Value, value: &Value) -> bool {
+        Lt(last.clone()).test(&Value::None, value)
+    }
+
+    fn size(&self) -> Option<usize> {
+        None
+    }
+
+    fn is_default_aligned(&self) -> Option<bool> {
+        None
     }
 }
 
@@ -118,11 +148,16 @@ impl fmt::Display for Dec {
 pub struct Inc;
 
 impl Matcher for Inc {
-    fn test<'a>(&self, last: Option<&Value>, value: &Value) -> bool {
-        match last {
-            Some(last) => Gt(*last).test(None, value),
-            None => false,
-        }
+    fn test(&self, last: &Value, value: &Value) -> bool {
+        Gt(last.clone()).test(&Value::None, value)
+    }
+
+    fn size(&self) -> Option<usize> {
+        None
+    }
+
+    fn is_default_aligned(&self) -> Option<bool> {
+        None
     }
 }
 
@@ -137,11 +172,16 @@ impl fmt::Display for Inc {
 pub struct Changed;
 
 impl Matcher for Changed {
-    fn test<'a>(&self, last: Option<&Value>, value: &Value) -> bool {
-        match last {
-            Some(last) => !Eq(*last).test(None, value),
-            None => false,
-        }
+    fn test(&self, last: &Value, value: &Value) -> bool {
+        !Eq(last.clone()).test(&Value::None, value)
+    }
+
+    fn size(&self) -> Option<usize> {
+        None
+    }
+
+    fn is_default_aligned(&self) -> Option<bool> {
+        None
     }
 }
 
@@ -156,11 +196,16 @@ impl fmt::Display for Changed {
 pub struct Same;
 
 impl Matcher for Same {
-    fn test<'a>(&self, last: Option<&Value>, value: &Value) -> bool {
-        match last {
-            Some(last) => Eq(*last).test(None, value),
-            None => false,
-        }
+    fn test(&self, last: &Value, value: &Value) -> bool {
+        Eq(last.clone()).test(&Value::None, value)
+    }
+
+    fn size(&self) -> Option<usize> {
+        None
+    }
+
+    fn is_default_aligned(&self) -> Option<bool> {
+        None
     }
 }
 
@@ -180,6 +225,7 @@ impl Matcher for Eq {
             ($(($field:ident, $ty:ident),)*) => {
                 match self.0 {
                 Value::None => return None,
+                Value::String(ref string) => Special::exact_string(string.as_str()),
                 $(Value::$field(v) => match v {
                     0 => Special::Zero,
                     o => Special::exact(o),
@@ -202,8 +248,16 @@ impl Matcher for Eq {
         })
     }
 
-    fn test<'a>(&self, _: Option<&Value>, value: &Value) -> bool {
+    fn test(&self, _: &Value, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a == b)
+    }
+
+    fn size(&self) -> Option<usize> {
+        Some(self.0.size())
+    }
+
+    fn is_default_aligned(&self) -> Option<bool> {
+        Some(self.0.is_default_aligned())
     }
 }
 
@@ -223,6 +277,7 @@ impl Matcher for Neq {
             ($(($field:ident, $ty:ident),)*) => {
                 match self.0 {
                 Value::None => return None,
+                Value::String(ref string) => Special::not_exact(string.as_str()),
                 $(Value::$field(v) => match v {
                     0 => Special::NotZero,
                     o => Special::not_exact(o),
@@ -245,8 +300,16 @@ impl Matcher for Neq {
         })
     }
 
-    fn test<'a>(&self, _: Option<&Value>, value: &Value) -> bool {
+    fn test(&self, _: &Value, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a != b)
+    }
+
+    fn size(&self) -> Option<usize> {
+        Some(self.0.size())
+    }
+
+    fn is_default_aligned(&self) -> Option<bool> {
+        Some(self.0.is_default_aligned())
     }
 }
 
@@ -277,8 +340,16 @@ impl Matcher for Gt {
         Some(s)
     }
 
-    fn test<'a>(&self, _: Option<&Value>, value: &Value) -> bool {
+    fn test(&self, _: &Value, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a > b)
+    }
+
+    fn size(&self) -> Option<usize> {
+        Some(self.0.size())
+    }
+
+    fn is_default_aligned(&self) -> Option<bool> {
+        Some(self.0.is_default_aligned())
     }
 }
 
@@ -311,8 +382,16 @@ impl Matcher for Gte {
         Some(s)
     }
 
-    fn test<'a>(&self, _: Option<&Value>, value: &Value) -> bool {
+    fn test(&self, _: &Value, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a >= b)
+    }
+
+    fn size(&self) -> Option<usize> {
+        Some(self.0.size())
+    }
+
+    fn is_default_aligned(&self) -> Option<bool> {
+        Some(self.0.is_default_aligned())
     }
 }
 
@@ -340,8 +419,16 @@ impl Matcher for Lt {
         Some(s)
     }
 
-    fn test<'a>(&self, _: Option<&Value>, value: &Value) -> bool {
+    fn test(&self, _: &Value, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a < b)
+    }
+
+    fn size(&self) -> Option<usize> {
+        Some(self.0.size())
+    }
+
+    fn is_default_aligned(&self) -> Option<bool> {
+        Some(self.0.is_default_aligned())
     }
 }
 
@@ -369,8 +456,16 @@ impl Matcher for Lte {
         Some(s)
     }
 
-    fn test<'a>(&self, _: Option<&Value>, value: &Value) -> bool {
+    fn test(&self, _: &Value, value: &Value) -> bool {
         numeric_match!(value, &self.0, a, b, a <= b)
+    }
+
+    fn size(&self) -> Option<usize> {
+        Some(self.0.size())
+    }
+
+    fn is_default_aligned(&self) -> Option<bool> {
+        Some(self.0.is_default_aligned())
     }
 }
 
@@ -407,8 +502,21 @@ impl fmt::Display for All {
 }
 
 impl Matcher for All {
-    fn test<'a>(&self, last: Option<&Value>, value: &Value) -> bool {
+    fn test(&self, last: &Value, value: &Value) -> bool {
         self.0.iter().all(|p| p.test(last, value))
+    }
+
+    fn size(&self) -> Option<usize> {
+        self.0.iter().flat_map(|w| w.size()).max()
+    }
+
+    fn is_default_aligned(&self) -> Option<bool> {
+        let mut it = self.0.iter().flat_map(|w| w.is_default_aligned());
+
+        match it.next() {
+            Some(aligned) => Some(aligned && it.all(|aligned| aligned)),
+            None => None,
+        }
     }
 }
 
@@ -423,8 +531,21 @@ impl Any {
 }
 
 impl Matcher for Any {
-    fn test<'a>(&self, last: Option<&Value>, value: &Value) -> bool {
+    fn test(&self, last: &Value, value: &Value) -> bool {
         self.0.iter().any(|p| p.test(last, value))
+    }
+
+    fn size(&self) -> Option<usize> {
+        self.0.iter().flat_map(|w| w.size()).max()
+    }
+
+    fn is_default_aligned(&self) -> Option<bool> {
+        let mut it = self.0.iter().flat_map(|w| w.is_default_aligned());
+
+        match it.next() {
+            Some(aligned) => Some(aligned && it.all(|aligned| aligned)),
+            None => None,
+        }
     }
 }
 

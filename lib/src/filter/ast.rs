@@ -1,5 +1,11 @@
-use crate::{filter, Type, Value};
+use crate::{filter, value, Type};
 use num_bigint::BigInt;
+
+#[derive(Debug)]
+pub enum Value {
+    Number(BigInt),
+    String(String),
+}
 
 #[derive(Debug)]
 pub enum Expression {
@@ -12,17 +18,17 @@ pub enum Expression {
     /// A value that has decreased.
     Dec,
     /// Test that the value equals the expected value.
-    Eq(BigInt),
+    Eq(Value),
     /// Test that the value is not equal to the given value.
-    Neq(BigInt),
+    Neq(Value),
     /// Test that a value is less than or equal to another value.
-    Lte(BigInt),
+    Lte(Value),
     /// Test that a value is greater than or equal to another value.
-    Gte(BigInt),
+    Gte(Value),
     /// Test that a value is less than another value.
-    Lt(BigInt),
+    Lt(Value),
     /// Test that a value is greater than another value.
-    Gt(BigInt),
+    Gt(Value),
     /// Multiple expressions and:ed together.
     And(Vec<Expression>),
     /// Multiple expressions or:ed together.
@@ -40,27 +46,27 @@ impl Expression {
             Inc => Box::new(filter::Inc),
             Dec => Box::new(filter::Dec),
             Eq(value) => {
-                let value = Value::from_big(value, ty)?;
+                let value = value::Value::from_ast(value, ty)?;
                 Box::new(filter::Eq(value))
             }
             Neq(value) => {
-                let value = Value::from_big(value, ty)?;
+                let value = value::Value::from_ast(value, ty)?;
                 Box::new(filter::Neq(value))
             }
             Lte(value) => {
-                let value = Value::from_big(value, ty)?;
+                let value = value::Value::from_ast(value, ty)?;
                 Box::new(filter::Lte(value))
             }
             Gte(value) => {
-                let value = Value::from_big(value, ty)?;
+                let value = value::Value::from_ast(value, ty)?;
                 Box::new(filter::Gte(value))
             }
             Lt(value) => {
-                let value = Value::from_big(value, ty)?;
+                let value = value::Value::from_ast(value, ty)?;
                 Box::new(filter::Lt(value))
             }
             Gt(value) => {
-                let value = Value::from_big(value, ty)?;
+                let value = value::Value::from_ast(value, ty)?;
                 Box::new(filter::Gt(value))
             }
             And(expressions) => {

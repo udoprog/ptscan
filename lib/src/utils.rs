@@ -3,12 +3,12 @@ use std::{ffi::OsString, ops};
 use crate::{
     error::Error,
     process::{MemoryInformation, MemoryProtect},
-    AddressRange, Size,
+    system, AddressRange, Size,
 };
 
 use winapi::{
-    shared::minwindef::{BOOL, DWORD, LPDWORD, TRUE},
-    um::winnt,
+    shared::minwindef::{BOOL, DWORD, FALSE, LPDWORD, PBOOL, TRUE},
+    um::{winnt, wow64apiset},
 };
 
 /// Evaluate the checked expression.
@@ -94,6 +94,22 @@ pub struct Handle(winnt::HANDLE);
 impl Handle {
     pub fn new(handle: winnt::HANDLE) -> Self {
         Handle(handle)
+    }
+
+    /// Test if this is a 64-bit process.
+    pub fn is_64bit(&self) -> Result<bool, Error> {
+        if self.is_wow64()? {
+            return Ok(false);
+        }
+
+        Ok(system::info()?.arch.is_64bit())
+    }
+
+    /// Test if the process is a 32-bit process running under WOW64 compatibility.
+    fn is_wow64(&self) -> Result<bool, Error> {
+        let mut out: BOOL = FALSE;
+        checked!(wow64apiset::IsWow64Process(self.0, &mut out as PBOOL))?;
+        Ok(out == TRUE)
     }
 }
 
@@ -181,6 +197,10 @@ where
                     }
 
                     if memory_info.protect.contains(MemoryProtect::NoCache) {
+                        continue;
+                    }
+
+                    if !memory_info.is_writable() {
                         continue;
                     }
 

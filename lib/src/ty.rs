@@ -1,9 +1,10 @@
-use crate::{error::Error, Value};
+use crate::{error::Error, Address, Process, Value};
 use std::{fmt, mem, str};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Type {
     None,
+    Pointer,
     U8,
     I8,
     U16,
@@ -29,6 +30,7 @@ impl Type {
     /// Convert from a string.
     pub fn from_string(input: &str) -> Type {
         match input {
+            "pointer" => Type::Pointer,
             "u8" => Type::U8,
             "i8" => Type::I8,
             "u16" => Type::U16,
@@ -48,6 +50,7 @@ impl Type {
     pub fn default(&self) -> Value {
         match *self {
             Self::None => Value::None,
+            Self::Pointer => Value::Pointer(Default::default()),
             Self::String(..) => Value::String(Default::default()),
             Self::U8 => Value::U8(Default::default()),
             Self::I8 => Value::I8(Default::default()),
@@ -66,6 +69,11 @@ impl Type {
     pub fn parse(&self, input: &str) -> Result<Value, Error> {
         let value = match *self {
             Self::None => return Err(Error::TypeParseNone),
+            Self::Pointer => {
+                return Ok(Value::Pointer(
+                    str::parse::<Address>(input).map_err(|_| Error::TypeParseError)?,
+                ));
+            }
             Self::String(..) => return Err(Error::TypeParseString),
             Self::U8 => str::parse::<u8>(input).map(Value::U8),
             Self::I8 => str::parse::<i8>(input).map(Value::I8),
@@ -86,6 +94,9 @@ impl Type {
     pub fn parse_hex(&self, input: &str) -> Result<Value, Error> {
         let value = match *self {
             Self::None => return Err(Error::TypeParseNone),
+            Self::Pointer => {
+                u64::from_str_radix(input, 16).map(|a| Value::Pointer(Address::new(a)))
+            }
             Self::String(..) => return Err(Error::TypeParseString),
             Self::U8 => u8::from_str_radix(input, 16).map(Value::U8),
             Self::I8 => i8::from_str_radix(input, 16).map(Value::I8),
@@ -104,9 +115,10 @@ impl Type {
 
     /// The known in-memory size that a type has.
     #[inline]
-    pub fn size(&self) -> usize {
+    pub fn size(&self, process: &Process) -> usize {
         match *self {
             Self::None => 0,
+            Self::Pointer => process.pointer_width,
             Self::U8 => mem::size_of::<u8>(),
             Self::I8 => mem::size_of::<i8>(),
             Self::U16 => mem::size_of::<u16>(),
@@ -122,7 +134,7 @@ impl Type {
     }
 
     /// Decode the given buffer into a value.
-    pub fn decode(&self, buf: &[u8]) -> Result<Value, Error> {
+    pub fn decode(&self, process: &Process, buf: &[u8]) -> Result<Value, Error> {
         // Decode a buffer, and depending on its width decode it differently.
         macro_rules! decode_buf {
             ($buf:expr, $ty:ty) => {
@@ -141,6 +153,7 @@ impl Type {
 
         Ok(match *self {
             Self::None => Value::None,
+            Type::Pointer => Value::Pointer(Address::decode(process, buf)?),
             Self::String(..) => Value::String(buf.to_vec()),
             Self::U8 => Value::U8(decode_buf!(buf, u8)),
             Self::I8 => Value::I8(decode_buf!(buf, i8)),
@@ -165,6 +178,7 @@ impl fmt::Display for Type {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let o = match *self {
             Type::None => "?",
+            Type::Pointer => "pointer",
             Type::U8 => "u8",
             Type::I8 => "i8",
             Type::U16 => "u16",
@@ -194,6 +208,7 @@ impl str::FromStr for Type {
         };
 
         let ty = match first {
+            "pointer" => Type::Pointer,
             "u8" => Type::U8,
             "i8" => Type::I8,
             "u16" => Type::U16,
@@ -228,6 +243,7 @@ impl fmt::Display for HumanDisplay {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.ty {
             Type::None => write!(fmt, "none"),
+            Type::Pointer => write!(fmt, "pointer"),
             Type::U8 => write!(fmt, "unsigned 8-bit number"),
             Type::I8 => write!(fmt, "signed 8-bit number"),
             Type::U16 => write!(fmt, "unsigned 16-bit number"),

@@ -1,4 +1,6 @@
-use crate::{encode::Encode, error::Error, filter::ast::EscapeString, Address, Type};
+use crate::{
+    encode::Encode, error::Error, filter::ast::EscapeString, process::Process, Address, Type,
+};
 use anyhow::bail;
 use std::{fmt, mem, str};
 
@@ -6,6 +8,7 @@ use std::{fmt, mem, str};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Value {
     None,
+    Pointer(Address),
     U8(u8),
     I8(i8),
     U16(u16),
@@ -45,6 +48,7 @@ impl Value {
 
         let out = match *self {
             None => bail!("nothing cannot be made into address"),
+            Pointer(address) => address,
             String(..) => bail!("string cannot be made into address"),
             U8(value) => Address::try_from(value)?,
             I8(value) => Address::try_from(value)?,
@@ -62,9 +66,10 @@ impl Value {
     }
 
     /// Encode the given buffer into a value.
-    pub fn encode(&self, buf: &mut [u8]) {
+    pub fn encode(&self, process: &Process, buf: &mut [u8]) -> Result<(), Error> {
         match self {
             Self::None => {}
+            Self::Pointer(address) => address.encode(process, buf)?,
             Self::U8(value) => value.encode(buf),
             Self::I8(value) => value.encode(buf),
             Self::U16(value) => value.encode(buf),
@@ -77,6 +82,8 @@ impl Value {
             Self::I128(value) => value.encode(buf),
             Self::String(string) => string.encode(buf),
         }
+
+        Ok(())
     }
 
     /// Cast this value.
@@ -107,6 +114,7 @@ impl Value {
 
         match self {
             None => Type::None,
+            Pointer(..) => Type::Pointer,
             U8(..) => Type::U8,
             I8(..) => Type::I8,
             U16(..) => Type::U16,
@@ -122,11 +130,12 @@ impl Value {
     }
 
     /// Get the size in bytes of this value.
-    pub fn size(&self) -> usize {
+    pub fn size(&self, process: &Process) -> usize {
         use self::Value::*;
 
         match self {
             None => 0,
+            Pointer(..) => process.pointer_width,
             U8(..) => mem::size_of::<u8>(),
             I8(..) => mem::size_of::<i8>(),
             U16(..) => mem::size_of::<u16>(),
@@ -199,6 +208,7 @@ impl fmt::Display for Value {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::None => write!(fmt, "none"),
+            Value::Pointer(address) => write!(fmt, "{}", address),
             Value::U8(value) => write!(fmt, "{}", value),
             Value::I8(value) => write!(fmt, "{}", value),
             Value::U16(value) => write!(fmt, "{}", value),

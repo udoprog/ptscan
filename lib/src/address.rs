@@ -3,6 +3,7 @@
 use crate::{
     error::Error,
     process_handle::{Location, ProcessHandle},
+    Process,
 };
 
 use std::{
@@ -10,13 +11,48 @@ use std::{
     fmt, io, str,
 };
 
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
+#[derive(Clone, Default, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct Address(u64);
 
 impl Address {
     /// Construct a new address.
-    pub fn new(value: u64) -> Address {
-        Address(value)
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub fn decode(process: &Process, buf: &[u8]) -> Result<Self, Error> {
+        use byteorder::ByteOrder as _;
+
+        assert!(buf.len() == process.pointer_width);
+
+        match process.pointer_width {
+            8 => {
+                let address = byteorder::LittleEndian::read_u64(buf);
+                Ok(Address(address))
+            }
+            4 => {
+                let address = byteorder::LittleEndian::read_u32(buf);
+                Ok(Address(address as u64))
+            }
+            n => Err(Error::UnsupportedPointerWidth(n)),
+        }
+    }
+
+    /// Encode the address in a process-dependent manner.
+    pub fn encode(&self, process: &Process, buf: &mut [u8]) -> anyhow::Result<(), Error> {
+        use crate::encode::Encode as _;
+
+        assert!(buf.len() == process.pointer_width);
+
+        match process.pointer_width {
+            8 => self.0.encode(buf),
+            4 => u32::try_from(self.0)
+                .map_err(|_| Error::PointerConversionError)?
+                .encode(buf),
+            n => return Err(Error::UnsupportedPointerWidth(n)),
+        }
+
+        Ok(())
     }
 
     /// Add an offset in a checked manner.
@@ -323,16 +359,14 @@ impl<'a> fmt::Display for AddressDisplay<'a> {
 
         let location = handle.find_location(*address);
 
-        let offset = match location {
+        match location {
             Location::Module(module) => match address.offset_of(module.range.base).ok() {
                 Some(offset) => {
-                    write!(fmt, "{}", module.name)?;
-                    offset
+                    write!(fmt, "{}{}", module.name, offset)?;
                 }
                 // TODO: handle error differently?
                 None => {
                     write!(fmt, "{}", address)?;
-                    return Ok(());
                 }
             },
             Location::Thread(thread) => {
@@ -344,26 +378,18 @@ impl<'a> fmt::Display for AddressDisplay<'a> {
 
                 match address.offset_of(base).ok() {
                     Some(offset) => {
-                        write!(fmt, "THREADSTACK{}", thread.id)?;
-                        offset
+                        write!(fmt, "THREADSTACK{}{}", thread.id, offset)?;
                     }
                     // TODO: handle error differently?
                     None => {
                         write!(fmt, "{}", address)?;
-                        return Ok(());
                     }
                 }
             }
             Location::None => {
                 write!(fmt, "{}", address)?;
-                return Ok(());
             }
         };
-
-        match offset.sign() {
-            Sign::Pos => write!(fmt, " + {}", offset)?,
-            Sign::Neg => write!(fmt, " - {}", offset.abs())?,
-        }
 
         Ok(())
     }
@@ -510,12 +536,17 @@ impl Offset {
     pub fn abs(self) -> u64 {
         self.1
     }
+
+    /// Check if the offset is within the given size.
+    pub fn is_within(self, size: Size) -> bool {
+        self.1 <= size.0
+    }
 }
 
 impl fmt::Display for Offset {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Offset(Sign::Pos, o) => write!(fmt, "{:X}", o),
+            Offset(Sign::Pos, o) => write!(fmt, "+{:X}", o),
             Offset(Sign::Neg, o) => write!(fmt, "-{:X}", o),
         }
     }

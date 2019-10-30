@@ -1,10 +1,4 @@
-use crate::{
-    filter,
-    process::{AddressProxy, Process},
-    process_handle::PointerMatcher,
-    Offset, Type, Value,
-};
-use num_bigint::{BigInt, Sign};
+use crate::{filter, process::Process, Type};
 use std::fmt;
 
 #[derive(Debug, Clone, Copy)]
@@ -38,64 +32,6 @@ pub enum ValueTrait {
     Zero,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ValueExpr {
-    /// The value of the address.
-    Value,
-    /// *<value>
-    Deref(Box<ValueExpr>),
-    /// Offset
-    Offset(Box<ValueExpr>, Offset),
-    /// A numerical literal.
-    Number(BigInt),
-    /// A string literal.
-    String(String),
-}
-
-impl ValueExpr {
-    /// Evaluate the expression.
-    pub fn eval(&self, ty: Type, address: AddressProxy<'_>) -> anyhow::Result<Value> {
-        match self {
-            Self::Value => address.eval(ty),
-            Self::String(string) => Ok(Value::String(string.as_bytes().to_vec())),
-            Self::Number(number) => Ok(Value::from_bigint(ty, number)?),
-            expr => anyhow::bail!("value expression not supported yet: {}", expr),
-        }
-    }
-
-    /// Get relevant traits of the expression.
-    pub fn traits(&self) -> (ValueTrait, Sign) {
-        use num_traits::Zero as _;
-
-        let value_trait = match self {
-            Self::Value => ValueTrait::IsValue,
-            Self::Deref(v) if **v == ValueExpr::Value => ValueTrait::IsDeref,
-            Self::Number(num) if num.is_zero() => ValueTrait::Zero,
-            Self::String(s) if s.as_bytes().iter().all(|c| *c == 0) => ValueTrait::Zero,
-            _ => ValueTrait::NonZero,
-        };
-
-        let sign = match self {
-            Self::Number(num) => num.sign(),
-            _ => Sign::NoSign,
-        };
-
-        (value_trait, sign)
-    }
-}
-
-impl fmt::Display for ValueExpr {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Value => "value".fmt(fmt),
-            Self::Deref(value) => write!(fmt, "*{}", value),
-            Self::Offset(value, offset) => write!(fmt, "{}{}", value, offset),
-            Self::Number(number) => write!(fmt, "{}", number),
-            Self::String(string) => write!(fmt, "{}", EscapeString(string.as_bytes())),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum Expression {
     /// A value that stays the same.
@@ -107,9 +43,9 @@ pub enum Expression {
     /// A value that has decreased.
     Dec,
     /// Value expression _is a pointer_.
-    IsPointer(ValueExpr),
+    IsPointer(filter::ValueExpr),
     /// Test that the value equals the expected value.
-    Binary(Op, ValueExpr, ValueExpr),
+    Binary(Op, filter::ValueExpr, filter::ValueExpr),
     /// Multiple expressions and:ed together.
     And(Vec<Expression>),
     /// Multiple expressions or:ed together.
@@ -139,7 +75,7 @@ impl Expression {
                     }
                 };
 
-                filter::Matcher::PointerMatcher(PointerMatcher::new(expr, process)?)
+                filter::Matcher::Pointer(filter::Pointer::new(expr, process)?)
             }
             And(expressions) => {
                 let filters = expressions

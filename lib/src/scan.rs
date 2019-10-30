@@ -32,7 +32,7 @@ pub struct Scan {
     /// If this scan has a set of initial results.
     pub initial: bool,
     /// Scan results.
-    results: Vec<ScanResult>,
+    pub results: Vec<ScanResult>,
 }
 
 impl Scan {
@@ -124,7 +124,7 @@ impl Scan {
     /// error will be propagated to the user.
     pub fn initial_scan(
         &mut self,
-        process: &Process,
+        handle: &ProcessHandle,
         filter: &filter::Filter,
         cancel: Option<&Token>,
         progress: (impl Progress + Send),
@@ -149,14 +149,14 @@ impl Scan {
 
         let mut last_error = None;
 
-        let size: Size = filter.ty.size().try_into()?;
+        let size: Size = filter.ty.size(&handle.process).try_into()?;
 
         let aligned = aligned.unwrap_or(filter.ty.is_default_aligned());
 
-        let session = process.session()?;
+        let session = handle.process.session()?;
         let session = &session;
 
-        let special = filter.special()?;
+        let special = filter.special(&handle.process)?;
         let special = special.as_ref();
 
         thread_pool.install(|| {
@@ -165,9 +165,20 @@ impl Scan {
                 let mut total = 0;
                 let mut bytes = Size::zero();
 
-                for region in process.virtual_memory_regions().only_relevant() {
-                    let region = region?;
-                    bytes.add_assign(region.range.size)?;
+                let memory_regions = handle
+                    .process
+                    .virtual_memory_regions()
+                    .only_relevant()
+                    .collect::<Result<Vec<_>, Error>>()?;
+
+                let ranges = handle
+                    .modules
+                    .iter()
+                    .map(|m| m.range.clone())
+                    .chain(memory_regions.into_iter().map(|m| m.range));
+
+                for range in ranges {
+                    bytes.add_assign(range.size)?;
                     total += 1;
 
                     let tx = tx.clone();
@@ -182,23 +193,19 @@ impl Scan {
 
                             let mut current = match special {
                                 Some(special) => {
-                                    match session.next_address(
-                                        &region.range,
-                                        region.range.base,
-                                        special,
-                                    )? {
+                                    match session.next_address(&range, range.base, special)? {
                                         Some(address) => address,
                                         None => return Ok(results),
                                     }
                                 }
-                                None => region.range.base,
+                                None => range.base,
                             };
 
                             if aligned {
                                 current.align_assign(size)?;
                             }
 
-                            let end = region.range.base.add(region.range.size)?;
+                            let end = range.base.add(range.size)?;
 
                             while current < end {
                                 let proxy = session.address_proxy(current);
@@ -217,14 +224,11 @@ impl Scan {
                                         current.add_assign(Size::new(1))?;
                                     }
 
-                                    current = match session.next_address(
-                                        &region.range,
-                                        current,
-                                        special,
-                                    )? {
-                                        Some(address) => address,
-                                        None => break,
-                                    };
+                                    current =
+                                        match session.next_address(&range, current, special)? {
+                                            Some(address) => address,
+                                            None => break,
+                                        };
 
                                     if aligned {
                                         current.align_assign(size)?;

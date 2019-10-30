@@ -1,8 +1,8 @@
 use std::{convert::TryFrom, ffi, fmt, iter, ptr, slice, sync::Arc};
 
 use crate::{
-    error::Error, filter, module, scan, scan::ScanResult, system, utils, Address, AddressRange,
-    ProcessId, Size, Token, Type, Value,
+    error::Error, filter, module, scan, scan::ScanResult, utils, Address, AddressRange, ProcessId,
+    Size, Token, Type, Value,
 };
 
 use ntapi::ntpsapi;
@@ -10,10 +10,10 @@ use parking_lot::RwLock;
 use winapi::{
     shared::{
         basetsd::SIZE_T,
-        minwindef::{BOOL, DWORD, FALSE, LPCVOID, LPVOID, PBOOL, TRUE},
+        minwindef::{BOOL, DWORD, FALSE, LPCVOID, LPVOID, TRUE},
         winerror,
     },
-    um::{memoryapi, processthreadsapi, psapi, winnt, wow64apiset},
+    um::{memoryapi, processthreadsapi, psapi, winnt},
 };
 
 const ZERO: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -93,7 +93,9 @@ impl<'a> Session<'a> {
 /// A process handle.
 #[derive(Clone)]
 pub struct Process {
-    process_id: ProcessId,
+    pub process_id: ProcessId,
+    pub is_64bit: bool,
+    pub pointer_width: usize,
     pub(crate) handle: Arc<utils::Handle>,
 }
 
@@ -236,7 +238,7 @@ impl Process {
             return Err(Error::ReadUnderflow);
         }
 
-        Ok(ty.decode(buf)?)
+        Ok(ty.decode(self, buf)?)
     }
 
     /// Read a 64-bit memory region as a little endian unsigned integer.
@@ -249,25 +251,6 @@ impl Process {
         }
 
         Ok(LittleEndian::read_u64(&out))
-    }
-
-    /// Test if the process is a 32-bit process running under WOW64 compatibility.
-    pub fn is_wow64(&self) -> Result<bool, Error> {
-        let mut out: BOOL = FALSE;
-        checked!(wow64apiset::IsWow64Process(
-            **self.handle,
-            &mut out as PBOOL
-        ))?;
-        Ok(out == TRUE)
-    }
-
-    /// Test if this is a 64-bit process.
-    pub fn is_64bit(&self) -> Result<bool, Error> {
-        if self.is_wow64()? {
-            return Ok(false);
-        }
-
-        Ok(system::info()?.arch.is_64bit())
     }
 
     /// Retrieve information about the memory page that corresponds to the given virtual `address`.
@@ -558,7 +541,7 @@ impl Process {
                             }
                         };
 
-                        let needed = result.value.size();
+                        let needed = result.value.size(self);
 
                         if buf.len() < needed {
                             buf.extend(
@@ -573,7 +556,7 @@ impl Process {
                                 return Ok(0u64);
                             }
 
-                            result.value = match result.value.ty().decode(buf) {
+                            result.value = match result.value.ty().decode(self, buf) {
                                 Ok(value) => value,
                                 Err(_) => Value::None,
                             };
@@ -775,18 +758,18 @@ pub struct AddressProxy<'a> {
 impl AddressProxy<'_> {
     /// Evaluate the location of the proxy.
     pub fn eval(&self, ty: Type) -> anyhow::Result<Value> {
-        let mut buf = vec![0u8; ty.size()];
+        let mut buf = vec![0u8; ty.size(self.process)];
 
         if let Some(memory_cache) = self.memory_cache {
             if memory_cache.read_process_memory(self.process, self.address, &mut buf)? {
-                return Ok(match ty.decode(&buf) {
+                return Ok(match ty.decode(self.process, &buf) {
                     Ok(value) => value,
                     Err(..) => Value::None,
                 });
             }
         } else {
             if self.process.read_process_memory(self.address, &mut buf)? {
-                return Ok(match ty.decode(&buf) {
+                return Ok(match ty.decode(self.process, &buf) {
                     Ok(value) => value,
                     Err(..) => Value::None,
                 });
@@ -855,9 +838,18 @@ impl OpenProcessBuilder {
             return Err(Error::last_system_error());
         }
 
-        let handle = Arc::new(utils::Handle::new(handle));
+        let handle = utils::Handle::new(handle);
+        let is_64bit = handle.is_64bit()?;
+        let handle = Arc::new(handle);
 
-        Ok(Process { process_id, handle })
+        let pointer_width = if is_64bit { 8 } else { 4 };
+
+        Ok(Process {
+            process_id,
+            is_64bit,
+            pointer_width,
+            handle,
+        })
     }
 }
 
@@ -937,6 +929,31 @@ pub struct MemoryInformation {
     pub state: MemoryState,
     pub ty: MemoryType,
     pub protect: fixed_map::Set<MemoryProtect>,
+}
+
+impl MemoryInformation {
+    /// Test if region is writable.
+    pub fn is_writable(&self) -> bool {
+        use self::MemoryProtect::*;
+        self.is_protect_any(&[ReadWrite, WriteCopy, ExecuteReadWrite, ExecuteWriteCopy])
+    }
+
+    /// Test if region is executable.
+    pub fn is_executable(&self) -> bool {
+        use self::MemoryProtect::*;
+        self.is_protect_any(&[Execute, ExecuteRead, ExecuteReadWrite, ExecuteWriteCopy])
+    }
+
+    /// Test if region is executable.
+    pub fn is_copy_on_write(&self) -> bool {
+        use self::MemoryProtect::*;
+        self.is_protect_any(&[WriteCopy, ExecuteWriteCopy])
+    }
+
+    /// Test if protection contains any of the specified elements.
+    fn is_protect_any<'a>(&self, it: impl IntoIterator<Item = &'a MemoryProtect>) -> bool {
+        it.into_iter().any(|p| self.protect.contains(*p))
+    }
 }
 
 /// Iterator over virtual memory regions.

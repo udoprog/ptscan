@@ -61,6 +61,10 @@ pub enum Error {
     TypeBadSize,
     #[error("numeric type {0} does not fit within type {1}")]
     ValueNumberConversion(num_bigint::BigInt, Type),
+    #[error("unsupported pointer width: {0}")]
+    UnsupportedPointerWidth(usize),
+    #[error("failed to convert address into native pointer")]
+    PointerConversionError,
     #[error("this error literally cannot happen")]
     Infallible,
 }

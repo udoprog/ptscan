@@ -1,11 +1,10 @@
-use self::ast::{Op, ValueExpr, ValueTrait};
+use self::ast::{Op, ValueTrait};
 use crate::{
-    process::{AddressProxy, Process},
-    process_handle::PointerMatcher,
+    process::{AddressProxy, MemoryInformation, Process},
     value::{self, Value},
-    Type,
+    AddressRange, Offset, Type,
 };
-use num_bigint::Sign;
+use num_bigint::{BigInt, Sign};
 use std::fmt;
 
 pub mod ast;
@@ -21,6 +20,64 @@ pub fn parse(input: &str, ty: Type, process: Option<&Process>) -> anyhow::Result
     Ok(Filter { ty, matcher })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueExpr {
+    /// The value of the address.
+    Value,
+    /// *<value>
+    Deref(Box<ValueExpr>),
+    /// Offset
+    Offset(Box<ValueExpr>, Offset),
+    /// A numerical literal.
+    Number(BigInt),
+    /// A string literal.
+    String(String),
+}
+
+impl ValueExpr {
+    /// Evaluate the expression.
+    pub fn eval(&self, ty: Type, address: AddressProxy<'_>) -> anyhow::Result<Value> {
+        match self {
+            Self::Value => address.eval(ty),
+            Self::String(string) => Ok(Value::String(string.as_bytes().to_vec())),
+            Self::Number(number) => Ok(Value::from_bigint(ty, number)?),
+            expr => anyhow::bail!("value expression not supported yet: {}", expr),
+        }
+    }
+
+    /// Get relevant traits of the expression.
+    pub fn traits(&self) -> (ValueTrait, Sign) {
+        use num_traits::Zero as _;
+
+        let value_trait = match self {
+            Self::Value => ValueTrait::IsValue,
+            Self::Deref(v) if **v == ValueExpr::Value => ValueTrait::IsDeref,
+            Self::Number(num) if num.is_zero() => ValueTrait::Zero,
+            Self::String(s) if s.as_bytes().iter().all(|c| *c == 0) => ValueTrait::Zero,
+            _ => ValueTrait::NonZero,
+        };
+
+        let sign = match self {
+            Self::Number(num) => num.sign(),
+            _ => Sign::NoSign,
+        };
+
+        (value_trait, sign)
+    }
+}
+
+impl fmt::Display for ValueExpr {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Value => "value".fmt(fmt),
+            Self::Deref(value) => write!(fmt, "*{}", value),
+            Self::Offset(value, offset) => write!(fmt, "{}{}", value, offset),
+            Self::Number(number) => write!(fmt, "{}", number),
+            Self::String(string) => write!(fmt, "{}", self::ast::EscapeString(string.as_bytes())),
+        }
+    }
+}
+
 pub enum Special {
     Bytes(Vec<u8>),
     NonZero,
@@ -33,13 +90,21 @@ pub struct Filter {
 }
 
 impl Filter {
+    /// Construct a new pointer filter.
+    pub fn pointer(ty: Type, expr: ValueExpr, process: &Process) -> anyhow::Result<Filter> {
+        Ok(Filter {
+            ty,
+            matcher: Matcher::Pointer(Pointer::new(expr, process)?),
+        })
+    }
+
     /// Test the given bytes against this filter.
     pub fn test(&self, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
         Ok(self.matcher.test(self.ty, last, proxy)?)
     }
 
-    pub fn special(&self) -> anyhow::Result<Option<Special>> {
-        self.matcher.special(self.ty)
+    pub fn special(&self, process: &Process) -> anyhow::Result<Option<Special>> {
+        self.matcher.special(process, self.ty)
     }
 }
 
@@ -52,7 +117,7 @@ pub enum Matcher {
     Any(Any),
     Inc(Inc),
     Dec(Dec),
-    PointerMatcher(PointerMatcher),
+    Pointer(Pointer),
 }
 
 impl Matcher {
@@ -66,15 +131,15 @@ impl Matcher {
             Self::Any(m) => m.test(ty, last, proxy),
             Self::Inc(m) => m.test(ty, last, proxy),
             Self::Dec(m) => m.test(ty, last, proxy),
-            Self::PointerMatcher(m) => m.test(ty, last, proxy),
+            Self::Pointer(m) => m.test(ty, last, proxy),
         }
     }
 
     /// Construct a special matcher.
-    fn special(&self, ty: Type) -> anyhow::Result<Option<Special>> {
+    fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {
         match self {
-            Self::PointerMatcher(..) => Ok(Some(Special::NonZero)),
-            Self::Binary(m) => m.special(ty),
+            Self::Pointer(..) => Ok(Some(Special::NonZero)),
+            Self::Binary(m) => m.special(process, ty),
             _ => Ok(None),
         }
     }
@@ -90,7 +155,7 @@ impl fmt::Display for Matcher {
             Self::Any(m) => m.fmt(fmt),
             Self::Inc(m) => m.fmt(fmt),
             Self::Dec(m) => m.fmt(fmt),
-            Self::PointerMatcher(m) => m.fmt(fmt),
+            Self::Pointer(m) => m.fmt(fmt),
         }
     }
 }
@@ -209,7 +274,7 @@ impl Binary {
         })
     }
 
-    fn special(&self, ty: Type) -> anyhow::Result<Option<Special>> {
+    fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {
         use self::Sign::*;
         use self::ValueExpr::*;
         use self::ValueTrait::*;
@@ -227,8 +292,8 @@ impl Binary {
         };
 
         if let Some(value) = bytes {
-            let mut buf = vec![0u8; value.size()];
-            value.encode(&mut buf);
+            let mut buf = vec![0u8; value.size(process)];
+            value.encode(process, &mut buf)?;
             return Ok(Some(Special::Bytes(buf)));
         }
 
@@ -328,6 +393,48 @@ impl fmt::Display for Any {
         }
 
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Pointer {
+    expr: ValueExpr,
+    /// Sorted memory regions.
+    memory_regions: Vec<MemoryInformation>,
+}
+
+impl Pointer {
+    pub fn new(expr: ValueExpr, process: &Process) -> anyhow::Result<Self> {
+        use crate::utils::IteratorExtension;
+
+        let mut memory_regions = process
+            .virtual_memory_regions()
+            .only_relevant()
+            .collect::<Result<Vec<_>, _>>()?;
+
+        memory_regions.sort_by_key(|m| m.range.base);
+
+        Ok(Self {
+            expr,
+            memory_regions,
+        })
+    }
+
+    pub fn test(&self, ty: Type, _: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+        let value = self.expr.eval(ty, proxy)?;
+
+        let address = match value {
+            Value::Pointer(address) => address,
+            _ => return Ok(false),
+        };
+
+        Ok(AddressRange::find_in_range(&self.memory_regions, |m| &m.range, address).is_some())
+    }
+}
+
+impl fmt::Display for Pointer {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "pointer")
     }
 }
 

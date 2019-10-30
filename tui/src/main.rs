@@ -2,7 +2,10 @@
 
 use anyhow::bail;
 use hashbrown::HashMap;
-use ptscan::{filter, scan, Address, Process, ProcessHandle, Size, Token, Type, Value};
+use ptscan::{
+    filter, scan, Address, Filter, Location, Offset, Process, ProcessHandle, Size, Token, Type,
+    Value, ValueExpr,
+};
 use std::{io, sync::Arc};
 
 static HELP: &'static str = include_str!("help.md");
@@ -40,11 +43,12 @@ fn main() {
 
 struct SimpleProgress<W> {
     out: W,
+    what: &'static str,
 }
 
 impl<W> SimpleProgress<W> {
-    fn new(out: W) -> SimpleProgress<W> {
-        Self { out: out }
+    fn new(out: W, what: &'static str) -> SimpleProgress<W> {
+        Self { out, what }
     }
 }
 
@@ -64,7 +68,11 @@ where
         self.out.flush()?;
 
         let repr = iter::repeat('#').take(percentage / 10).collect::<String>();
-        write!(self.out, "{}: {}% ({} results)", repr, percentage, count)?;
+        write!(
+            self.out,
+            "{}: {}% ({} results): {}",
+            repr, percentage, count, self.what
+        )?;
         self.out.flush()?;
 
         Ok(())
@@ -174,8 +182,10 @@ where
             Action::Help => {
                 Self::print_help(&mut self.w)?;
             }
-            Action::Process => {
-                self.process()?;
+            Action::Process {
+                include_memory_regions,
+            } => {
+                self.process(include_memory_regions)?;
             }
             Action::Attach(name) => {
                 if name.is_some() {
@@ -204,7 +214,7 @@ where
                         &self.thread_pool,
                         &mut stored,
                         None,
-                        SimpleProgress::new(&mut self.w),
+                        SimpleProgress::new(&mut self.w, "Refreshing values"),
                     )?;
 
                     results = &stored;
@@ -227,16 +237,25 @@ where
                     None => bail!("not attached to a process"),
                 };
 
-                let scan = match self.scans.get_mut(&self.current_scan) {
-                    Some(scan) => scan,
-                    None => bail!("no active scan"),
-                };
+                let Application {
+                    ref mut scans,
+                    ref thread_pool,
+                    ref current_scan,
+                    ..
+                } = self;
+
+                let scan = scans
+                    .entry(current_scan.clone())
+                    .or_insert_with(|| scan::Scan::new(thread_pool));
 
                 let value = handle.process.address_proxy(address).eval(ty)?;
                 scan.push(scan::ScanResult { address, value });
             }
             Action::Scan(filter) => {
                 self.scan(&filter, None)?;
+            }
+            Action::PointerScan(address) => {
+                self.pointer_scan(address)?;
             }
             Action::Reset => match self.scans.get_mut(&self.current_scan) {
                 Some(scan) => {
@@ -251,8 +270,8 @@ where
                     None => bail!("not attached to a process"),
                 };
 
-                let mut buf = vec![0u8; value.size()];
-                value.encode(&mut buf);
+                let mut buf = vec![0u8; value.size(&handle.process)];
+                value.encode(&handle.process, &mut buf)?;
                 handle.process.write_process_memory(address, &buf)?;
             }
         }
@@ -283,6 +302,95 @@ where
         Ok(())
     }
 
+    /// Perform a pointer scan towards the specified address.
+    fn pointer_scan(&mut self, needle: Address) -> anyhow::Result<()> {
+        use std::collections::{BTreeMap, HashSet, VecDeque};
+
+        let handle = match self.handle.as_ref() {
+            Some(handle) => handle,
+            None => bail!("not attached to a process"),
+        };
+
+        // Filter to find all pointers.
+        let pointers = Filter::pointer(Type::Pointer, ValueExpr::Value, &handle.process)?;
+
+        let mut scan = scan::Scan::new(&self.thread_pool);
+
+        scan.initial_scan(
+            handle,
+            &pointers,
+            None,
+            SimpleProgress::new(&mut self.w, "Performing initial pointer scan"),
+        )?;
+
+        writeln!(self.w, "")?;
+
+        let mut forward = BTreeMap::new();
+        let mut reverse = BTreeMap::new();
+
+        for result in &scan.results {
+            let value = result.value.as_address()?;
+            forward.insert(result.address, value);
+            reverse.insert(value, result.address);
+        }
+
+        let max_depth = 7;
+        let max_offset = Size::new(0x100);
+
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::new();
+        queue.push_back((needle, 0u16, smallvec::SmallVec::<[Offset; 16]>::new()));
+
+        while let Some((n, depth, path)) = queue.pop_front() {
+            if !visited.insert(n) {
+                continue;
+            }
+
+            if path.len() >= max_depth {
+                continue;
+            }
+
+            let it = reverse.range(..=n).rev();
+
+            for (from, hit) in it {
+                let offset = n.offset_of(*from)?;
+
+                if !offset.is_within(max_offset) {
+                    break;
+                }
+
+                let mut path = path.clone();
+                path.push(offset);
+
+                match handle.find_location(*hit) {
+                    Location::Module(module) => {
+                        let mut path = path.clone();
+                        let offset = hit.offset_of(module.range.base)?;
+                        path.reverse();
+
+                        write!(self.w, "{}{}", module.name, offset)?;
+
+                        for o in path {
+                            write!(self.w, " -> {}", o)?;
+                        }
+
+                        writeln!(self.w, "")?;
+                    }
+                    // ignore thread stacks
+                    Location::Thread(..) => {
+                        continue;
+                    }
+                    _ => (),
+                }
+
+                queue.push_back((*hit, depth + 1, path));
+            }
+        }
+
+        writeln!(self.w, "Found {} pointers", forward.len())?;
+        Ok(())
+    }
+
     /// Scan memory using the given filter and the currently selected scan.
     fn scan(&mut self, filter: &filter::Filter, cancel: Option<&Token>) -> anyhow::Result<()> {
         let handle = match self.handle.as_ref() {
@@ -299,16 +407,16 @@ where
                 &handle.process,
                 filter,
                 cancel,
-                SimpleProgress::new(&mut self.w),
+                SimpleProgress::new(&mut self.w, "Rescanning"),
             ),
             None => {
                 let mut scan = scan::Scan::new(&self.thread_pool);
 
                 let res = scan.initial_scan(
-                    &handle.process,
+                    handle,
                     filter,
                     cancel,
-                    SimpleProgress::new(&mut self.w),
+                    SimpleProgress::new(&mut self.w, "Performing initial scan"),
                 );
 
                 res.map(move |()| scan)
@@ -331,7 +439,7 @@ where
     }
 
     /// Print information on the current process, if any.
-    fn process(&mut self) -> anyhow::Result<()> {
+    fn process(&mut self, include_memory_regions: bool) -> anyhow::Result<()> {
         let handle = match self.handle.as_ref() {
             Some(handle) => handle,
             None => bail!("no process attached"),
@@ -346,6 +454,11 @@ where
                 .map(|n| n.as_str())
                 .unwrap_or("*unknown*")
         )?;
+
+        writeln!(self.w, "Process id: {}", handle.process.process_id)?;
+        writeln!(self.w, "Pointer width: {}", handle.process.pointer_width)?;
+        writeln!(self.w, "64 bit: {}", handle.process.is_64bit)?;
+
         writeln!(self.w, "Modules:")?;
 
         for module in &handle.modules {
@@ -358,10 +471,16 @@ where
             writeln!(self.w, "{:?}", thread)?;
         }
 
-        writeln!(self.w, "Memory:")?;
+        if include_memory_regions {
+            writeln!(self.w, "Memory Regions:")?;
 
-        for region in handle.process.virtual_memory_regions() {
-            writeln!(self.w, "{:?}", region?)?;
+            for region in handle.process.virtual_memory_regions() {
+                let region = region?;
+
+                if region.is_writable() {
+                    writeln!(self.w, "{:?}", region)?;
+                }
+            }
         }
 
         Ok(())
@@ -496,7 +615,21 @@ where
                 let filter = self.parse_filter(ty, &command[1..])?;
                 return Ok(Action::Scan(filter));
             }
-            "ps" | "process" => return Ok(Action::Process),
+            "pt" | "pointer-scan" => {
+                let command = &command[1..];
+
+                if command.len() != 1 {
+                    bail!("expected <address>");
+                }
+
+                let address = str::parse(command[0])?;
+                return Ok(Action::PointerScan(address));
+            }
+            "ps" | "process" => {
+                return Ok(Action::Process {
+                    include_memory_regions: false,
+                })
+            }
             "attach" => {
                 let command = &command[1..];
 
@@ -543,11 +676,13 @@ where
                     "del" => {
                         let command = &command[1..];
 
-                        if command.len() != 1 {
-                            bail!("missing <name>");
-                        }
+                        let name = if command.is_empty() {
+                            self.current_scan.to_owned()
+                        } else {
+                            command[0].to_string()
+                        };
 
-                        return Ok(Action::ScansDel(command[0].to_string()));
+                        return Ok(Action::ScansDel(name));
                     }
                     "set" => {
                         let command = &command[1..];
@@ -591,7 +726,7 @@ pub enum Action {
     /// Exit the application.
     Exit,
     /// Print information on the current process.
-    Process,
+    Process { include_memory_regions: bool },
     /// Attach to a new, or re-attach to an old process.
     Attach(Option<String>),
     /// Initialize or refine the existing scan.
@@ -614,4 +749,6 @@ pub enum Action {
     ScansDel(String),
     /// Switch to the given scan.
     ScansSet(String),
+    /// Perform a pointer scan for the specified address.
+    PointerScan(Address),
 }

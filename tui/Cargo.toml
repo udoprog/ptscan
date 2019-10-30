@@ -21,6 +21,7 @@ ptscan = {path = "../lib", version = "0.1.0"}
 rayon = "1.0.3"
 hashbrown = "0.1.8"
 anyhow = "1.0.18"
+smallvec = "0.6.11"
 
 [build-dependencies]
 failure = "0.1"

@@ -2,7 +2,6 @@
 
 use crate::{
     error::Error,
-    filter::ast::ValueExpr,
     pointer::{Base, Pointer},
     process, system,
     thread::Thread,
@@ -20,8 +19,6 @@ pub struct ProcessHandle {
     pub name: Option<String>,
     /// Handle to the process.
     pub process: process::Process,
-    /// If the process is a 64-bit process (or not).
-    is_64bit: bool,
     /// Information about all loaded modules.
     pub modules: Vec<ModuleInfo>,
     /// Module address by name.
@@ -58,12 +55,10 @@ impl ProcessHandle {
         };
 
         let name = process.module_base_name()?.to_string_lossy().to_string();
-        let is_64bit = process.is_64bit()?;
 
         Ok(Some(ProcessHandle {
             name: Some(name),
             process,
-            is_64bit,
             modules: Vec::new(),
             modules_address: HashMap::new(),
             kernel32: None,
@@ -220,12 +215,7 @@ impl ProcessHandle {
     pub fn scan_for_exit(&self, stack: AddressRange) -> anyhow::Result<Option<Address>> {
         use byteorder::{ByteOrder, LittleEndian};
 
-        let ptr_width = if self.is_64bit {
-            Size::new(8)
-        } else {
-            Size::new(4)
-        };
-
+        let ptr_width = Size::new(self.process.pointer_width as u64);
         let mut buf = vec![0u8; stack.size.as_usize()];
         self.process.read_process_memory(stack.base, &mut buf)?;
 
@@ -348,52 +338,5 @@ impl Decode for u32 {
     fn decode(buf: &[u8]) -> Result<Self, anyhow::Error> {
         use byteorder::{ByteOrder, LittleEndian};
         Ok(LittleEndian::read_u32(buf))
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct PointerMatcher {
-    expr: ValueExpr,
-    /// Sorted memory regions.
-    memory_regions: Vec<process::MemoryInformation>,
-}
-
-impl PointerMatcher {
-    pub fn new(expr: ValueExpr, process: &process::Process) -> anyhow::Result<Self> {
-        use crate::utils::IteratorExtension;
-
-        let mut memory_regions = process
-            .virtual_memory_regions()
-            .only_relevant()
-            .collect::<Result<Vec<_>, _>>()?;
-
-        memory_regions.sort_by_key(|m| m.range.base);
-
-        Ok(Self {
-            expr,
-            memory_regions,
-        })
-    }
-
-    pub fn test(
-        &self,
-        ty: Type,
-        _: &Value,
-        proxy: process::AddressProxy<'_>,
-    ) -> anyhow::Result<bool> {
-        let value = self.expr.eval(ty, proxy)?;
-
-        let address = match value {
-            Value::U64(value) => Address::new(value),
-            _ => return Ok(false),
-        };
-
-        Ok(AddressRange::find_in_range(&self.memory_regions, |m| &m.range, address).is_some())
-    }
-}
-
-impl fmt::Display for PointerMatcher {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "pointer")
     }
 }

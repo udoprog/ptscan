@@ -10,6 +10,7 @@ use crate::{
 };
 use std::{
     convert::TryInto,
+    ops, slice,
     sync::{mpsc, Arc},
 };
 
@@ -30,10 +31,8 @@ pub struct Scan {
     pub aligned: Option<bool>,
     /// If this scan has a set of initial results.
     pub initial: bool,
-    /// Addresses in the scan.
-    pub addresses: Vec<Address>,
-    /// Values in the scan.
-    pub values: Vec<Value>,
+    /// Scan results.
+    results: Vec<ScanResult>,
 }
 
 impl Scan {
@@ -43,8 +42,7 @@ impl Scan {
             aligned: None,
             initial: false,
             thread_pool: Arc::clone(thread_pool),
-            addresses: Vec::new(),
-            values: Vec::new(),
+            results: Vec::new(),
         }
     }
 
@@ -52,9 +50,8 @@ impl Scan {
     ///
     /// Returns `true` if the address was removed, `false` otherwise.
     pub fn remove_by_address(&mut self, address: Address) -> bool {
-        if let Some(index) = self.addresses.iter().position(|a| *a == address) {
-            self.addresses.swap_remove(index);
-            self.values.swap_remove(index);
+        if let Some(index) = self.results.iter().position(|r| r.address == address) {
+            self.results.swap_remove(index);
             true
         } else {
             false
@@ -63,31 +60,17 @@ impl Scan {
 
     /// Clear the scan.
     pub fn clear(&mut self) {
-        self.addresses.clear();
-        self.values.clear();
+        self.results.clear();
     }
 
     /// Get the length of the current scan.
     pub fn len(&self) -> usize {
-        self.addresses.len()
-    }
-
-    /// Get the result at the given location.
-    pub fn get<'a>(&'a self, index: usize) -> Option<ScanResult> {
-        let address = self.addresses.get(index).cloned()?;
-        let value = self.values.get(index).cloned()?;
-        Some(ScanResult { address, value })
+        self.results.len()
     }
 
     /// Push the given scan result.
     pub fn push(&mut self, result: ScanResult) {
-        self.addresses.push(result.address);
-        self.values.push(result.value.clone());
-    }
-
-    /// Create an iterator over the scan.
-    pub fn iter<'a>(&'a self) -> Iter<'a> {
-        Iter { scan: self, pos: 0 }
+        self.results.push(result);
     }
 
     /// Only scan for values which are aligned.
@@ -106,15 +89,12 @@ impl Scan {
         cancel: Option<&Token>,
         progress: (impl Progress + Send),
     ) -> Result<Scan, anyhow::Error> {
-        let mut addresses = Vec::new();
-        let mut values = Vec::new();
+        let mut results = Vec::new();
 
         process.rescan_values(
             &*self.thread_pool,
-            &self.values,
-            &self.addresses,
-            &mut values,
-            &mut addresses,
+            &self.results,
+            &mut results,
             filter,
             cancel,
             progress,
@@ -124,8 +104,7 @@ impl Scan {
             thread_pool: Arc::clone(&self.thread_pool),
             aligned: self.aligned,
             initial: false,
-            addresses,
-            values,
+            results,
         })
     }
 
@@ -160,15 +139,13 @@ impl Scan {
         };
 
         let Scan {
-            ref mut addresses,
-            ref mut values,
+            ref mut results,
             aligned,
             ref thread_pool,
             ..
         } = *self;
 
-        addresses.clear();
-        values.clear();
+        results.clear();
 
         let mut last_error = None;
 
@@ -197,11 +174,10 @@ impl Scan {
 
                     s.spawn(move |_| {
                         let work = move || {
-                            let mut addresses = Vec::new();
-                            let mut values = Vec::new();
+                            let mut results = Vec::new();
 
                             if cancel.test() {
-                                return Ok((addresses, values));
+                                return Ok(results);
                             }
 
                             let mut current = match special {
@@ -212,11 +188,15 @@ impl Scan {
                                         special,
                                     )? {
                                         Some(address) => address,
-                                        None => return Ok((addresses, values)),
+                                        None => return Ok(results),
                                     }
                                 }
                                 None => region.range.base,
                             };
+
+                            if aligned {
+                                current.align_assign(size)?;
+                            }
 
                             let end = region.range.base.add(region.range.size)?;
 
@@ -224,18 +204,30 @@ impl Scan {
                                 let proxy = session.address_proxy(current);
 
                                 if filter.test(&Value::None, proxy)? {
-                                    addresses.push(current);
-                                    values.push(proxy.eval(filter.ty)?);
+                                    results.push(ScanResult {
+                                        address: current,
+                                        value: proxy.eval(filter.ty)?,
+                                    });
                                 }
 
                                 if let Some(special) = special {
+                                    if aligned {
+                                        current.add_assign(size)?;
+                                    } else {
+                                        current.add_assign(Size::new(1))?;
+                                    }
+
                                     current = match session.next_address(
                                         &region.range,
-                                        current.saturating_add(Size::new(1)),
+                                        current,
                                         special,
                                     )? {
                                         Some(address) => address,
                                         None => break,
+                                    };
+
+                                    if aligned {
+                                        current.align_assign(size)?;
                                     }
                                 } else {
                                     if aligned {
@@ -246,7 +238,7 @@ impl Scan {
                                 }
                             }
 
-                            Ok::<_, anyhow::Error>((addresses, values))
+                            Ok::<_, anyhow::Error>(results)
                         };
 
                         tx.send(work()).expect("channel closed");
@@ -257,18 +249,17 @@ impl Scan {
 
                 reporter.report_bytes(bytes);
 
-                let mut results = 0u64;
+                let mut count = 0u64;
 
                 while !reporter.is_done() {
                     let result = rx.recv().expect("channel closed");
 
-                    if let Some((mut a, mut v)) = reporter.eval(result) {
-                        results += v.len() as u64;
-                        addresses.append(&mut a);
-                        values.append(&mut v);
+                    if let Some(mut r) = reporter.eval(result) {
+                        count += r.len() as u64;
+                        results.append(&mut r);
                     }
 
-                    reporter.tick(results);
+                    reporter.tick(count);
                 }
 
                 Ok::<(), anyhow::Error>(())
@@ -280,6 +271,22 @@ impl Scan {
         }
 
         return Ok(());
+    }
+}
+
+impl<I: slice::SliceIndex<[ScanResult]>> ops::Index<I> for Scan {
+    type Output = I::Output;
+
+    #[inline]
+    fn index(&self, index: I) -> &Self::Output {
+        ops::Index::index(&self.results, index)
+    }
+}
+
+impl<I: slice::SliceIndex<[ScanResult]>> ops::IndexMut<I> for Scan {
+    #[inline]
+    fn index_mut(&mut self, index: I) -> &mut Self::Output {
+        ops::IndexMut::index_mut(&mut self.results, index)
     }
 }
 
@@ -368,7 +375,7 @@ impl<'token, 'err, P> Reporter<'token, 'err, P> {
 }
 
 /// A single scan result.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ScanResult {
     /// Address where the scanned value lives.
     pub address: Address,
@@ -380,7 +387,7 @@ impl ScanResult {
     /// Buld a watch out of a scan result.
     pub fn as_watch(&self, handle: Option<&ProcessHandle>) -> Result<Watch, Error> {
         let base = match handle {
-            Some(handle) => match handle.find_location(self.address)? {
+            Some(handle) => match handle.find_location(self.address) {
                 Location::Module(module) => {
                     let offset = self.address.offset_of(module.range.base)?;
                     pointer::Base::Module(module.name.to_string(), offset)
@@ -395,20 +402,5 @@ impl ScanResult {
             value: self.value.clone(),
             ty: self.value.ty(),
         })
-    }
-}
-
-pub struct Iter<'a> {
-    scan: &'a Scan,
-    pos: usize,
-}
-
-impl<'a> Iterator for Iter<'a> {
-    type Item = ScanResult;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let result = self.scan.get(self.pos)?;
-        self.pos += 1;
-        Some(result)
     }
 }

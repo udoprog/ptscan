@@ -6,7 +6,6 @@ use crate::{
 };
 
 use std::{
-    cmp,
     convert::{TryFrom, TryInto},
     fmt, io, str,
 };
@@ -57,6 +56,27 @@ impl Address {
     pub fn add_assign(&mut self, rhs: Size) -> Result<(), Error> {
         *self = self.add(rhs)?;
         Ok(())
+    }
+
+    pub fn align_assign(&mut self, alignment: Size) -> Result<(), Error> {
+        let rem = self.0 % alignment.0;
+
+        if rem == 0 {
+            return Ok(());
+        }
+
+        self.0 -= rem;
+        Ok(())
+    }
+
+    /// Performed a checked subtraction between two addresses.
+    pub fn sub_address(self, rhs: Address) -> Result<Address, Error> {
+        let sum = self
+            .0
+            .checked_sub(rhs.0)
+            .ok_or_else(|| Error::Sub(self.0, rhs.0))?;
+
+        Ok(Address(sum))
     }
 
     /// Find how far this address offsets another one.
@@ -301,10 +321,7 @@ impl<'a> fmt::Display for AddressDisplay<'a> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let AddressDisplay { address, handle } = *self;
 
-        let location = handle
-            .find_location(*address)
-            .ok()
-            .unwrap_or(Location::None);
+        let location = handle.find_location(*address);
 
         let offset = match location {
             Location::Module(module) => match address.offset_of(module.range.base).ok() {
@@ -518,21 +535,8 @@ pub struct AddressRange {
 }
 
 impl AddressRange {
-    pub fn contains(&self, value: Address) -> Result<bool, Error> {
-        Ok(self.base <= value && value <= self.base.add(self.size)?)
-    }
-
-    /// Compare where an address falls withing the current range.
-    pub fn address_cmp(&self, address: Address) -> cmp::Ordering {
-        if address < self.base {
-            return cmp::Ordering::Greater;
-        }
-
-        if address < self.base.saturating_add(self.size) {
-            return cmp::Ordering::Equal;
-        }
-
-        cmp::Ordering::Less
+    pub fn contains(&self, value: Address) -> bool {
+        self.base <= value && value <= self.base.saturating_add(self.size)
     }
 
     /// Helper function to find which memory region a given address is contained in.
@@ -542,23 +546,23 @@ impl AddressRange {
         things: &Vec<T>,
         accessor: impl Fn(&T) -> &AddressRange,
         address: Address,
-    ) -> Result<Option<&T>, Error> {
+    ) -> Option<&T> {
         let thing = match things.binary_search_by(|m| accessor(m).base.cmp(&address)) {
             Ok(exact) => &things[exact],
             Err(closest) => {
                 if closest <= 0 {
-                    return Ok(None);
+                    return None;
                 }
 
                 &things[closest - 1]
             }
         };
 
-        if accessor(thing).contains(address)? {
-            return Ok(Some(thing));
+        if accessor(thing).contains(address) {
+            return Some(thing);
         }
 
-        Ok(None)
+        None
     }
 }
 

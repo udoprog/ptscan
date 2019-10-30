@@ -2,6 +2,7 @@
 
 use crate::{
     error::Error,
+    filter::ast::ValueExpr,
     pointer::{Base, Pointer},
     process, system,
     thread::Thread,
@@ -95,20 +96,6 @@ impl ProcessHandle {
         Ok(None)
     }
 
-    /// Build a matcher that matches any pointers which points to valid memory.
-    pub fn pointer_matcher(&self) -> Result<PointerMatcher, Error> {
-        use crate::utils::IteratorExtension;
-
-        let mut memory_regions = self
-            .process
-            .virtual_memory_regions()
-            .only_relevant()
-            .collect::<Result<Vec<_>, _>>()?;
-
-        memory_regions.sort_by_key(|m| m.range.base);
-        Ok(PointerMatcher { memory_regions })
-    }
-
     /// Name of the process.
     pub fn name(&self) -> ProcessName {
         ProcessName {
@@ -194,29 +181,26 @@ impl ProcessHandle {
     }
 
     /// Find the module that the address is contained in.
-    pub fn find_location<'a>(&'a self, address: Address) -> Result<Location<'a>, Error> {
-        if let Some(module) = self.find_module(address)? {
-            return Ok(Location::Module(module));
+    pub fn find_location<'a>(&'a self, address: Address) -> Location<'a> {
+        if let Some(module) = self.find_module(address) {
+            return Location::Module(module);
         }
 
         // TODO: need exact stack for thread.
-        if let Some(thread) = self.find_thread_by_stack(address)? {
-            return Ok(Location::Thread(thread));
+        if let Some(thread) = self.find_thread_by_stack(address) {
+            return Location::Thread(thread);
         }
 
-        Ok(Location::None)
+        Location::None
     }
 
     /// Find if address is contained in a module.
-    pub fn find_module<'a>(&'a self, address: Address) -> Result<Option<&'a ModuleInfo>, Error> {
+    pub fn find_module<'a>(&'a self, address: Address) -> Option<&'a ModuleInfo> {
         AddressRange::find_in_range(&self.modules, |m| &m.range, address)
     }
 
     /// Find if address is contained in a module.
-    pub fn find_thread_by_stack<'a>(
-        &'a self,
-        address: Address,
-    ) -> Result<Option<&'a ProcessThread>, Error> {
+    pub fn find_thread_by_stack<'a>(&'a self, address: Address) -> Option<&'a ProcessThread> {
         AddressRange::find_in_range(&self.threads, |m| &m.stack, address)
     }
 
@@ -262,7 +246,7 @@ impl ProcessHandle {
             // TODO: make independent of host architecture (use u64).
             let ptr = Address::try_from(LittleEndian::read_u64(w))?;
 
-            if kernel32.contains(ptr)? {
+            if kernel32.contains(ptr) {
                 let address = Size::try_from(n * ptr_width.as_usize())?;
                 return Ok(Some(stack.base.add(address)?));
             }
@@ -369,30 +353,42 @@ impl Decode for u32 {
 
 #[derive(Debug, Clone)]
 pub struct PointerMatcher {
+    expr: ValueExpr,
     /// Sorted memory regions.
     memory_regions: Vec<process::MemoryInformation>,
 }
 
 impl PointerMatcher {
+    pub fn new(expr: ValueExpr, process: &process::Process) -> anyhow::Result<Self> {
+        use crate::utils::IteratorExtension;
+
+        let mut memory_regions = process
+            .virtual_memory_regions()
+            .only_relevant()
+            .collect::<Result<Vec<_>, _>>()?;
+
+        memory_regions.sort_by_key(|m| m.range.base);
+
+        Ok(Self {
+            expr,
+            memory_regions,
+        })
+    }
+
     pub fn test(
         &self,
-        _: Type,
+        ty: Type,
         _: &Value,
         proxy: process::AddressProxy<'_>,
     ) -> anyhow::Result<bool> {
-        let value = proxy.eval(Type::U64)?;
+        let value = self.expr.eval(ty, proxy)?;
 
         let address = match value {
             Value::U64(value) => Address::new(value),
-            _ => anyhow::bail!("bad value when decoding address"),
+            _ => return Ok(false),
         };
 
-        Ok(
-            match AddressRange::find_in_range(&self.memory_regions, |m| &m.range, address) {
-                Ok(Some(_)) => true,
-                _ => false,
-            },
-        )
+        Ok(AddressRange::find_in_range(&self.memory_regions, |m| &m.range, address).is_some())
     }
 }
 

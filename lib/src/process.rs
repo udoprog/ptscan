@@ -1,8 +1,8 @@
-use std::{cmp, convert::TryFrom, ffi, fmt, iter, ptr, slice, sync::Arc};
+use std::{convert::TryFrom, ffi, fmt, iter, ptr, slice, sync::Arc};
 
 use crate::{
-    error::Error, filter, module, scan, system, utils, Address, AddressRange, ProcessId, Size,
-    Token, Type, Value,
+    error::Error, filter, module, scan, scan::ScanResult, system, utils, Address, AddressRange,
+    ProcessId, Size, Token, Type, Value,
 };
 
 use ntapi::ntpsapi;
@@ -15,6 +15,8 @@ use winapi::{
     },
     um::{memoryapi, processthreadsapi, psapi, winnt, wow64apiset},
 };
+
+const ZERO: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
 pub struct Session<'a> {
     process: &'a Process,
@@ -44,7 +46,7 @@ impl<'a> Session<'a> {
                     return Ok(None);
                 }
 
-                let offset = address.as_usize() - region.base.as_usize();
+                let offset = address.sub_address(region.base)?.as_usize();
 
                 return self.memory_cache.with_region(self.process, region, |data| {
                     let first = bytes[0];
@@ -55,6 +57,33 @@ impl<'a> Session<'a> {
                     };
 
                     Ok(Some(address.saturating_add(Size::try_from(index)?)))
+                });
+            }
+            filter::Special::NonZero => {
+                let offset = address.sub_address(region.base)?.as_usize();
+
+                return self.memory_cache.with_region(self.process, region, |data| {
+                    let mut data = &data[offset..];
+
+                    let mut local = 0;
+
+                    while !data.is_empty() {
+                        let len = usize::min(data.len(), ZERO.len());
+
+                        if &data[..len] != &ZERO[..len] {
+                            break;
+                        }
+
+                        data = &data[len..];
+                        local += len;
+                    }
+
+                    let index = match data.iter().position(|c| *c != 0) {
+                        Some(index) => index,
+                        None => return Ok(Some(address.saturating_add(Size::try_from(local)?))),
+                    };
+
+                    return Ok(Some(address.saturating_add(Size::try_from(local + index)?)));
                 });
             }
         }
@@ -337,10 +366,8 @@ impl Process {
     pub fn rescan_values(
         &self,
         thread_pool: &rayon::ThreadPool,
-        values: &[Value],
-        addresses: &[Address],
-        values_output: &mut Vec<Value>,
-        addresses_output: &mut Vec<Address>,
+        results: &[ScanResult],
+        results_output: &mut Vec<ScanResult>,
         filter: &filter::Filter,
         cancel: Option<&Token>,
         progress: (impl scan::Progress + Send),
@@ -354,14 +381,12 @@ impl Process {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        let len = usize::min(values.len(), addresses.len());
-
-        if len == 0 {
+        if results.is_empty() {
             return Ok(());
         }
 
         let mut last_error = None;
-        let mut reporter = scan::Reporter::new(progress, len, cancel, &mut last_error);
+        let mut reporter = scan::Reporter::new(progress, results.len(), cancel, &mut last_error);
 
         // how many tasks to run in parallel.
         let tasks = 0x100usize;
@@ -369,32 +394,35 @@ impl Process {
         thread_pool.install(|| {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<Task>>();
-                let (p_tx, p_rx) = crossbeam_channel::unbounded::<Option<(&Value, Address)>>();
+                let (p_tx, p_rx) = crossbeam_channel::unbounded::<Option<&ScanResult>>();
 
                 for _ in 0..thread_pool.current_num_threads() {
                     let tx = tx.clone();
                     let p_rx = p_rx.clone();
 
                     s.spawn(move |_| {
-                        let mut values = Vec::new();
-                        let mut addresses = Vec::new();
+                        let mut results = Vec::new();
 
                         loop {
-                            let (value, address) = match p_rx.recv().expect("closed") {
+                            let result = match p_rx.recv().expect("closed") {
                                 Some(task) => task,
                                 None => {
-                                    tx.send(Ok(Task::Result(values, addresses)))
-                                        .expect("closed");
+                                    tx.send(Ok(Task::Result(results))).expect("closed");
                                     return;
                                 }
                             };
 
                             let mut work = || {
-                                let address = self.address_proxy(address);
+                                let proxy = self.address_proxy(result.address);
 
-                                if filter.test(value, address)? {
-                                    values.push(value.clone());
-                                    addresses.push(address.address);
+                                if filter.test(&result.value, proxy)? {
+                                    let value = proxy.eval(filter.ty)?;
+
+                                    results.push(ScanResult {
+                                        address: result.address,
+                                        value,
+                                    });
+
                                     return Ok(Task::Accepted);
                                 }
 
@@ -406,10 +434,10 @@ impl Process {
                     });
                 }
 
-                let mut it = values.iter().zip(addresses.iter().cloned());
+                let mut it = results.iter();
 
-                for (output, address) in (&mut it).take(tasks) {
-                    p_tx.send(Some((output, address))).expect("closed");
+                for result in (&mut it).take(tasks) {
+                    p_tx.send(Some(result)).expect("closed");
                 }
 
                 let mut count = 0u64;
@@ -422,16 +450,15 @@ impl Process {
 
                     let result = rx.recv().expect("closed");
 
-                    if let Some((output, address)) = it.next() {
-                        p_tx.send(Some((output, address))).expect("closed");
+                    if let Some(result) = it.next() {
+                        p_tx.send(Some(result)).expect("closed");
                     }
 
                     count += match reporter.eval(result).unwrap_or(Task::Rejected) {
                         Task::Accepted => 1,
                         Task::Rejected => 0,
-                        Task::Result(mut values, addresses) => {
-                            values_output.append(&mut values);
-                            addresses_output.extend(addresses);
+                        Task::Result(mut results) => {
+                            results_output.append(&mut results);
                             expected -= 1;
                             continue;
                         }
@@ -452,9 +479,8 @@ impl Process {
                     count += match reporter.eval(result).unwrap_or(Task::Rejected) {
                         Task::Accepted => 1,
                         Task::Rejected => 0,
-                        Task::Result(mut values, addresses) => {
-                            values_output.append(&mut values);
-                            addresses_output.extend(addresses);
+                        Task::Result(mut results) => {
+                            results_output.append(&mut results);
                             expected -= 1;
                             continue;
                         }
@@ -481,7 +507,7 @@ impl Process {
             /// Address was rejected.
             Rejected,
             /// The result of a computation.
-            Result(Vec<Value>, Vec<Address>),
+            Result(Vec<ScanResult>),
         }
     }
 
@@ -489,8 +515,7 @@ impl Process {
     pub fn refresh_values(
         &self,
         thread_pool: &rayon::ThreadPool,
-        addresses: &[Address],
-        output: &mut [Value],
+        results: &mut [ScanResult],
         cancel: Option<&Token>,
         progress: (impl scan::Progress + Send),
     ) -> anyhow::Result<()> {
@@ -503,14 +528,12 @@ impl Process {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        let len = usize::min(addresses.len(), output.len());
-
-        if len == 0 {
+        if results.is_empty() {
             return Ok(());
         }
 
         let mut last_error = None;
-        let mut reporter = scan::Reporter::new(progress, len, cancel, &mut last_error);
+        let mut reporter = scan::Reporter::new(progress, results.len(), cancel, &mut last_error);
 
         // how many tasks to run in parallel.
         let tasks = 0x100usize;
@@ -518,7 +541,7 @@ impl Process {
         thread_pool.install(|| {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel();
-                let (p_tx, p_rx) = crossbeam_channel::unbounded::<Option<(&mut Value, Address)>>();
+                let (p_tx, p_rx) = crossbeam_channel::unbounded::<Option<&mut ScanResult>>();
 
                 for _ in 0..thread_pool.current_num_threads() {
                     let tx = tx.clone();
@@ -527,7 +550,7 @@ impl Process {
                     let mut buf = vec![0u8; 0x10];
 
                     s.spawn(move |_| loop {
-                        let (output, address) = match p_rx.recv().expect("closed") {
+                        let result = match p_rx.recv().expect("closed") {
                             Some(task) => task,
                             None => {
                                 tx.send(None).expect("closed");
@@ -535,8 +558,7 @@ impl Process {
                             }
                         };
 
-                        let ty = output.ty();
-                        let needed = output.size();
+                        let needed = result.value.size();
 
                         if buf.len() < needed {
                             buf.extend(
@@ -547,11 +569,11 @@ impl Process {
                         let buf = &mut buf[..needed];
 
                         let mut work = move || {
-                            if !self.read_process_memory(address, buf)? {
+                            if !self.read_process_memory(result.address, buf)? {
                                 return Ok(0u64);
                             }
 
-                            *output = match ty.decode(buf) {
+                            result.value = match result.value.ty().decode(buf) {
                                 Ok(value) => value,
                                 Err(_) => Value::None,
                             };
@@ -563,10 +585,10 @@ impl Process {
                     });
                 }
 
-                let mut it = output.iter_mut().zip(addresses.iter().cloned());
+                let mut it = results.iter_mut();
 
-                for (output, address) in (&mut it).take(tasks) {
-                    p_tx.send(Some((output, address))).expect("closed");
+                for result in (&mut it).take(tasks) {
+                    p_tx.send(Some(result)).expect("closed");
                 }
 
                 let mut count = 0u64;
@@ -577,13 +599,13 @@ impl Process {
                         break;
                     }
 
-                    let result = rx.recv().expect("closed").expect("sporadic none option");
+                    let res = rx.recv().expect("closed").expect("sporadic none option");
 
-                    if let Some((output, address)) = it.next() {
-                        p_tx.send(Some((output, address))).expect("closed");
+                    if let Some(result) = it.next() {
+                        p_tx.send(Some(result)).expect("closed");
                     }
 
-                    count += reporter.eval(result).unwrap_or_default();
+                    count += reporter.eval(res).unwrap_or_default();
                     reporter.tick(count);
                 }
 
@@ -645,10 +667,7 @@ pub struct Regions {
 impl Regions {
     /// Find the region for the given address.
     pub fn find_region_for(&self, address: Address) -> Option<&AddressRange> {
-        match self.regions.binary_search_by(|m| m.address_cmp(address)) {
-            Ok(index) => Some(&self.regions[index].range),
-            Err(..) => None,
-        }
+        AddressRange::find_in_range(&self.regions, |r| &r.range, address).map(|r| &r.range)
     }
 }
 
@@ -918,12 +937,6 @@ pub struct MemoryInformation {
     pub state: MemoryState,
     pub ty: MemoryType,
     pub protect: fixed_map::Set<MemoryProtect>,
-}
-
-impl MemoryInformation {
-    pub fn address_cmp(&self, address: Address) -> cmp::Ordering {
-        self.range.address_cmp(address)
-    }
 }
 
 /// Iterator over virtual memory regions.

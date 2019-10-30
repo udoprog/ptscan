@@ -1,4 +1,9 @@
-use crate::{filter, process::AddressProxy, Offset, Type, Value};
+use crate::{
+    filter,
+    process::{AddressProxy, Process},
+    process_handle::PointerMatcher,
+    Offset, Type, Value,
+};
 use num_bigint::{BigInt, Sign};
 use std::fmt;
 
@@ -27,8 +32,8 @@ impl fmt::Display for Op {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueTrait {
-    Value,
-    Deref,
+    IsValue,
+    IsDeref,
     NonZero,
     Zero,
 }
@@ -63,8 +68,8 @@ impl ValueExpr {
         use num_traits::Zero as _;
 
         let value_trait = match self {
-            Self::Value => ValueTrait::Value,
-            Self::Deref(v) if **v == ValueExpr::Value => ValueTrait::Deref,
+            Self::Value => ValueTrait::IsValue,
+            Self::Deref(v) if **v == ValueExpr::Value => ValueTrait::IsDeref,
             Self::Number(num) if num.is_zero() => ValueTrait::Zero,
             Self::String(s) if s.as_bytes().iter().all(|c| *c == 0) => ValueTrait::Zero,
             _ => ValueTrait::NonZero,
@@ -101,6 +106,8 @@ pub enum Expression {
     Inc,
     /// A value that has decreased.
     Dec,
+    /// Value expression _is a pointer_.
+    IsPointer(ValueExpr),
     /// Test that the value equals the expected value.
     Binary(Op, ValueExpr, ValueExpr),
     /// Multiple expressions and:ed together.
@@ -111,24 +118,44 @@ pub enum Expression {
 
 impl Expression {
     /// Convert expression into a matcher.
-    pub fn into_matcher(self, ty: Type) -> filter::Matcher {
+    pub fn into_matcher(
+        self,
+        ty: Type,
+        process: Option<&Process>,
+    ) -> anyhow::Result<filter::Matcher> {
         use self::Expression::*;
 
-        match self {
+        Ok(match self {
             Same => filter::Matcher::Same(filter::Same),
             Changed => filter::Matcher::Changed(filter::Changed),
             Inc => filter::Matcher::Inc(filter::Inc),
             Dec => filter::Matcher::Dec(filter::Dec),
             Binary(op, lhs, rhs) => filter::Matcher::Binary(filter::Binary(op, lhs, rhs)),
+            IsPointer(expr) => {
+                let process = match process {
+                    Some(process) => process,
+                    None => {
+                        anyhow::bail!("can only perform pointer matching when attached to process")
+                    }
+                };
+
+                filter::Matcher::PointerMatcher(PointerMatcher::new(expr, process)?)
+            }
             And(expressions) => {
-                let filters = expressions.into_iter().map(|e| e.into_matcher(ty));
+                let filters = expressions
+                    .into_iter()
+                    .map(|e| e.into_matcher(ty, process))
+                    .collect::<anyhow::Result<Vec<filter::Matcher>>>()?;
                 filter::Matcher::All(filter::All::new(filters))
             }
             Or(expressions) => {
-                let filters = expressions.into_iter().map(|e| e.into_matcher(ty));
+                let filters = expressions
+                    .into_iter()
+                    .map(|e| e.into_matcher(ty, process))
+                    .collect::<anyhow::Result<Vec<filter::Matcher>>>()?;
                 filter::Matcher::Any(filter::Any::new(filters))
             }
-        }
+        })
     }
 }
 

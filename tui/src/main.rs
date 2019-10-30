@@ -185,8 +185,6 @@ where
                 self.attach()?;
             }
             Action::Print(limit) => {
-                let limit = limit.unwrap_or(DEFAULT_LIMIT);
-
                 let scan = match self.scans.get_mut(&self.current_scan) {
                     Some(scan) => scan,
                     None => {
@@ -195,21 +193,25 @@ where
                     }
                 };
 
+                let limit = limit.unwrap_or(DEFAULT_LIMIT);
+                let mut stored;
+                let mut results = &scan[..usize::min(scan.len(), limit)];
+
                 if let Some(handle) = self.handle.as_ref() {
-                    let len = usize::min(scan.values.len(), limit);
+                    stored = results.to_vec();
 
                     handle.process.refresh_values(
                         &self.thread_pool,
-                        &scan.addresses,
-                        &mut scan.values[..len],
+                        &mut stored,
                         None,
                         SimpleProgress::new(&mut self.w),
                     )?;
 
+                    results = &stored;
                     println!("");
                 }
 
-                Self::print(&mut self.w, self.handle.as_ref(), &*scan, limit)?;
+                Self::print(&mut self.w, self.handle.as_ref(), scan.len(), results)?;
             }
             Action::Del(address) => {
                 let scan = match self.scans.get_mut(&self.current_scan) {
@@ -320,7 +322,10 @@ where
         println!("");
         let scan = res?;
 
-        Self::print(&mut self.w, self.handle.as_ref(), &scan, DEFAULT_LIMIT)?;
+        let len = usize::min(scan.len(), DEFAULT_LIMIT);
+
+        Self::print(&mut self.w, self.handle.as_ref(), scan.len(), &scan[..len])?;
+
         self.scans.insert(self.current_scan.clone(), scan);
         Ok(())
     }
@@ -366,16 +371,21 @@ where
     fn print(
         w: &mut impl io::Write,
         handle: Option<&ProcessHandle>,
-        scan: &ptscan::Scan,
-        limit: usize,
+        len: usize,
+        results: &[scan::ScanResult],
     ) -> anyhow::Result<()> {
-        if scan.len() > limit {
-            writeln!(w, "found {} addresses (only showing 10)", scan.len())?;
+        if len > results.len() {
+            writeln!(
+                w,
+                "found {} addresses (only showing {})",
+                len,
+                results.len()
+            )?;
         } else {
-            writeln!(w, "found {} addresses", scan.len())?;
+            writeln!(w, "found {} addresses", results.len())?;
         };
 
-        for result in scan.iter().take(limit) {
+        for result in results {
             if let Some(handle) = handle.as_ref() {
                 writeln!(w, "{} = {}", result.address.display(handle), result.value)?;
             } else {
@@ -482,6 +492,7 @@ where
                 }
 
                 let ty = str::parse(command[0])?;
+
                 let filter = self.parse_filter(ty, &command[1..])?;
                 return Ok(Action::Scan(filter));
             }
@@ -558,8 +569,9 @@ where
     ///
     /// Note: only supports simple predicates for now.
     pub fn parse_filter(&mut self, ty: Type, rest: &[&str]) -> anyhow::Result<filter::Filter> {
+        let process = self.handle.as_ref().map(|h| &h.process);
         let rest = rest.join(" ");
-        filter::parse(&rest, ty)
+        filter::parse(&rest, ty, process)
     }
 
     /// Print help messages.

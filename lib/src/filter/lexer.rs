@@ -27,6 +27,10 @@ pub enum Token {
     Inc,
     /// Value decreased.
     Dec,
+    /// Value is a pointer.
+    Pointer,
+    /// `is` keyword.
+    Is,
     /// `==`.
     Eq,
     /// `!=`.
@@ -368,6 +372,8 @@ impl<'a> Iterator for Lexer<'a> {
                         "changed" => return Some(Ok((s, Token::Changed, e))),
                         "inc" => return Some(Ok((s, Token::Inc, e))),
                         "dec" => return Some(Ok((s, Token::Dec, e))),
+                        "pointer" => return Some(Ok((s, Token::Pointer, e))),
+                        "is" => return Some(Ok((s, Token::Is, e))),
                         other => {
                             return Some(Err(self.err(format!("unsupported keyword `{}`", other))));
                         }

@@ -1,6 +1,6 @@
 use self::ast::{Op, ValueExpr, ValueTrait};
 use crate::{
-    process::AddressProxy,
+    process::{AddressProxy, Process},
     process_handle::PointerMatcher,
     value::{self, Value},
     Type,
@@ -13,16 +13,17 @@ mod lexer;
 lalrpop_util::lalrpop_mod!(parser, "/filter/parser.rs");
 
 /// Parse a a string into a filter.
-pub fn parse(input: &str, ty: Type) -> anyhow::Result<Filter> {
+pub fn parse(input: &str, ty: Type, process: Option<&Process>) -> anyhow::Result<Filter> {
     let matcher = parser::OrParser::new()
         .parse(lexer::Lexer::new(input))?
-        .into_matcher(ty);
+        .into_matcher(ty, process)?;
 
     Ok(Filter { ty, matcher })
 }
 
 pub enum Special {
     Bytes(Vec<u8>),
+    NonZero,
 }
 
 #[derive(Debug)]
@@ -35,11 +36,6 @@ impl Filter {
     /// Test the given bytes against this filter.
     pub fn test(&self, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
         Ok(self.matcher.test(self.ty, last, proxy)?)
-    }
-
-    /// Check if zero is a match to this filter.
-    pub fn is_zero_match(&self) -> bool {
-        self.matcher.is_zero_match()
     }
 
     pub fn special(&self) -> anyhow::Result<Option<Special>> {
@@ -74,22 +70,10 @@ impl Matcher {
         }
     }
 
-    fn is_zero_match(&self) -> bool {
-        match self {
-            Self::Changed(..) => true,
-            Self::Same(..) => true,
-            Self::Binary(m) => m.is_zero_match(),
-            Self::All(m) => m.is_zero_match(),
-            Self::Any(m) => m.is_zero_match(),
-            Self::Inc(..) => true,
-            Self::Dec(..) => true,
-            Self::PointerMatcher(..) => true,
-        }
-    }
-
     /// Construct a special matcher.
     fn special(&self, ty: Type) -> anyhow::Result<Option<Special>> {
         match self {
+            Self::PointerMatcher(..) => Ok(Some(Special::NonZero)),
             Self::Binary(m) => m.special(ty),
             _ => Ok(None),
         }
@@ -226,7 +210,9 @@ impl Binary {
     }
 
     fn special(&self, ty: Type) -> anyhow::Result<Option<Special>> {
+        use self::Sign::*;
         use self::ValueExpr::*;
+        use self::ValueTrait::*;
 
         let Binary(op, lhs, rhs) = self;
 
@@ -246,29 +232,32 @@ impl Binary {
             return Ok(Some(Special::Bytes(buf)));
         }
 
-        Ok(None)
-    }
-
-    /// Test if the given binary expression is allowed to assume a zero value.
-    fn is_zero_match(&self) -> bool {
-        use self::Sign::*;
-        use self::ValueTrait::*;
-
-        let Binary(op, lhs, rhs) = self;
-
-        match (op, lhs.traits(), rhs.traits()) {
+        // expressions that only matches non-zeroed regions.
+        let non_zero = match (op, lhs.traits(), rhs.traits()) {
             // any derefs must be done on a non-zero value.
-            (_, (Deref, _), _) | (_, _, (Deref, _)) => false,
-            (Op::Eq, (Value, _), (NonZero, _)) | (Op::Eq, (NonZero, _), (Value, _)) => false,
-            (Op::Neq, (Value, _), (Zero, _)) | (Op::Neq, (Zero, _), (Value, _)) => false,
-            (Op::Gte, (Value, _), (NonZero, Plus)) => false,
-            (Op::Lte, (Value, _), (NonZero, Minus)) => false,
-            (Op::Lt, (Value, _), (NonZero, Minus)) => false,
-            (Op::Lt, (Value, _), (Zero, _)) => false,
-            (Op::Gt, (Value, _), (NonZero, Plus)) => false,
-            (Op::Gt, (Value, _), (Zero, _)) => false,
-            _ => true,
+            (_, (IsDeref, _), _) | (_, _, (IsDeref, _)) => true,
+            // value equals something that is non-zero.
+            (Op::Eq, (IsValue, _), (NonZero, _)) | (Op::Eq, (NonZero, _), (IsValue, _)) => true,
+            // value does not equal to zero.
+            (Op::Neq, (IsValue, _), (Zero, _)) | (Op::Neq, (Zero, _), (IsValue, _)) => true,
+            // value is greater than non-zero positive.
+            (Op::Gte, (IsValue, _), (NonZero, Plus)) => true,
+            // value is less than non-zero negative.
+            (Op::Lte, (IsValue, _), (NonZero, Minus)) => true,
+            // less than zero.
+            (Op::Lt, (IsValue, _), (NonZero, Minus)) => true,
+            (Op::Lt, (IsValue, _), (Zero, _)) => true,
+            // greater than zero.
+            (Op::Gt, (IsValue, _), (NonZero, Plus)) => true,
+            (Op::Gt, (IsValue, _), (Zero, _)) => true,
+            _ => false,
+        };
+
+        if non_zero {
+            return Ok(Some(Special::NonZero));
         }
+
+        Ok(None)
     }
 }
 
@@ -285,10 +274,6 @@ pub struct All(Vec<Matcher>);
 impl All {
     pub fn new(filters: impl IntoIterator<Item = Matcher>) -> Self {
         All(filters.into_iter().collect())
-    }
-
-    pub fn is_zero_match(&self) -> bool {
-        self.0.iter().any(|m| m.is_zero_match())
     }
 }
 
@@ -321,10 +306,6 @@ pub struct Any(Vec<Matcher>);
 impl Any {
     pub fn new(filters: impl IntoIterator<Item = Matcher>) -> Self {
         Any(filters.into_iter().collect())
-    }
-
-    pub fn is_zero_match(&self) -> bool {
-        self.0.iter().all(|m| m.is_zero_match())
     }
 }
 

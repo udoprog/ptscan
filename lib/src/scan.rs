@@ -1,18 +1,17 @@
 //! Predicates used for matching against memory.
 
-use crate::{
-    address::{Address, Size},
-    error::Error,
-    filter, pointer,
-    process::Process,
-    watch::Watch,
-    Location, ProcessHandle, Token, Value,
-};
+use crate::{address::Size, error::Error, filter, Pointer, ProcessHandle, Token, Type, Value};
+use serde::{Deserialize, Serialize};
 use std::{
     convert::TryInto,
     ops, slice,
     sync::{mpsc, Arc},
 };
+
+#[derive(Debug, Clone, Default)]
+pub struct InitialScanConfig {
+    pub modules_only: bool,
+}
 
 /// A trait to track the progress of processes.
 pub trait Progress {
@@ -31,6 +30,8 @@ pub struct Scan {
     pub aligned: Option<bool>,
     /// If this scan has a set of initial results.
     pub initial: bool,
+    /// Last type used during a scan.
+    pub last_type: Option<Type>,
     /// Scan results.
     pub results: Vec<ScanResult>,
 }
@@ -40,17 +41,33 @@ impl Scan {
     pub fn new(thread_pool: &Arc<rayon::ThreadPool>) -> Self {
         Self {
             aligned: None,
-            initial: false,
+            initial: true,
+            last_type: None,
             thread_pool: Arc::clone(thread_pool),
             results: Vec::new(),
+        }
+    }
+
+    /// Construct a scan from an already existing collection of results.
+    pub fn from_results(
+        thread_pool: &Arc<rayon::ThreadPool>,
+        last_type: Type,
+        results: Vec<ScanResult>,
+    ) -> Self {
+        Self {
+            aligned: None,
+            initial: false,
+            last_type: Some(last_type),
+            thread_pool: Arc::clone(thread_pool),
+            results,
         }
     }
 
     /// Remove the given entry by address.
     ///
     /// Returns `true` if the address was removed, `false` otherwise.
-    pub fn remove_by_address(&mut self, address: Address) -> bool {
-        if let Some(index) = self.results.iter().position(|r| r.address == address) {
+    pub fn remove_by_pointer(&mut self, pointer: &Pointer) -> bool {
+        if let Some(index) = self.results.iter().position(|r| *r.pointer == *pointer) {
             self.results.swap_remove(index);
             true
         } else {
@@ -83,15 +100,15 @@ impl Scan {
 
     /// rescan a set of results.
     pub fn scan(
-        &self,
-        process: &Process,
+        &mut self,
+        handle: &ProcessHandle,
         filter: &filter::Filter,
         cancel: Option<&Token>,
         progress: (impl Progress + Send),
-    ) -> Result<Scan, anyhow::Error> {
+    ) -> anyhow::Result<()> {
         let mut results = Vec::new();
 
-        process.rescan_values(
+        handle.rescan_values(
             &*self.thread_pool,
             &self.results,
             &mut results,
@@ -100,12 +117,9 @@ impl Scan {
             progress,
         )?;
 
-        Ok(Scan {
-            thread_pool: Arc::clone(&self.thread_pool),
-            aligned: self.aligned,
-            initial: false,
-            results,
-        })
+        self.last_type = Some(filter.ty);
+        self.results = results;
+        Ok(())
     }
 
     /// Scan for the given value in memory.
@@ -128,6 +142,7 @@ impl Scan {
         filter: &filter::Filter,
         cancel: Option<&Token>,
         progress: (impl Progress + Send),
+        config: InitialScanConfig,
     ) -> anyhow::Result<()> {
         use crate::utils::IteratorExtension;
 
@@ -137,6 +152,8 @@ impl Scan {
             Some(cancel) => cancel,
             None => local_cancel.get_or_insert(Token::new()),
         };
+
+        self.last_type = Some(filter.ty);
 
         let Scan {
             ref mut results,
@@ -153,7 +170,7 @@ impl Scan {
 
         let aligned = aligned.unwrap_or(filter.ty.is_default_aligned());
 
-        let session = handle.process.session()?;
+        let session = handle.session()?;
         let session = &session;
 
         let special = filter.special(&handle.process)?;
@@ -165,17 +182,20 @@ impl Scan {
                 let mut total = 0;
                 let mut bytes = Size::zero();
 
-                let memory_regions = handle
-                    .process
-                    .virtual_memory_regions()
-                    .only_relevant()
-                    .collect::<Result<Vec<_>, Error>>()?;
+                let mut ranges = Vec::new();
 
-                let ranges = handle
-                    .modules
-                    .iter()
-                    .map(|m| m.range.clone())
-                    .chain(memory_regions.into_iter().map(|m| m.range));
+                if !config.modules_only {
+                    ranges.extend(
+                        handle
+                            .process
+                            .virtual_memory_regions()
+                            .only_relevant()
+                            .map(|m| m.map(|m| m.range))
+                            .collect::<Result<Vec<_>, Error>>()?,
+                    );
+                }
+
+                ranges.extend(handle.modules.iter().map(|m| m.range.clone()));
 
                 for range in ranges {
                     bytes.add_assign(range.size)?;
@@ -208,12 +228,16 @@ impl Scan {
                             let end = range.base.add(range.size)?;
 
                             while current < end {
-                                let proxy = session.address_proxy(current);
+                                let base = handle.address_to_pointer_base(current)?;
+                                let pointer = Pointer::new(base, vec![]);
+                                let proxy = session.address_proxy(&pointer);
 
                                 if filter.test(&Value::None, proxy)? {
+                                    let base = handle.address_to_pointer_base(current)?;
+
                                     results.push(ScanResult {
-                                        address: current,
-                                        value: proxy.eval(filter.ty)?,
+                                        pointer: Arc::new(Pointer::new(base, vec![])),
+                                        value: Box::new(proxy.eval(filter.ty)?),
                                     });
                                 }
 
@@ -379,32 +403,10 @@ impl<'token, 'err, P> Reporter<'token, 'err, P> {
 }
 
 /// A single scan result.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
     /// Address where the scanned value lives.
-    pub address: Address,
+    pub pointer: Arc<Pointer>,
     /// Value from last scan.
-    pub value: Value,
-}
-
-impl ScanResult {
-    /// Buld a watch out of a scan result.
-    pub fn as_watch(&self, handle: Option<&ProcessHandle>) -> Result<Watch, Error> {
-        let base = match handle {
-            Some(handle) => match handle.find_location(self.address) {
-                Location::Module(module) => {
-                    let offset = self.address.offset_of(module.range.base)?;
-                    pointer::Base::Module(module.name.to_string(), offset)
-                }
-                _ => pointer::Base::Fixed(self.address),
-            },
-            None => pointer::Base::Fixed(self.address),
-        };
-
-        Ok(Watch {
-            pointer: pointer::Pointer::new(base),
-            value: self.value.clone(),
-            ty: self.value.ty(),
-        })
-    }
+    pub value: Box<Value>,
 }

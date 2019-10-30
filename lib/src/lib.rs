@@ -1,7 +1,7 @@
 use winapi::shared::minwindef::DWORD;
 
 #[macro_use]
-mod utils;
+pub mod utils;
 mod address;
 mod encode;
 mod error;
@@ -17,7 +17,6 @@ mod thread;
 mod token;
 mod ty;
 mod value;
-pub mod watch;
 
 pub type ProcessId = DWORD;
 pub type ThreadId = DWORD;
@@ -27,9 +26,9 @@ pub use self::encode::Encode;
 pub use self::error::Error;
 pub use self::filter::{Filter, Matcher, ValueExpr};
 pub use self::module::Module;
-pub use self::pointer::Pointer;
-pub use self::process::{MemoryState, MemoryType, Process};
-pub use self::process_handle::{Location, ProcessHandle, ProcessName};
+pub use self::pointer::{Pointer, PointerBase};
+pub use self::process::{MemoryInformation, MemoryState, MemoryType, Process};
+pub use self::process_handle::{AddressProxy, Location, ProcessHandle, ProcessName};
 pub use self::scan::{Scan, ScanResult};
 pub use self::thread::Thread;
 pub use self::token::Token;

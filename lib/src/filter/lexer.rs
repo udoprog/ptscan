@@ -1,3 +1,4 @@
+use crate::Type;
 use num_bigint::BigInt;
 use std::{borrow::Cow, fmt, str};
 use thiserror::Error;
@@ -48,7 +49,7 @@ pub enum Token {
     /// `)`.
     CloseParen,
     /// A literal value, like `0x42`, or `128u32`.
-    Literal(BigInt),
+    Literal(BigInt, Option<Type>),
     /// A quoted string.
     String(String),
 }
@@ -128,6 +129,18 @@ impl<'a> Lexer<'a> {
     pub fn peek2(&self) -> Option<(usize, char, char)> {
         match (self.peek(), self.c2.as_ref().map(|(_, c)| *c)) {
             (Some((p, c1)), Some(c2)) => Some((p, c1, c2)),
+            _ => None,
+        }
+    }
+
+    /// Peek three characters.
+    pub fn peek3(&self) -> Option<(usize, char, Option<char>, Option<char>)> {
+        match (
+            self.peek(),
+            self.c2.as_ref().map(|(_, c)| *c),
+            self.c3.as_ref().map(|(_, c)| *c),
+        ) {
+            (Some((p, c1)), c2, c3) => Some((p, c1, c2, c3)),
             _ => None,
         }
     }
@@ -252,12 +265,13 @@ impl<'a> Lexer<'a> {
     }
 
     /// Scan an identifier.
-    pub fn scan_literal(&mut self) -> Result<BigInt, Error> {
+    pub fn scan_literal(&mut self) -> Result<(BigInt, Option<Type>), Error> {
         use num::Num;
 
         self.buf.clear();
 
         let mut hex = false;
+        let mut ty = None;
 
         // test if we have a hex prefix
         if let Some((_, '0', 'x')) = self.peek2() {
@@ -277,6 +291,30 @@ impl<'a> Lexer<'a> {
                     self.step();
                     self.buf.push(c);
                 }
+                'u' => {
+                    self.step();
+
+                    ty = Some(match self.peek3() {
+                        Some((_, '8', _, _)) => Type::U8,
+                        Some((_, '1', Some('6'), _)) => Type::U16,
+                        Some((_, '3', Some('2'), _)) => Type::U32,
+                        Some((_, '6', Some('4'), _)) => Type::U64,
+                        Some((_, '1', Some('2'), Some('8'))) => Type::U128,
+                        _ => return Err(self.err("unexpected suffix")),
+                    });
+                }
+                'i' => {
+                    self.step();
+
+                    ty = Some(match self.peek3() {
+                        Some((_, '8', _, _)) => Type::I8,
+                        Some((_, '1', Some('6'), _)) => Type::I16,
+                        Some((_, '3', Some('2'), _)) => Type::I32,
+                        Some((_, '6', Some('4'), _)) => Type::I64,
+                        Some((_, '1', Some('2'), Some('8'))) => Type::I128,
+                        _ => return Err(self.err("unexpected suffix")),
+                    });
+                }
                 _ => return Err(self.err("unexpected character in identifier")),
             }
         }
@@ -287,7 +325,7 @@ impl<'a> Lexer<'a> {
             BigInt::from_str_radix(&self.buf, 10)
         };
 
-        Ok(result.map_err(|e| self.err(e.to_string()))?)
+        Ok((result.map_err(|e| self.err(e.to_string()))?, ty))
     }
 }
 
@@ -380,9 +418,9 @@ impl<'a> Iterator for Lexer<'a> {
                     }
                 }
                 '-' | '+' | '0'..='9' => {
-                    let literal = try_iter!(self.scan_literal());
+                    let (literal, ty) = try_iter!(self.scan_literal());
                     let e = self.pos();
-                    return Some(Ok((s, Token::Literal(literal), e)));
+                    return Some(Ok((s, Token::Literal(literal, ty), e)));
                 }
                 _ => return Some(Err(self.err("unsupported character"))),
             }

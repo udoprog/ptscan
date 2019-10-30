@@ -1,3 +1,5 @@
+mod words;
+
 use std::{ffi::OsString, ops};
 
 use crate::{
@@ -5,6 +7,8 @@ use crate::{
     process::{MemoryInformation, MemoryProtect},
     system, AddressRange, Size,
 };
+
+pub use self::words::Words;
 
 use winapi::{
     shared::minwindef::{BOOL, DWORD, FALSE, LPDWORD, PBOOL, TRUE},

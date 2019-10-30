@@ -1,8 +1,8 @@
 use self::ast::{Op, ValueTrait};
 use crate::{
-    process::{AddressProxy, MemoryInformation, Process},
+    process::{MemoryInformation, Process},
     value::{self, Value},
-    AddressRange, Offset, Type,
+    AddressProxy, AddressRange, Offset, Type,
 };
 use num_bigint::{BigInt, Sign};
 use std::fmt;
@@ -12,12 +12,10 @@ mod lexer;
 lalrpop_util::lalrpop_mod!(parser, "/filter/parser.rs");
 
 /// Parse a a string into a filter.
-pub fn parse(input: &str, ty: Type, process: Option<&Process>) -> anyhow::Result<Filter> {
-    let matcher = parser::OrParser::new()
+pub fn parse_matcher(input: &str, process: Option<&Process>) -> anyhow::Result<Matcher> {
+    Ok(parser::OrParser::new()
         .parse(lexer::Lexer::new(input))?
-        .into_matcher(ty, process)?;
-
-    Ok(Filter { ty, matcher })
+        .into_matcher(process)?)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,18 +27,27 @@ pub enum ValueExpr {
     /// Offset
     Offset(Box<ValueExpr>, Offset),
     /// A numerical literal.
-    Number(BigInt),
+    Number(BigInt, Option<Type>),
     /// A string literal.
     String(String),
 }
 
 impl ValueExpr {
+    /// Get a hint at what type to use for this expression.
+    pub fn type_hint(&self) -> Option<Type> {
+        match self {
+            Self::Number(.., ty) => Some(ty.unwrap_or(Type::U32)),
+            Self::String(s) => Some(Type::String(s.len())),
+            _ => None,
+        }
+    }
+
     /// Evaluate the expression.
     pub fn eval(&self, ty: Type, address: AddressProxy<'_>) -> anyhow::Result<Value> {
         match self {
             Self::Value => address.eval(ty),
             Self::String(string) => Ok(Value::String(string.as_bytes().to_vec())),
-            Self::Number(number) => Ok(Value::from_bigint(ty, number)?),
+            Self::Number(number, _) => Ok(Value::from_bigint(ty, number)?),
             expr => anyhow::bail!("value expression not supported yet: {}", expr),
         }
     }
@@ -52,13 +59,13 @@ impl ValueExpr {
         let value_trait = match self {
             Self::Value => ValueTrait::IsValue,
             Self::Deref(v) if **v == ValueExpr::Value => ValueTrait::IsDeref,
-            Self::Number(num) if num.is_zero() => ValueTrait::Zero,
+            Self::Number(num, _) if num.is_zero() => ValueTrait::Zero,
             Self::String(s) if s.as_bytes().iter().all(|c| *c == 0) => ValueTrait::Zero,
             _ => ValueTrait::NonZero,
         };
 
         let sign = match self {
-            Self::Number(num) => num.sign(),
+            Self::Number(num, _) => num.sign(),
             _ => Sign::NoSign,
         };
 
@@ -72,7 +79,8 @@ impl fmt::Display for ValueExpr {
             Self::Value => "value".fmt(fmt),
             Self::Deref(value) => write!(fmt, "*{}", value),
             Self::Offset(value, offset) => write!(fmt, "{}{}", value, offset),
-            Self::Number(number) => write!(fmt, "{}", number),
+            Self::Number(number, None) => write!(fmt, "{}", number),
+            Self::Number(number, Some(ty)) => write!(fmt, "{}{}", number, ty),
             Self::String(string) => write!(fmt, "{}", self::ast::EscapeString(string.as_bytes())),
         }
     }
@@ -90,6 +98,11 @@ pub struct Filter {
 }
 
 impl Filter {
+    /// Construct a new, typed filter.
+    pub fn new(ty: Type, matcher: Matcher) -> Self {
+        Self { ty, matcher }
+    }
+
     /// Construct a new pointer filter.
     pub fn pointer(ty: Type, expr: ValueExpr, process: &Process) -> anyhow::Result<Filter> {
         Ok(Filter {
@@ -121,6 +134,20 @@ pub enum Matcher {
 }
 
 impl Matcher {
+    /// Get a hint of which type to use.
+    pub fn type_hint(&self) -> Option<Type> {
+        match self {
+            Self::Changed(..) => None,
+            Self::Same(..) => None,
+            Self::Binary(m) => m.type_hint(),
+            Self::All(m) => m.type_hint(),
+            Self::Any(m) => m.type_hint(),
+            Self::Inc(..) => None,
+            Self::Dec(..) => None,
+            Self::Pointer(m) => m.type_hint(),
+        }
+    }
+
     /// Test the specified memory region.
     fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
         match self {
@@ -160,6 +187,42 @@ impl fmt::Display for Matcher {
     }
 }
 
+macro_rules! single_numeric_match {
+    ($expr:expr, $ty:ty, $a:ident $op:tt $b:ident) => {
+        match $expr {
+            Value::U128($b) => $a $op ($b as $ty),
+            Value::U64($b) => $a $op ($b as $ty),
+            Value::U32($b) => $a $op ($b as $ty),
+            Value::U16($b) => $a $op ($b as $ty),
+            Value::U8($b) => $a $op ($b as $ty),
+            Value::I128($b) => $a $op ($b as $ty),
+            Value::I64($b) => $a $op ($b as $ty),
+            Value::I32($b) => $a $op ($b as $ty),
+            Value::I16($b) => $a $op ($b as $ty),
+            Value::I8($b) => $a $op ($b as $ty),
+            _ => false,
+        }
+    }
+}
+
+macro_rules! numeric_match {
+    ($expr_a:expr, $expr_b:expr, $a:ident $op:tt $b:ident) => {
+        match $expr_a {
+            Value::U128($a) => single_numeric_match!($expr_b, u128, $a $op $b),
+            Value::U64($a) => single_numeric_match!($expr_b, u64, $a $op $b),
+            Value::U32($a) => single_numeric_match!($expr_b, u32, $a $op $b),
+            Value::U16($a) => single_numeric_match!($expr_b, u16, $a $op $b),
+            Value::U8($a) => single_numeric_match!($expr_b, u8, $a $op $b),
+            Value::I128($a) => single_numeric_match!($expr_b, i128, $a $op $b),
+            Value::I64($a) => single_numeric_match!($expr_b, i64, $a $op $b),
+            Value::I32($a) => single_numeric_match!($expr_b, i32, $a $op $b),
+            Value::I16($a) => single_numeric_match!($expr_b, i16, $a $op $b),
+            Value::I8($a) => single_numeric_match!($expr_b, i8, $a $op $b),
+            _ => false,
+        }
+    }
+}
+
 macro_rules! value_match {
     ($expr_a:expr, $expr_b:expr, $a:ident $op:tt $b:ident) => {
         match ($expr_a, $expr_b) {
@@ -187,8 +250,9 @@ macro_rules! value_match {
 pub struct Dec;
 
 impl Dec {
-    fn test(&self, _: Type, _: &Value, _: AddressProxy<'_>) -> anyhow::Result<bool> {
-        Ok(false)
+    fn test(&self, ty: Type, old: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+        let value = proxy.eval(ty)?;
+        Ok(numeric_match!(value, *old, a < b))
     }
 }
 
@@ -203,8 +267,9 @@ impl fmt::Display for Dec {
 pub struct Inc;
 
 impl Inc {
-    fn test(&self, _: Type, _: &Value, _: AddressProxy<'_>) -> anyhow::Result<bool> {
-        Ok(false)
+    fn test(&self, ty: Type, old: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+        let value = proxy.eval(ty)?;
+        Ok(numeric_match!(value, *old, a > b))
     }
 }
 
@@ -219,8 +284,9 @@ impl fmt::Display for Inc {
 pub struct Changed;
 
 impl Changed {
-    fn test(&self, _: Type, _: &Value, _: AddressProxy<'_>) -> anyhow::Result<bool> {
-        Ok(false)
+    fn test(&self, ty: Type, old: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+        let value = proxy.eval(ty)?;
+        Ok(value != *old)
     }
 }
 
@@ -235,8 +301,9 @@ impl fmt::Display for Changed {
 pub struct Same;
 
 impl Same {
-    fn test(&self, _: Type, _: &Value, _: AddressProxy<'_>) -> anyhow::Result<bool> {
-        Ok(false)
+    fn test(&self, ty: Type, old: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+        let value = proxy.eval(ty)?;
+        Ok(value == *old)
     }
 }
 
@@ -251,6 +318,11 @@ impl fmt::Display for Same {
 pub struct Binary(Op, ValueExpr, ValueExpr);
 
 impl Binary {
+    pub fn type_hint(&self) -> Option<Type> {
+        let Binary(_, lhs, rhs) = self;
+        lhs.type_hint().or(rhs.type_hint())
+    }
+
     fn test(&self, ty: Type, _: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
         let Binary(op, lhs, rhs) = self;
 
@@ -285,7 +357,7 @@ impl Binary {
             (Op::Eq, String(string), Value) | (Op::Eq, Value, String(string)) => {
                 Some(value::Value::String(string.as_bytes().to_vec()))
             }
-            (Op::Eq, Number(number), Value) | (Op::Eq, Value, Number(number)) => {
+            (Op::Eq, Number(number, _), Value) | (Op::Eq, Value, Number(number, _)) => {
                 Some(value::Value::from_bigint(ty, number)?)
             }
             _ => None,
@@ -340,6 +412,14 @@ impl All {
     pub fn new(filters: impl IntoIterator<Item = Matcher>) -> Self {
         All(filters.into_iter().collect())
     }
+
+    pub fn type_hint(&self) -> Option<Type> {
+        self.0.iter().flat_map(|m| m.type_hint()).next()
+    }
+
+    fn test(&self, _: Type, _: &Value, _: AddressProxy<'_>) -> anyhow::Result<bool> {
+        Ok(false)
+    }
 }
 
 impl fmt::Display for All {
@@ -358,12 +438,6 @@ impl fmt::Display for All {
     }
 }
 
-impl All {
-    fn test(&self, _: Type, _: &Value, _: AddressProxy<'_>) -> anyhow::Result<bool> {
-        Ok(false)
-    }
-}
-
 /// Only matches when any nested filter match.
 #[derive(Debug, Clone)]
 pub struct Any(Vec<Matcher>);
@@ -372,9 +446,11 @@ impl Any {
     pub fn new(filters: impl IntoIterator<Item = Matcher>) -> Self {
         Any(filters.into_iter().collect())
     }
-}
 
-impl Any {
+    pub fn type_hint(&self) -> Option<Type> {
+        self.0.iter().flat_map(|m| m.type_hint()).next()
+    }
+
     fn test(&self, _: Type, _: &Value, _: AddressProxy<'_>) -> anyhow::Result<bool> {
         Ok(false)
     }
@@ -418,6 +494,11 @@ impl Pointer {
             expr,
             memory_regions,
         })
+    }
+
+    /// Get the type hint for a pointer.
+    pub fn type_hint(&self) -> Option<Type> {
+        Some(Type::Pointer)
     }
 
     pub fn test(&self, ty: Type, _: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {

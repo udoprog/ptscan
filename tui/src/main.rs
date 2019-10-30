@@ -1,12 +1,18 @@
 #![feature(backtrace)]
 
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use hashbrown::HashMap;
 use ptscan::{
-    filter, scan, Address, Filter, Location, Offset, Process, ProcessHandle, Size, Token, Type,
-    Value, ValueExpr,
+    filter, scan, Address, Filter, Location, MemoryInformation, Offset, Pointer, PointerBase,
+    Process, ProcessHandle, ScanResult, Size, Token, Type, Value, ValueExpr,
 };
-use std::{io, sync::Arc};
+use serde::{Deserialize, Serialize};
+use std::{
+    fs::File,
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 static HELP: &'static str = include_str!("help.md");
 static DEFAULT_LIMIT: usize = 10;
@@ -118,13 +124,26 @@ where
 
     /// Run the application in a loop.
     pub fn run(&mut self) -> anyhow::Result<()> {
+        use ptscan::utils::Words;
+        let mut app = Self::app();
+
         loop {
             write!(self.w, "ptscan> ")?;
             self.w.flush()?;
 
             let line = self.line()?;
 
-            let action = match self.line_into_action(&line) {
+            let it = std::iter::once(String::from("ptscan")).chain(Words::new(&line));
+
+            let m = match app.get_matches_from_safe_borrow(it) {
+                Ok(m) => m,
+                Err(e) => {
+                    writeln!(self.w, "{}", e.message)?;
+                    continue;
+                }
+            };
+
+            let action = match self.line_into_action(&m) {
                 Ok(action) => action,
                 Err(e) => {
                     writeln!(self.w, "{}", e)?;
@@ -132,7 +151,7 @@ where
                 }
             };
 
-            match self.apply_action(action) {
+            match self.apply_action(&mut app, action) {
                 Ok(true) => return Ok(()),
                 Ok(false) => {}
                 Err(e) => {
@@ -144,16 +163,20 @@ where
     }
 
     /// Returns a boolean indicating if the process should exit.
-    fn apply_action(&mut self, action: Action) -> anyhow::Result<bool> {
+    fn apply_action(
+        &mut self,
+        app: &mut clap::App<'_, '_>,
+        action: Action,
+    ) -> anyhow::Result<bool> {
         match action {
-            Action::ScansList => {
+            Action::ScanList => {
                 writeln!(self.w, "Scans:")?;
 
                 for (key, s) in &self.scans {
                     writeln!(self.w, "{} - {} result(s)", key, s.len())?;
                 }
             }
-            Action::ScansNew(name) => {
+            Action::ScanNew { name } => {
                 if self.scans.contains_key(&name) {
                     bail!("there is already a scan named `{}`", name);
                 }
@@ -162,30 +185,29 @@ where
                     .insert(name.clone(), scan::Scan::new(&self.thread_pool));
                 self.current_scan = name;
             }
-            Action::ScansDel(name) => {
+            Action::ScanDel { name } => {
                 if self.scans.remove(&name).is_none() {
                     bail!("no such scan `{}`", name);
                 }
 
                 writeln!(self.w, "removed scan `{}`", name)?;
             }
-            Action::ScansSet(name) => {
-                if !self.scans.contains_key(&name) {
-                    bail!("there is no scan named `{}`", name);
-                }
-
+            Action::ScanSwitch { name } => {
                 self.current_scan = name;
             }
             Action::Exit => {
                 return Ok(true);
             }
             Action::Help => {
-                Self::print_help(&mut self.w)?;
+                app.write_long_help(&mut self.w)?;
+                writeln!(self.w, "")?;
             }
             Action::Process {
-                include_memory_regions,
+                include_modules,
+                include_threads,
+                include_memory,
             } => {
-                self.process(include_memory_regions)?;
+                self.process(include_modules, include_threads, include_memory)?;
             }
             Action::Attach(name) => {
                 if name.is_some() {
@@ -194,7 +216,23 @@ where
 
                 self.attach()?;
             }
-            Action::Print(limit) => {
+            Action::Suspend => {
+                let handle = match self.handle.as_ref() {
+                    Some(handle) => handle,
+                    None => bail!("not attached to a process"),
+                };
+
+                handle.process.suspend()?;
+            }
+            Action::Resume => {
+                let handle = match self.handle.as_ref() {
+                    Some(handle) => handle,
+                    None => bail!("not attached to a process"),
+                };
+
+                handle.process.resume()?;
+            }
+            Action::Print { limit } => {
                 let scan = match self.scans.get_mut(&self.current_scan) {
                     Some(scan) => scan,
                     None => {
@@ -210,7 +248,7 @@ where
                 if let Some(handle) = self.handle.as_ref() {
                     stored = results.to_vec();
 
-                    handle.process.refresh_values(
+                    handle.refresh_values(
                         &self.thread_pool,
                         &mut stored,
                         None,
@@ -221,17 +259,17 @@ where
                     println!("");
                 }
 
-                Self::print(&mut self.w, self.handle.as_ref(), scan.len(), results)?;
+                Self::print(&mut self.w, scan.len(), results)?;
             }
-            Action::Del(address) => {
+            Action::Del { pointer } => {
                 let scan = match self.scans.get_mut(&self.current_scan) {
                     Some(scan) => scan,
                     None => bail!("no active scan"),
                 };
 
-                scan.remove_by_address(address);
+                scan.remove_by_pointer(&pointer);
             }
-            Action::Add(address, ty) => {
+            Action::Add { pointer, ty } => {
                 let handle = match self.handle.as_ref() {
                     Some(handle) => handle,
                     None => bail!("not attached to a process"),
@@ -248,31 +286,115 @@ where
                     .entry(current_scan.clone())
                     .or_insert_with(|| scan::Scan::new(thread_pool));
 
-                let value = handle.process.address_proxy(address).eval(ty)?;
-                scan.push(scan::ScanResult { address, value });
+                let value = handle.address_proxy(&pointer).eval(ty)?;
+                scan.push(scan::ScanResult {
+                    pointer: Arc::new(pointer),
+                    value: Box::new(value),
+                });
             }
-            Action::Scan(filter) => {
-                self.scan(&filter, None)?;
+            Action::Scan { filter, config } => {
+                self.scan(&filter, None, config)?;
             }
-            Action::PointerScan(address) => {
-                self.pointer_scan(address)?;
+            Action::PointerScan { name, address } => {
+                self.pointer_scan(name, address)?;
             }
             Action::Reset => match self.scans.get_mut(&self.current_scan) {
                 Some(scan) => {
                     scan.clear();
-                    scan.initial = false;
+                    scan.initial = true;
+                    scan.last_type = None;
                 }
                 None => writeln!(self.w, "no scan in use")?,
             },
-            Action::Set(address, value) => {
+            Action::Save { file, scan } => {
+                use flate2::{write::GzEncoder, Compression};
+
+                let scan = scan
+                    .as_ref()
+                    .map(String::as_str)
+                    .unwrap_or(self.current_scan.as_str());
+
+                let scan = match self.scans.get(scan) {
+                    Some(scan) => scan,
+                    None => bail!("no scan named `{}`", scan),
+                };
+
+                let serialized = SerializedScan {
+                    results: &scan.results,
+                    last_type: scan.last_type,
+                };
+
+                let mut f = GzEncoder::new(File::create(file)?, Compression::default());
+                serde_cbor::to_writer(&mut f, &serialized)?;
+                f.finish()?;
+
+                #[derive(Serialize)]
+                struct SerializedScan<'a> {
+                    results: &'a [ScanResult],
+                    #[serde(default, skip_serializing_if = "Option::is_none")]
+                    last_type: Option<Type>,
+                }
+            }
+            Action::Load { file, scan } => {
+                use flate2::read::GzDecoder;
+
+                let scan = scan
+                    .as_ref()
+                    .map(String::as_str)
+                    .unwrap_or(self.current_scan.as_str());
+
+                let Self {
+                    ref thread_pool,
+                    ref mut scans,
+                    ..
+                } = self;
+
+                let mut f = File::open(file)?;
+                let mut f = GzDecoder::new(&mut f);
+
+                let scan = scans
+                    .entry(scan.to_string())
+                    .or_insert_with(|| scan::Scan::new(thread_pool));
+                let deserialized: DeserializedScan = serde_cbor::from_reader(&mut f)?;
+                scan.results = deserialized.results;
+                scan.last_type = deserialized.last_type;
+                scan.initial = false;
+
+                #[derive(Deserialize)]
+                struct DeserializedScan {
+                    results: Vec<ScanResult>,
+                    #[serde(default, skip_serializing_if = "Option::is_none")]
+                    last_type: Option<Type>,
+                }
+            }
+            Action::Sort => {
+                let scan = match self.scans.get_mut(&self.current_scan) {
+                    Some(scan) => scan,
+                    None => bail!("no active scan"),
+                };
+
+                scan.results.sort_by(|a, b| a.pointer.cmp(&b.pointer));
+            }
+            Action::Set(pointer, value) => {
                 let handle = match self.handle.as_ref() {
                     Some(handle) => handle,
                     None => bail!("not attached to a process"),
                 };
 
-                let mut buf = vec![0u8; value.size(&handle.process)];
-                value.encode(&handle.process, &mut buf)?;
-                handle.process.write_process_memory(address, &buf)?;
+                let address = pointer.follow(handle, |a, buf| {
+                    handle
+                        .process
+                        .read_process_memory(a, buf)
+                        .map_err(Into::into)
+                })?;
+
+                if let Some(address) = address {
+                    let mut buf = vec![0u8; value.size(&handle.process)];
+                    value.encode(&handle.process, &mut buf)?;
+                    handle.process.write_process_memory(address, &buf)?;
+                } else {
+                    writeln!(self.w, "Invalid address to write to")?;
+                }
             }
         }
 
@@ -303,7 +425,7 @@ where
     }
 
     /// Perform a pointer scan towards the specified address.
-    fn pointer_scan(&mut self, needle: Address) -> anyhow::Result<()> {
+    fn pointer_scan(&mut self, name: String, needle: Address) -> anyhow::Result<()> {
         use std::collections::{BTreeMap, HashSet, VecDeque};
 
         let handle = match self.handle.as_ref() {
@@ -321,6 +443,7 @@ where
             &pointers,
             None,
             SimpleProgress::new(&mut self.w, "Performing initial pointer scan"),
+            Default::default(),
         )?;
 
         writeln!(self.w, "")?;
@@ -330,12 +453,17 @@ where
 
         for result in &scan.results {
             let value = result.value.as_address()?;
-            forward.insert(result.address, value);
-            reverse.insert(value, result.address);
+
+            if let Some(address) = result.pointer.base.eval(handle)? {
+                forward.insert(address, value);
+                reverse.insert(value, address);
+            }
         }
 
         let max_depth = 7;
         let max_offset = Size::new(0x100);
+
+        let mut results = Vec::new();
 
         let mut visited = HashSet::new();
         let mut queue = VecDeque::new();
@@ -368,13 +496,20 @@ where
                         let offset = hit.offset_of(module.range.base)?;
                         path.reverse();
 
-                        write!(self.w, "{}{}", module.name, offset)?;
+                        let pointer = Pointer::new(
+                            PointerBase::Module {
+                                name: module.name.to_string(),
+                                offset,
+                            },
+                            path.clone(),
+                        );
 
-                        for o in path {
-                            write!(self.w, " -> {}", o)?;
-                        }
+                        writeln!(self.w, "{}", pointer)?;
 
-                        writeln!(self.w, "")?;
+                        results.push(ScanResult {
+                            pointer: Arc::new(pointer),
+                            value: Box::new(Value::None),
+                        });
                     }
                     // ignore thread stacks
                     Location::Thread(..) => {
@@ -387,59 +522,83 @@ where
             }
         }
 
-        writeln!(self.w, "Found {} pointers", forward.len())?;
+        writeln!(self.w, "Saved {} paths to scan `{}`", results.len(), name)?;
+
+        let scan = scan::Scan::from_results(&self.thread_pool, Type::Pointer, results);
+        self.scans.insert(name, scan);
         Ok(())
     }
 
     /// Scan memory using the given filter and the currently selected scan.
-    fn scan(&mut self, filter: &filter::Filter, cancel: Option<&Token>) -> anyhow::Result<()> {
+    fn scan(
+        &mut self,
+        filter: &filter::Filter,
+        cancel: Option<&Token>,
+        config: ScanConfig,
+    ) -> anyhow::Result<()> {
         let handle = match self.handle.as_ref() {
             Some(handle) => handle,
             None => bail!("not attached to a process"),
         };
 
-        if self.suspend {
+        if self.suspend || config.suspend {
             handle.process.suspend()?;
         }
 
-        let res = match self.scans.get(&self.current_scan) {
-            Some(scan) => scan.scan(
-                &handle.process,
+        let Self {
+            ref thread_pool,
+            ref current_scan,
+            ..
+        } = self;
+
+        let scan = self
+            .scans
+            .entry(current_scan.to_string())
+            .or_insert_with(|| scan::Scan::new(thread_pool));
+
+        let result = if scan.initial {
+            let mut c = scan::InitialScanConfig::default();
+            c.modules_only = config.modules_only;
+
+            let result = scan.initial_scan(
+                handle,
+                filter,
+                cancel,
+                SimpleProgress::new(&mut self.w, "Performing initial scan"),
+                c,
+            );
+
+            scan.initial = false;
+
+            result
+        } else {
+            scan.scan(
+                handle,
                 filter,
                 cancel,
                 SimpleProgress::new(&mut self.w, "Rescanning"),
-            ),
-            None => {
-                let mut scan = scan::Scan::new(&self.thread_pool);
-
-                let res = scan.initial_scan(
-                    handle,
-                    filter,
-                    cancel,
-                    SimpleProgress::new(&mut self.w, "Performing initial scan"),
-                );
-
-                res.map(move |()| scan)
-            }
+            )
         };
 
-        if self.suspend {
+        if self.suspend || config.suspend {
             handle.process.resume()?;
         }
 
         println!("");
-        let scan = res?;
+        result?;
 
         let len = usize::min(scan.len(), DEFAULT_LIMIT);
-
-        Self::print(&mut self.w, self.handle.as_ref(), scan.len(), &scan[..len])?;
-
-        self.scans.insert(self.current_scan.clone(), scan);
+        Self::print(&mut self.w, scan.len(), &scan[..len])?;
         Ok(())
     }
 
     /// Print information on the current process, if any.
-    fn process(&mut self, include_memory_regions: bool) -> anyhow::Result<()> {
+    fn process(
+        &mut self,
+        include_modules: bool,
+        include_threads: bool,
+        include_memory: bool,
+    ) -> anyhow::Result<()> {
         let handle = match self.handle.as_ref() {
             Some(handle) => handle,
             None => bail!("no process attached"),
@@ -459,28 +618,51 @@ where
         writeln!(self.w, "Pointer width: {}", handle.process.pointer_width)?;
         writeln!(self.w, "64 bit: {}", handle.process.is_64bit)?;
 
-        writeln!(self.w, "Modules:")?;
+        if include_modules {
+            writeln!(self.w, "Modules:")?;
 
-        for module in &handle.modules {
-            writeln!(self.w, "{:?}", module)?;
+            for module in &handle.modules {
+                writeln!(self.w, " - {:?}", module)?;
+            }
+        } else {
+            writeln!(self.w, "Modules: *only shown with --modules*")?;
         }
 
-        writeln!(self.w, "Threads:")?;
+        if include_threads {
+            writeln!(self.w, "Threads:")?;
 
-        for thread in &handle.threads {
-            writeln!(self.w, "{:?}", thread)?;
+            for thread in &handle.threads {
+                writeln!(self.w, " - {:?}", thread)?;
+            }
+        } else {
+            writeln!(self.w, "Threads: *only shown with --threads*")?;
         }
 
-        if include_memory_regions {
+        if include_memory {
             writeln!(self.w, "Memory Regions:")?;
 
             for region in handle.process.virtual_memory_regions() {
                 let region = region?;
 
-                if region.is_writable() {
-                    writeln!(self.w, "{:?}", region)?;
-                }
+                let MemoryInformation {
+                    range,
+                    state,
+                    ty,
+                    protect,
+                } = region;
+
+                writeln!(
+                    self.w,
+                    " - {ty:?} [{}-{}] {protect:?} {state:?}",
+                    range.base,
+                    range.base.saturating_add(range.size),
+                    ty = ty,
+                    protect = protect,
+                    state = state,
+                )?;
             }
+        } else {
+            writeln!(self.w, "Memory Regions: *only shown with --memory*")?;
         }
 
         Ok(())
@@ -489,7 +671,6 @@ where
     /// Print the current state of the scan.
     fn print(
         w: &mut impl io::Write,
-        handle: Option<&ProcessHandle>,
         len: usize,
         results: &[scan::ScanResult],
     ) -> anyhow::Result<()> {
@@ -505,11 +686,7 @@ where
         };
 
         for result in results {
-            if let Some(handle) = handle.as_ref() {
-                writeln!(w, "{} = {}", result.address.display(handle), result.value)?;
-            } else {
-                writeln!(w, "{} = {}", result.address, result.value)?;
-            }
+            writeln!(w, "{} = {}", result.pointer, result.value)?;
         }
 
         Ok(())
@@ -550,163 +727,338 @@ where
         Ok(line)
     }
 
-    /// Convert a line into an action.
-    pub fn line_into_action(&mut self, line: &str) -> anyhow::Result<Action> {
-        // NB: filter the entire command to remove empty stuff.
-        let command = line
-            .split(" ")
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>();
+    fn app() -> clap::App<'static, 'static> {
+        use clap::{App, Arg};
 
-        if command.len() == 0 {
-            bail!("missing command");
-        }
+        let app = App::new("ptscan");
+        let app = app.subcommand(
+            App::new("process")
+                .alias("ps")
+                .about("Show information on the current process")
+                .arg(
+                    Arg::with_name("modules")
+                        .help("Include very detailed module information (.exe and .dll).")
+                        .long("modules"),
+                )
+                .arg(
+                    Arg::with_name("threads")
+                        .help("Include very detailed thread information.")
+                        .long("threads"),
+                )
+                .arg(
+                    Arg::with_name("memory")
+                        .help("Include very detailed memory information.")
+                        .long("memory"),
+                ),
+        );
 
-        match command[0] {
-            "exit" => return Ok(Action::Exit),
-            "h" | "help" => return Ok(Action::Help),
-            "p" | "print" => {
-                let command = &command[1..];
+        let app = app.subcommand(
+            App::new("scan")
+                .about("Perform a scan")
+                .arg(
+                    Arg::with_name("list")
+                        .help("List available scans.")
+                        .long("list")
+                        .short("l"),
+                )
+                .arg(
+                    Arg::with_name("new")
+                        .help("Create a new scan.")
+                        .long("new")
+                        .short("n")
+                        .value_name("name")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("del")
+                        .help("Delete the scan named <name>.")
+                        .long("del")
+                        .short("d")
+                        .value_name("name")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("switch")
+                        .help("Switch to a specific scan.")
+                        .long("switch")
+                        .short("s")
+                        .value_name("name")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("type")
+                        .help("The type of the filter, if it can't be derived.")
+                        .long("type")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("modules-only")
+                        .help("Only include modules in the initial scan.")
+                        .long("modules-only"),
+                )
+                .arg(
+                    Arg::with_name("suspend")
+                        .help("Suspend the process during the scan.")
+                        .long("suspend"),
+                )
+                .arg(Arg::with_name("filter").help("The filter to apply.")),
+        );
 
-                let limit = if command.len() > 0 {
-                    Some(str::parse(command[0])?)
-                } else {
-                    None
-                };
+        let app = app.subcommand(
+            App::new("attach")
+                .about("Attach to a process")
+                .arg(Arg::with_name("name").help("Name of the process to attach to.")),
+        );
 
-                return Ok(Action::Print(limit));
-            }
-            "del" => {
-                let command = &command[1..];
+        let app = app.subcommand(App::new("suspend").about("Suspend the attached to process."));
 
-                if command.len() != 1 {
-                    bail!("expected <address>");
-                }
+        let app = app.subcommand(App::new("resume").about("Resume the attached to process."));
 
-                let address = str::parse(command[0])?;
-                return Ok(Action::Del(address));
-            }
-            "add" => {
-                let command = &command[1..];
+        let app = app.subcommand(App::new("exit").about("Exit the application"));
 
-                if command.len() < 1 {
-                    bail!("expected <address>");
-                }
+        let app = app.subcommand(
+            App::new("print")
+                .alias("p")
+                .about("Print current scan")
+                .arg(
+                    Arg::with_name("limit")
+                        .help("Limit the number of results.")
+                        .long("limit")
+                        .value_name("number")
+                        .takes_value(true),
+                ),
+        );
 
-                let ty = if command.len() > 1 {
-                    str::parse(command[1])?
-                } else {
-                    Type::I32
-                };
+        let app = app.subcommand(App::new("help").about("Print help"));
 
-                let address = str::parse(command[0])?;
-                return Ok(Action::Add(address, ty));
-            }
-            "s" | "scan" => {
-                let command = &command[1..];
+        let app = app.subcommand(App::new("reset").about("Reset the current scan."));
 
-                if command.len() < 2 {
-                    bail!("Usage: scan <type> <filter>");
-                }
+        let app = app.subcommand(
+            App::new("save")
+                .about("Save a scan to a file.")
+                .arg(
+                    Arg::with_name("file")
+                        .help("The file to save the scan to.")
+                        .value_name("file")
+                        .required(true),
+                )
+                .arg(
+                    Arg::with_name("scan")
+                        .help("The scan to save.")
+                        .long("scan")
+                        .value_name("scan")
+                        .takes_value(true),
+                ),
+        );
 
-                let ty = str::parse(command[0])?;
+        let app = app.subcommand(App::new("sort").about("Sort scan results."));
 
-                let filter = self.parse_filter(ty, &command[1..])?;
-                return Ok(Action::Scan(filter));
-            }
-            "pt" | "pointer-scan" => {
-                let command = &command[1..];
+        let app = app.subcommand(
+            App::new("load")
+                .about("Load a scan from a file.")
+                .arg(
+                    Arg::with_name("file")
+                        .help("The file to load the scan from.")
+                        .value_name("file")
+                        .required(true),
+                )
+                .arg(
+                    Arg::with_name("scan")
+                        .help("The scan to load the file as.")
+                        .long("scan")
+                        .value_name("scan")
+                        .takes_value(true),
+                ),
+        );
 
-                if command.len() != 1 {
-                    bail!("expected <address>");
-                }
+        let app = app.subcommand(
+            App::new("del")
+                .about("Delete an address from the current scan")
+                .arg(
+                    Arg::with_name("pointer")
+                        .help("The address/pointer to delete.")
+                        .required(true),
+                ),
+        );
 
-                let address = str::parse(command[0])?;
-                return Ok(Action::PointerScan(address));
-            }
-            "ps" | "process" => {
-                return Ok(Action::Process {
-                    include_memory_regions: false,
-                })
-            }
-            "attach" => {
-                let command = &command[1..];
+        let app = app.subcommand(
+            App::new("add")
+                .about("Add an address to the current scan")
+                .arg(
+                    Arg::with_name("type")
+                        .help("The type of the pointer added to the scan.")
+                        .required(true),
+                )
+                .arg(
+                    Arg::with_name("pointer")
+                        .help("The address/pointer to delete.")
+                        .required(true),
+                ),
+        );
 
-                let name = if command.len() > 0 {
-                    Some(command[0].to_string())
-                } else {
-                    None
-                };
+        let app = app.subcommand(
+            App::new("pointer-scan")
+                .alias("pt")
+                .about("Perform a pointer scan on the specified address.")
+                .arg(
+                    Arg::with_name("name")
+                        .help(
+                            "The name of the scan in which to store result (default: \"default\").",
+                        )
+                        .long("name"),
+                )
+                .arg(
+                    Arg::with_name("address")
+                        .help("The address to scan for.")
+                        .required(true),
+                ),
+        );
 
-                return Ok(Action::Attach(name));
-            }
-            "reset" => {
-                return Ok(Action::Reset);
-            }
-            "set" => {
-                let command = &command[1..];
-
-                if command.len() != 2 {
-                    bail!("Usage: set <address> <value>");
-                }
-
-                let address = str::parse(command[0])?;
-                let value = str::parse(command[1])?;
-                return Ok(Action::Set(address, value));
-            }
-            "scans" => {
-                let command = &command[1..];
-
-                if command.len() == 0 {
-                    return Ok(Action::ScansList);
-                }
-
-                match command[0] {
-                    "list" => return Ok(Action::ScansList),
-                    "new" => {
-                        let command = &command[1..];
-
-                        if command.len() != 1 {
-                            bail!("missing <name>");
-                        }
-
-                        return Ok(Action::ScansNew(command[0].to_string()));
-                    }
-                    "del" => {
-                        let command = &command[1..];
-
-                        let name = if command.is_empty() {
-                            self.current_scan.to_owned()
-                        } else {
-                            command[0].to_string()
-                        };
-
-                        return Ok(Action::ScansDel(name));
-                    }
-                    "set" => {
-                        let command = &command[1..];
-
-                        if command.len() != 1 {
-                            bail!("missing <name>");
-                        }
-
-                        return Ok(Action::ScansSet(command[0].to_string()));
-                    }
-                    other => bail!("not a `scans` sub-command: {}", other),
-                }
-            }
-            command => bail!("no such command: {}", command),
-        }
+        app
     }
 
-    /// Parse the filter from commandline input.
-    ///
-    /// Note: only supports simple predicates for now.
-    pub fn parse_filter(&mut self, ty: Type, rest: &[&str]) -> anyhow::Result<filter::Filter> {
-        let process = self.handle.as_ref().map(|h| &h.process);
-        let rest = rest.join(" ");
-        filter::parse(&rest, ty, process)
+    /// Convert a line into an action.
+    pub fn line_into_action(&mut self, m: &clap::ArgMatches<'_>) -> anyhow::Result<Action> {
+        match m.subcommand() {
+            ("process", Some(m)) => {
+                let include_modules = m.is_present("modules");
+                let include_threads = m.is_present("threads");
+                let include_memory = m.is_present("memory");
+
+                return Ok(Action::Process {
+                    include_modules,
+                    include_threads,
+                    include_memory,
+                });
+            }
+            ("exit", _) => return Ok(Action::Exit),
+            ("help", _) => return Ok(Action::Help),
+            ("print", Some(m)) => {
+                let limit = m.value_of("limit").map(str::parse).transpose()?;
+                return Ok(Action::Print { limit });
+            }
+            ("scan", Some(m)) => {
+                if m.is_present("list") {
+                    return Ok(Action::ScanList);
+                }
+
+                if let Some(name) = m.value_of("new") {
+                    return Ok(Action::ScanNew {
+                        name: name.to_string(),
+                    });
+                }
+
+                if m.is_present("del") {
+                    return Ok(Action::ScanDel {
+                        name: self.current_scan.to_string(),
+                    });
+                }
+
+                if let Some(name) = m.value_of("del") {
+                    return Ok(Action::ScanDel {
+                        name: name.to_string(),
+                    });
+                }
+
+                if let Some(name) = m.value_of("switch") {
+                    return Ok(Action::ScanSwitch {
+                        name: name.to_string(),
+                    });
+                }
+
+                let ty = match m.value_of("type").map(str::parse).transpose()? {
+                    Some(ty) => Some(ty),
+                    None => None,
+                };
+
+                let filter = m
+                    .value_of("filter")
+                    .ok_or_else(|| anyhow!("missing <filter>"))?;
+
+                let process = self.handle.as_ref().map(|h| &h.process);
+                let matcher = filter::parse_matcher(&filter, process)?;
+
+                let last_type = self.scans.get(&self.current_scan).and_then(|s| s.last_type);
+
+                let ty = last_type
+                    .or_else(|| matcher.type_hint())
+                    .or(ty)
+                    .ok_or_else(|| anyhow!("cannot determine type of filter"))?;
+
+                let filter = filter::Filter::new(ty, matcher);
+
+                let mut config = ScanConfig::default();
+                config.modules_only = m.is_present("modules-only");
+                config.suspend = m.is_present("suspend");
+                return Ok(Action::Scan { filter, config });
+            }
+            ("attach", Some(m)) => {
+                let name = m.value_of("name").map(|s| s.to_string());
+                return Ok(Action::Attach(name));
+            }
+            ("suspend", _) => {
+                return Ok(Action::Suspend);
+            }
+            ("resume", _) => {
+                return Ok(Action::Resume);
+            }
+            ("reset", _) => {
+                return Ok(Action::Reset);
+            }
+            ("save", Some(m)) => {
+                let file = m
+                    .value_of("file")
+                    .map(Path::new)
+                    .ok_or_else(|| anyhow!("missing <file>"))?
+                    .to_owned();
+                let scan = m.value_of("scan").map(|s| s.to_string());
+
+                return Ok(Action::Save { file, scan });
+            }
+            ("sort", _) => return Ok(Action::Sort),
+            ("load", Some(m)) => {
+                let file = m
+                    .value_of("file")
+                    .map(Path::new)
+                    .ok_or_else(|| anyhow!("missing <file>"))?
+                    .to_owned();
+                let scan = m.value_of("scan").map(|s| s.to_string());
+
+                return Ok(Action::Load { file, scan });
+            }
+            ("del", Some(m)) => {
+                let pointer = m
+                    .value_of("pointer")
+                    .ok_or_else(|| anyhow!("missing <pointer>"))?;
+                let pointer = Pointer::parse(pointer)?;
+                return Ok(Action::Del { pointer });
+            }
+            ("add", Some(m)) => {
+                let ty = m
+                    .value_of("type")
+                    .map(str::parse)
+                    .transpose()?
+                    .ok_or_else(|| anyhow!("missing <type>"))?;
+                let pointer = m
+                    .value_of("pointer")
+                    .ok_or_else(|| anyhow!("missing <pointer>"))?;
+                let pointer = Pointer::parse(pointer)?;
+                return Ok(Action::Add { ty, pointer });
+            }
+            ("pointer-scan", Some(m)) => {
+                let name = m
+                    .value_of("name")
+                    .unwrap_or_else(|| &self.current_scan)
+                    .to_string();
+                let address = m
+                    .value_of("address")
+                    .map(str::parse)
+                    .transpose()?
+                    .ok_or_else(|| anyhow!("missing <address>"))?;
+                return Ok(Action::PointerScan { name, address });
+            }
+            _ => return Ok(Action::Help),
+        }
     }
 
     /// Print help messages.
@@ -719,6 +1071,12 @@ where
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ScanConfig {
+    modules_only: bool,
+    suspend: bool,
+}
+
 #[derive(Debug)]
 pub enum Action {
     /// Print help.
@@ -726,29 +1084,63 @@ pub enum Action {
     /// Exit the application.
     Exit,
     /// Print information on the current process.
-    Process { include_memory_regions: bool },
+    Process {
+        include_modules: bool,
+        include_threads: bool,
+        include_memory: bool,
+    },
     /// Attach to a new, or re-attach to an old process.
     Attach(Option<String>),
+    Suspend,
+    Resume,
     /// Initialize or refine the existing scan.
-    Scan(filter::Filter),
+    Scan {
+        filter: filter::Filter,
+        config: ScanConfig,
+    },
     /// Reset the state of the scan.
     Reset,
     /// Print results from scan.
-    Print(Option<usize>),
+    Print {
+        limit: Option<usize>,
+    },
     /// Delete the given address from the current scan.
-    Del(Address),
+    Del {
+        pointer: Pointer,
+    },
     /// Add the given address with the given type.
-    Add(Address, Type),
+    Add {
+        pointer: Pointer,
+        ty: Type,
+    },
     /// Write the value at the given address.
-    Set(Address, Value),
+    Set(Pointer, Value),
     /// List all scans.
-    ScansList,
+    ScanList,
     /// Create a new scan with the given name.
-    ScansNew(String),
+    ScanNew {
+        name: String,
+    },
     /// Delete the scan with the given name.
-    ScansDel(String),
+    ScanDel {
+        name: String,
+    },
     /// Switch to the given scan.
-    ScansSet(String),
-    /// Perform a pointer scan for the specified address.
-    PointerScan(Address),
+    ScanSwitch {
+        name: String,
+    },
+    /// Perform a pointer path scan with the given name, for the specified address.
+    PointerScan {
+        name: String,
+        address: Address,
+    },
+    Save {
+        file: PathBuf,
+        scan: Option<String>,
+    },
+    Load {
+        file: PathBuf,
+        scan: Option<String>,
+    },
+    Sort,
 }

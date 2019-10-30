@@ -22,6 +22,10 @@ rayon = "1.0.3"
 hashbrown = "0.1.8"
 anyhow = "1.0.18"
 smallvec = "0.6.11"
+clap = "2.33.0"
+serde_cbor = "0.10.2"
+serde = {version = "1.0.102", features = ["rc", "derive"]}
+flate2 = "1.0.12"
 
 [build-dependencies]
 failure = "0.1"

@@ -1,5 +1,5 @@
 // vim: ft=rust
-use crate::{filter::{ValueExpr, lexer::Token, ast::*}};
+use crate::{Type, filter::{ValueExpr, lexer::Token, ast::*}};
 use num_bigint::BigInt;
 
 grammar<'input>;
@@ -28,7 +28,7 @@ And: Expression = {
 
 ValueExpr: ValueExpr = {
     "value" => ValueExpr::Value,
-    <number:number> => ValueExpr::Number(number),
+    <number:number> => ValueExpr::Number(number.0, number.1),
     <string:"string"> => ValueExpr::String(string),
 };
 
@@ -68,7 +68,7 @@ extern {
         ">" => Token::Gt,
         "(" => Token::OpenParen,
         ")" => Token::CloseParen,
-        number => Token::Literal(<BigInt>),
+        number => Token::Literal(<BigInt>, <Option<Type>>),
         "string" => Token::String(<String>),
     }
 }

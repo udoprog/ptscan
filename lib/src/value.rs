@@ -2,23 +2,38 @@ use crate::{
     encode::Encode, error::Error, filter::ast::EscapeString, process::Process, Address, Type,
 };
 use anyhow::bail;
+use serde::{Deserialize, Serialize};
 use std::{fmt, mem, str};
 
 /// A single dynamic literal value.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value")]
 pub enum Value {
+    #[serde(rename = "none")]
     None,
+    #[serde(rename = "pointer")]
     Pointer(Address),
+    #[serde(rename = "u8")]
     U8(u8),
+    #[serde(rename = "i8")]
     I8(i8),
+    #[serde(rename = "u16")]
     U16(u16),
+    #[serde(rename = "i16")]
     I16(i16),
+    #[serde(rename = "u32")]
     U32(u32),
+    #[serde(rename = "i32")]
     I32(i32),
+    #[serde(rename = "u64")]
     U64(u64),
+    #[serde(rename = "i64")]
     I64(i64),
+    #[serde(rename = "u128")]
     U128(u128),
+    #[serde(rename = "i128")]
     I128(i128),
+    #[serde(rename = "string")]
     String(Vec<u8>),
 }
 

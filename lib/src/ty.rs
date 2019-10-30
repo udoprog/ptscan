@@ -1,20 +1,35 @@
 use crate::{error::Error, Address, Process, Value};
+use serde::{Deserialize, Serialize};
 use std::{fmt, mem, str};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value")]
 pub enum Type {
+    #[serde(rename = "none")]
     None,
+    #[serde(rename = "pointer")]
     Pointer,
+    #[serde(rename = "u8")]
     U8,
+    #[serde(rename = "i8")]
     I8,
+    #[serde(rename = "u16")]
     U16,
+    #[serde(rename = "i16")]
     I16,
+    #[serde(rename = "u32")]
     U32,
+    #[serde(rename = "i32")]
     I32,
+    #[serde(rename = "u64")]
     U64,
+    #[serde(rename = "i64")]
     I64,
+    #[serde(rename = "u128")]
     U128,
+    #[serde(rename = "i128")]
     I128,
+    #[serde(rename = "string")]
     String(usize),
 }
 

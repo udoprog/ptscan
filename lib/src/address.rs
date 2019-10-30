@@ -11,7 +11,9 @@ use std::{
     fmt, io, str,
 };
 
-#[derive(Clone, Default, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Default, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Address(u64);
 
 impl Address {
@@ -395,7 +397,7 @@ impl<'a> fmt::Display for AddressDisplay<'a> {
     }
 }
 
-#[derive(Clone, Copy, Default, PartialOrd, Ord, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Default, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(transparent)]
 pub struct Size(u64);
 
@@ -482,13 +484,15 @@ impl TryFrom<usize> for Size {
     }
 }
 
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Sign {
+    #[serde(rename = "pos")]
     Pos,
+    #[serde(rename = "neg")]
     Neg,
 }
 
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Offset(Sign, u64);
 
 impl Offset {
@@ -546,7 +550,7 @@ impl Offset {
 impl fmt::Display for Offset {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Offset(Sign::Pos, o) => write!(fmt, "+{:X}", o),
+            Offset(Sign::Pos, o) => write!(fmt, "{:X}", o),
             Offset(Sign::Neg, o) => write!(fmt, "-{:X}", o),
         }
     }

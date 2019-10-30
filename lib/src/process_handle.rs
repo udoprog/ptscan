@@ -1,15 +1,14 @@
 //! High-level interface to processes.
 
 use crate::{
-    error::Error,
-    pointer::{Base, Pointer},
-    process, system,
-    thread::Thread,
-    Address, AddressRange, ProcessId, Size, Type, Value,
+    error::Error, filter, process::MemoryInformation, scan, scan::ScanResult, system,
+    thread::Thread, Address, AddressRange, Pointer, PointerBase, Process, ProcessId, Size, Token,
+    Type, Value,
 };
 use anyhow::{bail, Context as _};
 use hashbrown::HashMap;
-use std::{convert::TryFrom, fmt};
+use parking_lot::RwLock;
+use std::{convert::TryFrom, fmt, iter};
 use winapi::shared::winerror;
 
 /// A handle for a process.
@@ -18,7 +17,7 @@ pub struct ProcessHandle {
     /// Name of the process (if present).
     pub name: Option<String>,
     /// Handle to the process.
-    pub process: process::Process,
+    pub process: Process,
     /// Information about all loaded modules.
     pub modules: Vec<ModuleInfo>,
     /// Module address by name.
@@ -43,7 +42,7 @@ impl ProcessHandle {
             return Ok(None);
         }
 
-        let process = match process::Process::builder().all_access().build(pid) {
+        let process = match Process::builder().all_access().build(pid) {
             Ok(process) => process,
             Err(e) => match e.raw_os_error().map(|n| n as u32) {
                 // NB: process no longer exists.
@@ -189,6 +188,20 @@ impl ProcessHandle {
         Location::None
     }
 
+    /// Convert an address into a pointer base.
+    pub fn address_to_pointer_base(&self, address: Address) -> anyhow::Result<PointerBase> {
+        Ok(match self.find_location(address) {
+            Location::Module(module) => {
+                let offset = address.offset_of(module.range.base)?;
+                PointerBase::Module {
+                    name: module.name.to_string(),
+                    offset,
+                }
+            }
+            _ => PointerBase::Address { address },
+        })
+    }
+
     /// Find if address is contained in a module.
     pub fn find_module<'a>(&'a self, address: Address) -> Option<&'a ModuleInfo> {
         AddressRange::find_in_range(&self.modules, |m| &m.range, address)
@@ -245,40 +258,481 @@ impl ProcessHandle {
         Ok(None)
     }
 
-    /// Read an address. Returns None if the address resolves to NULL.
-    pub fn read_address(&self, address: Address) -> Option<Address> {
-        let mut buf = [0u8; 8];
-
-        // TODO: use dynamic address type.
-        let n = match self
-            .process
-            .read_memory_of_type(address, Type::U64, &mut buf)
-            .ok()?
-        {
-            Value::U64(0) => return None,
-            Value::U64(n) => n,
-            _ => return None,
-        };
-
-        Some(Address::new(n))
+    /// Construct an address proxy for the given address.
+    pub fn address_proxy<'a>(&'a self, pointer: &'a Pointer) -> AddressProxy<'a> {
+        AddressProxy {
+            pointer,
+            handle: self,
+            memory_cache: None,
+        }
     }
 
-    /// Read a pointer.
-    pub fn read_pointer(&self, pointer: &Pointer) -> Option<Address> {
-        let mut address = match pointer.base {
-            Base::Module(ref module, offset) => {
-                let address = self.modules_address.get(module)?;
-                address.checked_offset(offset)?
-            }
-            Base::Fixed(address) => address,
+    /// Create a new cached session.
+    pub fn session<'a>(&'a self) -> Result<Session<'a>, Error> {
+        use crate::utils::IteratorExtension as _;
+
+        let regions = self
+            .process
+            .virtual_memory_regions()
+            .only_relevant()
+            .collect::<Result<_, Error>>()?;
+
+        Ok(Session {
+            handle: self,
+            memory_cache: MemoryCache::new(regions),
+        })
+    }
+
+    /// Read the value of many memory locations.
+    pub fn rescan_values(
+        &self,
+        thread_pool: &rayon::ThreadPool,
+        results: &[ScanResult],
+        results_output: &mut Vec<ScanResult>,
+        filter: &filter::Filter,
+        cancel: Option<&Token>,
+        progress: (impl scan::Progress + Send),
+    ) -> anyhow::Result<()> {
+        use std::sync::mpsc;
+
+        let mut local_cancel = None;
+
+        let cancel = match cancel {
+            Some(cancel) => cancel,
+            None => local_cancel.get_or_insert(Token::new()),
         };
 
-        for o in &pointer.offsets {
-            address = self.read_address(address)?;
-            address = address.checked_offset(*o)?;
+        if results.is_empty() {
+            return Ok(());
         }
 
-        Some(address)
+        let mut last_error = None;
+        let mut reporter = scan::Reporter::new(progress, results.len(), cancel, &mut last_error);
+
+        // how many tasks to run in parallel.
+        let tasks = 0x100usize;
+
+        thread_pool.install(|| {
+            rayon::scope(|s| {
+                let (tx, rx) = mpsc::channel::<anyhow::Result<Task>>();
+                let (p_tx, p_rx) = crossbeam_channel::unbounded::<Option<&ScanResult>>();
+
+                for _ in 0..thread_pool.current_num_threads() {
+                    let tx = tx.clone();
+                    let p_rx = p_rx.clone();
+
+                    s.spawn(move |_| {
+                        let mut results = Vec::new();
+
+                        loop {
+                            let result = match p_rx.recv().expect("closed") {
+                                Some(task) => task,
+                                None => {
+                                    tx.send(Ok(Task::Result(results))).expect("closed");
+                                    return;
+                                }
+                            };
+
+                            let mut work = || {
+                                let proxy = self.address_proxy(&result.pointer);
+
+                                if filter.test(&result.value, proxy)? {
+                                    let value = proxy.eval(filter.ty)?;
+
+                                    results.push(ScanResult {
+                                        pointer: result.pointer.clone(),
+                                        value: Box::new(value),
+                                    });
+
+                                    return Ok(Task::Accepted);
+                                }
+
+                                Ok(Task::Rejected)
+                            };
+
+                            tx.send(work()).expect("closed");
+                        }
+                    });
+                }
+
+                let mut it = results.iter();
+
+                for result in (&mut it).take(tasks) {
+                    p_tx.send(Some(result)).expect("closed");
+                }
+
+                let mut count = 0u64;
+                let mut expected = thread_pool.current_num_threads();
+
+                while !reporter.is_done() {
+                    if cancel.test() {
+                        break;
+                    }
+
+                    let result = rx.recv().expect("closed");
+
+                    if let Some(result) = it.next() {
+                        p_tx.send(Some(result)).expect("closed");
+                    }
+
+                    count += match reporter.eval(result).unwrap_or(Task::Rejected) {
+                        Task::Accepted => 1,
+                        Task::Rejected => 0,
+                        Task::Result(mut results) => {
+                            results_output.append(&mut results);
+                            expected -= 1;
+                            continue;
+                        }
+                    };
+
+                    reporter.tick(count);
+                }
+
+                // send indicator for threads to go.
+                for _ in 0..thread_pool.current_num_threads() {
+                    p_tx.send(None).expect("closed");
+                }
+
+                // reap threads.
+                while expected > 0 {
+                    let result = rx.recv().expect("closed");
+
+                    count += match reporter.eval(result).unwrap_or(Task::Rejected) {
+                        Task::Accepted => 1,
+                        Task::Rejected => 0,
+                        Task::Result(mut results) => {
+                            results_output.append(&mut results);
+                            expected -= 1;
+                            continue;
+                        }
+                    };
+
+                    reporter.tick(count);
+                }
+
+                Ok::<_, anyhow::Error>(())
+            })?;
+
+            Ok::<_, anyhow::Error>(())
+        })?;
+
+        if let Some(e) = last_error {
+            return Err(e);
+        }
+
+        return Ok(());
+
+        enum Task {
+            /// Address was accepted.
+            Accepted,
+            /// Address was rejected.
+            Rejected,
+            /// The result of a computation.
+            Result(Vec<ScanResult>),
+        }
+    }
+
+    /// Refresh a given set of existing values without a filter.
+    pub fn refresh_values(
+        &self,
+        thread_pool: &rayon::ThreadPool,
+        results: &mut [ScanResult],
+        cancel: Option<&Token>,
+        progress: (impl scan::Progress + Send),
+    ) -> anyhow::Result<()> {
+        use std::sync::mpsc;
+
+        let mut local_cancel = None;
+
+        let cancel = match cancel {
+            Some(cancel) => cancel,
+            None => local_cancel.get_or_insert(Token::new()),
+        };
+
+        if results.is_empty() {
+            return Ok(());
+        }
+
+        let mut last_error = None;
+        let mut reporter = scan::Reporter::new(progress, results.len(), cancel, &mut last_error);
+
+        // how many tasks to run in parallel.
+        let tasks = 0x100usize;
+
+        thread_pool.install(|| {
+            rayon::scope(|s| {
+                let (tx, rx) = mpsc::channel();
+                let (p_tx, p_rx) = crossbeam_channel::unbounded::<Option<&mut ScanResult>>();
+
+                for _ in 0..thread_pool.current_num_threads() {
+                    let tx = tx.clone();
+                    let p_rx = p_rx.clone();
+
+                    let mut buf = vec![0u8; 0x10];
+
+                    s.spawn(move |_| loop {
+                        let result = match p_rx.recv().expect("closed") {
+                            Some(task) => task,
+                            None => {
+                                tx.send(None).expect("closed");
+                                return;
+                            }
+                        };
+
+                        let needed = result.value.size(&self.process);
+
+                        if buf.len() < needed {
+                            buf.extend(
+                                std::iter::repeat(0u8).take(needed.saturating_sub(buf.len())),
+                            );
+                        }
+
+                        let buf = &mut buf[..needed];
+
+                        let mut work = move || {
+                            let address = result.pointer.follow(self, |a, buf| {
+                                self.process.read_process_memory(a, buf).map_err(Into::into)
+                            })?;
+
+                            let address = match address {
+                                Some(address) => address,
+                                None => {
+                                    result.value = Box::new(Value::None);
+                                    return Ok(0u64);
+                                }
+                            };
+
+                            if !self.process.read_process_memory(address, buf)? {
+                                return Ok(0u64);
+                            }
+
+                            result.value =
+                                Box::new(match result.value.ty().decode(&self.process, buf) {
+                                    Ok(value) => value,
+                                    Err(_) => Value::None,
+                                });
+
+                            Ok(1)
+                        };
+
+                        tx.send(Some(work())).expect("closed");
+                    });
+                }
+
+                let mut it = results.iter_mut();
+
+                for result in (&mut it).take(tasks) {
+                    p_tx.send(Some(result)).expect("closed");
+                }
+
+                let mut count = 0u64;
+                let mut expected = thread_pool.current_num_threads();
+
+                while !reporter.is_done() {
+                    if cancel.test() {
+                        break;
+                    }
+
+                    let res = rx.recv().expect("closed").expect("sporadic none option");
+
+                    if let Some(result) = it.next() {
+                        p_tx.send(Some(result)).expect("closed");
+                    }
+
+                    count += reporter.eval(res).unwrap_or_default();
+                    reporter.tick(count);
+                }
+
+                // send indicator for threads to go.
+                for _ in 0..thread_pool.current_num_threads() {
+                    p_tx.send(None).expect("closed");
+                }
+
+                // reap threads.
+                while expected > 0 {
+                    match rx.recv().expect("closed") {
+                        Some(result) => {
+                            count += reporter.eval(result).unwrap_or_default();
+                            reporter.tick(count);
+                        }
+                        None => {
+                            expected -= 1;
+                        }
+                    }
+                }
+            });
+        });
+
+        if let Some(e) = last_error {
+            return Err(e);
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct AddressProxy<'a> {
+    pointer: &'a Pointer,
+    handle: &'a ProcessHandle,
+    memory_cache: Option<&'a MemoryCache>,
+}
+
+impl AddressProxy<'_> {
+    /// Evaluate the pointer of the proxy.
+    pub fn eval(&self, ty: Type) -> anyhow::Result<Value> {
+        let mut buf = vec![0u8; ty.size(&self.handle.process)];
+
+        if let Some(memory_cache) = self.memory_cache {
+            let address = self.pointer.follow(self.handle, |a, buf| {
+                memory_cache.read_process_memory(&self.handle.process, a, buf)
+            })?;
+
+            let address = match address {
+                Some(address) => address,
+                None => return Ok(Value::None),
+            };
+
+            if memory_cache.read_process_memory(&self.handle.process, address, &mut buf)? {
+                return Ok(match ty.decode(&self.handle.process, &buf) {
+                    Ok(value) => value,
+                    Err(..) => Value::None,
+                });
+            }
+        } else {
+            let address = self.pointer.follow(self.handle, |a, buf| {
+                self.handle
+                    .process
+                    .read_process_memory(a, buf)
+                    .map_err(Into::into)
+            })?;
+
+            let address = match address {
+                Some(address) => address,
+                None => return Ok(Value::None),
+            };
+
+            if self.handle.process.read_process_memory(address, &mut buf)? {
+                return Ok(match ty.decode(&self.handle.process, &buf) {
+                    Ok(value) => value,
+                    Err(..) => Value::None,
+                });
+            }
+        }
+
+        Ok(Value::None)
+    }
+}
+
+#[derive(Debug)]
+pub struct MemoryCache {
+    /// Underlying cache.
+    cache: RwLock<lru::LruCache<AddressRange, Vec<u8>>>,
+    /// Valid memory regions.
+    regions: Regions,
+}
+
+impl MemoryCache {
+    /// Construct a new cache out of the given process.
+    pub fn new(regions: Regions) -> Self {
+        Self {
+            cache: RwLock::new(lru::LruCache::new(0x1000)),
+            regions,
+        }
+    }
+
+    /// Read process memory.
+    pub fn read_process_memory(
+        &self,
+        process: &Process,
+        address: Address,
+        buf: &mut [u8],
+    ) -> anyhow::Result<bool> {
+        let region = match self.regions.find_region_for(address) {
+            Some(region) => region,
+            None => return Ok(false),
+        };
+
+        let s = address.as_usize() - region.base.as_usize();
+        let e = s.saturating_add(buf.len());
+
+        {
+            let cache = self.cache.read();
+
+            if let Some(data) = cache.peek(region) {
+                if e >= data.len() {
+                    return Ok(false);
+                }
+
+                buf.clone_from_slice(&data[s..e]);
+                return Ok(true);
+            }
+        }
+
+        let mut cache = self.cache.write();
+        let mut data = vec![0u8; region.size.as_usize()];
+
+        if !process.read_process_memory(region.base, &mut data)? {
+            return Ok(false);
+        }
+
+        let result = if e < data.len() {
+            buf.clone_from_slice(&data[s..e]);
+            true
+        } else {
+            false
+        };
+
+        cache.put(region.clone(), data);
+        Ok(result)
+    }
+
+    pub fn with_region<T, U>(
+        &self,
+        process: &Process,
+        region: &AddressRange,
+        handle: T,
+    ) -> anyhow::Result<Option<U>>
+    where
+        T: FnOnce(&[u8]) -> anyhow::Result<Option<U>>,
+    {
+        {
+            let cache = self.cache.read();
+
+            if let Some(data) = cache.peek(region) {
+                return handle(data);
+            }
+        }
+
+        let mut cache = self.cache.write();
+        let mut data = vec![0u8; region.size.as_usize()];
+
+        if !process.read_process_memory(region.base, &mut data)? {
+            return Ok(None);
+        }
+
+        let result = handle(&data);
+        cache.put(region.clone(), data);
+        Ok(result?)
+    }
+}
+
+#[derive(Debug)]
+pub struct Regions {
+    regions: Vec<MemoryInformation>,
+}
+
+impl Regions {
+    /// Find the region for the given address.
+    pub fn find_region_for(&self, address: Address) -> Option<&AddressRange> {
+        AddressRange::find_in_range(&self.regions, |r| &r.range, address).map(|r| &r.range)
+    }
+}
+
+impl iter::FromIterator<MemoryInformation> for Regions {
+    fn from_iter<I: IntoIterator<Item = MemoryInformation>>(iter: I) -> Self {
+        let regions = iter.into_iter().collect();
+        Self { regions }
     }
 }
 
@@ -338,5 +792,85 @@ impl Decode for u32 {
     fn decode(buf: &[u8]) -> Result<Self, anyhow::Error> {
         use byteorder::{ByteOrder, LittleEndian};
         Ok(LittleEndian::read_u32(buf))
+    }
+}
+
+const ZERO: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
+pub struct Session<'a> {
+    handle: &'a ProcessHandle,
+    memory_cache: MemoryCache,
+}
+
+impl<'a> Session<'a> {
+    /// Construct an address proxy for the given address.
+    pub fn address_proxy(&'a self, pointer: &'a Pointer) -> AddressProxy<'a> {
+        AddressProxy {
+            pointer,
+            handle: self.handle,
+            memory_cache: Some(&self.memory_cache),
+        }
+    }
+
+    /// Get the next address matching.
+    pub fn next_address(
+        &self,
+        region: &AddressRange,
+        address: Address,
+        special: &filter::Special,
+    ) -> anyhow::Result<Option<Address>> {
+        match special {
+            filter::Special::Bytes(bytes) => {
+                if bytes.is_empty() {
+                    return Ok(None);
+                }
+
+                let offset = address.sub_address(region.base)?.as_usize();
+
+                return self
+                    .memory_cache
+                    .with_region(&self.handle.process, region, |data| {
+                        let first = bytes[0];
+
+                        let index = match memchr::memchr(first, &data[offset..]) {
+                            Some(index) => index,
+                            None => return Ok(None),
+                        };
+
+                        Ok(Some(address.saturating_add(Size::try_from(index)?)))
+                    });
+            }
+            filter::Special::NonZero => {
+                let offset = address.sub_address(region.base)?.as_usize();
+
+                return self
+                    .memory_cache
+                    .with_region(&self.handle.process, region, |data| {
+                        let mut data = &data[offset..];
+
+                        let mut local = 0;
+
+                        while !data.is_empty() {
+                            let len = usize::min(data.len(), ZERO.len());
+
+                            if &data[..len] != &ZERO[..len] {
+                                break;
+                            }
+
+                            data = &data[len..];
+                            local += len;
+                        }
+
+                        let index = match data.iter().position(|c| *c != 0) {
+                            Some(index) => index,
+                            None => {
+                                return Ok(Some(address.saturating_add(Size::try_from(local)?)))
+                            }
+                        };
+
+                        return Ok(Some(address.saturating_add(Size::try_from(local + index)?)));
+                    });
+            }
+        }
     }
 }

@@ -1,4 +1,4 @@
-use crate::{filter, process::Process, Type};
+use crate::{filter, process::Process};
 use std::fmt;
 
 #[derive(Debug, Clone, Copy)]
@@ -54,11 +54,7 @@ pub enum Expression {
 
 impl Expression {
     /// Convert expression into a matcher.
-    pub fn into_matcher(
-        self,
-        ty: Type,
-        process: Option<&Process>,
-    ) -> anyhow::Result<filter::Matcher> {
+    pub fn into_matcher(self, process: Option<&Process>) -> anyhow::Result<filter::Matcher> {
         use self::Expression::*;
 
         Ok(match self {
@@ -80,14 +76,14 @@ impl Expression {
             And(expressions) => {
                 let filters = expressions
                     .into_iter()
-                    .map(|e| e.into_matcher(ty, process))
+                    .map(|e| e.into_matcher(process))
                     .collect::<anyhow::Result<Vec<filter::Matcher>>>()?;
                 filter::Matcher::All(filter::All::new(filters))
             }
             Or(expressions) => {
                 let filters = expressions
                     .into_iter()
-                    .map(|e| e.into_matcher(ty, process))
+                    .map(|e| e.into_matcher(process))
                     .collect::<anyhow::Result<Vec<filter::Matcher>>>()?;
                 filter::Matcher::Any(filter::Any::new(filters))
             }
@@ -109,7 +105,7 @@ impl fmt::Display for EscapeString<'_> {
                 b'\t' => write!(fmt, "\\t")?,
                 b'\n' => write!(fmt, "\\n")?,
                 b'\r' => write!(fmt, "\\r")?,
-                b'\0' => write!(fmt, "\\0")?,
+                b'\0' => break,
                 c if *c < 0x80 => write!(fmt, "{}", *c as char)?,
                 c => write!(fmt, "\\x{:02x}", c)?,
             }

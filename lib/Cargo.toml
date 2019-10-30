@@ -35,6 +35,7 @@ lru = "0.4.0"
 parking_lot = "0.9.0"
 smallvec = "0.6.11"
 memchr = "2.2.1"
+serde = {version = "1.0.102", features = ["rc", "derive"]}
 
 [dependencies.winapi]
 version = "0.3.8"

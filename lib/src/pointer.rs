@@ -1,27 +1,45 @@
 mod lexer;
 lalrpop_util::lalrpop_mod!(parser, "/pointer/parser.rs");
 
-use crate::address::{Address, Offset, Sign};
+use crate::{
+    address::Sign, filter::ast::EscapeString, process_handle::ProcessHandle, Address, Offset,
+};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// The base of the pointer.
 ///
 /// Can either be a module identified by a string that has to be looked up from a `ProcessHandle`, or a fixed address.
-#[derive(Debug, Clone)]
-pub enum Base {
-    /// An offset from a module.
-    Module(String, Offset),
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum PointerBase {
+    /// An offset from a named module.
+    #[serde(rename = "module")]
+    Module { name: String, offset: Offset },
     /// A fixed address.
-    Fixed(Address),
+    #[serde(rename = "address")]
+    Address { address: Address },
 }
 
-impl fmt::Display for Base {
+impl PointerBase {
+    /// Evaluate a pointer base, trying to translate it into an address.
+    pub fn eval(&self, handle: &ProcessHandle) -> anyhow::Result<Option<Address>> {
+        match self {
+            Self::Module { name, offset } => match handle.modules_address.get(name) {
+                Some(address) => Ok(Some(address.saturating_offset(*offset))),
+                None => Ok(None),
+            },
+            Self::Address { address } => Ok(Some(*address)),
+        }
+    }
+}
+
+impl fmt::Display for PointerBase {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Base::Fixed(ref address) => fmt::Display::fmt(address, fmt),
-            Base::Module(ref name, ref offset) => {
-                // TODO: properly escape
-                write!(fmt, "\"{}\"", name)?;
+        match self {
+            PointerBase::Address { address } => fmt::Display::fmt(address, fmt),
+            PointerBase::Module { name, offset } => {
+                write!(fmt, "{}", EscapeString(name.as_bytes()))?;
 
                 if offset.abs() > 0 {
                     match offset.sign() {
@@ -36,29 +54,61 @@ impl fmt::Display for Base {
     }
 }
 
-/// A pointer path.
-///
-/// Each offset is applied and dereferenced on the base in a chain.
-///
-/// The last step is dereferences as the pointee type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Pointer {
-    pub(crate) base: Base,
-    pub(crate) offsets: Vec<Offset>,
+    /// Base address.
+    pub base: PointerBase,
+    /// Offsets and derefs to apply to find the given memory location.
+    pub offsets: Vec<Offset>,
 }
 
 impl Pointer {
-    pub fn new(base: Base) -> Self {
+    /// Construct a new pointer.
+    pub fn new(base: PointerBase, offsets: impl IntoIterator<Item = Offset>) -> Self {
         Self {
             base,
-            offsets: Vec::new(),
+            offsets: offsets.into_iter().collect(),
         }
+    }
+
+    /// Try to evaluate the current location into an address.
+    pub fn follow<F>(&self, handle: &ProcessHandle, eval: F) -> anyhow::Result<Option<Address>>
+    where
+        F: Fn(Address, &mut [u8]) -> anyhow::Result<bool>,
+    {
+        let address = match self.base.eval(handle)? {
+            Some(address) => address,
+            None => return Ok(None),
+        };
+
+        if self.offsets.is_empty() {
+            return Ok(Some(address));
+        }
+
+        let mut current = address;
+        let mut buf = vec![0u8; handle.process.pointer_width];
+
+        for o in &self.offsets {
+            eval(current, &mut buf)?;
+            current = Address::decode(&handle.process, &buf)?;
+
+            current = match current.checked_offset(*o) {
+                Some(current) => current,
+                None => return Ok(None),
+            };
+        }
+
+        Ok(Some(current))
     }
 }
 
 impl fmt::Display for Pointer {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.base, fmt)?;
+        if self.offsets.is_empty() {
+            return self.base.fmt(fmt);
+        }
+
+        write!(fmt, "{}", self.base)?;
 
         for o in &self.offsets {
             write!(fmt, " -> {}", o)?;

@@ -10,7 +10,7 @@ use std::{fmt, mem, str};
 #[serde(tag = "type", content = "value")]
 pub enum Value {
     #[serde(rename = "none")]
-    None,
+    None(Type),
     #[serde(rename = "pointer")]
     Pointer(Address),
     #[serde(rename = "u8")]
@@ -41,7 +41,7 @@ impl Value {
     /// Test if this value is something.
     pub fn is_some(&self) -> bool {
         match *self {
-            Value::None => false,
+            Value::None(..) => false,
             _ => true,
         }
     }
@@ -49,6 +49,7 @@ impl Value {
     /// Test if value is aligned by default or not.
     pub fn is_default_aligned(&self) -> bool {
         match self {
+            Self::None(Type::String(..)) => false,
             Self::String(..) => false,
             _ => true,
         }
@@ -58,23 +59,22 @@ impl Value {
     ///
     /// Returns `None` if this is not possible (e.g. value out of range).
     pub fn as_address(&self) -> anyhow::Result<Address> {
-        use self::Value::*;
         use std::convert::TryFrom;
 
         let out = match *self {
-            None => bail!("nothing cannot be made into address"),
-            Pointer(address) => address,
-            String(..) => bail!("string cannot be made into address"),
-            U8(value) => Address::try_from(value)?,
-            I8(value) => Address::try_from(value)?,
-            U16(value) => Address::try_from(value)?,
-            I16(value) => Address::try_from(value)?,
-            U32(value) => Address::try_from(value)?,
-            I32(value) => Address::try_from(value)?,
-            U64(value) => Address::try_from(value)?,
-            I64(value) => Address::try_from(value)?,
-            U128(value) => Address::try_from(value)?,
-            I128(value) => Address::try_from(value)?,
+            Self::None(..) => bail!("nothing cannot be made into address"),
+            Self::Pointer(address) => address,
+            Self::String(..) => bail!("string cannot be made into address"),
+            Self::U8(value) => Address::try_from(value)?,
+            Self::I8(value) => Address::try_from(value)?,
+            Self::U16(value) => Address::try_from(value)?,
+            Self::I16(value) => Address::try_from(value)?,
+            Self::U32(value) => Address::try_from(value)?,
+            Self::I32(value) => Address::try_from(value)?,
+            Self::U64(value) => Address::try_from(value)?,
+            Self::I64(value) => Address::try_from(value)?,
+            Self::U128(value) => Address::try_from(value)?,
+            Self::I128(value) => Address::try_from(value)?,
         };
 
         Ok(out)
@@ -83,7 +83,7 @@ impl Value {
     /// Encode the given buffer into a value.
     pub fn encode(&self, process: &Process, buf: &mut [u8]) -> Result<(), Error> {
         match self {
-            Self::None => {}
+            Self::None(..) => (),
             Self::Pointer(address) => address.encode(process, buf)?,
             Self::U8(value) => value.encode(buf),
             Self::I8(value) => value.encode(buf),
@@ -106,62 +106,56 @@ impl Value {
     where
         T: Default + num::FromPrimitive,
     {
-        use self::Value::*;
-
         match self {
-            U8(value) => T::from_u8(*value),
-            I8(value) => T::from_i8(*value),
-            U16(value) => T::from_u16(*value),
-            I16(value) => T::from_i16(*value),
-            U32(value) => T::from_u32(*value),
-            I32(value) => T::from_i32(*value),
-            U64(value) => T::from_u64(*value),
-            I64(value) => T::from_i64(*value),
-            U128(value) => T::from_u128(*value),
-            I128(value) => T::from_i128(*value),
+            Self::U8(value) => T::from_u8(*value),
+            Self::I8(value) => T::from_i8(*value),
+            Self::U16(value) => T::from_u16(*value),
+            Self::I16(value) => T::from_i16(*value),
+            Self::U32(value) => T::from_u32(*value),
+            Self::I32(value) => T::from_i32(*value),
+            Self::U64(value) => T::from_u64(*value),
+            Self::I64(value) => T::from_i64(*value),
+            Self::U128(value) => T::from_u128(*value),
+            Self::I128(value) => T::from_i128(*value),
             _ => Some(T::default()),
         }
     }
 
     /// Get the type of the value.
     pub fn ty(&self) -> Type {
-        use self::Value::*;
-
         match self {
-            None => Type::None,
-            Pointer(..) => Type::Pointer,
-            U8(..) => Type::U8,
-            I8(..) => Type::I8,
-            U16(..) => Type::U16,
-            I16(..) => Type::I16,
-            U32(..) => Type::U32,
-            I32(..) => Type::I32,
-            U64(..) => Type::U64,
-            I64(..) => Type::I64,
-            U128(..) => Type::U128,
-            I128(..) => Type::I128,
-            String(string) => Type::String(string.len()),
+            Self::None(ty) => *ty,
+            Self::Pointer(..) => Type::Pointer,
+            Self::U8(..) => Type::U8,
+            Self::I8(..) => Type::I8,
+            Self::U16(..) => Type::U16,
+            Self::I16(..) => Type::I16,
+            Self::U32(..) => Type::U32,
+            Self::I32(..) => Type::I32,
+            Self::U64(..) => Type::U64,
+            Self::I64(..) => Type::I64,
+            Self::U128(..) => Type::U128,
+            Self::I128(..) => Type::I128,
+            Self::String(string) => Type::String(string.len()),
         }
     }
 
     /// Get the size in bytes of this value.
     pub fn size(&self, process: &Process) -> usize {
-        use self::Value::*;
-
         match self {
-            None => 0,
-            Pointer(..) => process.pointer_width,
-            U8(..) => mem::size_of::<u8>(),
-            I8(..) => mem::size_of::<i8>(),
-            U16(..) => mem::size_of::<u16>(),
-            I16(..) => mem::size_of::<i16>(),
-            U32(..) => mem::size_of::<u32>(),
-            I32(..) => mem::size_of::<i32>(),
-            U64(..) => mem::size_of::<u64>(),
-            I64(..) => mem::size_of::<i64>(),
-            U128(..) => mem::size_of::<u128>(),
-            I128(..) => mem::size_of::<i128>(),
-            String(string) => string.len(),
+            Self::None(ty) => ty.size(process),
+            Self::Pointer(..) => process.pointer_width,
+            Self::U8(..) => mem::size_of::<u8>(),
+            Self::I8(..) => mem::size_of::<i8>(),
+            Self::U16(..) => mem::size_of::<u16>(),
+            Self::I16(..) => mem::size_of::<i16>(),
+            Self::U32(..) => mem::size_of::<u32>(),
+            Self::I32(..) => mem::size_of::<i32>(),
+            Self::U64(..) => mem::size_of::<u64>(),
+            Self::I64(..) => mem::size_of::<i64>(),
+            Self::U128(..) => mem::size_of::<u128>(),
+            Self::I128(..) => mem::size_of::<i128>(),
+            Self::String(string) => string.len(),
         }
     }
 
@@ -180,11 +174,17 @@ impl Value {
             Type::I64 => value.to_i64().map(Value::I64),
             Type::U128 => value.to_u128().map(Value::U128),
             Type::I128 => value.to_i128().map(Value::I128),
-            _ => return Ok(Value::None),
+            _ => return Ok(Value::None(ty)),
         };
 
         let out = out.ok_or_else(|| Error::ValueNumberConversion(value.clone(), ty))?;
         Ok(out)
+    }
+}
+
+impl Default for Value {
+    fn default() -> Self {
+        Self::None(Type::default())
     }
 }
 
@@ -222,7 +222,7 @@ impl str::FromStr for Value {
 impl fmt::Display for Value {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Value::None => write!(fmt, "none"),
+            Value::None(ty) => write!(fmt, "none({})", ty),
             Value::Pointer(address) => write!(fmt, "{}", address),
             Value::U8(value) => write!(fmt, "{}", value),
             Value::I8(value) => write!(fmt, "{}", value),

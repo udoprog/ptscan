@@ -24,8 +24,10 @@ anyhow = "1.0.18"
 smallvec = "0.6.11"
 clap = "2.33.0"
 serde_cbor = "0.10.2"
+serde_yaml = "0.8.11"
 serde = {version = "1.0.102", features = ["rc", "derive"]}
 flate2 = "1.0.12"
+crossterm = "0.12.1"
 
 [build-dependencies]
 failure = "0.1"

@@ -232,7 +232,7 @@ impl Scan {
                                 let pointer = Pointer::new(base, vec![]);
                                 let proxy = session.address_proxy(&pointer);
 
-                                if filter.test(&Value::None, proxy)? {
+                                if filter.test(&Value::default(), proxy)? {
                                     let base = handle.address_to_pointer_base(current)?;
 
                                     results.push(Box::new(ScanResult {

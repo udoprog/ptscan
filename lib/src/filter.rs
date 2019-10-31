@@ -327,12 +327,12 @@ impl Binary {
         let Binary(op, lhs, rhs) = self;
 
         let lhs = match lhs.eval(ty, proxy)? {
-            Value::None => return Ok(false),
+            Value::None(..) => return Ok(false),
             lhs => lhs,
         };
 
         let rhs = match rhs.eval(ty, proxy)? {
-            Value::None => return Ok(false),
+            Value::None(..) => return Ok(false),
             rhs => rhs,
         };
 

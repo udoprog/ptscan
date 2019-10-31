@@ -62,9 +62,9 @@ impl Type {
     }
 
     /// Initialize a default value of the given type.
-    pub fn default(&self) -> Value {
+    pub fn default_value(&self) -> Value {
         match *self {
-            Self::None => Value::None,
+            Self::None => Value::None(Type::None),
             Self::Pointer => Value::Pointer(Default::default()),
             Self::String(..) => Value::String(Default::default()),
             Self::U8 => Value::U8(Default::default()),
@@ -159,7 +159,7 @@ impl Type {
                     4 => byteorder::LittleEndian::read_u32($buf) as $ty,
                     8 => byteorder::LittleEndian::read_u64($buf) as $ty,
                     16 => byteorder::LittleEndian::read_u128($buf) as $ty,
-                    _ => return Ok(Value::None),
+                    _ => return Ok(Value::None(Type::None)),
                 }
             };
         }
@@ -167,7 +167,7 @@ impl Type {
         use byteorder::ByteOrder;
 
         Ok(match *self {
-            Self::None => Value::None,
+            Self::None => Value::None(Type::None),
             Type::Pointer => Value::Pointer(Address::decode(process, buf)?),
             Self::String(..) => Value::String(buf.to_vec()),
             Self::U8 => Value::U8(decode_buf!(buf, u8)),
@@ -186,6 +186,12 @@ impl Type {
     /// Convert into a type which implements `fmt::Display` for a human-readable string.
     pub fn human_display(&self) -> HumanDisplay {
         HumanDisplay { ty: *self }
+    }
+}
+
+impl Default for Type {
+    fn default() -> Self {
+        Self::None
     }
 }
 

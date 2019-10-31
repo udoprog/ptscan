@@ -495,7 +495,7 @@ impl ProcessHandle {
                             let address = match address {
                                 Some(address) => address,
                                 None => {
-                                    result.value = Value::None;
+                                    result.value = Value::None(result.value.ty());
                                     return Ok(0u64);
                                 }
                             };
@@ -506,7 +506,7 @@ impl ProcessHandle {
 
                             result.value = match result.value.ty().decode(&self.process, buf) {
                                 Ok(value) => value,
-                                Err(_) => Value::None,
+                                Err(_) => Value::None(result.value.ty()),
                             };
 
                             Ok(1)
@@ -587,13 +587,13 @@ impl AddressProxy<'_> {
 
             let address = match address {
                 Some(address) => address,
-                None => return Ok(Value::None),
+                None => return Ok(Value::None(ty)),
             };
 
             if memory_cache.read_process_memory(&self.handle.process, address, &mut buf)? {
                 return Ok(match ty.decode(&self.handle.process, &buf) {
                     Ok(value) => value,
-                    Err(..) => Value::None,
+                    Err(..) => Value::None(ty),
                 });
             }
         } else {
@@ -606,18 +606,18 @@ impl AddressProxy<'_> {
 
             let address = match address {
                 Some(address) => address,
-                None => return Ok(Value::None),
+                None => return Ok(Value::None(ty)),
             };
 
             if self.handle.process.read_process_memory(address, &mut buf)? {
                 return Ok(match ty.decode(&self.handle.process, &buf) {
                     Ok(value) => value,
-                    Err(..) => Value::None,
+                    Err(..) => Value::None(ty),
                 });
             }
         }
 
-        Ok(Value::None)
+        Ok(Value::None(ty))
     }
 }
 

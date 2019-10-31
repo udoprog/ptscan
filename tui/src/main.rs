@@ -1,17 +1,16 @@
 #![feature(backtrace)]
 
-use anyhow::{anyhow, bail};
+use anyhow::{anyhow, bail, Context as _};
 use hashbrown::HashMap;
 use ptscan::{
     filter, scan, Address, Filter, Location, MemoryInformation, Offset, Pointer, PointerBase,
     Process, ProcessHandle, ScanResult, Size, Token, Type, Value, ValueExpr,
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    fs::File,
-    io,
-    path::{Path, PathBuf},
-    sync::Arc,
+use std::{fs::File, io, path::PathBuf, sync::Arc, time::Instant};
+
+use crossterm::{
+    ClearType, Color, Colored, Crossterm, InputEvent, KeyEvent, Terminal, TerminalCursor,
 };
 
 static HELP: &'static str = include_str!("help.md");
@@ -44,6 +43,18 @@ fn main() {
                 eprintln!("Backtrace: {}", bt);
             }
         }
+    }
+}
+
+struct NoopProgress;
+
+impl scan::Progress for NoopProgress {
+    fn report_bytes(&mut self, _: Size) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn report(&mut self, _: usize, _: u64) -> anyhow::Result<()> {
+        Ok(())
     }
 }
 
@@ -96,6 +107,10 @@ pub struct Application<R, W> {
     handle: Option<ProcessHandle>,
     scans: HashMap<String, scan::Scan>,
     current_scan: String,
+    current_file: Option<PathBuf>,
+    current_format: FileFormat,
+    /// If the save file should be compressed or not.
+    current_compress: bool,
 }
 
 impl<R, W> Application<R, W>
@@ -119,6 +134,9 @@ where
             handle: None,
             scans: HashMap::new(),
             current_scan: String::from("default"),
+            current_file: Some(PathBuf::from("state")),
+            current_format: FileFormat::Cbor,
+            current_compress: true,
         }
     }
 
@@ -156,6 +174,15 @@ where
                 Ok(false) => {}
                 Err(e) => {
                     writeln!(self.w, "{}", e)?;
+
+                    for cause in e.chain().skip(1) {
+                        writeln!(self.w, "caused by: {}", cause)?;
+
+                        if let Some(bt) = cause.backtrace() {
+                            eprintln!("backtrace: {}", bt);
+                        }
+                    }
+
                     continue;
                 }
             }
@@ -248,18 +275,16 @@ where
                 if let Some(handle) = self.handle.as_ref() {
                     stored = results.to_vec();
 
-                    handle.refresh_values(
-                        &self.thread_pool,
-                        &mut stored,
-                        None,
-                        SimpleProgress::new(&mut self.w, "Refreshing values"),
-                    )?;
+                    handle.refresh_values(&self.thread_pool, &mut stored, None, NoopProgress)?;
 
                     results = &stored;
                     println!("");
                 }
 
                 Self::print(&mut self.w, scan.len(), results)?;
+            }
+            Action::Watch { limit } => {
+                self.watch(limit)?;
             }
             Action::Del { pointer } => {
                 let scan = match self.scans.get_mut(&self.current_scan) {
@@ -270,11 +295,6 @@ where
                 scan.remove_by_pointer(&pointer);
             }
             Action::Add { pointer, ty } => {
-                let handle = match self.handle.as_ref() {
-                    Some(handle) => handle,
-                    None => bail!("not attached to a process"),
-                };
-
                 let Application {
                     ref mut scans,
                     ref thread_pool,
@@ -286,14 +306,23 @@ where
                     .entry(current_scan.clone())
                     .or_insert_with(|| scan::Scan::new(thread_pool));
 
-                let value = handle.address_proxy(&pointer).eval(ty)?;
+                let value = match self.handle.as_ref() {
+                    Some(handle) => handle.address_proxy(&pointer).eval(ty)?,
+                    None => Value::None(ty),
+                };
+
                 scan.push(Box::new(scan::ScanResult { pointer, value }));
             }
             Action::Scan { filter, config } => {
                 self.scan(&filter, None, config)?;
             }
-            Action::PointerScan { name, address } => {
-                self.pointer_scan(name, address)?;
+            Action::PointerScan {
+                name,
+                address,
+                value_type,
+            } => {
+                let value_type = value_type.unwrap_or(Type::None);
+                self.pointer_scan(name, address, value_type)?;
             }
             Action::Reset => match self.scans.get_mut(&self.current_scan) {
                 Some(scan) => {
@@ -303,27 +332,70 @@ where
                 }
                 None => writeln!(self.w, "no scan in use")?,
             },
-            Action::Save { file, scan } => {
+            Action::Save {
+                file,
+                scan,
+                format,
+                compress,
+                ..
+            } => {
                 use flate2::{write::GzEncoder, Compression};
+
+                let file = file
+                    .as_ref()
+                    .or_else(|| self.current_file.as_ref())
+                    .ok_or_else(|| anyhow!("no file open, you need to specify <file>"))?
+                    .to_owned();
 
                 let scan = scan
                     .as_ref()
                     .map(String::as_str)
                     .unwrap_or(self.current_scan.as_str());
 
-                let scan = match self.scans.get(scan) {
-                    Some(scan) => scan,
-                    None => bail!("no scan named `{}`", scan),
+                let format = format.unwrap_or(self.current_format);
+                let compress = compress.unwrap_or(self.current_compress);
+
+                let Self {
+                    ref thread_pool,
+                    ref mut scans,
+                    ..
+                } = self;
+
+                let count = {
+                    let scan = scans
+                        .entry(scan.to_string())
+                        .or_insert_with(|| scan::Scan::new(thread_pool));
+
+                    let serialized = SerializedScan {
+                        results: &scan.results,
+                        last_type: scan.last_type,
+                    };
+
+                    let mut f = File::create(&file)
+                        .with_context(|| anyhow!("failed to create file `{}`", file.display()))?;
+
+                    if compress {
+                        let mut f = GzEncoder::new(&mut f, Compression::default());
+                        format.serialize(&mut f, &serialized)?;
+                        f.finish()?;
+                    } else {
+                        format.serialize(&mut f, &serialized)?
+                    };
+
+                    scan.results.len()
                 };
 
-                let serialized = SerializedScan {
-                    results: &scan.results,
-                    last_type: scan.last_type,
-                };
+                writeln!(
+                    self.w,
+                    "Saved {} results from scan `{}` to file `{}`",
+                    count,
+                    scan,
+                    file.display()
+                )?;
 
-                let mut f = GzEncoder::new(File::create(file)?, Compression::default());
-                serde_cbor::to_writer(&mut f, &serialized)?;
-                f.finish()?;
+                self.current_file = Some(file);
+                self.current_format = format;
+                self.current_compress = compress;
 
                 #[derive(Serialize)]
                 struct SerializedScan<'a> {
@@ -332,13 +404,29 @@ where
                     last_type: Option<Type>,
                 }
             }
-            Action::Load { file, scan } => {
+            Action::Load {
+                file,
+                scan,
+                append,
+                format,
+                compress,
+                ..
+            } => {
                 use flate2::read::GzDecoder;
+
+                let file = file
+                    .as_ref()
+                    .or_else(|| self.current_file.as_ref())
+                    .ok_or_else(|| anyhow!("no file open, you need to specify <file>"))?
+                    .to_owned();
 
                 let scan = scan
                     .as_ref()
                     .map(String::as_str)
                     .unwrap_or(self.current_scan.as_str());
+
+                let format = format.unwrap_or(self.current_format);
+                let compress = compress.unwrap_or(self.current_compress);
 
                 let Self {
                     ref thread_pool,
@@ -346,16 +434,40 @@ where
                     ..
                 } = self;
 
-                let mut f = File::open(file)?;
-                let mut f = GzDecoder::new(&mut f);
+                {
+                    let mut f = File::open(&file)
+                        .with_context(|| anyhow!("Failed to open file `{}`", file.display()))?;
 
-                let scan = scans
-                    .entry(scan.to_string())
-                    .or_insert_with(|| scan::Scan::new(thread_pool));
-                let deserialized: DeserializedScan = serde_cbor::from_reader(&mut f)?;
-                scan.results = deserialized.results;
-                scan.last_type = deserialized.last_type;
-                scan.initial = false;
+                    let deserialized: DeserializedScan = if compress {
+                        format.deserialize(&mut GzDecoder::new(&mut f))?
+                    } else {
+                        format.deserialize(&mut f)?
+                    };
+
+                    let scan = scans
+                        .entry(scan.to_string())
+                        .or_insert_with(|| scan::Scan::new(thread_pool));
+
+                    if append {
+                        scan.results.extend(deserialized.results);
+                    } else {
+                        scan.results = deserialized.results;
+                    }
+
+                    scan.last_type = deserialized.last_type;
+                    scan.initial = false;
+                }
+
+                writeln!(
+                    self.w,
+                    "Loaded scan `{}` from file `{}`",
+                    scan,
+                    file.display()
+                )?;
+
+                self.current_file = Some(file);
+                self.current_format = format;
+                self.current_compress = compress;
 
                 #[derive(Deserialize)]
                 struct DeserializedScan {
@@ -398,6 +510,166 @@ where
         Ok(false)
     }
 
+    fn watch(&mut self, limit: Option<usize>) -> anyhow::Result<()> {
+        use std::{thread, time::Duration};
+
+        let thread_pool = &self.thread_pool;
+
+        let handle = match self.handle.as_ref() {
+            Some(handle) => handle,
+            None => bail!("not attached to a process"),
+        };
+
+        let scan = self
+            .scans
+            .entry(self.current_scan.to_string())
+            .or_insert_with(|| scan::Scan::new(thread_pool));
+
+        let crossterm = Crossterm::new();
+        let terminal = crossterm.terminal();
+        let cursor = crossterm.cursor();
+        let input = crossterm.input();
+
+        let refresh_rate = Duration::from_millis(10);
+        let limit = limit.unwrap_or(DEFAULT_LIMIT);
+        let results = &scan[..usize::min(scan.len(), limit)];
+        let mut updates = results.to_vec();
+
+        let pointers = updates
+            .iter()
+            .map(|r| r.pointer.clone())
+            .collect::<Vec<_>>();
+
+        let mut values = updates
+            .iter()
+            .map(|r| (vec![(Instant::now(), r.value.clone())], false))
+            .collect::<Vec<_>>();
+
+        cursor.hide()?;
+        terminal.clear(ClearType::All)?;
+
+        let mut stdin = input.read_async();
+
+        cursor.goto(0, (results.len() as u16) + 1)?;
+        terminal.write(format!(
+            "Refresh rate: {:?} (Press `q` to stop watching)",
+            refresh_rate,
+        ))?;
+        write_results(&cursor, &terminal, &results)?;
+
+        loop {
+            if let Some(key_event) = stdin.next() {
+                if process_input_event(key_event) {
+                    break;
+                }
+            }
+
+            thread::sleep(refresh_rate);
+            handle.refresh_values(&self.thread_pool, &mut updates, None, NoopProgress)?;
+
+            let mut any = false;
+
+            for (update, (values, changed)) in updates.iter().zip(values.iter_mut()) {
+                if update.value != values[values.len() - 1].1 {
+                    *changed = true;
+                    any = true;
+                    values.push((Instant::now(), update.value.clone()));
+                }
+            }
+
+            if any {
+                write_updates(&cursor, &terminal, &pointers, &mut values)?;
+            }
+        }
+
+        cursor.show()?;
+        terminal.clear(ClearType::All)?;
+        return Ok(());
+
+        fn write_results(
+            cursor: &TerminalCursor,
+            terminal: &Terminal,
+            current: &[Box<ScanResult>],
+        ) -> anyhow::Result<()> {
+            for (row, result) in current.iter().enumerate() {
+                cursor.goto(0, row as u16)?;
+                terminal.clear(ClearType::CurrentLine)?;
+                terminal.write(format!("{} = {}", result.pointer, result.value))?;
+            }
+
+            Ok(())
+        }
+
+        fn write_updates(
+            cursor: &TerminalCursor,
+            terminal: &Terminal,
+            pointers: &[Pointer],
+            updates: &mut [(Vec<(Instant, Value)>, bool)],
+        ) -> anyhow::Result<()> {
+            use std::fmt::Write as _;
+
+            for (row, (pointer, (values, changed))) in
+                pointers.iter().zip(updates.iter_mut()).enumerate()
+            {
+                if !*changed {
+                    continue;
+                }
+
+                cursor.goto(0, row as u16)?;
+                terminal.clear(ClearType::CurrentLine)?;
+
+                let mut buf = String::new();
+
+                write!(buf, "{} = ", pointer)?;
+
+                let mut it = values.iter();
+
+                let last = it.next_back();
+
+                let mut last_change = None;
+
+                while let Some((when, v)) = it.next() {
+                    if let Some(last) = last_change {
+                        let duration = when.duration_since(last);
+                        write!(buf, "({:.3?}) ", duration)?;
+                    }
+
+                    write!(buf, "{} -> ", v)?;
+                    last_change = Some(*when);
+                }
+
+                if let Some((when, last)) = last {
+                    if let Some(last) = last_change {
+                        let duration = when.duration_since(last);
+                        write!(buf, "({:.3?}) ", duration)?;
+                    }
+
+                    write!(
+                        buf,
+                        "{}{}{}",
+                        Colored::Fg(Color::Red),
+                        last,
+                        Colored::Fg(Color::Reset)
+                    )?;
+                }
+
+                terminal.write(buf)?;
+                *changed = false;
+            }
+
+            Ok(())
+        }
+
+        fn process_input_event(event: InputEvent) -> bool {
+            println!("got event: {:?}", event);
+
+            match event {
+                InputEvent::Keyboard(KeyEvent::Char('q')) => true,
+                _ => false,
+            }
+        }
+    }
+
     /// Try to attach to some process.
     fn attach(&mut self) -> anyhow::Result<()> {
         let name = match self.process_name.as_ref() {
@@ -422,7 +694,7 @@ where
     }
 
     /// Perform a pointer scan towards the specified address.
-    fn pointer_scan(&mut self, name: String, needle: Address) -> anyhow::Result<()> {
+    fn pointer_scan(&mut self, name: String, needle: Address, ty: Type) -> anyhow::Result<()> {
         use std::collections::{BTreeMap, HashSet, VecDeque};
 
         let handle = match self.handle.as_ref() {
@@ -505,7 +777,7 @@ where
 
                         results.push(Box::new(ScanResult {
                             pointer,
-                            value: Value::None,
+                            value: Value::None(ty),
                         }));
                     }
                     // ignore thread stacks
@@ -826,6 +1098,19 @@ where
                 ),
         );
 
+        let app = app.subcommand(
+            App::new("watch")
+                .alias("w")
+                .about("Watch the values in the current scan for changes.")
+                .arg(
+                    Arg::with_name("limit")
+                        .help("Limit the number of results to show.")
+                        .long("limit")
+                        .value_name("number")
+                        .takes_value(true),
+                ),
+        );
+
         let app = app.subcommand(App::new("help").about("Print help"));
 
         let app = app.subcommand(App::new("reset").about("Reset the current scan."));
@@ -836,14 +1121,30 @@ where
                 .arg(
                     Arg::with_name("file")
                         .help("The file to save the scan to.")
-                        .value_name("file")
-                        .required(true),
+                        .value_name("file"),
                 )
                 .arg(
                     Arg::with_name("scan")
                         .help("The scan to save.")
                         .long("scan")
                         .value_name("scan")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("no-compress")
+                        .help("Disable compression.")
+                        .long("no-compress"),
+                )
+                .arg(
+                    Arg::with_name("compress")
+                        .help("Enable compression.")
+                        .long("compress"),
+                )
+                .arg(
+                    Arg::with_name("format")
+                        .help("The format to use when saving, valid formats are: cbor, yaml.")
+                        .long("format")
+                        .value_name("format")
                         .takes_value(true),
                 ),
         );
@@ -856,14 +1157,35 @@ where
                 .arg(
                     Arg::with_name("file")
                         .help("The file to load the scan from.")
-                        .value_name("file")
-                        .required(true),
+                        .value_name("file"),
                 )
                 .arg(
                     Arg::with_name("scan")
                         .help("The scan to load the file as.")
                         .long("scan")
                         .value_name("scan")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("append")
+                        .help("Append to the current scan instead of overwriting it.")
+                        .long("append"),
+                )
+                .arg(
+                    Arg::with_name("no-compress")
+                        .help("Disable compression.")
+                        .long("no-compress"),
+                )
+                .arg(
+                    Arg::with_name("compress")
+                        .help("Enable compression.")
+                        .long("compress"),
+                )
+                .arg(
+                    Arg::with_name("format")
+                        .help("The format to use when loading, valid formats are: cbor, yaml.")
+                        .long("format")
+                        .value_name("format")
                         .takes_value(true),
                 ),
         );
@@ -908,6 +1230,12 @@ where
                     Arg::with_name("address")
                         .help("The address to scan for.")
                         .required(true),
+                )
+                .arg(
+                    Arg::with_name("type")
+                        .help("The type of the resulting value.")
+                        .value_name("type")
+                        .takes_value(true),
                 ),
         );
 
@@ -933,6 +1261,10 @@ where
             ("print", Some(m)) => {
                 let limit = m.value_of("limit").map(str::parse).transpose()?;
                 return Ok(Action::Print { limit });
+            }
+            ("watch", Some(m)) => {
+                let limit = m.value_of("limit").map(str::parse).transpose()?;
+                return Ok(Action::Watch { limit });
             }
             ("scan", Some(m)) => {
                 if m.is_present("list") {
@@ -1003,25 +1335,52 @@ where
                 return Ok(Action::Reset);
             }
             ("save", Some(m)) => {
-                let file = m
-                    .value_of("file")
-                    .map(Path::new)
-                    .ok_or_else(|| anyhow!("missing <file>"))?
-                    .to_owned();
+                let file = m.value_of("file").map(PathBuf::from);
                 let scan = m.value_of("scan").map(|s| s.to_string());
+                let format = m.value_of("format").map(str::parse).transpose()?;
 
-                return Ok(Action::Save { file, scan });
+                let mut compress = None;
+
+                if m.is_present("no-compress") {
+                    compress = Some(false);
+                }
+
+                if m.is_present("compress") {
+                    compress = Some(true);
+                }
+
+                return Ok(Action::Save {
+                    file,
+                    scan,
+                    format,
+                    compress,
+                });
             }
             ("sort", _) => return Ok(Action::Sort),
             ("load", Some(m)) => {
-                let file = m
-                    .value_of("file")
-                    .map(Path::new)
-                    .ok_or_else(|| anyhow!("missing <file>"))?
-                    .to_owned();
-                let scan = m.value_of("scan").map(|s| s.to_string());
+                let file = m.value_of("file").map(PathBuf::from);
 
-                return Ok(Action::Load { file, scan });
+                let scan = m.value_of("scan").map(|s| s.to_string());
+                let append = m.is_present("append");
+                let format = m.value_of("format").map(str::parse).transpose()?;
+
+                let mut compress = None;
+
+                if m.is_present("no-compress") {
+                    compress = Some(false);
+                }
+
+                if m.is_present("compress") {
+                    compress = Some(true);
+                }
+
+                return Ok(Action::Load {
+                    file,
+                    scan,
+                    append,
+                    format,
+                    compress,
+                });
             }
             ("del", Some(m)) => {
                 let pointer = m
@@ -1047,12 +1406,20 @@ where
                     .value_of("name")
                     .unwrap_or_else(|| &self.current_scan)
                     .to_string();
+
                 let address = m
                     .value_of("address")
                     .map(str::parse)
                     .transpose()?
                     .ok_or_else(|| anyhow!("missing <address>"))?;
-                return Ok(Action::PointerScan { name, address });
+
+                let value_type = m.value_of("type").map(str::parse).transpose()?;
+
+                return Ok(Action::PointerScan {
+                    name,
+                    address,
+                    value_type,
+                });
             }
             _ => return Ok(Action::Help),
         }
@@ -1072,6 +1439,50 @@ where
 pub struct ScanConfig {
     modules_only: bool,
     suspend: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum FileFormat {
+    Cbor,
+    Yaml,
+}
+
+impl FileFormat {
+    /// Deserialize the given thing using the current file format.
+    pub fn deserialize<T, R>(self, r: &mut R) -> anyhow::Result<T>
+    where
+        T: for<'a> serde::Deserialize<'a>,
+        R: io::Read,
+    {
+        Ok(match self {
+            Self::Cbor => serde_cbor::from_reader(r)?,
+            Self::Yaml => serde_yaml::from_reader(r)?,
+        })
+    }
+
+    /// Serialize the given thing using the current file format.
+    pub fn serialize<T, W>(self, r: &mut W, value: &T) -> anyhow::Result<()>
+    where
+        T: serde::Serialize,
+        W: io::Write,
+    {
+        Ok(match self {
+            Self::Cbor => serde_cbor::to_writer(r, value)?,
+            Self::Yaml => serde_yaml::to_writer(r, value)?,
+        })
+    }
+}
+
+impl std::str::FromStr for FileFormat {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "yaml" => FileFormat::Yaml,
+            "cbor" => FileFormat::Cbor,
+            _ => bail!("invalid file format: {}", s),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -1099,6 +1510,10 @@ pub enum Action {
     Reset,
     /// Print results from scan.
     Print {
+        limit: Option<usize>,
+    },
+    /// Watch changes to the scan.
+    Watch {
         limit: Option<usize>,
     },
     /// Delete the given address from the current scan.
@@ -1130,14 +1545,21 @@ pub enum Action {
     PointerScan {
         name: String,
         address: Address,
+        value_type: Option<Type>,
     },
     Save {
-        file: PathBuf,
+        file: Option<PathBuf>,
         scan: Option<String>,
+        format: Option<FileFormat>,
+        compress: Option<bool>,
     },
     Load {
-        file: PathBuf,
+        file: Option<PathBuf>,
         scan: Option<String>,
+        /// If we should append to the current scan instead of overwriting it.
+        append: bool,
+        format: Option<FileFormat>,
+        compress: Option<bool>,
     },
     Sort,
 }

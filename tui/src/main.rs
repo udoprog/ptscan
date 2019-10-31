@@ -4,23 +4,34 @@ use anyhow::{anyhow, bail, Context as _};
 use hashbrown::HashMap;
 use ptscan::{
     filter, scan, Address, Filter, Location, MemoryInformation, Offset, Pointer, PointerBase,
-    Process, ProcessHandle, ScanResult, Size, Token, Type, Value, ValueExpr,
+    ProcessHandle, ScanResult, Size, Token, Type, Value, ValueExpr,
 };
 use serde::{Deserialize, Serialize};
 use std::{fs::File, io, path::PathBuf, sync::Arc, time::Instant};
 
 use crossterm::{
-    ClearType, Color, Colored, Crossterm, InputEvent, KeyEvent, Terminal, TerminalCursor,
+    ClearType, Color, Colored, Crossterm, InputEvent, KeyEvent, RawScreen, Terminal,
+    TerminalCursor, TerminalInput,
 };
 
-static HELP: &'static str = include_str!("help.md");
 static DEFAULT_LIMIT: usize = 10;
 
 fn try_main() -> anyhow::Result<()> {
     let opts = ptscan::opts::opts();
     let thread_pool = Arc::new(rayon::ThreadPoolBuilder::new().build()?);
 
-    let mut app = Application::new(io::stdin(), io::stdout(), thread_pool, opts.suspend);
+    let crossterm = Crossterm::new();
+    let terminal = crossterm.terminal();
+    let input = crossterm.input();
+    let cursor = crossterm.cursor();
+
+    let term = Term {
+        terminal,
+        input,
+        cursor,
+    };
+
+    let mut app = Application::new(term, thread_pool, opts.suspend);
     app.process_name = opts.process.clone();
 
     if app.process_name.is_some() {
@@ -58,21 +69,18 @@ impl scan::Progress for NoopProgress {
     }
 }
 
-struct SimpleProgress<W> {
-    out: W,
+struct SimpleProgress<'a> {
+    term: &'a mut Term,
     what: &'static str,
 }
 
-impl<W> SimpleProgress<W> {
-    fn new(out: W, what: &'static str) -> SimpleProgress<W> {
-        Self { out, what }
+impl<'a> SimpleProgress<'a> {
+    fn new(term: &'a mut Term, what: &'static str) -> SimpleProgress<'a> {
+        Self { term, what }
     }
 }
 
-impl<W> scan::Progress for SimpleProgress<W>
-where
-    W: io::Write,
-{
+impl<'a> scan::Progress for SimpleProgress<'a> {
     fn report_bytes(&mut self, _: Size) -> anyhow::Result<()> {
         // NB: do nothing
         Ok(())
@@ -81,24 +89,36 @@ where
     fn report(&mut self, percentage: usize, count: u64) -> anyhow::Result<()> {
         use std::iter;
 
-        write!(self.out, "\r")?;
-        self.out.flush()?;
+        self.term.terminal.clear(ClearType::CurrentLine)?;
 
         let repr = iter::repeat('#').take(percentage / 10).collect::<String>();
-        write!(
-            self.out,
+
+        self.term.terminal.write(format!(
             "{}: {}% ({} results): {}",
             repr, percentage, count, self.what
-        )?;
-        self.out.flush()?;
+        ))?;
 
         Ok(())
     }
 }
 
-pub struct Application<R, W> {
-    r: R,
-    w: W,
+/// Very simple terminal wrapper around crossterm.
+struct Term {
+    terminal: Terminal,
+    input: TerminalInput,
+    cursor: TerminalCursor,
+}
+
+impl Term {
+    /// Write a single line to the terminal.
+    fn write_line(&mut self, line: impl std::fmt::Display) -> anyhow::Result<()> {
+        println!("{}", line);
+        Ok(())
+    }
+}
+
+struct Application {
+    term: Term,
     thread_pool: Arc<rayon::ThreadPool>,
     suspend: bool,
     /// Process name that we are attached to.
@@ -113,21 +133,11 @@ pub struct Application<R, W> {
     current_compress: bool,
 }
 
-impl<R, W> Application<R, W>
-where
-    R: io::Read,
-    W: Send + io::Write,
-{
+impl Application {
     /// Create a new application with the given options.
-    pub fn new(
-        r: R,
-        w: W,
-        thread_pool: Arc<rayon::ThreadPool>,
-        suspend: bool,
-    ) -> Application<R, W> {
+    fn new(term: Term, thread_pool: Arc<rayon::ThreadPool>, suspend: bool) -> Application {
         Application {
-            r,
-            w,
+            term,
             thread_pool,
             suspend,
             process_name: None,
@@ -146,17 +156,15 @@ where
         let mut app = Self::app();
 
         loop {
-            write!(self.w, "ptscan> ")?;
-            self.w.flush()?;
-
-            let line = self.line()?;
+            self.term.terminal.write("ptscan> ")?;
+            let line = self.term.input.read_line()?;
 
             let it = std::iter::once(String::from("ptscan")).chain(Words::new(&line));
 
             let m = match app.get_matches_from_safe_borrow(it) {
                 Ok(m) => m,
                 Err(e) => {
-                    writeln!(self.w, "{}", e.message)?;
+                    self.term.write_line(format!("{}", e.message))?;
                     continue;
                 }
             };
@@ -164,7 +172,7 @@ where
             let action = match self.line_into_action(&m) {
                 Ok(action) => action,
                 Err(e) => {
-                    writeln!(self.w, "{}", e)?;
+                    self.term.write_line(format!("{}", e))?;
                     continue;
                 }
             };
@@ -173,10 +181,10 @@ where
                 Ok(true) => return Ok(()),
                 Ok(false) => {}
                 Err(e) => {
-                    writeln!(self.w, "{}", e)?;
+                    self.term.write_line(format!("{}", e))?;
 
                     for cause in e.chain().skip(1) {
-                        writeln!(self.w, "caused by: {}", cause)?;
+                        self.term.write_line(format!("caused by: {}", cause))?;
 
                         if let Some(bt) = cause.backtrace() {
                             eprintln!("backtrace: {}", bt);
@@ -197,10 +205,11 @@ where
     ) -> anyhow::Result<bool> {
         match action {
             Action::ScanList => {
-                writeln!(self.w, "Scans:")?;
+                self.term.write_line(format!("Scans:"))?;
 
                 for (key, s) in &self.scans {
-                    writeln!(self.w, "{} - {} result(s)", key, s.len())?;
+                    self.term
+                        .write_line(format!("{} - {} result(s)", key, s.len()))?;
                 }
             }
             Action::ScanNew { name } => {
@@ -217,17 +226,19 @@ where
                     bail!("no such scan `{}`", name);
                 }
 
-                writeln!(self.w, "removed scan `{}`", name)?;
+                self.term.write_line(format!("removed scan `{}`", name))?;
             }
             Action::ScanSwitch { name } => {
+                self.term.write_line(format!("Switch to scan `{}`", name))?;
                 self.current_scan = name;
             }
             Action::Exit => {
                 return Ok(true);
             }
             Action::Help => {
-                app.write_long_help(&mut self.w)?;
-                writeln!(self.w, "")?;
+                let mut out = Vec::new();
+                app.write_long_help(&mut out)?;
+                self.term.write_line(String::from_utf8(out)?)?;
             }
             Action::Process {
                 include_modules,
@@ -262,10 +273,7 @@ where
             Action::Print { limit } => {
                 let scan = match self.scans.get_mut(&self.current_scan) {
                     Some(scan) => scan,
-                    None => {
-                        writeln!(self.w, "no scan in use")?;
-                        return Ok(false);
-                    }
+                    None => bail!("no active scan"),
                 };
 
                 let limit = limit.unwrap_or(DEFAULT_LIMIT);
@@ -274,14 +282,11 @@ where
 
                 if let Some(handle) = self.handle.as_ref() {
                     stored = results.to_vec();
-
                     handle.refresh_values(&self.thread_pool, &mut stored, None, NoopProgress)?;
-
                     results = &stored;
-                    println!("");
                 }
 
-                Self::print(&mut self.w, scan.len(), results)?;
+                Self::print(&mut self.term, scan.len(), results)?;
             }
             Action::Watch { limit } => {
                 self.watch(limit)?;
@@ -330,7 +335,9 @@ where
                     scan.initial = true;
                     scan.last_type = None;
                 }
-                None => writeln!(self.w, "no scan in use")?,
+                None => {
+                    self.term.write_line(format!("no scan in use"))?;
+                }
             },
             Action::Save {
                 file,
@@ -385,13 +392,12 @@ where
                     scan.results.len()
                 };
 
-                writeln!(
-                    self.w,
+                self.term.write_line(format!(
                     "Saved {} results from scan `{}` to file `{}`",
                     count,
                     scan,
                     file.display()
-                )?;
+                ))?;
 
                 self.current_file = Some(file);
                 self.current_format = format;
@@ -458,12 +464,11 @@ where
                     scan.initial = false;
                 }
 
-                writeln!(
-                    self.w,
+                self.term.write_line(format!(
                     "Loaded scan `{}` from file `{}`",
                     scan,
                     file.display()
-                )?;
+                ))?;
 
                 self.current_file = Some(file);
                 self.current_format = format;
@@ -502,7 +507,8 @@ where
                     value.encode(&handle.process, &mut buf)?;
                     handle.process.write_process_memory(address, &buf)?;
                 } else {
-                    writeln!(self.w, "Invalid address to write to")?;
+                    self.term
+                        .write_line(format!("Invalid address to write to"))?;
                 }
             }
         }
@@ -511,6 +517,8 @@ where
     }
 
     fn watch(&mut self, limit: Option<usize>) -> anyhow::Result<()> {
+        let _raw = RawScreen::into_raw_mode()?;
+
         use std::{thread, time::Duration};
 
         let thread_pool = &self.thread_pool;
@@ -524,11 +532,6 @@ where
             .scans
             .entry(self.current_scan.to_string())
             .or_insert_with(|| scan::Scan::new(thread_pool));
-
-        let crossterm = Crossterm::new();
-        let terminal = crossterm.terminal();
-        let cursor = crossterm.cursor();
-        let input = crossterm.input();
 
         let refresh_rate = Duration::from_millis(10);
         let limit = limit.unwrap_or(DEFAULT_LIMIT);
@@ -545,17 +548,17 @@ where
             .map(|r| (vec![(Instant::now(), r.value.clone())], false))
             .collect::<Vec<_>>();
 
-        cursor.hide()?;
-        terminal.clear(ClearType::All)?;
+        self.term.cursor.hide()?;
+        self.term.terminal.clear(ClearType::All)?;
 
-        let mut stdin = input.read_async();
+        let mut stdin = self.term.input.read_async();
 
-        cursor.goto(0, (results.len() as u16) + 1)?;
-        terminal.write(format!(
+        self.term.cursor.goto(0, (results.len() as u16) + 1)?;
+        self.term.write_line(format!(
             "Refresh rate: {:?} (Press `q` to stop watching)",
             refresh_rate,
         ))?;
-        write_results(&cursor, &terminal, &results)?;
+        write_results(&mut self.term, &results)?;
 
         loop {
             if let Some(key_event) = stdin.next() {
@@ -578,31 +581,26 @@ where
             }
 
             if any {
-                write_updates(&cursor, &terminal, &pointers, &mut values)?;
+                write_updates(&mut self.term, &pointers, &mut values)?;
             }
         }
 
-        cursor.show()?;
-        terminal.clear(ClearType::All)?;
+        self.term.cursor.show()?;
+        self.term.terminal.clear(ClearType::All)?;
         return Ok(());
 
-        fn write_results(
-            cursor: &TerminalCursor,
-            terminal: &Terminal,
-            current: &[Box<ScanResult>],
-        ) -> anyhow::Result<()> {
+        fn write_results(term: &mut Term, current: &[Box<ScanResult>]) -> anyhow::Result<()> {
             for (row, result) in current.iter().enumerate() {
-                cursor.goto(0, row as u16)?;
-                terminal.clear(ClearType::CurrentLine)?;
-                terminal.write(format!("{} = {}", result.pointer, result.value))?;
+                term.cursor.goto(0, row as u16)?;
+                term.terminal.clear(ClearType::CurrentLine)?;
+                term.write_line(format!("{} = {}", result.pointer, result.value))?;
             }
 
             Ok(())
         }
 
         fn write_updates(
-            cursor: &TerminalCursor,
-            terminal: &Terminal,
+            term: &mut Term,
             pointers: &[Pointer],
             updates: &mut [(Vec<(Instant, Value)>, bool)],
         ) -> anyhow::Result<()> {
@@ -615,8 +613,8 @@ where
                     continue;
                 }
 
-                cursor.goto(0, row as u16)?;
-                terminal.clear(ClearType::CurrentLine)?;
+                term.cursor.goto(0, row as u16)?;
+                term.terminal.clear(ClearType::CurrentLine)?;
 
                 let mut buf = String::new();
 
@@ -653,7 +651,7 @@ where
                     )?;
                 }
 
-                terminal.write(buf)?;
+                term.write_line(buf)?;
                 *changed = false;
             }
 
@@ -685,11 +683,10 @@ where
             return Ok(());
         }
 
-        writeln!(
-            self.w,
+        self.term.write_line(format!(
             "not attached: could not find any process matching `{}`",
             name
-        )?;
+        ))?;
         Ok(())
     }
 
@@ -711,11 +708,11 @@ where
             handle,
             &pointers,
             None,
-            SimpleProgress::new(&mut self.w, "Performing initial pointer scan"),
+            SimpleProgress::new(&mut self.term, "Performing initial pointer scan"),
             Default::default(),
         )?;
 
-        writeln!(self.w, "")?;
+        self.term.write_line(format!(""))?;
 
         let mut forward = BTreeMap::new();
         let mut reverse = BTreeMap::new();
@@ -773,7 +770,7 @@ where
                             path.clone(),
                         );
 
-                        writeln!(self.w, "{}", pointer)?;
+                        self.term.write_line(format!("{}", pointer))?;
 
                         results.push(Box::new(ScanResult {
                             pointer,
@@ -791,7 +788,8 @@ where
             }
         }
 
-        writeln!(self.w, "Saved {} paths to scan `{}`", results.len(), name)?;
+        self.term
+            .write_line(format!("Saved {} paths to scan `{}`", results.len(), name))?;
 
         let scan = scan::Scan::from_results(&self.thread_pool, Type::Pointer, results);
         self.scans.insert(name, scan);
@@ -833,7 +831,7 @@ where
                 handle,
                 filter,
                 cancel,
-                SimpleProgress::new(&mut self.w, "Performing initial scan"),
+                SimpleProgress::new(&mut self.term, "Performing initial scan"),
                 c,
             );
 
@@ -845,7 +843,7 @@ where
                 handle,
                 filter,
                 cancel,
-                SimpleProgress::new(&mut self.w, "Rescanning"),
+                SimpleProgress::new(&mut self.term, "Rescanning"),
             )
         };
 
@@ -857,7 +855,7 @@ where
         result?;
 
         let len = usize::min(scan.len(), DEFAULT_LIMIT);
-        Self::print(&mut self.w, scan.len(), &scan[..len])?;
+        Self::print(&mut self.term, scan.len(), &scan[..len])?;
         Ok(())
     }
 
@@ -873,42 +871,46 @@ where
             None => bail!("no process attached"),
         };
 
-        writeln!(
-            self.w,
+        self.term.write_line(format!(
             "Name: {}",
             handle
                 .name
                 .as_ref()
                 .map(|n| n.as_str())
                 .unwrap_or("*unknown*")
-        )?;
+        ))?;
 
-        writeln!(self.w, "Process id: {}", handle.process.process_id)?;
-        writeln!(self.w, "Pointer width: {}", handle.process.pointer_width)?;
-        writeln!(self.w, "64 bit: {}", handle.process.is_64bit)?;
+        self.term
+            .write_line(format!("Process id: {}", handle.process.process_id))?;
+        self.term
+            .write_line(format!("Pointer width: {}", handle.process.pointer_width))?;
+        self.term
+            .write_line(format!("64 bit: {}", handle.process.is_64bit))?;
 
         if include_modules {
-            writeln!(self.w, "Modules:")?;
+            self.term.write_line(format!("Modules:"))?;
 
             for module in &handle.modules {
-                writeln!(self.w, " - {:?}", module)?;
+                self.term.write_line(format!(" - {:?}", module))?;
             }
         } else {
-            writeln!(self.w, "Modules: *only shown with --modules*")?;
+            self.term
+                .write_line(format!("Modules: *only shown with --modules*"))?;
         }
 
         if include_threads {
-            writeln!(self.w, "Threads:")?;
+            self.term.write_line(format!("Threads:"))?;
 
             for thread in &handle.threads {
-                writeln!(self.w, " - {:?}", thread)?;
+                self.term.write_line(format!(" - {:?}", thread))?;
             }
         } else {
-            writeln!(self.w, "Threads: *only shown with --threads*")?;
+            self.term
+                .write_line(format!("Threads: *only shown with --threads*"))?;
         }
 
         if include_memory {
-            writeln!(self.w, "Memory Regions:")?;
+            self.term.write_line(format!("Memory Regions:"))?;
 
             for region in handle.process.virtual_memory_regions() {
                 let region = region?;
@@ -920,80 +922,40 @@ where
                     protect,
                 } = region;
 
-                writeln!(
-                    self.w,
+                self.term.write_line(format!(
                     " - {ty:?} [{}-{}] {protect:?} {state:?}",
                     range.base,
                     range.base.saturating_add(range.size),
                     ty = ty,
                     protect = protect,
                     state = state,
-                )?;
+                ))?;
             }
         } else {
-            writeln!(self.w, "Memory Regions: *only shown with --memory*")?;
+            self.term
+                .write_line(format!("Memory Regions: *only shown with --memory*"))?;
         }
 
         Ok(())
     }
 
     /// Print the current state of the scan.
-    fn print(
-        w: &mut impl io::Write,
-        len: usize,
-        results: &[Box<scan::ScanResult>],
-    ) -> anyhow::Result<()> {
+    fn print(term: &mut Term, len: usize, results: &[Box<scan::ScanResult>]) -> anyhow::Result<()> {
         if len > results.len() {
-            writeln!(
-                w,
+            term.write_line(format!(
                 "found {} addresses (only showing {})",
                 len,
                 results.len()
-            )?;
+            ))?;
         } else {
-            writeln!(w, "found {} addresses", results.len())?;
+            term.write_line(format!("found {} addresses", results.len()))?;
         };
 
         for result in results {
-            writeln!(w, "{} = {}", result.pointer, result.value)?;
+            term.write_line(format!("{} = {}", result.pointer, result.value))?;
         }
 
         Ok(())
-    }
-
-    /// Run the given procedure while suspending the process (if application is configured to do so).
-    pub fn with_scan(
-        &mut self,
-        handle: &ProcessHandle,
-        mut proc: impl FnMut(&mut scan::Scan, &Process, &mut W) -> anyhow::Result<()>,
-    ) -> anyhow::Result<()> {
-        let scan = match self.scans.get_mut(&self.current_scan) {
-            Some(scan) => scan,
-            None => return Ok(()),
-        };
-
-        if self.suspend {
-            handle.process.suspend()?;
-        }
-
-        let ret = proc(scan, &handle.process, &mut self.w);
-
-        if self.suspend {
-            handle.process.resume()?;
-        }
-
-        ret
-    }
-
-    pub fn line(&mut self) -> anyhow::Result<String> {
-        use std::io::{BufRead, BufReader};
-
-        let mut line = String::new();
-
-        // neat trick :)
-        BufReader::new(&mut self.r).read_line(&mut line)?;
-
-        Ok(line)
     }
 
     fn app() -> clap::App<'static, 'static> {
@@ -1043,14 +1005,6 @@ where
                         .help("Delete the scan named <name>.")
                         .long("del")
                         .short("d")
-                        .value_name("name")
-                        .takes_value(true),
-                )
-                .arg(
-                    Arg::with_name("switch")
-                        .help("Switch to a specific scan.")
-                        .long("switch")
-                        .short("s")
                         .value_name("name")
                         .takes_value(true),
                 )
@@ -1201,6 +1155,17 @@ where
         );
 
         let app = app.subcommand(
+            App::new("switch")
+                .alias("sw")
+                .about("Switch to a different scan.")
+                .arg(
+                    Arg::with_name("scan")
+                        .help("The scan to switch to.")
+                        .required(true),
+                ),
+        );
+
+        let app = app.subcommand(
             App::new("add")
                 .about("Add an address to the current scan")
                 .arg(
@@ -1266,6 +1231,14 @@ where
                 let limit = m.value_of("limit").map(str::parse).transpose()?;
                 return Ok(Action::Watch { limit });
             }
+            ("switch", Some(m)) => {
+                let name = m
+                    .value_of("scan")
+                    .ok_or_else(|| anyhow!("misssing <scan>"))?
+                    .to_string();
+
+                return Ok(Action::ScanSwitch { name });
+            }
             ("scan", Some(m)) => {
                 if m.is_present("list") {
                     return Ok(Action::ScanList);
@@ -1285,12 +1258,6 @@ where
 
                 if let Some(name) = m.value_of("del") {
                     return Ok(Action::ScanDel {
-                        name: name.to_string(),
-                    });
-                }
-
-                if let Some(name) = m.value_of("switch") {
-                    return Ok(Action::ScanSwitch {
                         name: name.to_string(),
                     });
                 }
@@ -1423,15 +1390,6 @@ where
             }
             _ => return Ok(Action::Help),
         }
-    }
-
-    /// Print help messages.
-    pub fn print_help(w: &mut impl io::Write) -> anyhow::Result<()> {
-        for line in HELP.lines() {
-            writeln!(w, "{}", line)?;
-        }
-
-        Ok(())
     }
 }
 

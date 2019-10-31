@@ -445,20 +445,20 @@ mod tests {
             vec![
                 (0, Token::Value, 5),
                 (6, Token::Eq, 8),
-                (9, Token::Literal(BigInt::from(42)), 11)
+                (9, Token::Literal(BigInt::from(42), None), 11)
             ],
             tokenize("value == 42")?
         );
 
         assert_eq!(
-            vec![(0, Token::Literal(BigInt::from(66)), 4)],
+            vec![(0, Token::Literal(BigInt::from(66), None), 4)],
             tokenize("0x42")?
         );
 
         assert_eq!(
             vec![
-                (0, Token::Literal(BigInt::from(66)), 4),
-                (5, Token::Literal(BigInt::from(83)), 7)
+                (0, Token::Literal(BigInt::from(66), None), 4),
+                (5, Token::Literal(BigInt::from(83), None), 7)
             ],
             tokenize("0x42 83")?
         );

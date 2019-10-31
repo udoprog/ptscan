@@ -287,8 +287,8 @@ impl ProcessHandle {
     pub fn rescan_values(
         &self,
         thread_pool: &rayon::ThreadPool,
-        results: &[ScanResult],
-        results_output: &mut Vec<ScanResult>,
+        results: &[Box<ScanResult>],
+        results_output: &mut Vec<Box<ScanResult>>,
         filter: &filter::Filter,
         cancel: Option<&Token>,
         progress: (impl scan::Progress + Send),
@@ -337,12 +337,10 @@ impl ProcessHandle {
                                 let proxy = self.address_proxy(&result.pointer);
 
                                 if filter.test(&result.value, proxy)? {
-                                    let value = proxy.eval(filter.ty)?;
-
-                                    results.push(ScanResult {
+                                    results.push(Box::new(ScanResult {
                                         pointer: result.pointer.clone(),
-                                        value: Box::new(value),
-                                    });
+                                        value: proxy.eval(filter.ty)?,
+                                    }));
 
                                     return Ok(Task::Accepted);
                                 }
@@ -428,7 +426,7 @@ impl ProcessHandle {
             /// Address was rejected.
             Rejected,
             /// The result of a computation.
-            Result(Vec<ScanResult>),
+            Result(Vec<Box<ScanResult>>),
         }
     }
 
@@ -436,7 +434,7 @@ impl ProcessHandle {
     pub fn refresh_values(
         &self,
         thread_pool: &rayon::ThreadPool,
-        results: &mut [ScanResult],
+        results: &mut [Box<ScanResult>],
         cancel: Option<&Token>,
         progress: (impl scan::Progress + Send),
     ) -> anyhow::Result<()> {
@@ -497,7 +495,7 @@ impl ProcessHandle {
                             let address = match address {
                                 Some(address) => address,
                                 None => {
-                                    result.value = Box::new(Value::None);
+                                    result.value = Value::None;
                                     return Ok(0u64);
                                 }
                             };
@@ -506,11 +504,10 @@ impl ProcessHandle {
                                 return Ok(0u64);
                             }
 
-                            result.value =
-                                Box::new(match result.value.ty().decode(&self.process, buf) {
-                                    Ok(value) => value,
-                                    Err(_) => Value::None,
-                                });
+                            result.value = match result.value.ty().decode(&self.process, buf) {
+                                Ok(value) => value,
+                                Err(_) => Value::None,
+                            };
 
                             Ok(1)
                         };

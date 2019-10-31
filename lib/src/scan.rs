@@ -33,7 +33,7 @@ pub struct Scan {
     /// Last type used during a scan.
     pub last_type: Option<Type>,
     /// Scan results.
-    pub results: Vec<ScanResult>,
+    pub results: Vec<Box<ScanResult>>,
 }
 
 impl Scan {
@@ -52,7 +52,7 @@ impl Scan {
     pub fn from_results(
         thread_pool: &Arc<rayon::ThreadPool>,
         last_type: Type,
-        results: Vec<ScanResult>,
+        results: Vec<Box<ScanResult>>,
     ) -> Self {
         Self {
             aligned: None,
@@ -67,7 +67,7 @@ impl Scan {
     ///
     /// Returns `true` if the address was removed, `false` otherwise.
     pub fn remove_by_pointer(&mut self, pointer: &Pointer) -> bool {
-        if let Some(index) = self.results.iter().position(|r| *r.pointer == *pointer) {
+        if let Some(index) = self.results.iter().position(|r| r.pointer == *pointer) {
             self.results.swap_remove(index);
             true
         } else {
@@ -86,7 +86,7 @@ impl Scan {
     }
 
     /// Push the given scan result.
-    pub fn push(&mut self, result: ScanResult) {
+    pub fn push(&mut self, result: Box<ScanResult>) {
         self.results.push(result);
     }
 
@@ -235,10 +235,10 @@ impl Scan {
                                 if filter.test(&Value::None, proxy)? {
                                     let base = handle.address_to_pointer_base(current)?;
 
-                                    results.push(ScanResult {
-                                        pointer: Arc::new(Pointer::new(base, vec![])),
-                                        value: Box::new(proxy.eval(filter.ty)?),
-                                    });
+                                    results.push(Box::new(ScanResult {
+                                        pointer: Pointer::new(base, vec![]),
+                                        value: proxy.eval(filter.ty)?,
+                                    }));
                                 }
 
                                 if let Some(special) = special {
@@ -302,7 +302,7 @@ impl Scan {
     }
 }
 
-impl<I: slice::SliceIndex<[ScanResult]>> ops::Index<I> for Scan {
+impl<I: slice::SliceIndex<[Box<ScanResult>]>> ops::Index<I> for Scan {
     type Output = I::Output;
 
     #[inline]
@@ -311,7 +311,7 @@ impl<I: slice::SliceIndex<[ScanResult]>> ops::Index<I> for Scan {
     }
 }
 
-impl<I: slice::SliceIndex<[ScanResult]>> ops::IndexMut<I> for Scan {
+impl<I: slice::SliceIndex<[Box<ScanResult>]>> ops::IndexMut<I> for Scan {
     #[inline]
     fn index_mut(&mut self, index: I) -> &mut Self::Output {
         ops::IndexMut::index_mut(&mut self.results, index)
@@ -406,7 +406,7 @@ impl<'token, 'err, P> Reporter<'token, 'err, P> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
     /// Address where the scanned value lives.
-    pub pointer: Arc<Pointer>,
+    pub pointer: Pointer,
     /// Value from last scan.
-    pub value: Box<Value>,
+    pub value: Value,
 }

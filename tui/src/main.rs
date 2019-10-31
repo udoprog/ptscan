@@ -287,10 +287,7 @@ where
                     .or_insert_with(|| scan::Scan::new(thread_pool));
 
                 let value = handle.address_proxy(&pointer).eval(ty)?;
-                scan.push(scan::ScanResult {
-                    pointer: Arc::new(pointer),
-                    value: Box::new(value),
-                });
+                scan.push(Box::new(scan::ScanResult { pointer, value }));
             }
             Action::Scan { filter, config } => {
                 self.scan(&filter, None, config)?;
@@ -330,7 +327,7 @@ where
 
                 #[derive(Serialize)]
                 struct SerializedScan<'a> {
-                    results: &'a [ScanResult],
+                    results: &'a [Box<ScanResult>],
                     #[serde(default, skip_serializing_if = "Option::is_none")]
                     last_type: Option<Type>,
                 }
@@ -362,7 +359,7 @@ where
 
                 #[derive(Deserialize)]
                 struct DeserializedScan {
-                    results: Vec<ScanResult>,
+                    results: Vec<Box<ScanResult>>,
                     #[serde(default, skip_serializing_if = "Option::is_none")]
                     last_type: Option<Type>,
                 }
@@ -506,10 +503,10 @@ where
 
                         writeln!(self.w, "{}", pointer)?;
 
-                        results.push(ScanResult {
-                            pointer: Arc::new(pointer),
-                            value: Box::new(Value::None),
-                        });
+                        results.push(Box::new(ScanResult {
+                            pointer,
+                            value: Value::None,
+                        }));
                     }
                     // ignore thread stacks
                     Location::Thread(..) => {
@@ -672,7 +669,7 @@ where
     fn print(
         w: &mut impl io::Write,
         len: usize,
-        results: &[scan::ScanResult],
+        results: &[Box<scan::ScanResult>],
     ) -> anyhow::Result<()> {
         if len > results.len() {
             writeln!(

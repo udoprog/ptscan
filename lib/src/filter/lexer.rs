@@ -252,12 +252,11 @@ impl<'a> Lexer<'a> {
             };
 
             match c {
-                'a'..='z' => {
+                ' ' => break,
+                c => {
                     self.step();
                     self.buf.push(c);
-                    continue;
                 }
-                _ => break,
             }
         }
 
@@ -398,7 +397,12 @@ impl<'a> Iterator for Lexer<'a> {
                     let e = self.pos();
                     return Some(Ok((s, Token::String(string), e)));
                 }
-                'a'..='z' => {
+                '-' | '+' | '0'..='9' => {
+                    let (literal, ty) = try_iter!(self.scan_literal());
+                    let e = self.pos();
+                    return Some(Ok((s, Token::Literal(literal, ty), e)));
+                }
+                _ => {
                     let ident = try_iter!(self.scan_ident());
                     let e = self.pos();
 
@@ -412,17 +416,11 @@ impl<'a> Iterator for Lexer<'a> {
                         "dec" => return Some(Ok((s, Token::Dec, e))),
                         "pointer" => return Some(Ok((s, Token::Pointer, e))),
                         "is" => return Some(Ok((s, Token::Is, e))),
-                        other => {
-                            return Some(Err(self.err(format!("unsupported keyword `{}`", other))));
+                        string => {
+                            return Some(Ok((s, Token::String(string.to_string()), e)));
                         }
                     }
                 }
-                '-' | '+' | '0'..='9' => {
-                    let (literal, ty) = try_iter!(self.scan_literal());
-                    let e = self.pos();
-                    return Some(Ok((s, Token::Literal(literal, ty), e)));
-                }
-                _ => return Some(Err(self.err("unsupported character"))),
             }
         }
 

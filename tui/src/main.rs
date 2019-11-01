@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail, Context as _};
 use hashbrown::HashMap;
 use ptscan::{
     filter, scan, Address, Filter, Location, MemoryInformation, Offset, Pointer, PointerBase,
-    ProcessHandle, ScanResult, Size, Token, Type, Value, ValueExpr,
+    ProcessHandle, ProcessId, ScanResult, Size, Token, Type, Value, ValueExpr,
 };
 use serde::{Deserialize, Serialize};
 use std::{fs::File, io, path::PathBuf, sync::Arc, time::Instant};
@@ -18,7 +18,11 @@ static DEFAULT_LIMIT: usize = 10;
 
 fn try_main() -> anyhow::Result<()> {
     let opts = ptscan::opts::opts();
-    let thread_pool = Arc::new(rayon::ThreadPoolBuilder::new().build()?);
+    let thread_pool = Arc::new(
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(num_cpus::get())
+            .build()?,
+    );
 
     let crossterm = Crossterm::new();
     let terminal = crossterm.terminal();
@@ -33,6 +37,11 @@ fn try_main() -> anyhow::Result<()> {
 
     let mut app = Application::new(term, thread_pool, opts.suspend);
     app.process_name = opts.process.clone();
+
+    if let Some(file) = opts.load_file {
+        app.current_file = file;
+        app.load(None, false)?;
+    }
 
     if app.process_name.is_some() {
         app.attach()?;
@@ -89,6 +98,7 @@ impl<'a> scan::Progress for SimpleProgress<'a> {
     fn report(&mut self, percentage: usize, count: u64) -> anyhow::Result<()> {
         use std::iter;
 
+        self.term.cursor.save_position()?;
         self.term.terminal.clear(ClearType::CurrentLine)?;
 
         let repr = iter::repeat('#').take(percentage / 10).collect::<String>();
@@ -98,6 +108,7 @@ impl<'a> scan::Progress for SimpleProgress<'a> {
             repr, percentage, count, self.what
         ))?;
 
+        self.term.cursor.restore_position()?;
         Ok(())
     }
 }
@@ -115,6 +126,13 @@ impl Term {
         println!("{}", line);
         Ok(())
     }
+
+    /// Perform an panicky write to the specified line, indicating that an error happened.
+    fn write_on_line(&mut self, row: u16, line: impl std::fmt::Display) -> anyhow::Result<()> {
+        self.cursor.goto(0, row)?;
+        self.write_line(line)?;
+        Ok(())
+    }
 }
 
 struct Application {
@@ -127,7 +145,8 @@ struct Application {
     handle: Option<ProcessHandle>,
     scans: HashMap<String, scan::Scan>,
     current_scan: String,
-    current_file: Option<PathBuf>,
+    /// Current file being saved/loaded.
+    current_file: PathBuf,
     current_format: FileFormat,
     /// If the save file should be compressed or not.
     current_compress: bool,
@@ -144,7 +163,7 @@ impl Application {
             handle: None,
             scans: HashMap::new(),
             current_scan: String::from("default"),
-            current_file: Some(PathBuf::from("state")),
+            current_file: PathBuf::from("state"),
             current_format: FileFormat::Cbor,
             current_compress: true,
         }
@@ -282,7 +301,13 @@ impl Application {
 
                 if let Some(handle) = self.handle.as_ref() {
                     stored = results.to_vec();
-                    handle.refresh_values(&self.thread_pool, &mut stored, None, NoopProgress)?;
+                    handle.refresh_values(
+                        &self.thread_pool,
+                        &mut stored,
+                        None,
+                        None,
+                        NoopProgress,
+                    )?;
                     results = &stored;
                 }
 
@@ -321,6 +346,30 @@ impl Application {
             Action::Scan { filter, config } => {
                 self.scan(&filter, None, config)?;
             }
+            Action::Refresh { new_type } => {
+                let handle = match self.handle.as_ref() {
+                    Some(handle) => handle,
+                    None => bail!("not attached to a process"),
+                };
+
+                let scan = match self.scans.get_mut(&self.current_scan) {
+                    Some(scan) => scan,
+                    None => bail!("no active scan to refresh!"),
+                };
+
+                handle.refresh_values(
+                    &self.thread_pool,
+                    &mut scan.results,
+                    None,
+                    new_type,
+                    SimpleProgress::new(&mut self.term, "Refreshing values"),
+                )?;
+
+                println!("");
+
+                let len = usize::min(scan.len(), DEFAULT_LIMIT);
+                Self::print(&mut self.term, scan.len(), &scan[..len])?;
+            }
             Action::PointerScan {
                 name,
                 address,
@@ -346,69 +395,19 @@ impl Application {
                 compress,
                 ..
             } => {
-                use flate2::{write::GzEncoder, Compression};
-
-                let file = file
-                    .as_ref()
-                    .or_else(|| self.current_file.as_ref())
-                    .ok_or_else(|| anyhow!("no file open, you need to specify <file>"))?
-                    .to_owned();
-
-                let scan = scan
-                    .as_ref()
-                    .map(String::as_str)
-                    .unwrap_or(self.current_scan.as_str());
-
-                let format = format.unwrap_or(self.current_format);
-                let compress = compress.unwrap_or(self.current_compress);
-
-                let Self {
-                    ref thread_pool,
-                    ref mut scans,
-                    ..
-                } = self;
-
-                let count = {
-                    let scan = scans
-                        .entry(scan.to_string())
-                        .or_insert_with(|| scan::Scan::new(thread_pool));
-
-                    let serialized = SerializedScan {
-                        results: &scan.results,
-                        last_type: scan.last_type,
-                    };
-
-                    let mut f = File::create(&file)
-                        .with_context(|| anyhow!("failed to create file `{}`", file.display()))?;
-
-                    if compress {
-                        let mut f = GzEncoder::new(&mut f, Compression::default());
-                        format.serialize(&mut f, &serialized)?;
-                        f.finish()?;
-                    } else {
-                        format.serialize(&mut f, &serialized)?
-                    };
-
-                    scan.results.len()
-                };
-
-                self.term.write_line(format!(
-                    "Saved {} results from scan `{}` to file `{}`",
-                    count,
-                    scan,
-                    file.display()
-                ))?;
-
-                self.current_file = Some(file);
-                self.current_format = format;
-                self.current_compress = compress;
-
-                #[derive(Serialize)]
-                struct SerializedScan<'a> {
-                    results: &'a [Box<ScanResult>],
-                    #[serde(default, skip_serializing_if = "Option::is_none")]
-                    last_type: Option<Type>,
+                if let Some(file) = file {
+                    self.current_file = file;
                 }
+
+                if let Some(format) = format {
+                    self.current_format = format;
+                }
+
+                if let Some(compress) = compress {
+                    self.current_compress = compress;
+                }
+
+                self.save(scan.as_ref().map(String::as_str))?;
             }
             Action::Load {
                 file,
@@ -418,68 +417,19 @@ impl Application {
                 compress,
                 ..
             } => {
-                use flate2::read::GzDecoder;
-
-                let file = file
-                    .as_ref()
-                    .or_else(|| self.current_file.as_ref())
-                    .ok_or_else(|| anyhow!("no file open, you need to specify <file>"))?
-                    .to_owned();
-
-                let scan = scan
-                    .as_ref()
-                    .map(String::as_str)
-                    .unwrap_or(self.current_scan.as_str());
-
-                let format = format.unwrap_or(self.current_format);
-                let compress = compress.unwrap_or(self.current_compress);
-
-                let Self {
-                    ref thread_pool,
-                    ref mut scans,
-                    ..
-                } = self;
-
-                {
-                    let mut f = File::open(&file)
-                        .with_context(|| anyhow!("Failed to open file `{}`", file.display()))?;
-
-                    let deserialized: DeserializedScan = if compress {
-                        format.deserialize(&mut GzDecoder::new(&mut f))?
-                    } else {
-                        format.deserialize(&mut f)?
-                    };
-
-                    let scan = scans
-                        .entry(scan.to_string())
-                        .or_insert_with(|| scan::Scan::new(thread_pool));
-
-                    if append {
-                        scan.results.extend(deserialized.results);
-                    } else {
-                        scan.results = deserialized.results;
-                    }
-
-                    scan.last_type = deserialized.last_type;
-                    scan.initial = false;
+                if let Some(file) = file {
+                    self.current_file = file;
                 }
 
-                self.term.write_line(format!(
-                    "Loaded scan `{}` from file `{}`",
-                    scan,
-                    file.display()
-                ))?;
-
-                self.current_file = Some(file);
-                self.current_format = format;
-                self.current_compress = compress;
-
-                #[derive(Deserialize)]
-                struct DeserializedScan {
-                    results: Vec<Box<ScanResult>>,
-                    #[serde(default, skip_serializing_if = "Option::is_none")]
-                    last_type: Option<Type>,
+                if let Some(format) = format {
+                    self.current_format = format;
                 }
+
+                if let Some(compress) = compress {
+                    self.current_compress = compress;
+                }
+
+                self.load(scan.as_ref().map(String::as_str), append)?;
             }
             Action::Sort => {
                 let scan = match self.scans.get_mut(&self.current_scan) {
@@ -495,12 +445,7 @@ impl Application {
                     None => bail!("not attached to a process"),
                 };
 
-                let address = pointer.follow(handle, |a, buf| {
-                    handle
-                        .process
-                        .read_process_memory(a, buf)
-                        .map_err(Into::into)
-                })?;
+                let address = pointer.follow_default(handle)?;
 
                 if let Some(address) = address {
                     let mut buf = vec![0u8; value.size(&handle.process)];
@@ -516,10 +461,120 @@ impl Application {
         Ok(false)
     }
 
-    fn watch(&mut self, limit: Option<usize>) -> anyhow::Result<()> {
-        let _raw = RawScreen::into_raw_mode()?;
+    fn save(&mut self, scan: Option<&str>) -> anyhow::Result<()> {
+        use flate2::{write::GzEncoder, Compression};
 
-        use std::{thread, time::Duration};
+        let Self {
+            ref thread_pool,
+            ref mut scans,
+            ref current_file,
+            ..
+        } = self;
+
+        let scan = scan.unwrap_or(self.current_scan.as_str());
+
+        let count = {
+            let scan = scans
+                .entry(scan.to_string())
+                .or_insert_with(|| scan::Scan::new(thread_pool));
+
+            let serialized = SerializedScan {
+                results: &scan.results,
+                last_type: scan.last_type,
+            };
+
+            let mut f = File::create(current_file)
+                .with_context(|| anyhow!("failed to create file `{}`", current_file.display()))?;
+
+            if self.current_compress {
+                let mut f = GzEncoder::new(&mut f, Compression::default());
+                self.current_format.serialize(&mut f, &serialized)?;
+                f.finish()?;
+            } else {
+                self.current_format.serialize(&mut f, &serialized)?
+            };
+
+            scan.results.len()
+        };
+
+        self.term.write_line(format!(
+            "Saved {} results from scan `{}` to file `{}`",
+            count,
+            scan,
+            current_file.display()
+        ))?;
+
+        return Ok(());
+
+        #[derive(Serialize)]
+        struct SerializedScan<'a> {
+            results: &'a [Box<ScanResult>],
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            last_type: Option<Type>,
+        }
+    }
+
+    fn load(&mut self, scan: Option<&str>, append: bool) -> anyhow::Result<()> {
+        use flate2::read::GzDecoder;
+
+        let Self {
+            ref thread_pool,
+            ref mut scans,
+            ref current_file,
+            ..
+        } = self;
+
+        let scan = scan.unwrap_or(self.current_scan.as_str());
+
+        {
+            let mut f = File::open(current_file)
+                .with_context(|| anyhow!("Failed to open file `{}`", current_file.display()))?;
+
+            let deserialized: DeserializedScan = if self.current_compress {
+                self.current_format
+                    .deserialize(&mut GzDecoder::new(&mut f))?
+            } else {
+                self.current_format.deserialize(&mut f)?
+            };
+
+            let scan = scans
+                .entry(scan.to_string())
+                .or_insert_with(|| scan::Scan::new(thread_pool));
+
+            if append {
+                scan.results.extend(deserialized.results);
+            } else {
+                scan.results = deserialized.results;
+            }
+
+            scan.last_type = deserialized.last_type;
+            scan.initial = false;
+        }
+
+        self.term.write_line(format!(
+            "Loaded scan `{}` from file `{}`",
+            scan,
+            current_file.display()
+        ))?;
+
+        return Ok(());
+
+        #[derive(Deserialize)]
+        struct DeserializedScan {
+            results: Vec<Box<ScanResult>>,
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            last_type: Option<Type>,
+        }
+    }
+
+    fn watch(&mut self, limit: Option<usize>) -> anyhow::Result<()> {
+        use std::{
+            sync::atomic::{AtomicBool, Ordering},
+            thread,
+            time::Duration,
+        };
+
+        let _raw = RawScreen::into_raw_mode()?;
 
         let thread_pool = &self.thread_pool;
 
@@ -533,61 +588,129 @@ impl Application {
             .entry(self.current_scan.to_string())
             .or_insert_with(|| scan::Scan::new(thread_pool));
 
-        let refresh_rate = Duration::from_millis(10);
+        if scan.results.is_empty() {
+            self.term.write_line("cannot watch, scan is empty")?;
+            return Ok(());
+        }
+
+        let refresh_rate = Duration::from_millis(500);
         let limit = limit.unwrap_or(DEFAULT_LIMIT);
         let results = &scan[..usize::min(scan.len(), limit)];
         let mut updates = results.to_vec();
 
-        let pointers = updates
-            .iter()
-            .map(|r| r.pointer.clone())
-            .collect::<Vec<_>>();
-
-        let mut values = updates
-            .iter()
-            .map(|r| (vec![(Instant::now(), r.value.clone())], false))
-            .collect::<Vec<_>>();
-
         self.term.cursor.hide()?;
         self.term.terminal.clear(ClearType::All)?;
 
-        let mut stdin = self.term.input.read_async();
+        let mut stdin = self.term.input.read_sync();
 
-        self.term.cursor.goto(0, (results.len() as u16) + 1)?;
-        self.term.write_line(format!(
-            "Refresh rate: {:?} (Press `q` to stop watching)",
-            refresh_rate,
-        ))?;
+        let line_below = results.len() as u16;
+        let info_line = line_below + 1;
+        let error_line = line_below + 2;
+
         write_results(&mut self.term, &results)?;
 
-        loop {
-            if let Some(key_event) = stdin.next() {
-                if process_input_event(key_event) {
-                    break;
+        // NB: do a little borrow dance to support the scoped thread with split borrows.
+        let exit = AtomicBool::new(false);
+        let exit = &exit;
+        let term = &mut self.term;
+
+        rayon::scope(|s| {
+            s.spawn(move |_| {
+                refresh_loop(
+                    &*thread_pool,
+                    info_line,
+                    error_line,
+                    refresh_rate,
+                    &exit,
+                    term,
+                    &mut updates,
+                    &handle,
+                )
+                .expect("refresh loop panicked");
+            });
+
+            loop {
+                if let Some(event) = stdin.next() {
+                    match event {
+                        InputEvent::Keyboard(KeyEvent::Char(c)) => match c {
+                            'q' => break,
+                            _ => (),
+                        },
+                        InputEvent::Keyboard(KeyEvent::Ctrl('c')) => break,
+                        _ => (),
+                    }
                 }
             }
 
-            thread::sleep(refresh_rate);
-            handle.refresh_values(&self.thread_pool, &mut updates, None, NoopProgress)?;
+            exit.store(true, Ordering::Release);
+        });
 
-            let mut any = false;
-
-            for (update, (values, changed)) in updates.iter().zip(values.iter_mut()) {
-                if update.value != values[values.len() - 1].1 {
-                    *changed = true;
-                    any = true;
-                    values.push((Instant::now(), update.value.clone()));
-                }
-            }
-
-            if any {
-                write_updates(&mut self.term, &pointers, &mut values)?;
-            }
-        }
-
+        self.term.cursor.goto(0, info_line)?;
+        self.term.terminal.clear(ClearType::CurrentLine)?;
         self.term.cursor.show()?;
-        self.term.terminal.clear(ClearType::All)?;
         return Ok(());
+
+        fn refresh_loop(
+            thread_pool: &rayon::ThreadPool,
+            info_line: u16,
+            error_line: u16,
+            refresh_rate: Duration,
+            exit: &AtomicBool,
+            term: &mut Term,
+            updates: &mut [Box<ScanResult>],
+            handle: &ProcessHandle,
+        ) -> anyhow::Result<()> {
+            let mut info_changed = true;
+
+            let pointers = updates
+                .iter()
+                .map(|r| r.pointer.clone())
+                .collect::<Vec<_>>();
+
+            let mut values = updates
+                .iter()
+                .map(|r| (vec![(Instant::now(), r.value.clone())], false))
+                .collect::<Vec<_>>();
+
+            while !exit.load(Ordering::Acquire) {
+                if info_changed {
+                    term.write_on_line(
+                        info_line,
+                        format!(
+                            "Refresh rate: {:?} (Press `q` or CTRL+C to stop watching)",
+                            refresh_rate,
+                        ),
+                    )?;
+
+                    info_changed = false;
+                }
+
+                if let Err(e) =
+                    handle.refresh_values(thread_pool, updates, None, None, NoopProgress)
+                {
+                    term.write_on_line(error_line, format!("Error refreshing values: {}", e))?;
+                }
+
+                let mut any = false;
+
+                for (update, (values, changed)) in updates.iter().zip(values.iter_mut()) {
+                    if update.value != values[values.len() - 1].1 {
+                        *changed = true;
+                        any = true;
+                        values.push((Instant::now(), update.value.clone()));
+                    }
+                }
+
+                if any {
+                    write_updates(term, &pointers, &mut values)?;
+                }
+
+                term.cursor.hide()?;
+                thread::sleep(refresh_rate);
+            }
+
+            Ok(())
+        }
 
         fn write_results(term: &mut Term, current: &[Box<ScanResult>]) -> anyhow::Result<()> {
             for (row, result) in current.iter().enumerate() {
@@ -629,17 +752,17 @@ impl Application {
                 while let Some((when, v)) = it.next() {
                     if let Some(last) = last_change {
                         let duration = when.duration_since(last);
-                        write!(buf, "({:.3?}) ", duration)?;
+                        write!(buf, " ({:.0?}) -> ", duration)?;
                     }
 
-                    write!(buf, "{} -> ", v)?;
+                    write!(buf, "{}", v)?;
                     last_change = Some(*when);
                 }
 
                 if let Some((when, last)) = last {
                     if let Some(last) = last_change {
                         let duration = when.duration_since(last);
-                        write!(buf, "({:.3?}) ", duration)?;
+                        write!(buf, " ({:.0?}) -> ", duration)?;
                     }
 
                     write!(
@@ -657,29 +780,39 @@ impl Application {
 
             Ok(())
         }
-
-        fn process_input_event(event: InputEvent) -> bool {
-            println!("got event: {:?}", event);
-
-            match event {
-                InputEvent::Keyboard(KeyEvent::Char('q')) => true,
-                _ => false,
-            }
-        }
     }
 
     /// Try to attach to some process.
     fn attach(&mut self) -> anyhow::Result<()> {
-        let name = match self.process_name.as_ref() {
-            Some(name) => name,
+        // NB: storage for amended name, in case that's needed.
+        let amended_name;
+
+        let mut name = match self.process_name.as_ref() {
+            Some(name) => name.as_str(),
             None => bail!("no process name to attach to"),
         };
 
-        self.handle = ProcessHandle::open_by_name(name)?;
+        self.handle = match str::parse::<ProcessId>(name) {
+            Ok(id) => ProcessHandle::open(id)?,
+            Err(_) => {
+                if !name.ends_with(".exe") {
+                    amended_name = format!("{}.exe", name);
+                    name = amended_name.as_str();
+                }
+
+                ProcessHandle::open_by_name(name)?
+            }
+        };
 
         if let Some(handle) = self.handle.as_mut() {
             handle.refresh_modules()?;
             handle.refresh_threads()?;
+
+            self.term.write_line(format!(
+                "attached to process `{}` ({})",
+                handle.name, handle.process.process_id
+            ))?;
+
             return Ok(());
         }
 
@@ -687,6 +820,7 @@ impl Application {
             "not attached: could not find any process matching `{}`",
             name
         ))?;
+
         Ok(())
     }
 
@@ -871,14 +1005,7 @@ impl Application {
             None => bail!("no process attached"),
         };
 
-        self.term.write_line(format!(
-            "Name: {}",
-            handle
-                .name
-                .as_ref()
-                .map(|n| n.as_str())
-                .unwrap_or("*unknown*")
-        ))?;
+        self.term.write_line(format!("Name: {}", handle.name))?;
 
         self.term
             .write_line(format!("Process id: {}", handle.process.process_id))?;
@@ -984,6 +1111,17 @@ impl Application {
         );
 
         let app = app.subcommand(
+            App::new("refresh")
+                .about("Refresh values in a scan, optionally setting a new type for them.")
+                .arg(
+                    Arg::with_name("type")
+                        .help("The type of the filter, if it can't be derived.")
+                        .long("type")
+                        .takes_value(true),
+                ),
+        );
+
+        let app = app.subcommand(
             App::new("scan")
                 .about("Perform a scan")
                 .arg(
@@ -1024,7 +1162,11 @@ impl Application {
                         .help("Suspend the process during the scan.")
                         .long("suspend"),
                 )
-                .arg(Arg::with_name("filter").help("The filter to apply.")),
+                .arg(
+                    Arg::with_name("filter")
+                        .help("The filter to apply.")
+                        .multiple(true),
+                ),
         );
 
         let app = app.subcommand(
@@ -1267,18 +1409,19 @@ impl Application {
                     None => None,
                 };
 
-                let filter = m
-                    .value_of("filter")
-                    .ok_or_else(|| anyhow!("missing <filter>"))?;
+                let filter = match m.values_of("filter") {
+                    Some(values) => values.collect::<Vec<_>>().join(" "),
+                    None => String::new(),
+                };
 
                 let process = self.handle.as_ref().map(|h| &h.process);
                 let matcher = filter::parse_matcher(&filter, process)?;
 
                 let last_type = self.scans.get(&self.current_scan).and_then(|s| s.last_type);
 
-                let ty = last_type
+                let ty = ty
                     .or_else(|| matcher.type_hint())
-                    .or(ty)
+                    .or(last_type)
                     .ok_or_else(|| anyhow!("cannot determine type of filter"))?;
 
                 let filter = filter::Filter::new(ty, matcher);
@@ -1287,6 +1430,15 @@ impl Application {
                 config.modules_only = m.is_present("modules-only");
                 config.suspend = m.is_present("suspend");
                 return Ok(Action::Scan { filter, config });
+            }
+
+            ("refresh", Some(m)) => {
+                let new_type = match m.value_of("type").map(str::parse).transpose()? {
+                    Some(ty) => Some(ty),
+                    None => None,
+                };
+
+                return Ok(Action::Refresh { new_type });
             }
             ("attach", Some(m)) => {
                 let name = m.value_of("name").map(|s| s.to_string());
@@ -1520,4 +1672,7 @@ pub enum Action {
         compress: Option<bool>,
     },
     Sort,
+    Refresh {
+        new_type: Option<Type>,
+    },
 }

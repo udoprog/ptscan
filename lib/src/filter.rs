@@ -11,6 +11,8 @@ pub mod ast;
 mod lexer;
 lalrpop_util::lalrpop_mod!(parser, "/filter/parser.rs");
 
+const ZERO: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+
 /// Parse a a string into a filter.
 pub fn parse_matcher(input: &str, process: Option<&Process>) -> anyhow::Result<Matcher> {
     Ok(parser::OrParser::new()
@@ -89,6 +91,63 @@ impl fmt::Display for ValueExpr {
 pub enum Special {
     Bytes(Vec<u8>),
     NonZero,
+}
+
+impl Special {
+    pub fn test(&self, mut data: &[u8]) -> Option<usize> {
+        match self {
+            Self::Bytes(bytes) => {
+                if bytes.is_empty() {
+                    return None;
+                }
+
+                let first = bytes[0];
+                let mut local = 0usize;
+
+                while !data.is_empty() {
+                    let index = match memchr::memchr(first, data) {
+                        Some(index) => index,
+                        None => {
+                            return None;
+                        }
+                    };
+
+                    data = &data[index..];
+                    let len = usize::min(data.len(), bytes.len());
+
+                    if &data[..len] == &bytes[..len] {
+                        return Some(local + index);
+                    }
+
+                    local += index + 1;
+                    data = &data[1..];
+                }
+
+                None
+            }
+            Self::NonZero => {
+                let mut local = 0;
+
+                while !data.is_empty() {
+                    let len = usize::min(data.len(), ZERO.len());
+
+                    if &data[..len] != &ZERO[..len] {
+                        break;
+                    }
+
+                    data = &data[len..];
+                    local += len;
+                }
+
+                let index = match data.iter().position(|c| *c != 0) {
+                    Some(index) => index,
+                    None => return Some(local),
+                };
+
+                Some(local + index)
+            }
+        }
+    }
 }
 
 #[derive(Debug)]

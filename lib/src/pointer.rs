@@ -71,6 +71,16 @@ impl Pointer {
         }
     }
 
+    /// Follow, using default memory resolution.
+    pub fn follow_default(&self, handle: &ProcessHandle) -> anyhow::Result<Option<Address>> {
+        self.follow(handle, |a, buf| {
+            handle
+                .process
+                .read_process_memory(a, buf)
+                .map_err(Into::into)
+        })
+    }
+
     /// Try to evaluate the current location into an address.
     pub fn follow<F>(&self, handle: &ProcessHandle, eval: F) -> anyhow::Result<Option<Address>>
     where

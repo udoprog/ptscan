@@ -1,16 +1,21 @@
 //! Predicates used for matching against memory.
 
-use crate::{address::Size, error::Error, filter, Pointer, ProcessHandle, Token, Type, Value};
+use crate::{
+    error::Error, filter, Address, AddressRange, Pointer, PointerBase, ProcessHandle, Size, Token,
+    Type, Value,
+};
 use serde::{Deserialize, Serialize};
 use std::{
-    convert::TryInto,
+    convert::TryFrom as _,
     ops, slice,
     sync::{mpsc, Arc},
+    time::{Duration, Instant},
 };
 
 #[derive(Debug, Clone, Default)]
 pub struct InitialScanConfig {
     pub modules_only: bool,
+    pub tasks: Option<usize>,
 }
 
 /// A trait to track the progress of processes.
@@ -144,6 +149,8 @@ impl Scan {
         progress: (impl Progress + Send),
         config: InitialScanConfig,
     ) -> anyhow::Result<()> {
+        const BUFFER_SIZE: usize = 0x10_000_000;
+
         use crate::utils::IteratorExtension;
 
         let mut local_cancel = None;
@@ -166,110 +173,63 @@ impl Scan {
 
         let mut last_error = None;
 
-        let size: Size = filter.ty.size(&handle.process).try_into()?;
-
+        let type_size = filter.ty.size(&handle.process);
         let aligned = aligned.unwrap_or(filter.ty.is_default_aligned());
-
-        let session = handle.session()?;
-        let session = &session;
 
         let special = filter.special(&handle.process)?;
         let special = special.as_ref();
 
+        let tasks = config
+            .tasks
+            .unwrap_or_else(|| thread_pool.current_num_threads());
+
+        let mut bytes = Size::zero();
+
+        let mut ranges = Vec::new();
+
+        if !config.modules_only {
+            ranges.extend(
+                handle
+                    .process
+                    .virtual_memory_regions()
+                    .only_relevant()
+                    .map(|m| m.map(|m| m.range))
+                    .collect::<Result<Vec<_>, Error>>()?,
+            );
+        }
+
+        ranges.extend(handle.modules.iter().map(|m| m.range.clone()));
+
+        // the size of a chunk to assign to each task.
+        let chunk = (ranges.len() + (tasks - 1)) / tasks;
+
         thread_pool.install(|| {
             rayon::scope(|s| {
-                let (tx, rx) = mpsc::sync_channel(1024);
+                let (tx, rx) = mpsc::channel::<Task>();
+
                 let mut total = 0;
-                let mut bytes = Size::zero();
+                let mut task_count = 0;
 
-                let mut ranges = Vec::new();
+                for ranges in ranges.chunks(chunk) {
+                    task_count += 1;
 
-                if !config.modules_only {
-                    ranges.extend(
-                        handle
-                            .process
-                            .virtual_memory_regions()
-                            .only_relevant()
-                            .map(|m| m.map(|m| m.range))
-                            .collect::<Result<Vec<_>, Error>>()?,
-                    );
-                }
-
-                ranges.extend(handle.modules.iter().map(|m| m.range.clone()));
-
-                for range in ranges {
-                    bytes.add_assign(range.size)?;
-                    total += 1;
+                    for r in ranges {
+                        bytes.add_assign(r.size)?;
+                        total += r.size.as_usize();
+                    }
 
                     let tx = tx.clone();
 
                     s.spawn(move |_| {
-                        let work = move || {
-                            let mut results = Vec::new();
+                        let start = Instant::now();
+                        let result = work(
+                            handle, &tx, ranges, filter, special, aligned, type_size, cancel,
+                        );
 
-                            if cancel.test() {
-                                return Ok(results);
-                            }
-
-                            let mut current = match special {
-                                Some(special) => {
-                                    match session.next_address(&range, range.base, special)? {
-                                        Some(address) => address,
-                                        None => return Ok(results),
-                                    }
-                                }
-                                None => range.base,
-                            };
-
-                            if aligned {
-                                current.align_assign(size)?;
-                            }
-
-                            let end = range.base.add(range.size)?;
-
-                            while current < end {
-                                let base = handle.address_to_pointer_base(current)?;
-                                let pointer = Pointer::new(base, vec![]);
-                                let proxy = session.address_proxy(&pointer);
-
-                                if filter.test(&Value::default(), proxy)? {
-                                    let base = handle.address_to_pointer_base(current)?;
-
-                                    results.push(Box::new(ScanResult {
-                                        pointer: Pointer::new(base, vec![]),
-                                        value: proxy.eval(filter.ty)?,
-                                    }));
-                                }
-
-                                if let Some(special) = special {
-                                    if aligned {
-                                        current.add_assign(size)?;
-                                    } else {
-                                        current.add_assign(Size::new(1))?;
-                                    }
-
-                                    current =
-                                        match session.next_address(&range, current, special)? {
-                                            Some(address) => address,
-                                            None => break,
-                                        };
-
-                                    if aligned {
-                                        current.align_assign(size)?;
-                                    }
-                                } else {
-                                    if aligned {
-                                        current.add_assign(size)?;
-                                    } else {
-                                        current.add_assign(1u32.into())?;
-                                    }
-                                }
-                            }
-
-                            Ok::<_, anyhow::Error>(results)
-                        };
-
-                        tx.send(work()).expect("channel closed");
+                        let now = Instant::now();
+                        let duration = now.duration_since(start);
+                        tx.send(Task::Done(result, duration, now))
+                            .expect("send done failed");
                     });
                 }
 
@@ -277,17 +237,26 @@ impl Scan {
 
                 reporter.report_bytes(bytes);
 
-                let mut count = 0u64;
+                let mut hits = 0u64;
 
-                while !reporter.is_done() {
-                    let result = rx.recv().expect("channel closed");
+                while task_count > 0 && !cancel.test() {
+                    match rx.recv().expect("channel closed") {
+                        Task::Done(result, ..) => {
+                            if let Some(mut r) = reporter.eval(result) {
+                                results.append(&mut r);
+                            }
 
-                    if let Some(mut r) = reporter.eval(result) {
-                        count += r.len() as u64;
-                        results.append(&mut r);
+                            task_count -= 1;
+
+                            if task_count == 0 {
+                                break;
+                            }
+                        }
+                        Task::Tick(bytes, c, ..) => {
+                            hits += c;
+                            reporter.tick_n(bytes, hits);
+                        }
                     }
-
-                    reporter.tick(count);
                 }
 
                 Ok::<(), anyhow::Error>(())
@@ -299,6 +268,144 @@ impl Scan {
         }
 
         return Ok(());
+
+        enum Task {
+            Done(anyhow::Result<Vec<Box<ScanResult>>>, Duration, Instant),
+            Tick(usize, u64, Duration, Instant),
+        }
+
+        #[inline(always)]
+        fn work(
+            handle: &ProcessHandle,
+            tx: &mpsc::Sender<Task>,
+            ranges: &[AddressRange],
+            filter: &filter::Filter,
+            special: Option<&filter::Special>,
+            aligned: bool,
+            type_size: usize,
+            cancel: &Token,
+        ) -> anyhow::Result<Vec<Box<ScanResult>>> {
+            let mut results = Vec::new();
+
+            let mut data = vec![0u8; BUFFER_SIZE];
+            let none = Value::default();
+
+            for range in ranges {
+                if cancel.test() {
+                    return Ok(results);
+                }
+
+                let mut offset = 0usize;
+                let range_size = range.size.as_usize();
+
+                while offset < range_size {
+                    let data = {
+                        let len = usize::min(data.len(), range_size - offset);
+                        &mut data[..len]
+                    };
+
+                    let base = range.base.add(Size::try_from(offset)?)?;
+
+                    let start = Instant::now();
+                    let mut hits = 0;
+
+                    if handle.process.read_process_memory(base, data)? {
+                        process_one(
+                            handle,
+                            filter,
+                            &mut results,
+                            &mut hits,
+                            base,
+                            &data,
+                            type_size,
+                            &none,
+                            aligned,
+                            special,
+                        )?;
+                    }
+
+                    offset += data.len();
+
+                    let duration = Instant::now().duration_since(start);
+                    tx.send(Task::Tick(data.len(), hits, duration, Instant::now()))
+                        .expect("send tick failed");
+                }
+            }
+
+            return Ok(results);
+        };
+
+        #[inline(always)]
+        fn process_one(
+            handle: &ProcessHandle,
+            filter: &filter::Filter,
+            results: &mut Vec<Box<ScanResult>>,
+            hits: &mut u64,
+            base: Address,
+            data: &[u8],
+            type_size: usize,
+            none: &Value,
+            aligned: bool,
+            special: Option<&filter::Special>,
+        ) -> anyhow::Result<()> {
+            let mut inner_offset = match special {
+                Some(special) => match special.test(data) {
+                    Some(inner_offset) => inner_offset,
+                    None => return Ok(()),
+                },
+                None => 0usize,
+            };
+
+            if aligned {
+                align(&mut inner_offset, type_size);
+            }
+
+            while inner_offset < data.len() {
+                let address = base.add(Size::try_from(inner_offset)?)?;
+                let mut pointer = Pointer::new(PointerBase::Address { address }, vec![]);
+                let proxy = handle.address_proxy(&pointer);
+
+                if filter.test(none, proxy)? {
+                    *hits += 1;
+                    let value = proxy.eval(filter.ty)?;
+                    pointer.base = handle.address_to_pointer_base(address)?;
+                    results.push(Box::new(ScanResult { pointer, value }));
+                }
+
+                if let Some(special) = special {
+                    if aligned {
+                        inner_offset += type_size;
+                    } else {
+                        inner_offset += 1;
+                    }
+
+                    inner_offset += match special.test(&data[inner_offset..]) {
+                        Some(o) => o,
+                        None => return Ok(()),
+                    };
+
+                    if aligned {
+                        align(&mut inner_offset, type_size);
+                    }
+                } else {
+                    if aligned {
+                        inner_offset += type_size;
+                    } else {
+                        inner_offset += 1;
+                    }
+                };
+            }
+
+            Ok(())
+        }
+
+        fn align(to_align: &mut usize, alignment: usize) {
+            let rem = *to_align % alignment;
+
+            if rem > 0 {
+                *to_align -= rem;
+            }
+        }
     }
 }
 
@@ -322,8 +429,8 @@ pub struct Reporter<'token, 'err, P> {
     progress: P,
     /// Current progress.
     current: usize,
-    /// how many ticks constitute a percentage.
-    percentage: usize,
+    /// Last percentage encountered.
+    last_percentage: usize,
     /// Total.
     total: usize,
     /// Whether to report progress or not.
@@ -340,16 +447,10 @@ impl<'token, 'err, P> Reporter<'token, 'err, P> {
         token: &'token Token,
         last_err: &'err mut Option<anyhow::Error>,
     ) -> Reporter<'token, 'err, P> {
-        let mut percentage = total / 100;
-
-        if percentage <= 0 {
-            percentage = 1;
-        }
-
         Reporter {
             progress,
             current: 0,
-            percentage,
+            last_percentage: 0,
             total,
             token,
             last_err,
@@ -384,15 +485,24 @@ impl<'token, 'err, P> Reporter<'token, 'err, P> {
     where
         P: Progress,
     {
-        self.current += 1;
+        self.tick_n(1, results);
+    }
 
-        if self.current % self.percentage == 0 {
-            let p = (self.current * 100) / self.total;
+    /// Tick a single task.
+    pub fn tick_n(&mut self, count: usize, results: u64)
+    where
+        P: Progress,
+    {
+        self.current += count;
+        let p = (self.current * 100) / self.total;
 
+        if p > self.last_percentage {
             if let Err(e) = self.progress.report(p, results) {
                 *self.last_err = Some(e);
                 self.token.set();
             }
+
+            self.last_percentage = p;
         }
     }
 

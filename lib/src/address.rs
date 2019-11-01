@@ -545,6 +545,11 @@ impl Offset {
     pub fn is_within(self, size: Size) -> bool {
         self.1 <= size.0
     }
+
+    /// Convert into an absolute distance.
+    pub fn distance(self) -> u64 {
+        self.1
+    }
 }
 
 impl fmt::Display for Offset {

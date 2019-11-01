@@ -18,7 +18,7 @@ readme = "README.md"
 
 [dependencies]
 ptscan = {path = "../lib", version = "0.1.0"}
-rayon = "1.0.3"
+rayon = "1.2.0"
 hashbrown = "0.1.8"
 anyhow = "1.0.18"
 smallvec = "0.6.11"
@@ -28,6 +28,7 @@ serde_yaml = "0.8.11"
 serde = {version = "1.0.102", features = ["rc", "derive"]}
 flate2 = "1.0.12"
 crossterm = "0.12.1"
+num_cpus = "1.11.0"
 
 [build-dependencies]
 failure = "0.1"

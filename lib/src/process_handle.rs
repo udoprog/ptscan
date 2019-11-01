@@ -15,7 +15,7 @@ use winapi::shared::winerror;
 #[derive(Debug)]
 pub struct ProcessHandle {
     /// Name of the process (if present).
-    pub name: Option<String>,
+    pub name: String,
     /// Handle to the process.
     pub process: Process,
     /// Information about all loaded modules.
@@ -56,7 +56,7 @@ impl ProcessHandle {
         let name = process.module_base_name()?.to_string_lossy().to_string();
 
         Ok(Some(ProcessHandle {
-            name: Some(name),
+            name,
             process,
             modules: Vec::new(),
             modules_address: HashMap::new(),
@@ -74,13 +74,7 @@ impl ProcessHandle {
                 None => continue,
             };
 
-            let handle_name = match handle.name.as_ref() {
-                // NB: can't find by name if we can't decode the name from the process :(.
-                None => continue,
-                Some(handle_name) => handle_name.as_str(),
-            };
-
-            if handle_name != name {
+            if handle.name.to_lowercase() != name.to_lowercase() {
                 continue;
             }
 
@@ -104,14 +98,15 @@ impl ProcessHandle {
     pub fn refresh_modules(&mut self) -> Result<(), Error> {
         use std::ffi::OsStr;
 
+        let mut name = None;
         let mut modules = Vec::with_capacity(self.modules.len());
         let mut modules_address = HashMap::new();
 
         for module in self.process.modules()? {
             let module_name = module.name()?;
 
-            if self.name.is_none() {
-                self.name = Some(module_name.to_string_lossy().to_string());
+            if name.is_none() {
+                name = Some(module_name.to_string_lossy().to_string());
             }
 
             let info = module.info()?;
@@ -133,6 +128,11 @@ impl ProcessHandle {
         }
 
         modules.sort_by_key(|m| m.range.base);
+
+        if let Some(name) = name {
+            self.name = name;
+        }
+
         self.modules = modules;
         self.modules_address = modules_address;
         Ok(())
@@ -436,6 +436,7 @@ impl ProcessHandle {
         thread_pool: &rayon::ThreadPool,
         results: &mut [Box<ScanResult>],
         cancel: Option<&Token>,
+        new_type: Option<Type>,
         progress: (impl scan::Progress + Send),
     ) -> anyhow::Result<()> {
         use std::sync::mpsc;
@@ -477,7 +478,8 @@ impl ProcessHandle {
                             }
                         };
 
-                        let needed = result.value.size(&self.process);
+                        let ty = new_type.unwrap_or_else(|| result.value.ty());
+                        let needed = ty.size(&self.process);
 
                         if buf.len() < needed {
                             buf.extend(
@@ -488,14 +490,12 @@ impl ProcessHandle {
                         let buf = &mut buf[..needed];
 
                         let mut work = move || {
-                            let address = result.pointer.follow(self, |a, buf| {
-                                self.process.read_process_memory(a, buf).map_err(Into::into)
-                            })?;
+                            let address = result.pointer.follow_default(self)?;
 
                             let address = match address {
                                 Some(address) => address,
                                 None => {
-                                    result.value = Value::None(result.value.ty());
+                                    result.value = Value::None(ty);
                                     return Ok(0u64);
                                 }
                             };
@@ -504,9 +504,9 @@ impl ProcessHandle {
                                 return Ok(0u64);
                             }
 
-                            result.value = match result.value.ty().decode(&self.process, buf) {
+                            result.value = match ty.decode(&self.process, buf) {
                                 Ok(value) => value,
-                                Err(_) => Value::None(result.value.ty()),
+                                Err(_) => Value::None(ty),
                             };
 
                             Ok(1)
@@ -597,12 +597,7 @@ impl AddressProxy<'_> {
                 });
             }
         } else {
-            let address = self.pointer.follow(self.handle, |a, buf| {
-                self.handle
-                    .process
-                    .read_process_memory(a, buf)
-                    .map_err(Into::into)
-            })?;
+            let address = self.pointer.follow_default(self.handle)?;
 
             let address = match address {
                 Some(address) => address,
@@ -669,9 +664,16 @@ impl MemoryCache {
         let mut cache = self.cache.write();
         let mut data = vec![0u8; region.size.as_usize()];
 
+        let start = std::time::Instant::now();
+
+        println!("reading under lock...");
         if !process.read_process_memory(region.base, &mut data)? {
             return Ok(false);
         }
+        println!(
+            "done reading under lock: {:?}",
+            std::time::Instant::now().duration_since(start)
+        );
 
         let result = if e < data.len() {
             buf.clone_from_slice(&data[s..e]);
@@ -743,16 +745,12 @@ pub struct ModuleInfo {
 #[derive(Debug)]
 pub struct ProcessName {
     pub id: ProcessId,
-    pub name: Option<String>,
+    pub name: String,
 }
 
 impl fmt::Display for ProcessName {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(name) = self.name.as_ref() {
-            write!(fmt, "{} ({})", name, self.id)
-        } else {
-            write!(fmt, "{}", self.id)
-        }
+        write!(fmt, "{} ({})", self.name, self.id)
     }
 }
 
@@ -792,8 +790,6 @@ impl Decode for u32 {
     }
 }
 
-const ZERO: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-
 pub struct Session<'a> {
     handle: &'a ProcessHandle,
     memory_cache: MemoryCache,
@@ -816,58 +812,15 @@ impl<'a> Session<'a> {
         address: Address,
         special: &filter::Special,
     ) -> anyhow::Result<Option<Address>> {
-        match special {
-            filter::Special::Bytes(bytes) => {
-                if bytes.is_empty() {
-                    return Ok(None);
-                }
-
+        self.memory_cache
+            .with_region(&self.handle.process, region, |data| {
                 let offset = address.sub_address(region.base)?.as_usize();
+                let data = &data[offset..];
 
-                return self
-                    .memory_cache
-                    .with_region(&self.handle.process, region, |data| {
-                        let first = bytes[0];
-
-                        let index = match memchr::memchr(first, &data[offset..]) {
-                            Some(index) => index,
-                            None => return Ok(None),
-                        };
-
-                        Ok(Some(address.saturating_add(Size::try_from(index)?)))
-                    });
-            }
-            filter::Special::NonZero => {
-                let offset = address.sub_address(region.base)?.as_usize();
-
-                return self
-                    .memory_cache
-                    .with_region(&self.handle.process, region, |data| {
-                        let mut data = &data[offset..];
-
-                        let mut local = 0;
-
-                        while !data.is_empty() {
-                            let len = usize::min(data.len(), ZERO.len());
-
-                            if &data[..len] != &ZERO[..len] {
-                                break;
-                            }
-
-                            data = &data[len..];
-                            local += len;
-                        }
-
-                        let index = match data.iter().position(|c| *c != 0) {
-                            Some(index) => index,
-                            None => {
-                                return Ok(Some(address.saturating_add(Size::try_from(local)?)))
-                            }
-                        };
-
-                        return Ok(Some(address.saturating_add(Size::try_from(local + index)?)));
-                    });
-            }
-        }
+                Ok(match special.test(data) {
+                    Some(offset) => Some(address.saturating_add(Size::try_from(offset)?)),
+                    None => None,
+                })
+            })
     }
 }

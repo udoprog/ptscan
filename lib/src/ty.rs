@@ -31,6 +31,8 @@ pub enum Type {
     I128,
     #[serde(rename = "string")]
     String(usize),
+    #[serde(rename = "bytes")]
+    Bytes(usize),
 }
 
 impl Type {
@@ -38,26 +40,8 @@ impl Type {
     pub fn is_default_aligned(&self) -> bool {
         match self {
             Self::String(..) => false,
+            Self::Bytes(..) => false,
             _ => true,
-        }
-    }
-
-    /// Convert from a string.
-    pub fn from_string(input: &str) -> Type {
-        match input {
-            "pointer" => Type::Pointer,
-            "u8" => Type::U8,
-            "i8" => Type::I8,
-            "u16" => Type::U16,
-            "i16" => Type::I16,
-            "u32" => Type::U32,
-            "i32" => Type::I32,
-            "u64" => Type::U64,
-            "i64" => Type::I64,
-            "u128" => Type::U128,
-            "i128" => Type::I128,
-            "string" => Type::String(0x100),
-            _ => Type::None,
         }
     }
 
@@ -66,7 +50,6 @@ impl Type {
         match *self {
             Self::None => Value::None(Type::None),
             Self::Pointer => Value::Pointer(Default::default()),
-            Self::String(..) => Value::String(Default::default()),
             Self::U8 => Value::U8(Default::default()),
             Self::I8 => Value::I8(Default::default()),
             Self::U16 => Value::U16(Default::default()),
@@ -77,6 +60,8 @@ impl Type {
             Self::I64 => Value::I64(Default::default()),
             Self::U128 => Value::U128(Default::default()),
             Self::I128 => Value::I128(Default::default()),
+            Self::String(..) => Value::String(Default::default()),
+            Self::Bytes(..) => Value::Bytes(Default::default()),
         }
     }
 
@@ -89,7 +74,6 @@ impl Type {
                     str::parse::<Address>(input).map_err(|_| Error::TypeParseError)?,
                 ));
             }
-            Self::String(..) => return Err(Error::TypeParseString),
             Self::U8 => str::parse::<u8>(input).map(Value::U8),
             Self::I8 => str::parse::<i8>(input).map(Value::I8),
             Self::U16 => str::parse::<u16>(input).map(Value::U16),
@@ -100,6 +84,8 @@ impl Type {
             Self::I64 => str::parse::<i64>(input).map(Value::I64),
             Self::U128 => str::parse::<u128>(input).map(Value::U128),
             Self::I128 => str::parse::<i128>(input).map(Value::I128),
+            Self::String(..) => return Err(Error::TypeParseString),
+            Self::Bytes(..) => return Err(Error::TypeParseBytes),
         };
 
         value.map_err(|_| Error::TypeParseError)
@@ -112,7 +98,6 @@ impl Type {
             Self::Pointer => {
                 u64::from_str_radix(input, 16).map(|a| Value::Pointer(Address::new(a)))
             }
-            Self::String(..) => return Err(Error::TypeParseString),
             Self::U8 => u8::from_str_radix(input, 16).map(Value::U8),
             Self::I8 => i8::from_str_radix(input, 16).map(Value::I8),
             Self::U16 => u16::from_str_radix(input, 16).map(Value::U16),
@@ -123,6 +108,8 @@ impl Type {
             Self::I64 => i64::from_str_radix(input, 16).map(Value::I64),
             Self::U128 => u128::from_str_radix(input, 16).map(Value::U128),
             Self::I128 => i128::from_str_radix(input, 16).map(Value::I128),
+            Self::String(..) => return Err(Error::TypeParseString),
+            Self::Bytes(..) => return Err(Error::TypeParseBytes),
         };
 
         value.map_err(|_| Error::TypeParseError)
@@ -145,6 +132,7 @@ impl Type {
             Self::U128 => mem::size_of::<u128>(),
             Self::I128 => mem::size_of::<i128>(),
             Self::String(len) => len,
+            Self::Bytes(len) => len,
         }
     }
 
@@ -169,7 +157,6 @@ impl Type {
         Ok(match *self {
             Self::None => Value::None(Type::None),
             Type::Pointer => Value::Pointer(Address::decode(process, buf)?),
-            Self::String(..) => Value::String(buf.to_vec()),
             Self::U8 => Value::U8(decode_buf!(buf, u8)),
             Self::I8 => Value::I8(decode_buf!(buf, i8)),
             Self::U16 => Value::U16(decode_buf!(buf, u16)),
@@ -180,6 +167,8 @@ impl Type {
             Self::I64 => Value::I64(decode_buf!(buf, i64)),
             Self::U128 => Value::U128(decode_buf!(buf, u128)),
             Self::I128 => Value::I128(decode_buf!(buf, i128)),
+            Self::String(..) => Value::String(buf.to_vec()),
+            Self::Bytes(..) => Value::Bytes(buf.to_vec()),
         })
     }
 
@@ -211,6 +200,7 @@ impl fmt::Display for Type {
             Type::U128 => "u128",
             Type::I128 => "i128",
             Type::String(len) => return write!(fmt, "string/{}", len),
+            Type::Bytes(len) => return write!(fmt, "bytes/{}", len),
         };
 
         o.fmt(fmt)
@@ -248,6 +238,14 @@ impl str::FromStr for Type {
 
                 Type::String(size)
             }
+            "bytes" => {
+                let size = match it.next() {
+                    Some(size) => str::parse::<usize>(size).map_err(|_| Error::TypeBadSize)?,
+                    None => 0x100,
+                };
+
+                Type::Bytes(size)
+            }
             other => return Err(Error::IllegalType(other.to_string())),
         };
 
@@ -276,6 +274,7 @@ impl fmt::Display for HumanDisplay {
             Type::U128 => write!(fmt, "unsigned 128-bit number"),
             Type::I128 => write!(fmt, "signed 128-bit number"),
             Type::String(len) => write!(fmt, "utf-8-encoded string of length {}", len),
+            Type::Bytes(len) => write!(fmt, "a byte array of length {}", len),
         }
     }
 }

@@ -32,6 +32,8 @@ pub enum ValueExpr {
     Number(BigInt, Option<Type>),
     /// A string literal.
     String(String),
+    /// A number of raw bytes.
+    Bytes(Vec<u8>),
 }
 
 impl ValueExpr {
@@ -40,6 +42,7 @@ impl ValueExpr {
         match self {
             Self::Number(.., ty) => Some(ty.unwrap_or(Type::U32)),
             Self::String(s) => Some(Type::String(s.len())),
+            Self::Bytes(s) => Some(Type::Bytes(s.len())),
             _ => None,
         }
     }
@@ -48,8 +51,9 @@ impl ValueExpr {
     pub fn eval(&self, ty: Type, address: AddressProxy<'_>) -> anyhow::Result<Value> {
         match self {
             Self::Value => address.eval(ty),
-            Self::String(string) => Ok(Value::String(string.as_bytes().to_vec())),
             Self::Number(number, _) => Ok(Value::from_bigint(ty, number)?),
+            Self::String(string) => Ok(Value::String(string.as_bytes().to_vec())),
+            Self::Bytes(bytes) => Ok(Value::Bytes(bytes.to_vec())),
             expr => anyhow::bail!("value expression not supported yet: {}", expr),
         }
     }
@@ -63,6 +67,7 @@ impl ValueExpr {
             Self::Deref(v) if **v == ValueExpr::Value => ValueTrait::IsDeref,
             Self::Number(num, _) if num.is_zero() => ValueTrait::Zero,
             Self::String(s) if s.as_bytes().iter().all(|c| *c == 0) => ValueTrait::Zero,
+            Self::Bytes(s) if s.iter().all(|c| *c == 0) => ValueTrait::Zero,
             _ => ValueTrait::NonZero,
         };
 
@@ -84,6 +89,7 @@ impl fmt::Display for ValueExpr {
             Self::Number(number, None) => write!(fmt, "{}", number),
             Self::Number(number, Some(ty)) => write!(fmt, "{}{}", number, ty),
             Self::String(string) => write!(fmt, "{}", self::ast::EscapeString(string.as_bytes())),
+            Self::Bytes(bytes) => write!(fmt, "{}", self::ast::Hex(&bytes)),
         }
     }
 }
@@ -299,6 +305,12 @@ macro_rules! value_match {
                 let $b = &$b[..len];
                 $a $op $b
             },
+            (Value::Bytes($a), Value::Bytes($b)) => {
+                let len = usize::min($a.len(), $b.len());
+                let $a = &$a[..len];
+                let $b = &$b[..len];
+                $a $op $b
+            },
             _ => false,
         }
     };
@@ -415,6 +427,9 @@ impl Binary {
         let bytes = match (op, lhs, rhs) {
             (Op::Eq, String(string), Value) | (Op::Eq, Value, String(string)) => {
                 Some(value::Value::String(string.as_bytes().to_vec()))
+            }
+            (Op::Eq, Bytes(bytes), Value) | (Op::Eq, Value, Bytes(bytes)) => {
+                return Ok(Some(Special::Bytes(bytes.clone())));
             }
             (Op::Eq, Number(number, _), Value) | (Op::Eq, Value, Number(number, _)) => {
                 Some(value::Value::from_bigint(ty, number)?)

@@ -51,6 +51,8 @@ pub enum Error {
     TypeParseNone,
     #[error("cannot parse string as a type")]
     TypeParseString,
+    #[error("cannot parse bytes as a type")]
+    TypeParseBytes,
     #[error("failed to parse type")]
     TypeParseError,
     #[error("failed to decode utf-8 string")]

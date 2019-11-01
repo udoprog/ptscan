@@ -115,3 +115,23 @@ impl fmt::Display for EscapeString<'_> {
         Ok(())
     }
 }
+
+pub struct Hex<'a>(pub &'a [u8]);
+
+impl fmt::Display for Hex<'_> {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut it = self.0.iter().cloned();
+
+        let last = it.next_back();
+
+        while let Some(c) = it.next() {
+            write!(fmt, "{:02X} ", c)?;
+        }
+
+        if let Some(c) = last {
+            write!(fmt, "{:02X}", c)?;
+        }
+
+        Ok(())
+    }
+}

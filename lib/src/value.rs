@@ -1,5 +1,9 @@
 use crate::{
-    encode::Encode, error::Error, filter::ast::EscapeString, process::Process, Address, Type,
+    encode::Encode,
+    error::Error,
+    filter::ast::{EscapeString, Hex},
+    process::Process,
+    Address, Type,
 };
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
@@ -35,6 +39,8 @@ pub enum Value {
     I128(i128),
     #[serde(rename = "string")]
     String(Vec<u8>),
+    #[serde(rename = "bytes")]
+    Bytes(Vec<u8>),
 }
 
 impl Value {
@@ -49,8 +55,8 @@ impl Value {
     /// Test if value is aligned by default or not.
     pub fn is_default_aligned(&self) -> bool {
         match self {
-            Self::None(Type::String(..)) => false,
-            Self::String(..) => false,
+            Self::None(Type::String(..)) | Self::String(..) => false,
+            Self::None(Type::Bytes(..)) | Self::Bytes(..) => false,
             _ => true,
         }
     }
@@ -64,7 +70,6 @@ impl Value {
         let out = match *self {
             Self::None(..) => bail!("nothing cannot be made into address"),
             Self::Pointer(address) => address,
-            Self::String(..) => bail!("string cannot be made into address"),
             Self::U8(value) => Address::try_from(value)?,
             Self::I8(value) => Address::try_from(value)?,
             Self::U16(value) => Address::try_from(value)?,
@@ -75,6 +80,8 @@ impl Value {
             Self::I64(value) => Address::try_from(value)?,
             Self::U128(value) => Address::try_from(value)?,
             Self::I128(value) => Address::try_from(value)?,
+            Self::String(..) => bail!("string cannot be made into address"),
+            Self::Bytes(..) => bail!("bytes cannot be made into address"),
         };
 
         Ok(out)
@@ -96,6 +103,7 @@ impl Value {
             Self::U128(value) => value.encode(buf),
             Self::I128(value) => value.encode(buf),
             Self::String(string) => string.encode(buf),
+            Self::Bytes(bytes) => bytes.encode(buf),
         }
 
         Ok(())
@@ -137,6 +145,7 @@ impl Value {
             Self::U128(..) => Type::U128,
             Self::I128(..) => Type::I128,
             Self::String(string) => Type::String(string.len()),
+            Self::Bytes(bytes) => Type::Bytes(bytes.len()),
         }
     }
 
@@ -156,6 +165,7 @@ impl Value {
             Self::U128(..) => mem::size_of::<u128>(),
             Self::I128(..) => mem::size_of::<i128>(),
             Self::String(string) => string.len(),
+            Self::Bytes(bytes) => bytes.len(),
         }
     }
 
@@ -235,6 +245,7 @@ impl fmt::Display for Value {
             Value::U128(value) => write!(fmt, "{}", value),
             Value::I128(value) => write!(fmt, "{}", value),
             Value::String(string) => write!(fmt, "{}", EscapeString(&*string)),
+            Value::Bytes(bytes) => write!(fmt, "{}", Hex(&*bytes)),
         }
     }
 }

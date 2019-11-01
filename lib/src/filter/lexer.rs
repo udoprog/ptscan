@@ -52,6 +52,8 @@ pub enum Token {
     Literal(BigInt, Option<Type>),
     /// A quoted string.
     String(String),
+    /// A raw byte array.
+    Bytes(Vec<u8>),
 }
 
 impl fmt::Display for Token {
@@ -217,6 +219,28 @@ impl<'a> Lexer<'a> {
     }
 
     /// Scan a string.
+    fn scan_bytes(&mut self) -> Result<Vec<u8>, Error> {
+        self.buf.clear();
+
+        while let Some((_, c)) = self.peek() {
+            match c {
+                'a'..='f' => {
+                    self.buf.extend(c.to_uppercase());
+                }
+                '0'..='9' | 'A'..='F' => {
+                    self.buf.push(c);
+                }
+                _ => break,
+            }
+
+            self.step();
+        }
+
+        let result = hex::FromHex::from_hex(&self.buf);
+        Ok(result.map_err(|e: hex::FromHexError| self.err(e.to_string()))?)
+    }
+
+    /// Scan a string.
     fn scan_string(&mut self) -> Result<String, Error> {
         self.buf.clear();
 
@@ -269,21 +293,9 @@ impl<'a> Lexer<'a> {
 
         self.buf.clear();
 
-        let mut hex = false;
         let mut ty = None;
 
-        // test if we have a hex prefix
-        if let Some((_, '0', 'x')) = self.peek2() {
-            hex = true;
-            self.step_n(2);
-        }
-
-        loop {
-            let (_, c) = match self.peek() {
-                Some(c) => c,
-                None => break,
-            };
-
+        while let Some((_, c)) = self.peek() {
             match c {
                 ' ' => break,
                 '0'..='9' => {
@@ -318,12 +330,7 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        let result = if hex {
-            BigInt::from_str_radix(&self.buf, 16)
-        } else {
-            BigInt::from_str_radix(&self.buf, 10)
-        };
-
+        let result = BigInt::from_str_radix(&self.buf, 10);
         Ok((result.map_err(|e| self.err(e.to_string()))?, ty))
     }
 }
@@ -358,6 +365,11 @@ impl<'a> Iterator for Lexer<'a> {
                 Some((s, '>', '=')) => {
                     let e = self.step_n(2);
                     return Some(Ok((s, Token::Gte, e)));
+                }
+                Some((s, '0', 'x')) => {
+                    let e = self.step_n(2);
+                    let bytes = try_iter!(self.scan_bytes());
+                    return Some(Ok((s, Token::Bytes(bytes), e)));
                 }
                 _ => {}
             }

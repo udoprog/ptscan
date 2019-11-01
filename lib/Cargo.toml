@@ -37,6 +37,7 @@ smallvec = "0.6.11"
 memchr = "2.2.1"
 serde = {version = "1.0.102", features = ["rc", "derive"]}
 num_cpus = "1.11.0"
+hex = "0.4.0"
 
 [dependencies.winapi]
 version = "0.3.8"

@@ -30,6 +30,7 @@ ValueExpr: ValueExpr = {
     "value" => ValueExpr::Value,
     <number:number> => ValueExpr::Number(number.0, number.1),
     <string:"string"> => ValueExpr::String(string),
+    <bytes:bytes> => ValueExpr::Bytes(bytes),
 };
 
 Filter: Expression = {
@@ -70,5 +71,6 @@ extern {
         ")" => Token::CloseParen,
         number => Token::Literal(<BigInt>, <Option<Type>>),
         "string" => Token::String(<String>),
+        bytes => Token::Bytes(<Vec<u8>>),
     }
 }

@@ -408,6 +408,10 @@ impl Application {
                     SimpleProgress::new(&mut self.term, "Refreshing values"),
                 )?;
 
+                if let Some(new_type) = new_type {
+                    scan.last_type = Some(new_type);
+                }
+
                 println!("");
 
                 let len = usize::min(scan.len(), self.limit);

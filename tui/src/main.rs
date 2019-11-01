@@ -150,6 +150,8 @@ struct Application {
     current_format: FileFormat,
     /// If the save file should be compressed or not.
     current_compress: bool,
+    /// The current active limit.
+    limit: usize,
 }
 
 impl Application {
@@ -166,6 +168,7 @@ impl Application {
             current_file: PathBuf::from("state"),
             current_format: FileFormat::Cbor,
             current_compress: true,
+            limit: DEFAULT_LIMIT,
         }
     }
 
@@ -224,11 +227,16 @@ impl Application {
     ) -> anyhow::Result<bool> {
         match action {
             Action::ScanList => {
+                if self.scans.is_empty() {
+                    self.term.write_line("No scans")?;
+                    return Ok(false);
+                }
+
                 self.term.write_line(format!("Scans:"))?;
 
                 for (key, s) in &self.scans {
                     self.term
-                        .write_line(format!("{} - {} result(s)", key, s.len()))?;
+                        .write_line(format!(" - `{}` with {} result(s)", key, s.len()))?;
                 }
             }
             Action::ScanNew { name } => {
@@ -290,14 +298,17 @@ impl Application {
                 handle.process.resume()?;
             }
             Action::Print { limit } => {
+                if let Some(limit) = limit {
+                    self.limit = limit;
+                }
+
                 let scan = match self.scans.get_mut(&self.current_scan) {
                     Some(scan) => scan,
-                    None => bail!("no active scan"),
+                    None => bail!("No active scan"),
                 };
 
-                let limit = limit.unwrap_or(DEFAULT_LIMIT);
                 let mut stored;
-                let mut results = &scan[..usize::min(scan.len(), limit)];
+                let mut results = &scan[..usize::min(scan.len(), self.limit)];
 
                 if let Some(handle) = self.handle.as_ref() {
                     stored = results.to_vec();
@@ -311,20 +322,35 @@ impl Application {
                     results = &stored;
                 }
 
-                Self::print(&mut self.term, scan.len(), results)?;
+                self.term
+                    .write_line(format!("Scan: {}", self.current_scan))?;
+
+                Self::print(
+                    &mut self.term,
+                    scan.len(),
+                    results.iter().map(|r| &**r).enumerate(),
+                )?;
             }
             Action::Watch { limit } => {
-                self.watch(limit)?;
+                if let Some(limit) = limit {
+                    self.limit = limit;
+                }
+
+                self.watch()?;
             }
-            Action::Del { pointer } => {
+            Action::Del { index } => {
                 let scan = match self.scans.get_mut(&self.current_scan) {
                     Some(scan) => scan,
-                    None => bail!("no active scan"),
+                    None => bail!("No active scan"),
                 };
 
-                scan.remove_by_pointer(&pointer);
+                if index < scan.results.len() {
+                    let result = scan.results.swap_remove(index);
+                    self.term.write_line("deleted:")?;
+                    self.print_result(&*result)?;
+                }
             }
-            Action::Add { pointer, ty } => {
+            Action::Add { mut pointer, ty } => {
                 let Application {
                     ref mut scans,
                     ref thread_pool,
@@ -336,12 +362,29 @@ impl Application {
                     .entry(current_scan.clone())
                     .or_insert_with(|| scan::Scan::new(thread_pool));
 
+                if let Some(ty) = ty {
+                    scan.last_type = Some(ty);
+                }
+
+                let ty = scan.last_type.unwrap_or(Type::U32);
+
                 let value = match self.handle.as_ref() {
                     Some(handle) => handle.address_proxy(&pointer).eval(ty)?,
                     None => Value::None(ty),
                 };
 
-                scan.push(Box::new(scan::ScanResult { pointer, value }));
+                if let Some(handle) = &self.handle {
+                    let base = match pointer.base {
+                        PointerBase::Address { address } => {
+                            handle.address_to_pointer_base(address)?
+                        }
+                        other => other,
+                    };
+
+                    pointer.base = base;
+                }
+
+                scan.push(Box::new(ScanResult { pointer, value }));
             }
             Action::Scan { filter, config } => {
                 self.scan(&filter, None, config)?;
@@ -367,16 +410,21 @@ impl Application {
 
                 println!("");
 
-                let len = usize::min(scan.len(), DEFAULT_LIMIT);
-                Self::print(&mut self.term, scan.len(), &scan[..len])?;
+                let len = usize::min(scan.len(), self.limit);
+                Self::print(
+                    &mut self.term,
+                    scan.len(),
+                    scan.results.iter().take(len).map(|r| &**r).enumerate(),
+                )?;
             }
             Action::PointerScan {
                 name,
                 address,
+                append,
                 value_type,
             } => {
                 let value_type = value_type.unwrap_or(Type::None);
-                self.pointer_scan(name, address, value_type)?;
+                self.pointer_scan(name, address, append, value_type)?;
             }
             Action::Reset => match self.scans.get_mut(&self.current_scan) {
                 Some(scan) => {
@@ -434,7 +482,7 @@ impl Application {
             Action::Sort => {
                 let scan = match self.scans.get_mut(&self.current_scan) {
                     Some(scan) => scan,
-                    None => bail!("no active scan"),
+                    None => bail!("No active scan"),
                 };
 
                 scan.results.sort_by(|a, b| a.pointer.cmp(&b.pointer));
@@ -567,7 +615,7 @@ impl Application {
         }
     }
 
-    fn watch(&mut self, limit: Option<usize>) -> anyhow::Result<()> {
+    fn watch(&mut self) -> anyhow::Result<()> {
         use std::{
             sync::atomic::{AtomicBool, Ordering},
             thread,
@@ -594,8 +642,7 @@ impl Application {
         }
 
         let refresh_rate = Duration::from_millis(500);
-        let limit = limit.unwrap_or(DEFAULT_LIMIT);
-        let results = &scan[..usize::min(scan.len(), limit)];
+        let results = &scan[..usize::min(scan.len(), self.limit)];
         let mut updates = results.to_vec();
 
         self.term.cursor.hide()?;
@@ -825,7 +872,13 @@ impl Application {
     }
 
     /// Perform a pointer scan towards the specified address.
-    fn pointer_scan(&mut self, name: String, needle: Address, ty: Type) -> anyhow::Result<()> {
+    fn pointer_scan(
+        &mut self,
+        name: String,
+        needle: Address,
+        append: bool,
+        ty: Type,
+    ) -> anyhow::Result<()> {
         use std::collections::{BTreeMap, HashSet, VecDeque};
 
         let handle = match self.handle.as_ref() {
@@ -902,6 +955,7 @@ impl Application {
                                 offset,
                             },
                             path.clone(),
+                            Some(*hit),
                         );
 
                         self.term.write_line(format!("{}", pointer))?;
@@ -922,11 +976,30 @@ impl Application {
             }
         }
 
-        self.term
-            .write_line(format!("Saved {} paths to scan `{}`", results.len(), name))?;
+        let Self {
+            ref mut scans,
+            ref thread_pool,
+            ..
+        } = self;
 
-        let scan = scan::Scan::from_results(&self.thread_pool, Type::Pointer, results);
-        self.scans.insert(name, scan);
+        let len = results.len();
+
+        let scan = scans
+            .entry(name.to_string())
+            .or_insert_with(|| scan::Scan::new(thread_pool));
+
+        scan.last_type = Some(Type::Pointer);
+
+        if append {
+            scan.results.extend(results);
+            self.term
+                .write_line(format!("Appended {} paths to scan `{}`", len, name))?;
+        } else {
+            scan.results = results;
+            self.term
+                .write_line(format!("Saved {} paths to scan `{}`", len, name))?;
+        }
+
         Ok(())
     }
 
@@ -988,8 +1061,12 @@ impl Application {
         println!("");
         result?;
 
-        let len = usize::min(scan.len(), DEFAULT_LIMIT);
-        Self::print(&mut self.term, scan.len(), &scan[..len])?;
+        let len = usize::min(scan.len(), self.limit);
+        Self::print(
+            &mut self.term,
+            scan.len(),
+            scan[..len].iter().map(|r| &**r).enumerate(),
+        )?;
         Ok(())
     }
 
@@ -1066,20 +1143,30 @@ impl Application {
         Ok(())
     }
 
-    /// Print the current state of the scan.
-    fn print(term: &mut Term, len: usize, results: &[Box<scan::ScanResult>]) -> anyhow::Result<()> {
-        if len > results.len() {
-            term.write_line(format!(
-                "found {} addresses (only showing {})",
-                len,
-                results.len()
-            ))?;
-        } else {
-            term.write_line(format!("found {} addresses", results.len()))?;
-        };
+    fn print_result(&mut self, result: &ScanResult) -> anyhow::Result<()> {
+        self.term
+            .write_line(format!("{} = {}", result.pointer, result.value))?;
+        Ok(())
+    }
 
-        for result in results {
-            term.write_line(format!("{} = {}", result.pointer, result.value))?;
+    /// Print the current state of the scan.
+    fn print<'a>(
+        term: &mut Term,
+        len: usize,
+        results: impl IntoIterator<Item = (usize, &'a ScanResult)>,
+    ) -> anyhow::Result<()> {
+        let mut count = 0;
+
+        for (index, result) in results {
+            count += 1;
+            term.write_line(format!(
+                "{:>03} : {} = {}",
+                index, result.pointer, result.value
+            ))?;
+        }
+
+        if count < len {
+            term.write_line(format!("... {} more omitted", len - count))?;
         }
 
         Ok(())
@@ -1113,12 +1200,9 @@ impl Application {
         let app = app.subcommand(
             App::new("refresh")
                 .about("Refresh values in a scan, optionally setting a new type for them.")
-                .arg(
-                    Arg::with_name("type")
-                        .help("The type of the filter, if it can't be derived.")
-                        .long("type")
-                        .takes_value(true),
-                ),
+                .arg(type_argument(
+                    "The type of the filter, if it can't be derived.",
+                )),
         );
 
         let app = app.subcommand(
@@ -1146,12 +1230,9 @@ impl Application {
                         .value_name("name")
                         .takes_value(true),
                 )
-                .arg(
-                    Arg::with_name("type")
-                        .help("The type of the filter, if it can't be derived.")
-                        .long("type")
-                        .takes_value(true),
-                )
+                .arg(type_argument(
+                    "The type of the filter, if it can't be derived.",
+                ))
                 .arg(
                     Arg::with_name("modules-only")
                         .help("Only include modules in the initial scan.")
@@ -1165,6 +1246,7 @@ impl Application {
                 .arg(
                     Arg::with_name("filter")
                         .help("The filter to apply.")
+                        .value_name("filter")
                         .multiple(true),
                 ),
         );
@@ -1290,9 +1372,11 @@ impl Application {
             App::new("del")
                 .about("Delete an address from the current scan")
                 .arg(
-                    Arg::with_name("pointer")
-                        .help("The address/pointer to delete.")
-                        .required(true),
+                    Arg::with_name("index")
+                        .help("The index to delete.")
+                        .value_name("index")
+                        .required(true)
+                        .takes_value(true),
                 ),
         );
 
@@ -1308,17 +1392,21 @@ impl Application {
         );
 
         let app = app.subcommand(
+            App::new("list")
+                .alias("l")
+                .alias("ls")
+                .about("List available scans."),
+        );
+
+        let app = app.subcommand(
             App::new("add")
                 .about("Add an address to the current scan")
-                .arg(
-                    Arg::with_name("type")
-                        .help("The type of the pointer added to the scan.")
-                        .required(true),
-                )
+                .arg(type_argument("The type of the pointer added to the scan."))
                 .arg(
                     Arg::with_name("pointer")
                         .help("The address/pointer to delete.")
-                        .required(true),
+                        .value_name("pointer")
+                        .multiple(true),
                 ),
         );
 
@@ -1327,26 +1415,30 @@ impl Application {
                 .alias("pt")
                 .about("Perform a pointer scan on the specified address.")
                 .arg(
-                    Arg::with_name("name")
-                        .help(
-                            "The name of the scan in which to store result (default: \"default\").",
-                        )
-                        .long("name"),
+                    Arg::with_name("scan")
+                        .help("The name of the scan in which to store result.")
+                        .long("scan")
+                        .takes_value(true)
+                        .value_name("scan"),
                 )
                 .arg(
                     Arg::with_name("address")
                         .help("The address to scan for.")
                         .required(true),
                 )
-                .arg(
-                    Arg::with_name("type")
-                        .help("The type of the resulting value.")
-                        .value_name("type")
-                        .takes_value(true),
-                ),
+                .arg(type_argument("The type of the resulting value.")),
         );
 
-        app
+        return app;
+
+        fn type_argument<'help>(help: &'help str) -> Arg<'help, 'static> {
+            Arg::with_name("type")
+                .help(help)
+                .long("type")
+                .short("t")
+                .value_name("type")
+                .takes_value(true)
+        }
     }
 
     /// Convert a line into an action.
@@ -1381,11 +1473,8 @@ impl Application {
 
                 return Ok(Action::ScanSwitch { name });
             }
+            ("list", _) => return Ok(Action::ScanList),
             ("scan", Some(m)) => {
-                if m.is_present("list") {
-                    return Ok(Action::ScanList);
-                }
-
                 if let Some(name) = m.value_of("new") {
                     return Ok(Action::ScanNew {
                         name: name.to_string(),
@@ -1502,22 +1591,22 @@ impl Application {
                 });
             }
             ("del", Some(m)) => {
-                let pointer = m
-                    .value_of("pointer")
-                    .ok_or_else(|| anyhow!("missing <pointer>"))?;
-                let pointer = Pointer::parse(pointer)?;
-                return Ok(Action::Del { pointer });
-            }
-            ("add", Some(m)) => {
-                let ty = m
-                    .value_of("type")
+                let index = m
+                    .value_of("index")
                     .map(str::parse)
                     .transpose()?
-                    .ok_or_else(|| anyhow!("missing <type>"))?;
-                let pointer = m
-                    .value_of("pointer")
-                    .ok_or_else(|| anyhow!("missing <pointer>"))?;
-                let pointer = Pointer::parse(pointer)?;
+                    .ok_or_else(|| anyhow!("missing <index>"))?;
+                return Ok(Action::Del { index });
+            }
+            ("add", Some(m)) => {
+                let ty = m.value_of("type").map(str::parse).transpose()?;
+
+                let pointer = match m.values_of("pointer") {
+                    Some(values) => values.collect::<Vec<_>>().join(" "),
+                    None => String::new(),
+                };
+
+                let pointer = Pointer::parse(&pointer)?;
                 return Ok(Action::Add { ty, pointer });
             }
             ("pointer-scan", Some(m)) => {
@@ -1532,11 +1621,14 @@ impl Application {
                     .transpose()?
                     .ok_or_else(|| anyhow!("missing <address>"))?;
 
+                let append = m.is_present("append");
+
                 let value_type = m.value_of("type").map(str::parse).transpose()?;
 
                 return Ok(Action::PointerScan {
                     name,
                     address,
+                    append,
                     value_type,
                 });
             }
@@ -1628,12 +1720,12 @@ pub enum Action {
     },
     /// Delete the given address from the current scan.
     Del {
-        pointer: Pointer,
+        index: usize,
     },
     /// Add the given address with the given type.
     Add {
         pointer: Pointer,
-        ty: Type,
+        ty: Option<Type>,
     },
     /// Write the value at the given address.
     Set(Pointer, Value),
@@ -1655,6 +1747,7 @@ pub enum Action {
     PointerScan {
         name: String,
         address: Address,
+        append: bool,
         value_type: Option<Type>,
     },
     Save {

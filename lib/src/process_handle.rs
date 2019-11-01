@@ -509,6 +509,15 @@ impl ProcessHandle {
                                 Err(_) => Value::None(ty),
                             };
 
+                            if result.pointer.last_address.is_none() {
+                                let address = Pointer::do_follow_default(
+                                    &result.pointer.base,
+                                    &result.pointer.offsets,
+                                    self,
+                                )?;
+                                result.pointer.last_address = address;
+                            }
+
                             Ok(1)
                         };
 

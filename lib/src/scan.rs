@@ -68,18 +68,6 @@ impl Scan {
         }
     }
 
-    /// Remove the given entry by address.
-    ///
-    /// Returns `true` if the address was removed, `false` otherwise.
-    pub fn remove_by_pointer(&mut self, pointer: &Pointer) -> bool {
-        if let Some(index) = self.results.iter().position(|r| r.pointer == *pointer) {
-            self.results.swap_remove(index);
-            true
-        } else {
-            false
-        }
-    }
-
     /// Clear the scan.
     pub fn clear(&mut self) {
         self.results.clear();
@@ -362,7 +350,8 @@ impl Scan {
 
             while inner_offset < data.len() {
                 let address = base.add(Size::try_from(inner_offset)?)?;
-                let mut pointer = Pointer::new(PointerBase::Address { address }, vec![]);
+                let mut pointer =
+                    Pointer::new(PointerBase::Address { address }, vec![], Some(address));
                 let proxy = handle.address_proxy(&pointer);
 
                 if filter.test(none, proxy)? {

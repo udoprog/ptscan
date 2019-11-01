@@ -11,6 +11,7 @@ pub Pointer: Pointer = {
         Pointer {
             base,
             offsets: offsets.into_iter().map(Hex::into_offset).collect(),
+            last_address: None,
         }
     },
 }

@@ -25,7 +25,7 @@ impl PointerBase {
     /// Evaluate a pointer base, trying to translate it into an address.
     pub fn eval(&self, handle: &ProcessHandle) -> anyhow::Result<Option<Address>> {
         match self {
-            Self::Module { name, offset } => match handle.modules_address.get(name) {
+            Self::Module { name, offset, .. } => match handle.modules_address.get(name) {
                 Some(address) => Ok(Some(address.saturating_offset(*offset))),
                 None => Ok(None),
             },
@@ -60,20 +60,43 @@ pub struct Pointer {
     pub base: PointerBase,
     /// Offsets and derefs to apply to find the given memory location.
     pub offsets: Vec<Offset>,
+    pub last_address: Option<Address>,
 }
 
 impl Pointer {
     /// Construct a new pointer.
-    pub fn new(base: PointerBase, offsets: impl IntoIterator<Item = Offset>) -> Self {
+    pub fn new(
+        base: PointerBase,
+        offsets: impl IntoIterator<Item = Offset>,
+        last_address: Option<Address>,
+    ) -> Self {
         Self {
             base,
             offsets: offsets.into_iter().collect(),
+            last_address,
         }
     }
 
     /// Follow, using default memory resolution.
     pub fn follow_default(&self, handle: &ProcessHandle) -> anyhow::Result<Option<Address>> {
-        self.follow(handle, |a, buf| {
+        Self::do_follow_default(&self.base, &self.offsets, handle)
+    }
+
+    /// Try to evaluate the current location into an address.
+    pub fn follow<F>(&self, handle: &ProcessHandle, eval: F) -> anyhow::Result<Option<Address>>
+    where
+        F: Fn(Address, &mut [u8]) -> anyhow::Result<bool>,
+    {
+        Self::do_follow(&self.base, &self.offsets, handle, eval)
+    }
+
+    /// Follow, using default memory resolution.
+    pub fn do_follow_default(
+        base: &PointerBase,
+        offsets: &[Offset],
+        handle: &ProcessHandle,
+    ) -> anyhow::Result<Option<Address>> {
+        Self::do_follow(base, offsets, handle, |a, buf| {
             handle
                 .process
                 .read_process_memory(a, buf)
@@ -82,23 +105,28 @@ impl Pointer {
     }
 
     /// Try to evaluate the current location into an address.
-    pub fn follow<F>(&self, handle: &ProcessHandle, eval: F) -> anyhow::Result<Option<Address>>
+    pub fn do_follow<F>(
+        base: &PointerBase,
+        offsets: &[Offset],
+        handle: &ProcessHandle,
+        eval: F,
+    ) -> anyhow::Result<Option<Address>>
     where
         F: Fn(Address, &mut [u8]) -> anyhow::Result<bool>,
     {
-        let address = match self.base.eval(handle)? {
+        let address = match base.eval(handle)? {
             Some(address) => address,
             None => return Ok(None),
         };
 
-        if self.offsets.is_empty() {
+        if offsets.is_empty() {
             return Ok(Some(address));
         }
 
         let mut current = address;
         let mut buf = vec![0u8; handle.process.pointer_width];
 
-        for o in &self.offsets {
+        for o in offsets {
             eval(current, &mut buf)?;
             current = Address::decode(&handle.process, &buf)?;
 
@@ -114,14 +142,14 @@ impl Pointer {
 
 impl fmt::Display for Pointer {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.offsets.is_empty() {
-            return self.base.fmt(fmt);
-        }
-
         write!(fmt, "{}", self.base)?;
 
         for o in &self.offsets {
             write!(fmt, " -> {}", o)?;
+        }
+
+        if let Some(address) = &self.last_address {
+            write!(fmt, " ({})", address)?;
         }
 
         Ok(())

@@ -169,26 +169,9 @@ impl<'a> Lexer<'a> {
     pub fn scan_quoted(&mut self) -> Result<String, Error> {
         self.buf.clear();
 
-        match self.peek() {
-            Some((_, '"')) => {
-                self.step();
-            }
-            Some((_, c)) => {
-                return Err(self.err(format!("expected quote, but found `{}`", c)));
-            }
-            None => {
-                return Err(self.err("expected quote"));
-            }
-        }
-
         let mut escape = false;
 
-        loop {
-            let (_, c) = match self.peek() {
-                Some(c) => c,
-                None => break,
-            };
-
+        while let Some((_, c)) = self.peek() {
             if escape {
                 let o = match c {
                     '\\' => "\\",
@@ -231,6 +214,28 @@ impl<'a> Lexer<'a> {
 
         Ok(self.buf.to_string())
     }
+
+    /// Scan an identifier.
+    pub fn scan_ident(&mut self) -> Result<String, Error> {
+        self.buf.clear();
+
+        while let Some((_, c)) = self.peek() {
+            println!("{}", c);
+
+            self.step();
+
+            match c {
+                ' ' => {
+                    break;
+                }
+                c => {
+                    self.buf.push(c);
+                }
+            }
+        }
+
+        Ok(self.buf.to_string())
+    }
 }
 
 macro_rules! try_iter {
@@ -246,26 +251,27 @@ impl<'a> Iterator for Lexer<'a> {
     type Item = Result<(usize, Token, usize), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let (s, c) = match self.peek() {
-                Some(c) => c,
-                None => break,
-            };
-
+        while let Some((s, c)) = self.peek() {
             match (c, self.peek2().map(|c| c.1)) {
                 ('-', Some('>')) => {
                     let e = self.step_n(2);
                     return Some(Ok((s, Token::Rocket, e)));
                 }
-                ('-', c) if !is_hex(c.clone()) => {
+                ('-', _) => {
                     self.step();
                     let e = self.pos();
                     return Some(Ok((s, Token::Minus, e)));
                 }
-                ('+', c) if !is_hex(c.clone()) => {
+                ('+', _) => {
                     self.step();
                     let e = self.pos();
                     return Some(Ok((s, Token::Plus, e)));
+                }
+                ('0', Some('x')) => {
+                    self.step_n(2);
+                    let hex = try_iter!(self.scan_hex());
+                    let e = self.pos();
+                    return Some(Ok((s, Token::Hex(hex), e)));
                 }
                 _ => {}
             }
@@ -275,33 +281,21 @@ impl<'a> Iterator for Lexer<'a> {
                     self.step();
                     continue;
                 }
-                '+' | '-' | '0'..='9' | 'A'..='F' | 'a'..='f' => {
-                    let hex = try_iter!(self.scan_hex());
-                    let e = self.pos();
-                    return Some(Ok((s, Token::Hex(hex), e)));
-                }
                 '"' => {
+                    self.step();
                     let string = try_iter!(self.scan_quoted());
                     let e = self.pos();
                     return Some(Ok((s, Token::String(string), e)));
                 }
-                c => return Some(Err(self.err(format!("unsupported character `{}`", c)))),
+                _ => {
+                    let string = try_iter!(self.scan_ident());
+                    let e = self.pos();
+                    return Some(Ok((s, Token::String(string), e)));
+                }
             }
         }
 
-        return None;
-
-        fn is_hex(c: Option<char>) -> bool {
-            let c = match c {
-                Some(c) => c,
-                None => return false,
-            };
-
-            match c {
-                '0'..='9' | 'A'..='F' | 'a'..='f' => true,
-                _ => false,
-            }
-        }
+        None
     }
 }
 

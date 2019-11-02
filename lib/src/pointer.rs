@@ -170,12 +170,12 @@ mod tests {
 
     #[test]
     fn basic_parsing() -> Result<(), Box<dyn error::Error>> {
-        dbg!(Pointer::parse("ABCDEF")?);
-        dbg!(Pointer::parse("\"Steam.exe\" + 0F")?);
-        dbg!(Pointer::parse("\"Steam.exe\" + 0F -> -FFAA")?);
-        dbg!(Pointer::parse("\"Steam.exe\" - F0F -> -FFAA")?);
-        dbg!(Pointer::parse("\"Steam.exe\" - -F0F -> -FFAA")?);
-        dbg!(Pointer::parse("\"Steam.exe\" -> +FFAA")?);
+        dbg!(Pointer::parse("0xABCDEF")?);
+        dbg!(Pointer::parse("\"Steam.exe\" + 0x0F")?);
+        dbg!(Pointer::parse("\"Steam.exe\" + 0x0F -> -0xFFAA")?);
+        dbg!(Pointer::parse("\"Steam.exe\" - 0xF0F -> -0xFFAA")?);
+        dbg!(Pointer::parse("\"Steam.exe\" - 0xF0F -> -0xFFAA")?);
+        dbg!(Pointer::parse("\"Steam.exe\" -> +0xFFAA")?);
         Ok(())
     }
 }

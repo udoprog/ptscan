@@ -28,17 +28,15 @@ And: Expression = {
 
 ValueExpr: ValueExpr = {
     "value" => ValueExpr::Value,
+    "last" => ValueExpr::Last,
     <number:number> => ValueExpr::Number(number.0, number.1),
     <string:"string"> => ValueExpr::String(string),
     <bytes:bytes> => ValueExpr::Bytes(bytes),
 };
 
 Filter: Expression = {
-    changed => Expression::Changed,
-    same => Expression::Same,
-    inc => Expression::Inc,
-    dec => Expression::Dec,
     <expr:ValueExpr> is pointer => Expression::IsPointer(expr),
+    <expr:ValueExpr> is not pointer => Expression::Not(Box::new(Expression::IsPointer(expr))),
     <lhs:ValueExpr> "==" <rhs:ValueExpr> => Expression::Binary(Op::Eq, lhs, rhs),
     <lhs:ValueExpr> "!=" <rhs:ValueExpr> => Expression::Binary(Op::Neq, lhs, rhs),
     <lhs:ValueExpr> "<=" <rhs:ValueExpr> => Expression::Binary(Op::Lte, lhs, rhs),
@@ -53,14 +51,13 @@ extern {
 
     enum Token {
         "value" => Token::Value,
-        changed => Token::Changed,
-        same => Token::Same,
-        inc => Token::Inc,
-        dec => Token::Dec,
+        "last" => Token::Last,
         and => Token::And,
         or => Token::Or,
         is => Token::Is,
         pointer => Token::Pointer,
+        not => Token::Not,
+        none => Token::None,
         "==" => Token::Eq,
         "!=" => Token::Neq,
         "<=" => Token::Lte,

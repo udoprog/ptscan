@@ -1,9 +1,13 @@
 //! High-level interface to processes.
 
 use crate::{
-    error::Error, filter, process::MemoryInformation, scan, scan::ScanResult, system,
-    thread::Thread, Address, AddressRange, Pointer, PointerBase, Process, ProcessId, Size, Token,
-    Type, Value,
+    error::Error,
+    filter,
+    process::MemoryInformation,
+    scan::{self, ScanProgress, ScanResult},
+    system,
+    thread::Thread,
+    Address, AddressRange, Pointer, PointerBase, Process, ProcessId, Size, Token, Type, Value,
 };
 use anyhow::{bail, Context as _};
 use hashbrown::HashMap;
@@ -291,7 +295,7 @@ impl ProcessHandle {
         results_output: &mut Vec<Box<ScanResult>>,
         filter: &filter::Filter,
         cancel: Option<&Token>,
-        progress: (impl scan::Progress + Send),
+        progress: (impl ScanProgress + Send),
     ) -> anyhow::Result<()> {
         use std::sync::mpsc;
 
@@ -437,7 +441,7 @@ impl ProcessHandle {
         results: &mut [Box<ScanResult>],
         cancel: Option<&Token>,
         new_type: Option<Type>,
-        progress: (impl scan::Progress + Send),
+        progress: (impl ScanProgress + Send),
     ) -> anyhow::Result<()> {
         use std::sync::mpsc;
 

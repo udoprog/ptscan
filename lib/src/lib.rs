@@ -29,7 +29,7 @@ pub use self::module::Module;
 pub use self::pointer::{Pointer, PointerBase};
 pub use self::process::{MemoryInformation, MemoryState, MemoryType, Process};
 pub use self::process_handle::{AddressProxy, Location, ProcessHandle, ProcessName};
-pub use self::scan::{Scan, ScanResult};
+pub use self::scan::{InitialScanConfig, Scan, ScanProgress, ScanResult};
 pub use self::thread::Thread;
 pub use self::token::Token;
 pub use self::ty::Type;

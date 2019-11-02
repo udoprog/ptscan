@@ -20,14 +20,12 @@ pub enum Token {
     Or,
     /// value, references the value in memory.
     Value,
-    /// changed keyword.
-    Changed,
-    /// same keyword.
-    Same,
-    /// Value increased.
-    Inc,
-    /// Value decreased.
-    Dec,
+    /// last value known.
+    Last,
+    /// `not` keyword.
+    Not,
+    /// The special `none` value.
+    None,
     /// Value is a pointer.
     Pointer,
     /// `is` keyword.
@@ -367,8 +365,9 @@ impl<'a> Iterator for Lexer<'a> {
                     return Some(Ok((s, Token::Gte, e)));
                 }
                 Some((s, '0', 'x')) => {
-                    let e = self.step_n(2);
+                    self.step_n(2);
                     let bytes = try_iter!(self.scan_bytes());
+                    let e = self.pos();
                     return Some(Ok((s, Token::Bytes(bytes), e)));
                 }
                 _ => {}
@@ -420,14 +419,13 @@ impl<'a> Iterator for Lexer<'a> {
 
                     match ident.as_str() {
                         "value" => return Some(Ok((s, Token::Value, e))),
+                        "last" => return Some(Ok((s, Token::Last, e))),
+                        "not" => return Some(Ok((s, Token::Not, e))),
                         "and" => return Some(Ok((s, Token::And, e))),
                         "or" => return Some(Ok((s, Token::Or, e))),
-                        "same" => return Some(Ok((s, Token::Same, e))),
-                        "changed" => return Some(Ok((s, Token::Changed, e))),
-                        "inc" => return Some(Ok((s, Token::Inc, e))),
-                        "dec" => return Some(Ok((s, Token::Dec, e))),
                         "pointer" => return Some(Ok((s, Token::Pointer, e))),
                         "is" => return Some(Ok((s, Token::Is, e))),
+                        "none" => return Some(Ok((s, Token::None, e))),
                         string => {
                             return Some(Ok((s, Token::String(string.to_string()), e)));
                         }
@@ -461,13 +459,13 @@ mod tests {
         );
 
         assert_eq!(
-            vec![(0, Token::Literal(BigInt::from(66), None), 4)],
-            tokenize("0x42")?
+            vec![(0, Token::Bytes(vec![0x42, 0x41, 0x40]), 8)],
+            tokenize("0x424140")?
         );
 
         assert_eq!(
             vec![
-                (0, Token::Literal(BigInt::from(66), None), 4),
+                (0, Token::Bytes(vec![0x42]), 4),
                 (5, Token::Literal(BigInt::from(83), None), 7)
             ],
             tokenize("0x42 83")?

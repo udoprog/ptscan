@@ -313,11 +313,12 @@ mod tests {
             vec![
                 (0, Token::String(String::from("Steam.exe")), 11),
                 (12, Token::Plus, 13),
-                (14, Token::Hex(Hex(12)), 16),
-                (17, Token::Rocket, 19),
-                (20, Token::Hex(Hex(-8)), 22)
+                (14, Token::Hex(Hex(12)), 18),
+                (19, Token::Rocket, 21),
+                (22, Token::Minus, 23),
+                (23, Token::Hex(Hex(8)), 26)
             ],
-            tokenize("\"Steam.exe\" + 0C -> -8")?
+            tokenize("\"Steam.exe\" + 0x0C -> -0x8")?
         );
 
         Ok(())

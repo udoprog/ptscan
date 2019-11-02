@@ -34,14 +34,8 @@ pub enum ValueTrait {
 
 #[derive(Debug)]
 pub enum Expression {
-    /// A value that stays the same.
-    Same,
-    /// A value that has changed.
-    Changed,
-    /// A value that has increased.
-    Inc,
-    /// A value that has decreased.
-    Dec,
+    /// Invert the truth value of an expression.
+    Not(Box<Expression>),
     /// Value expression _is a pointer_.
     IsPointer(filter::ValueExpr),
     /// Test that the value equals the expected value.
@@ -58,10 +52,13 @@ impl Expression {
         use self::Expression::*;
 
         Ok(match self {
-            Same => filter::Matcher::Same(filter::Same),
-            Changed => filter::Matcher::Changed(filter::Changed),
-            Inc => filter::Matcher::Inc(filter::Inc),
-            Dec => filter::Matcher::Dec(filter::Dec),
+            Not(expr) => {
+                let matcher = expr.into_matcher(process)?;
+
+                filter::Matcher::Not(filter::Not {
+                    matcher: Box::new(matcher),
+                })
+            }
             Binary(op, lhs, rhs) => filter::Matcher::Binary(filter::Binary(op, lhs, rhs)),
             IsPointer(expr) => {
                 let process = match process {

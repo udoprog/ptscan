@@ -3,11 +3,12 @@
 use anyhow::{anyhow, bail, Context as _};
 use hashbrown::HashMap;
 use ptscan::{
-    filter, scan, Address, Filter, Location, MemoryInformation, Offset, Pointer, PointerBase,
-    ProcessHandle, ProcessId, ScanResult, Size, Token, Type, Value, ValueExpr,
+    filter, Address, Filter, InitialScanConfig, Location, MemoryInformation, Offset, Pointer,
+    PointerBase, ProcessHandle, ProcessId, Scan, ScanProgress, ScanResult, Size, Token, Type,
+    Value, ValueExpr,
 };
 use serde::{Deserialize, Serialize};
-use std::{fs::File, io, path::PathBuf, sync::Arc, time::Instant};
+use std::{collections::VecDeque, fs::File, io, path::PathBuf, sync::Arc, time::Instant};
 
 use crossterm::{
     ClearType, Color, Colored, Crossterm, InputEvent, KeyEvent, RawScreen, Terminal,
@@ -68,7 +69,7 @@ fn main() {
 
 struct NoopProgress;
 
-impl scan::Progress for NoopProgress {
+impl ScanProgress for NoopProgress {
     fn report_bytes(&mut self, _: Size) -> anyhow::Result<()> {
         Ok(())
     }
@@ -89,7 +90,7 @@ impl<'a> SimpleProgress<'a> {
     }
 }
 
-impl<'a> scan::Progress for SimpleProgress<'a> {
+impl<'a> ScanProgress for SimpleProgress<'a> {
     fn report_bytes(&mut self, _: Size) -> anyhow::Result<()> {
         // NB: do nothing
         Ok(())
@@ -143,7 +144,7 @@ struct Application {
     process_name: Option<String>,
     /// Process that we are currently attached to.
     handle: Option<ProcessHandle>,
-    scans: HashMap<String, scan::Scan>,
+    scans: HashMap<String, Scan>,
     current_scan: String,
     /// Current file being saved/loaded.
     current_file: PathBuf,
@@ -245,7 +246,7 @@ impl Application {
                 }
 
                 self.scans
-                    .insert(name.clone(), scan::Scan::new(&self.thread_pool));
+                    .insert(name.clone(), Scan::new(&self.thread_pool));
                 self.current_scan = name;
             }
             Action::ScanDel { name } => {
@@ -331,12 +332,16 @@ impl Application {
                     results.iter().map(|r| &**r).enumerate(),
                 )?;
             }
-            Action::Watch { limit } => {
+            Action::Watch {
+                limit,
+                filter,
+                change_length,
+            } => {
                 if let Some(limit) = limit {
                     self.limit = limit;
                 }
 
-                self.watch()?;
+                self.watch(filter.as_ref(), change_length)?;
             }
             Action::Del { index } => {
                 let scan = match self.scans.get_mut(&self.current_scan) {
@@ -360,7 +365,7 @@ impl Application {
 
                 let scan = scans
                     .entry(current_scan.clone())
-                    .or_insert_with(|| scan::Scan::new(thread_pool));
+                    .or_insert_with(|| Scan::new(thread_pool));
 
                 if let Some(ty) = ty {
                     scan.last_type = Some(ty);
@@ -411,8 +416,6 @@ impl Application {
                 if let Some(new_type) = new_type {
                     scan.last_type = Some(new_type);
                 }
-
-                println!("");
 
                 let len = usize::min(scan.len(), self.limit);
                 Self::print(
@@ -528,7 +531,7 @@ impl Application {
         let count = {
             let scan = scans
                 .entry(scan.to_string())
-                .or_insert_with(|| scan::Scan::new(thread_pool));
+                .or_insert_with(|| Scan::new(thread_pool));
 
             let serialized = SerializedScan {
                 results: &scan.results,
@@ -591,7 +594,7 @@ impl Application {
 
             let scan = scans
                 .entry(scan.to_string())
-                .or_insert_with(|| scan::Scan::new(thread_pool));
+                .or_insert_with(|| Scan::new(thread_pool));
 
             if append {
                 scan.results.extend(deserialized.results);
@@ -619,14 +622,12 @@ impl Application {
         }
     }
 
-    fn watch(&mut self) -> anyhow::Result<()> {
+    fn watch(&mut self, filter: Option<&Filter>, change_length: usize) -> anyhow::Result<()> {
         use std::{
             sync::atomic::{AtomicBool, Ordering},
             thread,
             time::Duration,
         };
-
-        let _raw = RawScreen::into_raw_mode()?;
 
         let thread_pool = &self.thread_pool;
 
@@ -638,7 +639,7 @@ impl Application {
         let scan = self
             .scans
             .entry(self.current_scan.to_string())
-            .or_insert_with(|| scan::Scan::new(thread_pool));
+            .or_insert_with(|| Scan::new(thread_pool));
 
         if scan.results.is_empty() {
             self.term.write_line("cannot watch, scan is empty")?;
@@ -655,15 +656,30 @@ impl Application {
         let mut stdin = self.term.input.read_sync();
 
         let line_below = results.len() as u16;
-        let info_line = line_below + 1;
-        let error_line = line_below + 2;
-
-        write_results(&mut self.term, &results)?;
+        let info_line = (line_below * 2) + 1;
+        let error_line = (line_below * 2) + 2;
 
         // NB: do a little borrow dance to support the scoped thread with split borrows.
         let exit = AtomicBool::new(false);
         let exit = &exit;
+
+        let mut states = updates
+            .iter()
+            .map(|r| {
+                let mut values = VecDeque::new();
+                values.push_back((Instant::now(), r.value.clone()));
+                State {
+                    values,
+                    changed: true,
+                    removed: false,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let raw = RawScreen::into_raw_mode()?;
+
         let term = &mut self.term;
+        let borrowed_stated = &mut states;
 
         rayon::scope(|s| {
             s.spawn(move |_| {
@@ -675,7 +691,10 @@ impl Application {
                     &exit,
                     term,
                     &mut updates,
+                    borrowed_stated,
                     &handle,
+                    change_length,
+                    filter,
                 )
                 .expect("refresh loop panicked");
             });
@@ -694,12 +713,40 @@ impl Application {
             }
 
             exit.store(true, Ordering::Release);
-        });
+
+            Ok::<_, anyhow::Error>(())
+        })?;
 
         self.term.cursor.goto(0, info_line)?;
         self.term.terminal.clear(ClearType::CurrentLine)?;
         self.term.cursor.show()?;
+
+        drop(raw);
+
+        let mut removed = 0;
+
+        // remove removed items from watch.
+        for (index, state) in states.into_iter().enumerate().rev() {
+            if state.removed {
+                removed += 1;
+                scan.results.swap_remove(index);
+            }
+        }
+
+        if removed > 0 {
+            self.term.write_line(format!(
+                "removed {} filtered items from scan `{}`",
+                removed, self.current_scan
+            ))?;
+        }
+
         return Ok(());
+
+        struct State {
+            values: VecDeque<(Instant, Value)>,
+            changed: bool,
+            removed: bool,
+        }
 
         fn refresh_loop(
             thread_pool: &rayon::ThreadPool,
@@ -709,7 +756,10 @@ impl Application {
             exit: &AtomicBool,
             term: &mut Term,
             updates: &mut [Box<ScanResult>],
+            states: &mut [State],
             handle: &ProcessHandle,
+            change_length: usize,
+            filter: Option<&Filter>,
         ) -> anyhow::Result<()> {
             let mut info_changed = true;
 
@@ -718,10 +768,17 @@ impl Application {
                 .map(|r| r.pointer.clone())
                 .collect::<Vec<_>>();
 
-            let mut values = updates
-                .iter()
-                .map(|r| (vec![(Instant::now(), r.value.clone())], false))
-                .collect::<Vec<_>>();
+            if let Some(filter) = filter {
+                for (result, state) in updates.iter().zip(states.iter_mut()) {
+                    let proxy = handle.address_proxy(&result.pointer);
+
+                    if !filter.test(&result.value, proxy)? {
+                        state.removed = true;
+                    }
+                }
+            }
+
+            write_results(term, &pointers, states)?;
 
             while !exit.load(Ordering::Acquire) {
                 if info_changed {
@@ -742,18 +799,39 @@ impl Application {
                     term.write_on_line(error_line, format!("Error refreshing values: {}", e))?;
                 }
 
-                let mut any = false;
+                let mut any_changed = false;
 
-                for (update, (values, changed)) in updates.iter().zip(values.iter_mut()) {
-                    if update.value != values[values.len() - 1].1 {
-                        *changed = true;
-                        any = true;
-                        values.push((Instant::now(), update.value.clone()));
+                for (result, state) in updates.iter().zip(states.iter_mut()) {
+                    if state.removed {
+                        continue;
+                    }
+
+                    if let Some(last) = state.values.back().map(|v| &v.1) {
+                        if result.value != *last {
+                            if let Some(filter) = filter {
+                                let proxy = handle.address_proxy(&result.pointer);
+
+                                if !filter.test(last, proxy)? {
+                                    state.removed = true;
+                                }
+                            }
+
+                            state.changed = true;
+                            any_changed = true;
+
+                            state
+                                .values
+                                .push_back((Instant::now(), result.value.clone()));
+
+                            while state.values.len() > change_length {
+                                state.values.pop_front();
+                            }
+                        }
                     }
                 }
 
-                if any {
-                    write_updates(term, &pointers, &mut values)?;
+                if any_changed {
+                    write_results(term, &pointers, states)?;
                 }
 
                 term.cursor.hide()?;
@@ -763,41 +841,29 @@ impl Application {
             Ok(())
         }
 
-        fn write_results(term: &mut Term, current: &[Box<ScanResult>]) -> anyhow::Result<()> {
-            for (row, result) in current.iter().enumerate() {
-                term.cursor.goto(0, row as u16)?;
-                term.terminal.clear(ClearType::CurrentLine)?;
-                term.write_line(format!("{} = {}", result.pointer, result.value))?;
-            }
-
-            Ok(())
-        }
-
-        fn write_updates(
+        fn write_results(
             term: &mut Term,
             pointers: &[Pointer],
-            updates: &mut [(Vec<(Instant, Value)>, bool)],
+            states: &mut [State],
         ) -> anyhow::Result<()> {
             use std::fmt::Write as _;
 
-            for (row, (pointer, (values, changed))) in
-                pointers.iter().zip(updates.iter_mut()).enumerate()
-            {
-                if !*changed {
+            for (index, (pointer, state)) in pointers.iter().zip(states.iter_mut()).enumerate() {
+                if !state.changed {
                     continue;
                 }
 
-                term.cursor.goto(0, row as u16)?;
-                term.terminal.clear(ClearType::CurrentLine)?;
-
                 let mut buf = String::new();
 
-                write!(buf, "{} = ", pointer)?;
+                if state.removed {
+                    write!(buf, "{}", Colored::Fg(Color::Red))?;
+                }
 
-                let mut it = values.iter();
+                writeln!(buf, "{:03} : {}", index, pointer)?;
+                write!(buf, " = ")?;
 
+                let mut it = state.values.iter();
                 let last = it.next_back();
-
                 let mut last_change = None;
 
                 while let Some((when, v)) = it.next() {
@@ -816,17 +882,17 @@ impl Application {
                         write!(buf, " ({:.0?}) -> ", duration)?;
                     }
 
-                    write!(
-                        buf,
-                        "{}{}{}",
-                        Colored::Fg(Color::Red),
-                        last,
-                        Colored::Fg(Color::Reset)
-                    )?;
+                    write!(buf, "{}", last)?;
                 }
 
+                if state.removed {
+                    write!(buf, " (filtered){}", Colored::Fg(Color::Reset))?;
+                }
+
+                term.cursor.goto(0, (index as u16) * 2)?;
+                term.terminal.clear(ClearType::CurrentLine)?;
                 term.write_line(buf)?;
-                *changed = false;
+                state.changed = false;
             }
 
             Ok(())
@@ -883,7 +949,7 @@ impl Application {
         append: bool,
         ty: Type,
     ) -> anyhow::Result<()> {
-        use std::collections::{BTreeMap, HashSet, VecDeque};
+        use std::collections::{BTreeMap, HashSet};
 
         let handle = match self.handle.as_ref() {
             Some(handle) => handle,
@@ -893,7 +959,7 @@ impl Application {
         // Filter to find all pointers.
         let pointers = Filter::pointer(Type::Pointer, ValueExpr::Value, &handle.process)?;
 
-        let mut scan = scan::Scan::new(&self.thread_pool);
+        let mut scan = Scan::new(&self.thread_pool);
 
         scan.initial_scan(
             handle,
@@ -990,7 +1056,7 @@ impl Application {
 
         let scan = scans
             .entry(name.to_string())
-            .or_insert_with(|| scan::Scan::new(thread_pool));
+            .or_insert_with(|| Scan::new(thread_pool));
 
         scan.last_type = Some(Type::Pointer);
 
@@ -1032,10 +1098,10 @@ impl Application {
         let scan = self
             .scans
             .entry(current_scan.to_string())
-            .or_insert_with(|| scan::Scan::new(thread_pool));
+            .or_insert_with(|| Scan::new(thread_pool));
 
         let result = if scan.initial {
-            let mut c = scan::InitialScanConfig::default();
+            let mut c = InitialScanConfig::default();
             c.modules_only = config.modules_only;
 
             let result = scan.initial_scan(
@@ -1062,7 +1128,6 @@ impl Application {
             handle.process.resume()?;
         }
 
-        println!("");
         result?;
 
         let len = usize::min(scan.len(), self.limit);
@@ -1071,6 +1136,7 @@ impl Application {
             scan.len(),
             scan[..len].iter().map(|r| &**r).enumerate(),
         )?;
+
         Ok(())
     }
 
@@ -1163,6 +1229,7 @@ impl Application {
 
         for (index, result) in results {
             count += 1;
+            term.terminal.clear(ClearType::CurrentLine)?;
             term.write_line(format!(
                 "{:>03} : {} = {}",
                 index, result.pointer, result.value
@@ -1170,6 +1237,7 @@ impl Application {
         }
 
         if count < len {
+            term.terminal.clear(ClearType::CurrentLine)?;
             term.write_line(format!("... {} more omitted", len - count))?;
         }
 
@@ -1289,6 +1357,20 @@ impl Application {
                         .help("Limit the number of results to show.")
                         .long("limit")
                         .value_name("number")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("length")
+                        .help("The number of value changes to show.")
+                        .long("length")
+                        .value_name("number")
+                        .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("filter")
+                        .help("Remove values which do not match the specified filter.")
+                        .long("filter")
+                        .value_name("filter")
                         .takes_value(true),
                 ),
         );
@@ -1467,7 +1549,27 @@ impl Application {
             }
             ("watch", Some(m)) => {
                 let limit = m.value_of("limit").map(str::parse).transpose()?;
-                return Ok(Action::Watch { limit });
+
+                let filter = match m.value_of("filter") {
+                    Some(filter) => {
+                        let last_type =
+                            self.scans.get(&self.current_scan).and_then(|s| s.last_type);
+                        let process = self.handle.as_ref().map(|h| &h.process);
+                        Some(Filter::parse(&filter, process, last_type)?)
+                    }
+                    None => None,
+                };
+
+                let change_length = m
+                    .value_of("length")
+                    .map(str::parse)
+                    .transpose()?
+                    .unwrap_or(5);
+                return Ok(Action::Watch {
+                    limit,
+                    filter,
+                    change_length,
+                });
             }
             ("switch", Some(m)) => {
                 let name = m
@@ -1507,17 +1609,9 @@ impl Application {
                     None => String::new(),
                 };
 
-                let process = self.handle.as_ref().map(|h| &h.process);
-                let matcher = filter::parse_matcher(&filter, process)?;
-
                 let last_type = self.scans.get(&self.current_scan).and_then(|s| s.last_type);
-
-                let ty = ty
-                    .or_else(|| matcher.type_hint())
-                    .or(last_type)
-                    .ok_or_else(|| anyhow!("cannot determine type of filter"))?;
-
-                let filter = filter::Filter::new(ty, matcher);
+                let process = self.handle.as_ref().map(|h| &h.process);
+                let filter = Filter::parse(&filter, process, ty.or(last_type))?;
 
                 let mut config = ScanConfig::default();
                 config.modules_only = m.is_present("modules-only");
@@ -1721,6 +1815,8 @@ pub enum Action {
     /// Watch changes to the scan.
     Watch {
         limit: Option<usize>,
+        filter: Option<Filter>,
+        change_length: usize,
     },
     /// Delete the given address from the current scan.
     Del {

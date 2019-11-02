@@ -19,7 +19,7 @@ pub struct InitialScanConfig {
 }
 
 /// A trait to track the progress of processes.
-pub trait Progress {
+pub trait ScanProgress {
     /// Report the total number of bytes to process.
     fn report_bytes(&mut self, bytes: Size) -> anyhow::Result<()>;
 
@@ -97,7 +97,7 @@ impl Scan {
         handle: &ProcessHandle,
         filter: &filter::Filter,
         cancel: Option<&Token>,
-        progress: (impl Progress + Send),
+        progress: (impl ScanProgress + Send),
     ) -> anyhow::Result<()> {
         let mut results = Vec::new();
 
@@ -122,19 +122,19 @@ impl Scan {
     /// Errors raised in worker threads will be collected, and the last error propagated to the user.
     /// Any error causes the processing to cancel.
     ///
-    /// # Errors raised in Progress
+    /// # Errors raised in ScanProgress
     ///
-    /// We can't just ignore errors which are raised by `scan::Progress`, since these might be important to the
+    /// We can't just ignore errors which are raised by `ScanProgress`, since these might be important to the
     /// processing at hand.
     ///
-    /// Therefore, any error raised by Progress will be treated as any error raised from a worker thread. Only the last
+    /// Therefore, any error raised by ScanProgress will be treated as any error raised from a worker thread. Only the last
     /// error will be propagated to the user.
     pub fn initial_scan(
         &mut self,
         handle: &ProcessHandle,
         filter: &filter::Filter,
         cancel: Option<&Token>,
-        progress: (impl Progress + Send),
+        progress: (impl ScanProgress + Send),
         config: InitialScanConfig,
     ) -> anyhow::Result<()> {
         const BUFFER_SIZE: usize = 0x10_000_000;
@@ -461,7 +461,7 @@ impl<'token, 'err, P> Reporter<'token, 'err, P> {
     /// Report a number of bytes.
     pub fn report_bytes(&mut self, bytes: Size)
     where
-        P: Progress,
+        P: ScanProgress,
     {
         if let Err(e) = self.progress.report_bytes(bytes) {
             *self.last_err = Some(e);
@@ -472,7 +472,7 @@ impl<'token, 'err, P> Reporter<'token, 'err, P> {
     /// Tick a single task.
     pub fn tick(&mut self, results: u64)
     where
-        P: Progress,
+        P: ScanProgress,
     {
         self.tick_n(1, results);
     }
@@ -480,7 +480,7 @@ impl<'token, 'err, P> Reporter<'token, 'err, P> {
     /// Tick a single task.
     pub fn tick_n(&mut self, count: usize, results: u64)
     where
-        P: Progress,
+        P: ScanProgress,
     {
         self.current += count;
         let p = (self.current * 100) / self.total;

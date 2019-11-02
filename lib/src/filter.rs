@@ -4,6 +4,7 @@ use crate::{
     value::{self, Value},
     AddressProxy, AddressRange, Offset, Type,
 };
+use anyhow::anyhow;
 use num_bigint::{BigInt, Sign};
 use std::fmt;
 
@@ -13,17 +14,55 @@ lalrpop_util::lalrpop_mod!(parser, "/filter/parser.rs");
 
 const ZERO: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
-/// Parse a a string into a filter.
-pub fn parse_matcher(input: &str, process: Option<&Process>) -> anyhow::Result<Matcher> {
-    Ok(parser::OrParser::new()
-        .parse(lexer::Lexer::new(input))?
-        .into_matcher(process)?)
+/// test if the given slice contains all zeros.
+/// Hopefully this gets vectorized (please check!).
+fn is_all_zeros(mut data: &[u8]) -> bool {
+    while !data.is_empty() {
+        let len = usize::min(data.len(), ZERO.len());
+
+        if &data[..len] != &ZERO[..len] {
+            return false;
+        }
+
+        data = &data[len..];
+    }
+
+    true
+}
+
+/// Find first nonzero byte in a slice.
+fn find_first_nonzero(mut data: &[u8]) -> Option<usize> {
+    let mut local = 0;
+
+    while !data.is_empty() {
+        let len = usize::min(data.len(), ZERO.len());
+
+        if &data[..len] != &ZERO[..len] {
+            break;
+        }
+
+        data = &data[len..];
+        local += len;
+    }
+
+    if data.is_empty() {
+        return None;
+    }
+
+    let index = match data.iter().position(|c| *c != 0) {
+        Some(index) => index,
+        None => return None,
+    };
+
+    Some(local + index)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueExpr {
     /// The value of the address.
     Value,
+    /// The last known value.
+    Last,
     /// *<value>
     Deref(Box<ValueExpr>),
     /// Offset
@@ -48,9 +87,10 @@ impl ValueExpr {
     }
 
     /// Evaluate the expression.
-    pub fn eval(&self, ty: Type, address: AddressProxy<'_>) -> anyhow::Result<Value> {
+    pub fn eval(&self, ty: Type, last: &Value, address: AddressProxy<'_>) -> anyhow::Result<Value> {
         match self {
             Self::Value => address.eval(ty),
+            Self::Last => Ok(last.clone()),
             Self::Number(number, _) => Ok(Value::from_bigint(ty, number)?),
             Self::String(string) => Ok(Value::String(string.as_bytes().to_vec())),
             Self::Bytes(bytes) => Ok(Value::Bytes(bytes.to_vec())),
@@ -84,6 +124,7 @@ impl fmt::Display for ValueExpr {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Value => "value".fmt(fmt),
+            Self::Last => "last".fmt(fmt),
             Self::Deref(value) => write!(fmt, "*{}", value),
             Self::Offset(value, offset) => write!(fmt, "{}{}", value, offset),
             Self::Number(number, None) => write!(fmt, "{}", number),
@@ -96,13 +137,15 @@ impl fmt::Display for ValueExpr {
 
 pub enum Special {
     Bytes(Vec<u8>),
-    NonZero,
+    NotBytes(Vec<u8>),
+    Zero(usize),
+    NonZero(usize),
 }
 
 impl Special {
     pub fn test(&self, mut data: &[u8]) -> Option<usize> {
-        match self {
-            Self::Bytes(bytes) => {
+        match *self {
+            Self::Bytes(ref bytes) => {
                 if bytes.is_empty() {
                     return None;
                 }
@@ -131,26 +174,44 @@ impl Special {
 
                 None
             }
-            Self::NonZero => {
-                let mut local = 0;
-
-                while !data.is_empty() {
-                    let len = usize::min(data.len(), ZERO.len());
-
-                    if &data[..len] != &ZERO[..len] {
-                        break;
-                    }
-
-                    data = &data[len..];
-                    local += len;
+            Self::NotBytes(..) => None,
+            Self::NonZero(..) => find_first_nonzero(data),
+            Self::Zero(width) => {
+                if width == 0 {
+                    return None;
                 }
 
-                let index = match data.iter().position(|c| *c != 0) {
-                    Some(index) => index,
-                    None => return Some(local),
-                };
+                let mut local = 0usize;
 
-                Some(local + index)
+                while !data.is_empty() {
+                    let index = match memchr::memchr(0, data) {
+                        Some(index) => index,
+                        None => {
+                            return Some(local + data.len());
+                        }
+                    };
+
+                    local += index;
+                    data = &data[index..];
+
+                    if data.len() < width {
+                        return Some(local);
+                    }
+
+                    if is_all_zeros(&data[..width]) {
+                        return Some(local);
+                    }
+
+                    let offset = match data[..width].iter().position(|c| *c != 0) {
+                        Some(offset) => offset,
+                        None => width,
+                    };
+
+                    local += offset;
+                    data = &data[offset..];
+                }
+
+                None
             }
         }
     }
@@ -166,6 +227,21 @@ impl Filter {
     /// Construct a new, typed filter.
     pub fn new(ty: Type, matcher: Matcher) -> Self {
         Self { ty, matcher }
+    }
+
+    /// Parse the given filter.
+    pub fn parse(
+        filter: &str,
+        process: Option<&Process>,
+        ty: Option<Type>,
+    ) -> anyhow::Result<Self> {
+        let matcher = Matcher::parse(filter, process)?;
+
+        let ty = ty
+            .or_else(|| matcher.type_hint())
+            .ok_or_else(|| anyhow!("cannot determine type of filter"))?;
+
+        Ok(Self::new(ty, matcher))
     }
 
     /// Construct a new pointer filter.
@@ -188,50 +264,49 @@ impl Filter {
 
 #[derive(Debug, Clone)]
 pub enum Matcher {
-    Changed(Changed),
-    Same(Same),
     Binary(Binary),
     All(All),
     Any(Any),
-    Inc(Inc),
-    Dec(Dec),
     Pointer(Pointer),
+    Not(Not),
 }
 
 impl Matcher {
+    /// Parse a a string into a matcher.
+    pub fn parse(input: &str, process: Option<&Process>) -> anyhow::Result<Self> {
+        Ok(parser::OrParser::new()
+            .parse(lexer::Lexer::new(input))?
+            .into_matcher(process)?)
+    }
+
     /// Get a hint of which type to use.
     pub fn type_hint(&self) -> Option<Type> {
         match self {
-            Self::Changed(..) => None,
-            Self::Same(..) => None,
             Self::Binary(m) => m.type_hint(),
             Self::All(m) => m.type_hint(),
             Self::Any(m) => m.type_hint(),
-            Self::Inc(..) => None,
-            Self::Dec(..) => None,
             Self::Pointer(m) => m.type_hint(),
+            Self::Not(m) => m.type_hint(),
         }
     }
 
     /// Test the specified memory region.
     fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
         match self {
-            Self::Changed(m) => m.test(ty, last, proxy),
-            Self::Same(m) => m.test(ty, last, proxy),
             Self::Binary(m) => m.test(ty, last, proxy),
             Self::All(m) => m.test(ty, last, proxy),
             Self::Any(m) => m.test(ty, last, proxy),
-            Self::Inc(m) => m.test(ty, last, proxy),
-            Self::Dec(m) => m.test(ty, last, proxy),
             Self::Pointer(m) => m.test(ty, last, proxy),
+            Self::Not(m) => m.test(ty, last, proxy),
         }
     }
 
     /// Construct a special matcher.
     fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {
         match self {
-            Self::Pointer(..) => Ok(Some(Special::NonZero)),
+            Self::Pointer(..) => Ok(Some(Special::NonZero(ty.size(process)))),
             Self::Binary(m) => m.special(process, ty),
+            Self::Not(m) => m.special(process, ty),
             _ => Ok(None),
         }
     }
@@ -240,147 +315,12 @@ impl Matcher {
 impl fmt::Display for Matcher {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Changed(m) => m.fmt(fmt),
-            Self::Same(m) => m.fmt(fmt),
             Self::Binary(m) => m.fmt(fmt),
             Self::All(m) => m.fmt(fmt),
             Self::Any(m) => m.fmt(fmt),
-            Self::Inc(m) => m.fmt(fmt),
-            Self::Dec(m) => m.fmt(fmt),
             Self::Pointer(m) => m.fmt(fmt),
+            Self::Not(m) => m.fmt(fmt),
         }
-    }
-}
-
-macro_rules! single_numeric_match {
-    ($expr:expr, $ty:ty, $a:ident $op:tt $b:ident) => {
-        match $expr {
-            Value::U128($b) => $a $op ($b as $ty),
-            Value::U64($b) => $a $op ($b as $ty),
-            Value::U32($b) => $a $op ($b as $ty),
-            Value::U16($b) => $a $op ($b as $ty),
-            Value::U8($b) => $a $op ($b as $ty),
-            Value::I128($b) => $a $op ($b as $ty),
-            Value::I64($b) => $a $op ($b as $ty),
-            Value::I32($b) => $a $op ($b as $ty),
-            Value::I16($b) => $a $op ($b as $ty),
-            Value::I8($b) => $a $op ($b as $ty),
-            _ => false,
-        }
-    }
-}
-
-macro_rules! numeric_match {
-    ($expr_a:expr, $expr_b:expr, $a:ident $op:tt $b:ident) => {
-        match $expr_a {
-            Value::U128($a) => single_numeric_match!($expr_b, u128, $a $op $b),
-            Value::U64($a) => single_numeric_match!($expr_b, u64, $a $op $b),
-            Value::U32($a) => single_numeric_match!($expr_b, u32, $a $op $b),
-            Value::U16($a) => single_numeric_match!($expr_b, u16, $a $op $b),
-            Value::U8($a) => single_numeric_match!($expr_b, u8, $a $op $b),
-            Value::I128($a) => single_numeric_match!($expr_b, i128, $a $op $b),
-            Value::I64($a) => single_numeric_match!($expr_b, i64, $a $op $b),
-            Value::I32($a) => single_numeric_match!($expr_b, i32, $a $op $b),
-            Value::I16($a) => single_numeric_match!($expr_b, i16, $a $op $b),
-            Value::I8($a) => single_numeric_match!($expr_b, i8, $a $op $b),
-            _ => false,
-        }
-    }
-}
-
-macro_rules! value_match {
-    ($expr_a:expr, $expr_b:expr, $a:ident $op:tt $b:ident) => {
-        match ($expr_a, $expr_b) {
-            (Value::U128($a), Value::U128($b)) => $a $op $b,
-            (Value::I128($a), Value::I128($b)) => $a $op $b,
-            (Value::U64($a), Value::U64($b)) => $a $op $b,
-            (Value::I64($a), Value::I64($b)) => $a $op $b,
-            (Value::U32($a), Value::U32($b)) => $a $op $b,
-            (Value::I32($a), Value::I32($b)) => $a $op $b,
-            (Value::U8($a), Value::U8($b)) => $a $op $b,
-            (Value::I8($a), Value::I8($b)) => $a $op $b,
-            (Value::String($a), Value::String($b)) => {
-                let len = usize::min($a.len(), $b.len());
-                let $a = &$a[..len];
-                let $b = &$b[..len];
-                $a $op $b
-            },
-            (Value::Bytes($a), Value::Bytes($b)) => {
-                let len = usize::min($a.len(), $b.len());
-                let $a = &$a[..len];
-                let $b = &$b[..len];
-                $a $op $b
-            },
-            _ => false,
-        }
-    };
-}
-
-/// Match values which are smaller than before.
-#[derive(Debug, Clone)]
-pub struct Dec;
-
-impl Dec {
-    fn test(&self, ty: Type, old: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
-        let value = proxy.eval(ty)?;
-        Ok(numeric_match!(value, *old, a < b))
-    }
-}
-
-impl fmt::Display for Dec {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "dec")
-    }
-}
-
-/// Match values which are larger than before.
-#[derive(Debug, Clone)]
-pub struct Inc;
-
-impl Inc {
-    fn test(&self, ty: Type, old: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
-        let value = proxy.eval(ty)?;
-        Ok(numeric_match!(value, *old, a > b))
-    }
-}
-
-impl fmt::Display for Inc {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "inc")
-    }
-}
-
-/// Match a value that has changed from the last scan.
-#[derive(Debug, Clone)]
-pub struct Changed;
-
-impl Changed {
-    fn test(&self, ty: Type, old: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
-        let value = proxy.eval(ty)?;
-        Ok(value != *old)
-    }
-}
-
-impl fmt::Display for Changed {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "changed")
-    }
-}
-
-/// Match a value that is the same as last scan.
-#[derive(Debug, Clone)]
-pub struct Same;
-
-impl Same {
-    fn test(&self, ty: Type, old: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
-        let value = proxy.eval(ty)?;
-        Ok(value == *old)
-    }
-}
-
-impl fmt::Display for Same {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "same")
     }
 }
 
@@ -394,26 +334,89 @@ impl Binary {
         lhs.type_hint().or(rhs.type_hint())
     }
 
-    fn test(&self, ty: Type, _: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+    fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+        macro_rules! binary_numeric {
+            ($expr:expr, $ty:ty, $a:ident $op:tt $b:ident) => {
+                match $expr {
+                    Value::U128($b) => $a $op ($b as $ty),
+                    Value::U64($b) => $a $op ($b as $ty),
+                    Value::U32($b) => $a $op ($b as $ty),
+                    Value::U16($b) => $a $op ($b as $ty),
+                    Value::U8($b) => $a $op ($b as $ty),
+                    Value::I128($b) => $a $op ($b as $ty),
+                    Value::I64($b) => $a $op ($b as $ty),
+                    Value::I32($b) => $a $op ($b as $ty),
+                    Value::I16($b) => $a $op ($b as $ty),
+                    Value::I8($b) => $a $op ($b as $ty),
+                    _ => false,
+                }
+            }
+        }
+
+        macro_rules! binary_bytes {
+            ($expr:expr, $a:ident $op:tt $b:ident) => {
+                match $expr {
+                    Value::Bytes($b) => {
+                        let len = usize::min($a.len(), $b.len());
+                        let $a = &$a[..len];
+                        let $b = &$b[..len];
+                        $a $op $b
+                    },
+                    Value::String($b) => {
+                        let len = usize::min($a.len(), $b.len());
+                        let $a = &$a[..len];
+                        let $b = &$b[..len];
+                        $a $op $b
+                    },
+                    _ => false,
+                }
+            }
+        }
+
+        macro_rules! binary {
+            ($expr_a:expr, $expr_b:expr, $a:ident $op:tt $b:ident) => {
+                match $expr_a {
+                    Value::U128($a) => binary_numeric!($expr_b, u128, $a $op $b),
+                    Value::U64($a) => binary_numeric!($expr_b, u64, $a $op $b),
+                    Value::U32($a) => binary_numeric!($expr_b, u32, $a $op $b),
+                    Value::U16($a) => binary_numeric!($expr_b, u16, $a $op $b),
+                    Value::U8($a) => binary_numeric!($expr_b, u8, $a $op $b),
+                    Value::I128($a) => binary_numeric!($expr_b, i128, $a $op $b),
+                    Value::I64($a) => binary_numeric!($expr_b, i64, $a $op $b),
+                    Value::I32($a) => binary_numeric!($expr_b, i32, $a $op $b),
+                    Value::I16($a) => binary_numeric!($expr_b, i16, $a $op $b),
+                    Value::I8($a) => binary_numeric!($expr_b, i8, $a $op $b),
+                    Value::String($a) => binary_bytes!($expr_b, $a $op $b),
+                    Value::Bytes($a) => binary_bytes!($expr_b, $a $op $b),
+                    _ => false,
+                }
+            };
+        }
+
         let Binary(op, lhs, rhs) = self;
 
-        let lhs = match lhs.eval(ty, proxy)? {
+        let lhs = match lhs.eval(ty, last, proxy)? {
             Value::None(..) => return Ok(false),
             lhs => lhs,
         };
 
-        let rhs = match rhs.eval(ty, proxy)? {
+        let rhs = match rhs.eval(ty, last, proxy)? {
             Value::None(..) => return Ok(false),
             rhs => rhs,
         };
 
+        // NB: we treat 'none' specially:
+        // The only allowed match on none is to compare against something which is strictly not equal to it, like value != none.
         Ok(match op {
-            Op::Eq => value_match!(lhs, rhs, a == b),
-            Op::Neq => value_match!(lhs, rhs, a != b),
-            Op::Lt => value_match!(lhs, rhs, a < b),
-            Op::Lte => value_match!(lhs, rhs, a <= b),
-            Op::Gt => value_match!(lhs, rhs, a > b),
-            Op::Gte => value_match!(lhs, rhs, a >= b),
+            Op::Eq => binary!(lhs, rhs, a == b),
+            Op::Neq => match (lhs, rhs) {
+                (Value::None(..), other) | (other, Value::None(..)) if other.is_some() => true,
+                (lhs, rhs) => binary!(lhs, rhs, a != b),
+            },
+            Op::Lt => binary!(lhs, rhs, a < b),
+            Op::Lte => binary!(lhs, rhs, a <= b),
+            Op::Gt => binary!(lhs, rhs, a > b),
+            Op::Gte => binary!(lhs, rhs, a >= b),
         })
     }
 
@@ -438,9 +441,15 @@ impl Binary {
         };
 
         if let Some(value) = bytes {
-            let mut buf = vec![0u8; value.size(process)];
+            let width = value.size(process);
+            let mut buf = vec![0u8; width];
             value.encode(process, &mut buf)?;
-            return Ok(Some(Special::Bytes(buf)));
+
+            if buf.iter().all(|c| *c == 0) {
+                return Ok(Some(Special::Zero(width)));
+            } else {
+                return Ok(Some(Special::Bytes(buf)));
+            }
         }
 
         // expressions that only matches non-zeroed regions.
@@ -465,7 +474,7 @@ impl Binary {
         };
 
         if non_zero {
-            return Ok(Some(Special::NonZero));
+            return Ok(Some(Special::NonZero(ty.size(process))));
         }
 
         Ok(None)
@@ -575,8 +584,8 @@ impl Pointer {
         Some(Type::Pointer)
     }
 
-    pub fn test(&self, ty: Type, _: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
-        let value = self.expr.eval(ty, proxy)?;
+    pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+        let value = self.expr.eval(ty, last, proxy)?;
 
         let address = match value {
             Value::Pointer(address) => address,
@@ -589,17 +598,56 @@ impl Pointer {
 
 impl fmt::Display for Pointer {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "pointer")
+        write!(fmt, "is pointer")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Not {
+    matcher: Box<Matcher>,
+}
+
+impl Not {
+    pub fn type_hint(&self) -> Option<Type> {
+        self.matcher.type_hint()
+    }
+
+    fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+        Ok(!self.matcher.test(ty, last, proxy)?)
+    }
+
+    pub fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {
+        // erase or fix specializations produced.
+        let special = match self.matcher.special(process, ty)? {
+            Some(special) => special,
+            None => return Ok(None),
+        };
+
+        Ok(Some(match special {
+            Special::Bytes(bytes) => Special::NotBytes(bytes),
+            Special::NotBytes(bytes) => Special::Bytes(bytes),
+            Special::NonZero(width) => Special::Zero(width),
+            Special::Zero(width) => Special::NonZero(width),
+        }))
+    }
+}
+
+impl fmt::Display for Not {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &*self.matcher {
+            Matcher::Pointer(..) => write!(fmt, "is not pointer"),
+            other => write!(fmt, "not {}", other),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{lexer, parser};
-    use std::error;
+    use super::{find_first_nonzero, is_all_zeros, lexer, parser};
+    use std::iter;
 
     #[test]
-    fn basic_parsing() -> Result<(), Box<dyn error::Error>> {
+    fn test_basic_parsing() -> anyhow::Result<()> {
         let parser = parser::OrParser::new();
         let a = parser.parse(lexer::Lexer::new("value == 1"))?;
         let b = parser.parse(lexer::Lexer::new("value == 1 and value == 2"))?;
@@ -609,6 +657,37 @@ mod tests {
         dbg!(b);
         dbg!(c);
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_find_first_nonzero() -> anyhow::Result<()> {
+        assert_eq!(Some(4), find_first_nonzero(&[0, 0, 0, 0, 5, 0, 0]));
+        assert_eq!(
+            None,
+            find_first_nonzero(&iter::repeat(0u8).take(127).collect::<Vec<_>>())
+        );
+        let test = iter::repeat(0u8)
+            .take(126)
+            .chain(iter::once(8))
+            .collect::<Vec<_>>();
+        assert_eq!(Some(126), find_first_nonzero(&test));
+        assert_ne!(0, test[126]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_is_all_zeros() -> anyhow::Result<()> {
+        assert_eq!(false, is_all_zeros(&[0, 0, 0, 0, 5, 0, 0]));
+        assert_eq!(
+            true,
+            is_all_zeros(&iter::repeat(0u8).take(127).collect::<Vec<_>>())
+        );
+        let test = iter::repeat(0u8)
+            .take(126)
+            .chain(iter::once(8))
+            .collect::<Vec<_>>();
+        assert_eq!(false, is_all_zeros(&test));
         Ok(())
     }
 }

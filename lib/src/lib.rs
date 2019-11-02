@@ -3,7 +3,6 @@ use winapi::shared::minwindef::DWORD;
 #[macro_use]
 pub mod utils;
 mod address;
-mod encode;
 mod error;
 pub mod filter;
 mod module;
@@ -22,7 +21,6 @@ pub type ProcessId = DWORD;
 pub type ThreadId = DWORD;
 
 pub use self::address::{Address, AddressRange, Offset, Size};
-pub use self::encode::Encode;
 pub use self::error::Error;
 pub use self::filter::{Filter, Matcher, ValueExpr};
 pub use self::module::Module;

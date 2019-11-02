@@ -22,12 +22,10 @@ pub enum Token {
     Value,
     /// last value known.
     Last,
+    /// `as` casting keyword.
+    As,
     /// `not` keyword.
     Not,
-    /// The special `none` value.
-    None,
-    /// Value is a pointer.
-    Pointer,
     /// `is` keyword.
     Is,
     /// `==`.
@@ -52,6 +50,12 @@ pub enum Token {
     String(String),
     /// A raw byte array.
     Bytes(Vec<u8>),
+    /// A type literal, like `u8`.
+    Type(Type),
+    /// The deref operator `*`.
+    Deref,
+    /// The addressof operator `&`.
+    AddressOf,
 }
 
 impl fmt::Display for Token {
@@ -413,9 +417,23 @@ impl<'a> Iterator for Lexer<'a> {
                     let e = self.pos();
                     return Some(Ok((s, Token::Literal(literal, ty), e)));
                 }
+                '*' => {
+                    self.step();
+                    let e = self.pos();
+                    return Some(Ok((s, Token::Deref, e)));
+                }
+                '&' => {
+                    self.step();
+                    let e = self.pos();
+                    return Some(Ok((s, Token::AddressOf, e)));
+                }
                 _ => {
                     let ident = try_iter!(self.scan_ident());
                     let e = self.pos();
+
+                    if let Ok(ty) = str::parse::<Type>(&ident) {
+                        return Some(Ok((s, Token::Type(ty), e)));
+                    }
 
                     match ident.as_str() {
                         "value" => return Some(Ok((s, Token::Value, e))),
@@ -423,9 +441,8 @@ impl<'a> Iterator for Lexer<'a> {
                         "not" => return Some(Ok((s, Token::Not, e))),
                         "and" => return Some(Ok((s, Token::And, e))),
                         "or" => return Some(Ok((s, Token::Or, e))),
-                        "pointer" => return Some(Ok((s, Token::Pointer, e))),
                         "is" => return Some(Ok((s, Token::Is, e))),
-                        "none" => return Some(Ok((s, Token::None, e))),
+                        "as" => return Some(Ok((s, Token::As, e))),
                         string => {
                             return Some(Ok((s, Token::String(string.to_string()), e)));
                         }

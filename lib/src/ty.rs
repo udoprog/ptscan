@@ -140,33 +140,38 @@ impl Type {
     pub fn decode(&self, process: &Process, buf: &[u8]) -> Result<Value, Error> {
         // Decode a buffer, and depending on its width decode it differently.
         macro_rules! decode_buf {
-            ($buf:expr, $ty:ty) => {
-                match $buf.len() {
-                    1 => $buf[0] as $ty,
-                    2 => byteorder::LittleEndian::read_u16($buf) as $ty,
-                    4 => byteorder::LittleEndian::read_u32($buf) as $ty,
-                    8 => byteorder::LittleEndian::read_u64($buf) as $ty,
-                    16 => byteorder::LittleEndian::read_u128($buf) as $ty,
-                    _ => return Ok(Value::None(Type::None)),
+            ($buf:expr, $ty:ty, $reader:ident) => {{
+                if buf.len() != std::mem::size_of::<$ty>() {
+                    return Err(Error::BufferOverflow(std::mem::size_of::<$ty>(), buf.len()));
                 }
-            };
+
+                process.$reader($buf) as $ty
+            }};
         }
 
-        use byteorder::ByteOrder;
+        macro_rules! decode_byte {
+            ($buf:expr, $ty:ty) => {{
+                if buf.is_empty() {
+                    return Err(Error::BufferOverflow(1, buf.len()));
+                }
+
+                buf[0] as $ty
+            }};
+        }
 
         Ok(match *self {
             Self::None => Value::None(Type::None),
             Type::Pointer => Value::Pointer(Address::decode(process, buf)?),
-            Self::U8 => Value::U8(decode_buf!(buf, u8)),
-            Self::I8 => Value::I8(decode_buf!(buf, i8)),
-            Self::U16 => Value::U16(decode_buf!(buf, u16)),
-            Self::I16 => Value::I16(decode_buf!(buf, i16)),
-            Self::U32 => Value::U32(decode_buf!(buf, u32)),
-            Self::I32 => Value::I32(decode_buf!(buf, i32)),
-            Self::U64 => Value::U64(decode_buf!(buf, u64)),
-            Self::I64 => Value::I64(decode_buf!(buf, i64)),
-            Self::U128 => Value::U128(decode_buf!(buf, u128)),
-            Self::I128 => Value::I128(decode_buf!(buf, i128)),
+            Self::U8 => Value::U8(decode_byte!(buf, u8)),
+            Self::I8 => Value::I8(decode_byte!(buf, i8)),
+            Self::U16 => Value::U16(decode_buf!(buf, u16, read_u16)),
+            Self::I16 => Value::I16(decode_buf!(buf, i16, read_u16)),
+            Self::U32 => Value::U32(decode_buf!(buf, u32, read_u32)),
+            Self::I32 => Value::I32(decode_buf!(buf, i32, read_u32)),
+            Self::U64 => Value::U64(decode_buf!(buf, u64, read_u64)),
+            Self::I64 => Value::I64(decode_buf!(buf, i64, read_u64)),
+            Self::U128 => Value::U128(decode_buf!(buf, u128, read_u128)),
+            Self::I128 => Value::I128(decode_buf!(buf, i128, read_u128)),
             Self::String(..) => Value::String(buf.to_vec()),
             Self::Bytes(..) => Value::Bytes(buf.to_vec()),
         })
@@ -246,6 +251,7 @@ impl str::FromStr for Type {
 
                 Type::Bytes(size)
             }
+            "none" => Type::None,
             other => return Err(Error::IllegalType(other.to_string())),
         };
 

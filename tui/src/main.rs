@@ -298,7 +298,7 @@ impl Application {
 
                 handle.process.resume()?;
             }
-            Action::Print { limit } => {
+            Action::Print { limit, expr } => {
                 if let Some(limit) = limit {
                     self.limit = limit;
                 }
@@ -306,6 +306,15 @@ impl Application {
                 let scan = match self.scans.get_mut(&self.current_scan) {
                     Some(scan) => scan,
                     None => bail!("No active scan"),
+                };
+
+                if let (Some(expr), Some(handle)) = (&expr, self.handle.as_ref()) {
+                    let (last_type, value_expr) =
+                        ValueExpr::parse(expr, scan.last_type, &handle.process)?;
+
+                    // update value expression used.
+                    scan.last_type = Some(last_type);
+                    scan.value_expr = value_expr;
                 };
 
                 let mut stored;
@@ -317,8 +326,9 @@ impl Application {
                         &self.thread_pool,
                         &mut stored,
                         None,
-                        None,
+                        scan.last_type,
                         NoopProgress,
+                        &scan.value_expr,
                     )?;
                     results = &stored;
                 }
@@ -330,18 +340,20 @@ impl Application {
                     &mut self.term,
                     scan.len(),
                     results.iter().map(|r| &**r).enumerate(),
+                    &scan.value_expr,
                 )?;
             }
             Action::Watch {
                 limit,
                 filter,
                 change_length,
+                incremental,
             } => {
                 if let Some(limit) = limit {
                     self.limit = limit;
                 }
 
-                self.watch(filter.as_ref(), change_length)?;
+                self.watch(filter.as_ref(), change_length, incremental)?;
             }
             Action::Del { index } => {
                 let scan = match self.scans.get_mut(&self.current_scan) {
@@ -373,10 +385,12 @@ impl Application {
 
                 let ty = scan.last_type.unwrap_or(Type::U32);
 
-                let value = match self.handle.as_ref() {
+                let (last_address, value) = match self.handle.as_ref() {
                     Some(handle) => handle.address_proxy(&pointer).eval(ty)?,
-                    None => Value::None(ty),
+                    None => (None, Value::None(ty)),
                 };
+
+                pointer.last_address = last_address;
 
                 if let Some(handle) = &self.handle {
                     let base = match pointer.base {
@@ -411,6 +425,7 @@ impl Application {
                     None,
                     new_type,
                     SimpleProgress::new(&mut self.term, "Refreshing values"),
+                    &scan.value_expr,
                 )?;
 
                 if let Some(new_type) = new_type {
@@ -422,6 +437,7 @@ impl Application {
                     &mut self.term,
                     scan.len(),
                     scan.results.iter().take(len).map(|r| &**r).enumerate(),
+                    &scan.value_expr,
                 )?;
             }
             Action::PointerScan {
@@ -536,6 +552,7 @@ impl Application {
             let serialized = SerializedScan {
                 results: &scan.results,
                 last_type: scan.last_type,
+                value_expr: &scan.value_expr,
             };
 
             let mut f = File::create(current_file)
@@ -566,6 +583,7 @@ impl Application {
             results: &'a [Box<ScanResult>],
             #[serde(default, skip_serializing_if = "Option::is_none")]
             last_type: Option<Type>,
+            value_expr: &'a ValueExpr,
         }
     }
 
@@ -603,6 +621,7 @@ impl Application {
             }
 
             scan.last_type = deserialized.last_type;
+            scan.value_expr = deserialized.value_expr;
             scan.initial = false;
         }
 
@@ -619,10 +638,17 @@ impl Application {
             results: Vec<Box<ScanResult>>,
             #[serde(default, skip_serializing_if = "Option::is_none")]
             last_type: Option<Type>,
+            #[serde(default)]
+            value_expr: ValueExpr,
         }
     }
 
-    fn watch(&mut self, filter: Option<&Filter>, change_length: usize) -> anyhow::Result<()> {
+    fn watch(
+        &mut self,
+        filter: Option<&Filter>,
+        change_length: usize,
+        incremental: bool,
+    ) -> anyhow::Result<()> {
         use std::{
             sync::atomic::{AtomicBool, Ordering},
             thread,
@@ -680,6 +706,7 @@ impl Application {
 
         let term = &mut self.term;
         let borrowed_stated = &mut states;
+        let value_expr = &scan.value_expr;
 
         rayon::scope(|s| {
             s.spawn(move |_| {
@@ -695,6 +722,8 @@ impl Application {
                     &handle,
                     change_length,
                     filter,
+                    incremental,
+                    value_expr,
                 )
                 .expect("refresh loop panicked");
             });
@@ -760,9 +789,9 @@ impl Application {
             handle: &ProcessHandle,
             change_length: usize,
             filter: Option<&Filter>,
+            incremental: bool,
+            value_expr: &ValueExpr,
         ) -> anyhow::Result<()> {
-            let mut info_changed = true;
-
             let pointers = updates
                 .iter()
                 .map(|r| r.pointer.clone())
@@ -778,25 +807,35 @@ impl Application {
                 }
             }
 
-            write_results(term, &pointers, states)?;
+            let info = format!(
+                "Refresh rate: {:?} (Press `q` or CTRL+C to stop watching)",
+                refresh_rate,
+            );
+
+            if incremental {
+                term.write_line(info)?;
+            } else {
+                term.write_on_line(info_line, info)?;
+            }
+
+            write_results(term, &pointers, states, incremental)?;
 
             while !exit.load(Ordering::Acquire) {
-                if info_changed {
-                    term.write_on_line(
-                        info_line,
-                        format!(
-                            "Refresh rate: {:?} (Press `q` or CTRL+C to stop watching)",
-                            refresh_rate,
-                        ),
-                    )?;
+                if let Err(e) = handle.refresh_values(
+                    thread_pool,
+                    updates,
+                    None,
+                    None,
+                    NoopProgress,
+                    value_expr,
+                ) {
+                    let m = format!("Error refreshing values: {}", e);
 
-                    info_changed = false;
-                }
-
-                if let Err(e) =
-                    handle.refresh_values(thread_pool, updates, None, None, NoopProgress)
-                {
-                    term.write_on_line(error_line, format!("Error refreshing values: {}", e))?;
+                    if incremental {
+                        term.write_line(m)?;
+                    } else {
+                        term.write_on_line(error_line, m)?;
+                    }
                 }
 
                 let mut any_changed = false;
@@ -831,7 +870,7 @@ impl Application {
                 }
 
                 if any_changed {
-                    write_results(term, &pointers, states)?;
+                    write_results(term, &pointers, states, incremental)?;
                 }
 
                 term.cursor.hide()?;
@@ -845,6 +884,7 @@ impl Application {
             term: &mut Term,
             pointers: &[Pointer],
             states: &mut [State],
+            incremental: bool,
         ) -> anyhow::Result<()> {
             use std::fmt::Write as _;
 
@@ -889,8 +929,11 @@ impl Application {
                     write!(buf, " (filtered){}", Colored::Fg(Color::Reset))?;
                 }
 
-                term.cursor.goto(0, (index as u16) * 2)?;
-                term.terminal.clear(ClearType::CurrentLine)?;
+                if !incremental {
+                    term.cursor.goto(0, (index as u16) * 2)?;
+                    term.terminal.clear(ClearType::CurrentLine)?;
+                }
+
                 term.write_line(buf)?;
                 state.changed = false;
             }
@@ -1135,6 +1178,7 @@ impl Application {
             &mut self.term,
             scan.len(),
             scan[..len].iter().map(|r| &**r).enumerate(),
+            &scan.value_expr,
         )?;
 
         Ok(())
@@ -1224,16 +1268,34 @@ impl Application {
         term: &mut Term,
         len: usize,
         results: impl IntoIterator<Item = (usize, &'a ScanResult)>,
+        value_expr: &ValueExpr,
     ) -> anyhow::Result<()> {
+        use std::fmt::Write as _;
+
+        let mut buf = String::new();
         let mut count = 0;
 
         for (index, result) in results {
             count += 1;
+
+            buf.clear();
+
+            write!(buf, "{:>03} : {}", index, result.pointer)?;
+
+            if ValueExpr::Value != *value_expr {
+                write!(buf, " : {}", value_expr)?;
+            }
+
+            write!(buf, " = {}", result.value)?;
+
             term.terminal.clear(ClearType::CurrentLine)?;
-            term.write_line(format!(
-                "{:>03} : {} = {}",
-                index, result.pointer, result.value
-            ))?;
+            term.write_line(&buf)?;
+        }
+
+        if count == 0 {
+            term.terminal.clear(ClearType::CurrentLine)?;
+            term.write_line("no matching addresses")?;
+            return Ok(());
         }
 
         if count < len {
@@ -1345,6 +1407,12 @@ impl Application {
                         .long("limit")
                         .value_name("number")
                         .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("expr")
+                        .help("Value expression to use when printing.")
+                        .value_name("expr")
+                        .multiple(true),
                 ),
         );
 
@@ -1358,6 +1426,12 @@ impl Application {
                         .long("limit")
                         .value_name("number")
                         .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("incremental")
+                        .help("Show results incrementally instead of all at once (recommended for big watch sets).")
+                        .long("incremental")
+                        .short("i")
                 )
                 .arg(
                     Arg::with_name("length")
@@ -1545,7 +1619,13 @@ impl Application {
             ("help", _) => return Ok(Action::Help),
             ("print", Some(m)) => {
                 let limit = m.value_of("limit").map(str::parse).transpose()?;
-                return Ok(Action::Print { limit });
+
+                let expr = match m.values_of("expr") {
+                    Some(values) => Some(values.collect::<Vec<_>>().join(" ")),
+                    None => None,
+                };
+
+                return Ok(Action::Print { limit, expr });
             }
             ("watch", Some(m)) => {
                 let limit = m.value_of("limit").map(str::parse).transpose()?;
@@ -1554,8 +1634,14 @@ impl Application {
                     Some(filter) => {
                         let last_type =
                             self.scans.get(&self.current_scan).and_then(|s| s.last_type);
-                        let process = self.handle.as_ref().map(|h| &h.process);
-                        Some(Filter::parse(&filter, process, last_type)?)
+
+                        let process = self
+                            .handle
+                            .as_ref()
+                            .map(|h| &h.process)
+                            .ok_or_else(|| anyhow!("must be attached to process"))?;
+
+                        Some(Filter::parse(&filter, last_type, process)?)
                     }
                     None => None,
                 };
@@ -1565,10 +1651,14 @@ impl Application {
                     .map(str::parse)
                     .transpose()?
                     .unwrap_or(5);
+
+                let incremental = m.is_present("incremental");
+
                 return Ok(Action::Watch {
                     limit,
                     filter,
                     change_length,
+                    incremental,
                 });
             }
             ("switch", Some(m)) => {
@@ -1610,8 +1700,14 @@ impl Application {
                 };
 
                 let last_type = self.scans.get(&self.current_scan).and_then(|s| s.last_type);
-                let process = self.handle.as_ref().map(|h| &h.process);
-                let filter = Filter::parse(&filter, process, ty.or(last_type))?;
+
+                let process = self
+                    .handle
+                    .as_ref()
+                    .map(|h| &h.process)
+                    .ok_or_else(|| anyhow!("must be attached to process"))?;
+
+                let filter = Filter::parse(&filter, ty.or(last_type), process)?;
 
                 let mut config = ScanConfig::default();
                 config.modules_only = m.is_present("modules-only");
@@ -1811,12 +1907,15 @@ pub enum Action {
     /// Print results from scan.
     Print {
         limit: Option<usize>,
+        /// Expression to use when printing.
+        expr: Option<String>,
     },
     /// Watch changes to the scan.
     Watch {
         limit: Option<usize>,
         filter: Option<Filter>,
         change_length: usize,
+        incremental: bool,
     },
     /// Delete the given address from the current scan.
     Del {

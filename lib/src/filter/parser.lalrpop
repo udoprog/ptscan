@@ -1,5 +1,5 @@
 // vim: ft=rust
-use crate::{Type, filter::{ValueExpr, lexer::Token, ast::*}};
+use crate::{Type, filter::{lexer::Token, ast::*}};
 use num_bigint::BigInt;
 
 grammar<'input>;
@@ -26,17 +26,24 @@ And: Expression = {
     Filter,
 }
 
-ValueExpr: ValueExpr = {
+InnerValueExpr: ValueExpr = {
     "value" => ValueExpr::Value,
     "last" => ValueExpr::Last,
     <number:number> => ValueExpr::Number(number.0, number.1),
     <string:"string"> => ValueExpr::String(string),
     <bytes:bytes> => ValueExpr::Bytes(bytes),
+    "*" <expr:InnerValueExpr> => ValueExpr::Deref(Box::new(expr)),
+    "&" <expr:InnerValueExpr> => ValueExpr::AddressOf(Box::new(expr)),
 };
 
+pub ValueExpr: ValueExpr = {
+    <expr:InnerValueExpr> => expr,
+    <expr:InnerValueExpr> as <ty:ty> => ValueExpr::As(Box::new(expr), ty),
+}
+
 Filter: Expression = {
-    <expr:ValueExpr> is pointer => Expression::IsPointer(expr),
-    <expr:ValueExpr> is not pointer => Expression::Not(Box::new(Expression::IsPointer(expr))),
+    <expr:ValueExpr> is <ty:ty> => Expression::IsType(expr, ty),
+    <expr:ValueExpr> is not <ty:ty> => Expression::Not(Box::new(Expression::IsType(expr, ty))),
     <lhs:ValueExpr> "==" <rhs:ValueExpr> => Expression::Binary(Op::Eq, lhs, rhs),
     <lhs:ValueExpr> "!=" <rhs:ValueExpr> => Expression::Binary(Op::Neq, lhs, rhs),
     <lhs:ValueExpr> "<=" <rhs:ValueExpr> => Expression::Binary(Op::Lte, lhs, rhs),
@@ -55,9 +62,8 @@ extern {
         and => Token::And,
         or => Token::Or,
         is => Token::Is,
-        pointer => Token::Pointer,
+        as => Token::As,
         not => Token::Not,
-        none => Token::None,
         "==" => Token::Eq,
         "!=" => Token::Neq,
         "<=" => Token::Lte,
@@ -66,8 +72,11 @@ extern {
         ">" => Token::Gt,
         "(" => Token::OpenParen,
         ")" => Token::CloseParen,
+        "*" => Token::Deref,
+        "&" => Token::AddressOf,
         number => Token::Literal(<BigInt>, <Option<Type>>),
         "string" => Token::String(<String>),
         bytes => Token::Bytes(<Vec<u8>>),
+        ty => Token::Type(<Type>),
     }
 }

@@ -77,6 +77,11 @@ impl Pointer {
         }
     }
 
+    /// Construct a new pointer from an address.
+    pub fn from_address(address: Address) -> Self {
+        Self::new(PointerBase::Address { address }, vec![], None)
+    }
+
     /// Follow, using default memory resolution.
     pub fn follow_default(&self, handle: &ProcessHandle) -> anyhow::Result<Option<Address>> {
         Self::do_follow_default(&self.base, &self.offsets, handle)
@@ -148,8 +153,16 @@ impl fmt::Display for Pointer {
             write!(fmt, " -> {}", o)?;
         }
 
-        if let Some(address) = &self.last_address {
-            write!(fmt, " ({})", address)?;
+        let last_address = match (&self.base, self.last_address) {
+            (PointerBase::Address { address }, Some(last_address)) if *address != last_address => {
+                Some(last_address)
+            }
+            (PointerBase::Module { .. }, Some(address)) => Some(address),
+            _ => None,
+        };
+
+        if let Some(address) = last_address {
+            write!(fmt, " => {}", address)?;
         }
 
         Ok(())

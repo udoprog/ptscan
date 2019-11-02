@@ -2,7 +2,7 @@
 
 use crate::{
     error::Error,
-    filter,
+    filter::{self, ValueExpr},
     process::MemoryInformation,
     scan::{self, ScanProgress, ScanResult},
     system,
@@ -341,10 +341,11 @@ impl ProcessHandle {
                                 let proxy = self.address_proxy(&result.pointer);
 
                                 if filter.test(&result.value, proxy)? {
-                                    results.push(Box::new(ScanResult {
-                                        pointer: result.pointer.clone(),
-                                        value: proxy.eval(filter.ty)?,
-                                    }));
+                                    let (last_address, value) = proxy.eval(filter.ty)?;
+                                    let mut pointer = result.pointer.clone();
+                                    pointer.last_address = last_address;
+
+                                    results.push(Box::new(ScanResult { pointer, value }));
 
                                     return Ok(Task::Accepted);
                                 }
@@ -442,6 +443,7 @@ impl ProcessHandle {
         cancel: Option<&Token>,
         new_type: Option<Type>,
         progress: (impl ScanProgress + Send),
+        expr: &ValueExpr,
     ) -> anyhow::Result<()> {
         use std::sync::mpsc;
 
@@ -471,8 +473,6 @@ impl ProcessHandle {
                     let tx = tx.clone();
                     let p_rx = p_rx.clone();
 
-                    let mut buf = vec![0u8; 0x10];
-
                     s.spawn(move |_| loop {
                         let result = match p_rx.recv().expect("closed") {
                             Some(task) => task,
@@ -483,46 +483,18 @@ impl ProcessHandle {
                         };
 
                         let ty = new_type.unwrap_or_else(|| result.value.ty());
-                        let needed = ty.size(&self.process);
-
-                        if buf.len() < needed {
-                            buf.extend(
-                                std::iter::repeat(0u8).take(needed.saturating_sub(buf.len())),
-                            );
-                        }
-
-                        let buf = &mut buf[..needed];
 
                         let mut work = move || {
-                            let address = result.pointer.follow_default(self)?;
+                            let proxy = self.address_proxy(&result.pointer);
+                            let (address, value) = expr.eval(ty, &result.value, proxy)?;
+                            result.value = value;
+                            result.pointer.last_address = address;
 
-                            let address = match address {
-                                Some(address) => address,
-                                None => {
-                                    result.value = Value::None(ty);
-                                    return Ok(0u64);
-                                }
-                            };
-
-                            if !self.process.read_process_memory(address, buf)? {
-                                return Ok(0u64);
+                            if result.value.is_some() {
+                                Ok(1)
+                            } else {
+                                Ok(0)
                             }
-
-                            result.value = match ty.decode(&self.process, buf) {
-                                Ok(value) => value,
-                                Err(_) => Value::None(ty),
-                            };
-
-                            if result.pointer.last_address.is_none() {
-                                let address = Pointer::do_follow_default(
-                                    &result.pointer.base,
-                                    &result.pointer.offsets,
-                                    self,
-                                )?;
-                                result.pointer.last_address = address;
-                            }
-
-                            Ok(1)
                         };
 
                         tx.send(Some(work())).expect("closed");
@@ -584,13 +556,13 @@ impl ProcessHandle {
 #[derive(Debug, Clone, Copy)]
 pub struct AddressProxy<'a> {
     pointer: &'a Pointer,
-    handle: &'a ProcessHandle,
+    pub(crate) handle: &'a ProcessHandle,
     memory_cache: Option<&'a MemoryCache>,
 }
 
 impl AddressProxy<'_> {
     /// Evaluate the pointer of the proxy.
-    pub fn eval(&self, ty: Type) -> anyhow::Result<Value> {
+    pub fn eval(&self, ty: Type) -> anyhow::Result<(Option<Address>, Value)> {
         let mut buf = vec![0u8; ty.size(&self.handle.process)];
 
         if let Some(memory_cache) = self.memory_cache {
@@ -600,32 +572,50 @@ impl AddressProxy<'_> {
 
             let address = match address {
                 Some(address) => address,
-                None => return Ok(Value::None(ty)),
+                None => return Ok((None, Value::None(ty))),
             };
 
-            if memory_cache.read_process_memory(&self.handle.process, address, &mut buf)? {
-                return Ok(match ty.decode(&self.handle.process, &buf) {
-                    Ok(value) => value,
-                    Err(..) => Value::None(ty),
-                });
-            }
+            let value =
+                if memory_cache.read_process_memory(&self.handle.process, address, &mut buf)? {
+                    match ty.decode(&self.handle.process, &buf) {
+                        Ok(value) => value,
+                        Err(..) => Value::None(ty),
+                    }
+                } else {
+                    Value::None(ty)
+                };
+
+            Ok((Some(address), value))
         } else {
             let address = self.pointer.follow_default(self.handle)?;
 
             let address = match address {
                 Some(address) => address,
-                None => return Ok(Value::None(ty)),
+                None => return Ok((None, Value::None(ty))),
             };
 
-            if self.handle.process.read_process_memory(address, &mut buf)? {
-                return Ok(match ty.decode(&self.handle.process, &buf) {
+            let value = if self.handle.process.read_process_memory(address, &mut buf)? {
+                match ty.decode(&self.handle.process, &buf) {
                     Ok(value) => value,
                     Err(..) => Value::None(ty),
-                });
-            }
-        }
+                }
+            } else {
+                Value::None(ty)
+            };
 
-        Ok(Value::None(ty))
+            Ok((Some(address), value))
+        }
+    }
+
+    /// Follow the address this proxy refers to.
+    pub fn follow_default(&self) -> anyhow::Result<Option<Address>> {
+        Ok(if let Some(memory_cache) = self.memory_cache {
+            self.pointer.follow(self.handle, |a, buf| {
+                memory_cache.read_process_memory(&self.handle.process, a, buf)
+            })?
+        } else {
+            self.pointer.follow_default(self.handle)?
+        })
     }
 }
 

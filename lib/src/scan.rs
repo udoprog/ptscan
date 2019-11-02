@@ -2,7 +2,7 @@
 
 use crate::{
     error::Error, filter, Address, AddressRange, Pointer, PointerBase, ProcessHandle, Size, Token,
-    Type, Value,
+    Type, Value, ValueExpr,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -39,6 +39,8 @@ pub struct Scan {
     pub last_type: Option<Type>,
     /// Scan results.
     pub results: Vec<Box<ScanResult>>,
+    /// Value expression being used for resolving the current value.
+    pub value_expr: ValueExpr,
 }
 
 impl Scan {
@@ -50,6 +52,7 @@ impl Scan {
             last_type: None,
             thread_pool: Arc::clone(thread_pool),
             results: Vec::new(),
+            value_expr: ValueExpr::Value,
         }
     }
 
@@ -65,6 +68,7 @@ impl Scan {
             last_type: Some(last_type),
             thread_pool: Arc::clone(thread_pool),
             results,
+            value_expr: ValueExpr::Value,
         }
     }
 
@@ -227,7 +231,7 @@ impl Scan {
 
                 let mut hits = 0u64;
 
-                while task_count > 0 && !cancel.test() {
+                while task_count > 0 {
                     match rx.recv().expect("channel closed") {
                         Task::Done(result, ..) => {
                             if let Some(mut r) = reporter.eval(result) {
@@ -356,8 +360,9 @@ impl Scan {
 
                 if filter.test(none, proxy)? {
                     *hits += 1;
-                    let value = proxy.eval(filter.ty)?;
+                    let (last_address, value) = proxy.eval(filter.ty)?;
                     pointer.base = handle.address_to_pointer_base(address)?;
+                    pointer.last_address = last_address;
                     results.push(Box::new(ScanResult { pointer, value }));
                 }
 

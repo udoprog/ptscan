@@ -29,6 +29,66 @@ impl Process {
         }
     }
 
+    pub fn read_u16(&self, buf: &[u8]) -> u16 {
+        use byteorder::ByteOrder as _;
+        // FUTURE TODO: take endianness into account for remote scans.
+        byteorder::NativeEndian::read_u16(buf)
+    }
+
+    pub fn read_u32(&self, buf: &[u8]) -> u32 {
+        use byteorder::ByteOrder as _;
+        // FUTURE TODO: take endianness into account for remote scans.
+        byteorder::NativeEndian::read_u32(buf)
+    }
+
+    pub fn read_u64(&self, buf: &[u8]) -> u64 {
+        use byteorder::ByteOrder as _;
+        // FUTURE TODO: take endianness into account for remote scans.
+        byteorder::NativeEndian::read_u64(buf)
+    }
+
+    pub fn read_u128(&self, buf: &[u8]) -> u128 {
+        use byteorder::ByteOrder as _;
+        // FUTURE TODO: take endianness into account for remote scans.
+        byteorder::NativeEndian::read_u128(buf)
+    }
+
+    pub fn encode_u16(&self, buf: &mut [u8], value: u16) {
+        use byteorder::ByteOrder as _;
+        byteorder::NativeEndian::write_u16(buf, value)
+    }
+
+    pub fn encode_u32(&self, buf: &mut [u8], value: u32) {
+        use byteorder::ByteOrder as _;
+        byteorder::NativeEndian::write_u32(buf, value)
+    }
+
+    pub fn encode_u64(&self, buf: &mut [u8], value: u64) {
+        use byteorder::ByteOrder as _;
+        byteorder::NativeEndian::write_u64(buf, value)
+    }
+
+    pub fn encode_u128(&self, buf: &mut [u8], value: u128) {
+        use byteorder::ByteOrder as _;
+        byteorder::NativeEndian::write_u128(buf, value)
+    }
+
+    /// Encode a pointer into the specified buffer.
+    pub fn encode_pointer(&self, buf: &mut [u8], value: u64) -> anyhow::Result<(), Error> {
+        assert!(buf.len() == self.pointer_width);
+
+        match self.pointer_width {
+            8 => self.encode_u64(buf, value),
+            4 => {
+                let value = u32::try_from(value).map_err(|_| Error::PointerConversionError)?;
+                self.encode_u32(buf, value);
+            }
+            n => return Err(Error::UnsupportedPointerWidth(n)),
+        }
+
+        Ok(())
+    }
+
     /// Get the name of the process.
     pub fn module_base_name(&self) -> Result<ffi::OsString, Error> {
         crate::utils::string(|buf, len| unsafe {
@@ -121,6 +181,7 @@ impl Process {
             Err(ref e) if e.raw_os_error() == Some(winerror::ERROR_PARTIAL_COPY as i32) => {
                 Ok(false)
             }
+            Err(ref e) if e.raw_os_error() == Some(winerror::ERROR_NOACCESS as i32) => Ok(false),
             Err(e) => Err(e),
         }
     }
@@ -137,18 +198,6 @@ impl Process {
         }
 
         Ok(ty.decode(self, buf)?)
-    }
-
-    /// Read a 64-bit memory region as a little endian unsigned integer.
-    pub fn read_u64(&self, address: Address) -> Result<u64, Error> {
-        use byteorder::{ByteOrder, LittleEndian};
-        let mut out = [0u8; std::mem::size_of::<u64>()];
-
-        if !self.read_process_memory(address, &mut out)? {
-            return Err(Error::ReadUnderflow);
-        }
-
-        Ok(LittleEndian::read_u64(&out))
     }
 
     /// Retrieve information about the memory page that corresponds to the given virtual `address`.

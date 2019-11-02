@@ -1,4 +1,10 @@
-use crate::{filter, process::Process};
+use crate::{
+    filter::{self, Matcher},
+    process::Process,
+    value, Offset, Type,
+};
+use anyhow::bail;
+use num_bigint::BigInt;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy)]
@@ -25,9 +31,82 @@ impl fmt::Display for Op {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueExpr {
+    /// The value of the address.
+    Value,
+    /// The last known value.
+    Last,
+    /// addressof `&<value>`.
+    AddressOf(Box<ValueExpr>),
+    /// deref `*<value>`
+    Deref(Box<ValueExpr>),
+    /// Offset
+    Offset(Box<ValueExpr>, Offset),
+    /// A numerical literal.
+    Number(BigInt, Option<Type>),
+    /// A string literal.
+    String(String),
+    /// A number of raw bytes.
+    Bytes(Vec<u8>),
+    /// Casting a value.
+    As(Box<ValueExpr>, Type),
+}
+
+impl ValueExpr {
+    /// Get a hint at what type to use for this expression.
+    pub fn type_from_hint(&self, external: Option<Type>) -> Option<Type> {
+        let implicit = match self {
+            Self::Number(.., ty) => Some(ty.unwrap_or(Type::U32)),
+            Self::String(s) => Some(Type::String(s.len())),
+            Self::Bytes(s) => Some(Type::Bytes(s.len())),
+            Self::AddressOf(..) => Some(Type::Pointer),
+            _ => None,
+        };
+
+        let explicit = match self {
+            Self::As(_, ty) => Some(*ty),
+            _ => None,
+        };
+
+        explicit.or(external).or(implicit)
+    }
+
+    /// Evaluate the expression.
+    pub fn eval(self, ty: Type, process: &Process) -> anyhow::Result<filter::ValueExpr> {
+        use filter::ValueExpr::*;
+
+        Ok(match self {
+            Self::Value => Value,
+            Self::Last => Last,
+            Self::Offset(value, offset) => Offset {
+                value: Box::new(value.eval(ty, process)?),
+                offset,
+            },
+            Self::Number(number, _) => Literal {
+                value: value::Value::from_bigint(ty, &number)?,
+            },
+            Self::String(string) => Literal {
+                value: ty.decode(process, string.as_bytes())?,
+            },
+            Self::Bytes(bytes) => Literal {
+                value: ty.decode(process, &bytes)?,
+            },
+            Self::As(value, ty) => value.eval(ty, process)?,
+            Self::AddressOf(value) => AddressOf {
+                value: Box::new(value.eval(ty, process)?),
+            },
+            Self::Deref(value) => Deref {
+                value: Box::new(value.eval(ty, process)?),
+            },
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueTrait {
     IsValue,
     IsDeref,
+    IsNone,
     NonZero,
     Zero,
 }
@@ -37,9 +116,9 @@ pub enum Expression {
     /// Invert the truth value of an expression.
     Not(Box<Expression>),
     /// Value expression _is a pointer_.
-    IsPointer(filter::ValueExpr),
+    IsType(ValueExpr, Type),
     /// Test that the value equals the expected value.
-    Binary(Op, filter::ValueExpr, filter::ValueExpr),
+    Binary(Op, ValueExpr, ValueExpr),
     /// Multiple expressions and:ed together.
     And(Vec<Expression>),
     /// Multiple expressions or:ed together.
@@ -47,42 +126,54 @@ pub enum Expression {
 }
 
 impl Expression {
+    pub fn type_from_hint(&self, ty: Option<Type>) -> Option<Type> {
+        match self {
+            Self::Not(expr) => expr.type_from_hint(ty),
+            Self::IsType(_, ty) => Some(*ty),
+            Self::Binary(_, lhs, rhs) => lhs.type_from_hint(ty).or(rhs.type_from_hint(ty)),
+            Self::And(exprs) | Self::Or(exprs) => {
+                exprs.iter().flat_map(|e| e.type_from_hint(ty)).next()
+            }
+        }
+    }
+
     /// Convert expression into a matcher.
-    pub fn into_matcher(self, process: Option<&Process>) -> anyhow::Result<filter::Matcher> {
-        use self::Expression::*;
-
+    pub fn into_matcher(self, ty: Type, process: &Process) -> anyhow::Result<Matcher> {
         Ok(match self {
-            Not(expr) => {
-                let matcher = expr.into_matcher(process)?;
+            Self::Not(expr) => {
+                let matcher = expr.into_matcher(ty, process)?;
 
-                filter::Matcher::Not(filter::Not {
+                Matcher::Not(filter::Not {
                     matcher: Box::new(matcher),
                 })
             }
-            Binary(op, lhs, rhs) => filter::Matcher::Binary(filter::Binary(op, lhs, rhs)),
-            IsPointer(expr) => {
-                let process = match process {
-                    Some(process) => process,
-                    None => {
-                        anyhow::bail!("can only perform pointer matching when attached to process")
-                    }
-                };
+            Self::Binary(op, lhs, rhs) => {
+                let lhs = lhs.eval(ty, process)?;
+                let rhs = rhs.eval(ty, process)?;
+                Matcher::Binary(filter::Binary(op, lhs, rhs))
+            }
+            Self::IsType(expr, ty) => {
+                let expr = expr.eval(ty, process)?;
 
-                filter::Matcher::Pointer(filter::Pointer::new(expr, process)?)
+                match ty {
+                    Type::Pointer => Matcher::IsPointer(filter::IsPointer::new(expr, process)?),
+                    Type::None => Matcher::IsNone(filter::IsNone::new(expr)?),
+                    ty => bail!("cannot type check for {}", ty),
+                }
             }
-            And(expressions) => {
+            Self::And(expressions) => {
                 let filters = expressions
                     .into_iter()
-                    .map(|e| e.into_matcher(process))
-                    .collect::<anyhow::Result<Vec<filter::Matcher>>>()?;
-                filter::Matcher::All(filter::All::new(filters))
+                    .map(|e| e.into_matcher(ty, process))
+                    .collect::<anyhow::Result<Vec<Matcher>>>()?;
+                Matcher::All(filter::All::new(filters))
             }
-            Or(expressions) => {
+            Self::Or(expressions) => {
                 let filters = expressions
                     .into_iter()
-                    .map(|e| e.into_matcher(process))
-                    .collect::<anyhow::Result<Vec<filter::Matcher>>>()?;
-                filter::Matcher::Any(filter::Any::new(filters))
+                    .map(|e| e.into_matcher(ty, process))
+                    .collect::<anyhow::Result<Vec<Matcher>>>()?;
+                Matcher::Any(filter::Any::new(filters))
             }
         })
     }

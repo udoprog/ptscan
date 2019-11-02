@@ -14,7 +14,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Default, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct Address(u64);
+pub struct Address(pub(crate) u64);
 
 impl Address {
     /// Construct a new address.
@@ -22,18 +22,26 @@ impl Address {
         Self(value)
     }
 
-    pub fn decode(process: &Process, buf: &[u8]) -> Result<Self, Error> {
-        use byteorder::ByteOrder as _;
+    /// If the address is null.
+    pub fn is_null(&self) -> bool {
+        self.0 == 0
+    }
 
-        assert!(buf.len() == process.pointer_width);
+    pub fn decode(process: &Process, buf: &[u8]) -> Result<Self, Error> {
+        assert!(
+            buf.len() == process.pointer_width,
+            "{} (buffer length) != {} (pointer width)",
+            buf.len(),
+            process.pointer_width
+        );
 
         match process.pointer_width {
             8 => {
-                let address = byteorder::LittleEndian::read_u64(buf);
+                let address = process.read_u64(buf);
                 Ok(Address(address))
             }
             4 => {
-                let address = byteorder::LittleEndian::read_u32(buf);
+                let address = process.read_u32(buf);
                 Ok(Address(address as u64))
             }
             n => Err(Error::UnsupportedPointerWidth(n)),
@@ -42,19 +50,7 @@ impl Address {
 
     /// Encode the address in a process-dependent manner.
     pub fn encode(&self, process: &Process, buf: &mut [u8]) -> anyhow::Result<(), Error> {
-        use crate::encode::Encode as _;
-
-        assert!(buf.len() == process.pointer_width);
-
-        match process.pointer_width {
-            8 => self.0.encode(buf),
-            4 => u32::try_from(self.0)
-                .map_err(|_| Error::PointerConversionError)?
-                .encode(buf),
-            n => return Err(Error::UnsupportedPointerWidth(n)),
-        }
-
-        Ok(())
+        Ok(process.encode_pointer(buf, self.0)?)
     }
 
     /// Add an offset in a checked manner.

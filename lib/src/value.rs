@@ -1,11 +1,11 @@
 use crate::{
-    encode::Encode,
     error::Error,
     filter::ast::{EscapeString, Hex},
     process::Process,
     Address, Type,
 };
 use anyhow::bail;
+use num_bigint::Sign;
 use serde::{Deserialize, Serialize};
 use std::{fmt, mem, str};
 
@@ -52,6 +52,74 @@ impl Value {
         }
     }
 
+    pub fn is_none(&self) -> bool {
+        match *self {
+            Value::None(..) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_zero(&self) -> Option<bool> {
+        Some(match *self {
+            Self::None(..) => return None,
+            Self::Pointer(address) => address.is_null(),
+            Self::U8(value) => value == 0,
+            Self::I8(value) => value == 0,
+            Self::U16(value) => value == 0,
+            Self::I16(value) => value == 0,
+            Self::U32(value) => value == 0,
+            Self::I32(value) => value == 0,
+            Self::U64(value) => value == 0,
+            Self::I64(value) => value == 0,
+            Self::U128(value) => value == 0,
+            Self::I128(value) => value == 0,
+            Self::String(ref bytes) | Self::Bytes(ref bytes) => bytes.iter().all(|c| *c == 0),
+        })
+    }
+
+    pub fn sign(&self) -> Sign {
+        macro_rules! signed {
+            ($expr:expr) => {
+                match $expr.signum() {
+                    -1 => Sign::Minus,
+                    1 => Sign::Plus,
+                    _ => Sign::NoSign,
+                }
+            };
+        }
+
+        macro_rules! unsigned {
+            ($expr:expr) => {
+                if $expr > 0 {
+                    Sign::Plus
+                } else {
+                    Sign::NoSign
+                }
+            };
+        }
+
+        match *self {
+            Self::Pointer(address) => {
+                if address.is_null() {
+                    Sign::Plus
+                } else {
+                    Sign::NoSign
+                }
+            }
+            Self::U8(value) => unsigned!(value),
+            Self::I8(value) => signed!(value),
+            Self::U16(value) => unsigned!(value),
+            Self::I16(value) => signed!(value),
+            Self::U32(value) => unsigned!(value),
+            Self::I32(value) => signed!(value),
+            Self::U64(value) => unsigned!(value),
+            Self::I64(value) => signed!(value),
+            Self::U128(value) => unsigned!(value),
+            Self::I128(value) => signed!(value),
+            _ => Sign::NoSign,
+        }
+    }
+
     /// Test if value is aligned by default or not.
     pub fn is_default_aligned(&self) -> bool {
         match self {
@@ -68,7 +136,6 @@ impl Value {
         use std::convert::TryFrom;
 
         let out = match *self {
-            Self::None(..) => bail!("nothing cannot be made into address"),
             Self::Pointer(address) => address,
             Self::U8(value) => Address::try_from(value)?,
             Self::I8(value) => Address::try_from(value)?,
@@ -80,6 +147,7 @@ impl Value {
             Self::I64(value) => Address::try_from(value)?,
             Self::U128(value) => Address::try_from(value)?,
             Self::I128(value) => Address::try_from(value)?,
+            Self::None(..) => bail!("nothing cannot be made into address"),
             Self::String(..) => bail!("string cannot be made into address"),
             Self::Bytes(..) => bail!("bytes cannot be made into address"),
         };
@@ -89,21 +157,27 @@ impl Value {
 
     /// Encode the given buffer into a value.
     pub fn encode(&self, process: &Process, buf: &mut [u8]) -> Result<(), Error> {
-        match self {
+        match *self {
             Self::None(..) => (),
             Self::Pointer(address) => address.encode(process, buf)?,
-            Self::U8(value) => value.encode(buf),
-            Self::I8(value) => value.encode(buf),
-            Self::U16(value) => value.encode(buf),
-            Self::I16(value) => value.encode(buf),
-            Self::U32(value) => value.encode(buf),
-            Self::I32(value) => value.encode(buf),
-            Self::U64(value) => value.encode(buf),
-            Self::I64(value) => value.encode(buf),
-            Self::U128(value) => value.encode(buf),
-            Self::I128(value) => value.encode(buf),
-            Self::String(string) => string.encode(buf),
-            Self::Bytes(bytes) => bytes.encode(buf),
+            Self::U8(value) => {
+                buf[0] = value;
+            }
+            Self::I8(value) => {
+                buf[0] = value as u8;
+            }
+            Self::U16(value) => process.encode_u16(buf, value),
+            Self::I16(value) => process.encode_u16(buf, value as u16),
+            Self::U32(value) => process.encode_u32(buf, value),
+            Self::I32(value) => process.encode_u32(buf, value as u32),
+            Self::U64(value) => process.encode_u64(buf, value),
+            Self::I64(value) => process.encode_u64(buf, value as u64),
+            Self::U128(value) => process.encode_u128(buf, value),
+            Self::I128(value) => process.encode_u128(buf, value as u128),
+            Self::String(ref bytes) | Self::Bytes(ref bytes) => {
+                let len = usize::min(bytes.len(), buf.len());
+                buf[..len].clone_from_slice(&bytes[..len]);
+            }
         }
 
         Ok(())
@@ -174,6 +248,7 @@ impl Value {
         use num::ToPrimitive;
 
         let out = match ty {
+            Type::Pointer => value.to_u64().map(|v| Value::Pointer(Address(v))),
             Type::U8 => value.to_u8().map(Value::U8),
             Type::I8 => value.to_i8().map(Value::I8),
             Type::U16 => value.to_u16().map(Value::U16),

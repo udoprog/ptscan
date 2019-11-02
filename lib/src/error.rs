@@ -25,8 +25,8 @@ pub enum Error {
     BadRegionType(DWORD),
     #[error("read underflow")]
     ReadUnderflow,
-    #[error("buffer too small")]
-    BufferOverflow,
+    #[error("buffer too small, expected {0} bytes but got {1}")]
+    BufferOverflow(usize, usize),
     #[error("failed to open process: {0}")]
     OpenProcess(ProcessId),
     #[error("failed to build thread interface: {0}")]

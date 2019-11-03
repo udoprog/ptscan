@@ -42,6 +42,8 @@ pub enum Token {
     Gt,
     /// `^`.
     Caret,
+    /// `~`.
+    Tilde,
     /// `(`.
     OpenParen,
     /// `)`.
@@ -415,6 +417,11 @@ impl<'a> Iterator for Lexer<'a> {
                     self.step();
                     let e = self.pos();
                     return Some(Ok((s, Token::Caret, e)));
+                }
+                '~' => {
+                    self.step();
+                    let e = self.pos();
+                    return Some(Ok((s, Token::Tilde, e)));
                 }
                 '{' => {
                     self.step();

@@ -104,6 +104,23 @@ impl ValueExpr {
     }
 }
 
+impl fmt::Display for ValueExpr {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Value => "value".fmt(fmt),
+            Self::Last => "last".fmt(fmt),
+            Self::AddressOf(expr) => write!(fmt, "&{}", expr),
+            Self::Deref(expr) => write!(fmt, "*{}", expr),
+            Self::Offset(expr, offset) => write!(fmt, "{} {}", expr, offset),
+            Self::Number(number, Some(ty)) => write!(fmt, "{}{}", number, ty),
+            Self::Number(number, None) => write!(fmt, "{}", number),
+            Self::String(s) => EscapeString(s).fmt(fmt),
+            Self::Bytes(bytes) => Hex(bytes).fmt(fmt),
+            Self::As(expr, ty) => write!(fmt, "{} as {}", expr, ty),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueTrait {
     IsValue,
@@ -125,6 +142,8 @@ pub enum Expression {
     And(Vec<Expression>),
     /// Multiple expressions or:ed together.
     Or(Vec<Expression>),
+    /// Match a value against a regular expression.
+    Regex(ValueExpr, ValueExpr),
 }
 
 impl Expression {
@@ -136,6 +155,7 @@ impl Expression {
             Self::And(exprs) | Self::Or(exprs) => {
                 exprs.iter().flat_map(|e| e.type_from_hint()).next()
             }
+            Self::Regex(..) => Some(Type::String(255)),
         }
     }
 
@@ -177,27 +197,35 @@ impl Expression {
                     .collect::<anyhow::Result<Vec<Matcher>>>()?;
                 Matcher::Any(filter::Any::new(filters))
             }
+            Self::Regex(expr, pattern) => {
+                let expr = expr.eval(ty, process)?;
+
+                let regex = match pattern {
+                    ValueExpr::String(s) => regex::bytes::Regex::new(&s)?,
+                    other => bail!("cannot use expression {} as a regular expression", other),
+                };
+
+                Matcher::Regex(filter::Regex::new(expr, regex))
+            }
         })
     }
 }
 
-pub struct EscapeString<'a>(pub &'a [u8]);
+pub struct EscapeString<'a>(pub &'a str);
 
 impl fmt::Display for EscapeString<'_> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "\"")?;
 
-        for c in self.0 {
+        for c in self.0.chars() {
             match c {
-                b'\\' => write!(fmt, "\\\\")?,
-                b'"' => write!(fmt, "\\\"")?,
-                b' ' => write!(fmt, " ")?,
-                b'\t' => write!(fmt, "\\t")?,
-                b'\n' => write!(fmt, "\\n")?,
-                b'\r' => write!(fmt, "\\r")?,
-                b'\0' => break,
-                c if *c < 0x80 => write!(fmt, "{}", *c as char)?,
-                c => write!(fmt, "\\x{:02x}", c)?,
+                '\\' => write!(fmt, "\\\\")?,
+                '"' => write!(fmt, "\\\"")?,
+                ' ' => write!(fmt, " ")?,
+                '\t' => write!(fmt, "\\t")?,
+                '\n' => write!(fmt, "\\n")?,
+                '\r' => write!(fmt, "\\r")?,
+                c => write!(fmt, "{}", c)?,
             }
         }
 

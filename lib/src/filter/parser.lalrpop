@@ -51,6 +51,7 @@ Filter: Expression = {
     <lhs:ValueExpr> "<" <rhs:ValueExpr> => Expression::Binary(Op::Lt, lhs, rhs),
     <lhs:ValueExpr> ">" <rhs:ValueExpr> => Expression::Binary(Op::Gt, lhs, rhs),
     <lhs:ValueExpr> "^" <rhs:ValueExpr> => Expression::Binary(Op::StartsWith, lhs, rhs),
+    <expr:ValueExpr> "~" <pattern:ValueExpr> => Expression::Regex(expr, pattern),
 };
 
 extern {
@@ -72,6 +73,7 @@ extern {
         "<" => Token::Lt,
         ">" => Token::Gt,
         "^" => Token::Caret,
+        "~" => Token::Tilde,
         "(" => Token::OpenParen,
         ")" => Token::CloseParen,
         "*" => Token::Deref,

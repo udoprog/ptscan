@@ -197,6 +197,8 @@ pub enum Special {
     All(Vec<Special>),
     /// Any of the inner specials match.
     Any(Vec<Special>),
+    /// Special seek for a regular expression.
+    Regex(regex::bytes::Regex),
 }
 
 impl Special {
@@ -272,6 +274,10 @@ impl Special {
 
                 None
             }
+            Self::Regex(ref regex) => match regex.find(data) {
+                Some(m) => Some(m.start()),
+                None => None,
+            },
         }
     }
 }
@@ -349,6 +355,7 @@ pub enum Matcher {
     IsPointer(IsPointer),
     IsNone(IsNone),
     Not(Not),
+    Regex(Regex),
 }
 
 impl Matcher {
@@ -372,6 +379,7 @@ impl Matcher {
             Self::IsPointer(m) => m.test(ty, last, proxy),
             Self::IsNone(m) => m.test(ty, last, proxy),
             Self::Not(m) => m.test(ty, last, proxy),
+            Self::Regex(m) => m.test(ty, last, proxy),
         }
     }
 
@@ -384,6 +392,7 @@ impl Matcher {
             Self::IsPointer(..) => Ok(Some(Special::NonZero(ty.size(process)))),
             Self::IsNone(..) => Ok(None),
             Self::Not(m) => m.special(process, ty),
+            Self::Regex(m) => m.special(),
         }
     }
 }
@@ -397,6 +406,7 @@ impl fmt::Display for Matcher {
             Self::IsPointer(m) => m.fmt(fmt),
             Self::IsNone(m) => m.fmt(fmt),
             Self::Not(m) => m.fmt(fmt),
+            Self::Regex(m) => m.fmt(fmt),
         }
     }
 }
@@ -428,27 +438,6 @@ impl Binary {
             }
         }
 
-        macro_rules! binary_bytes {
-            ($expr:expr, $a:ident $op:tt $b:ident) => {
-                match $expr {
-                    Value::Bytes($b) => {
-                        let len = usize::min($a.len(), $b.len());
-                        let $a = &$a[..len];
-                        let $b = &$b[..len];
-                        $a $op $b
-                    },
-                    Value::String($b, ..) => {
-                        let len = usize::min($a.len(), $b.len());
-                        let $a = &$a[..len];
-                        let $b = &$b[..len];
-                        $a $op $b
-                    },
-                    Value::None(..) => return Ok(Test::Undefined),
-                    _ => false,
-                }
-            }
-        }
-
         macro_rules! binary {
             ($expr_a:expr, $expr_b:expr, $a:ident $op:tt $b:ident) => {
                 match $expr_a {
@@ -466,14 +455,29 @@ impl Binary {
                     Value::String($a, ..) => match $expr_b {
                         Value::Bytes($b) => {
                             let len = usize::min($a.len(), $b.len());
-                            let $a = &$a[..len];
+                            let $a = &$a.as_bytes()[..len];
                             let $b = &$b[..len];
                             $a $op $b
                         },
                         Value::String($b, ..) => $a $op $b,
                         _ => false,
                     },
-                    Value::Bytes($a) => binary_bytes!($expr_b, $a $op $b),
+                    Value::Bytes($a) => match $expr_b {
+                        Value::Bytes($b) => {
+                            let len = usize::min($a.len(), $b.len());
+                            let $a = &$a[..len];
+                            let $b = &$b[..len];
+                            $a $op $b
+                        },
+                        Value::String($b, ..) => {
+                            let len = usize::min($a.len(), $b.len());
+                            let $a = &$a[..len];
+                            let $b = &$b.as_bytes()[..len];
+                            $a $op $b
+                        },
+                        Value::None(..) => return Ok(Test::Undefined),
+                        _ => false,
+                    },
                     Value::None(..) => return Ok(Test::Undefined),
                 }
             };
@@ -500,11 +504,11 @@ impl Binary {
             Op::StartsWith => match lhs {
                 Value::String(lhs, ..) => match rhs {
                     Value::String(rhs, ..) => lhs.starts_with(&rhs),
-                    Value::Bytes(rhs) => lhs.starts_with(&rhs),
+                    Value::Bytes(rhs) => lhs.as_bytes().starts_with(&rhs),
                     _ => false,
                 },
                 Value::Bytes(lhs, ..) => match rhs {
-                    Value::String(rhs, ..) => lhs.starts_with(&rhs),
+                    Value::String(rhs, ..) => lhs.starts_with(rhs.as_bytes()),
                     Value::Bytes(rhs) => lhs.starts_with(&rhs),
                     _ => false,
                 },
@@ -527,6 +531,7 @@ impl Binary {
             (Op::Eq, Literal { value }, Value) | (Op::Eq, Value, Literal { value }) => {
                 Some(value.clone())
             }
+            (Op::StartsWith, Value, Literal { value }) => Some(value.clone()),
             _ => None,
         };
 
@@ -753,6 +758,41 @@ impl IsNone {
 }
 
 impl fmt::Display for IsNone {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "is none")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Regex {
+    expr: ValueExpr,
+    regex: regex::bytes::Regex,
+}
+
+impl Regex {
+    pub fn new(expr: ValueExpr, regex: regex::bytes::Regex) -> Self {
+        Self { expr, regex }
+    }
+
+    pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
+        let (_, value) = self.expr.eval(ty, last, proxy)?;
+
+        let bytes = match &value {
+            Value::Bytes(bytes) => &bytes[..],
+            Value::String(s, ..) => s.as_bytes(),
+            Value::None(..) => return Ok(Test::Undefined),
+            _ => return Ok(Test::False),
+        };
+
+        Ok(self.regex.is_match(bytes).into())
+    }
+
+    pub fn special(&self) -> anyhow::Result<Option<Special>> {
+        Ok(Some(Special::Regex(self.regex.clone())))
+    }
+}
+
+impl fmt::Display for Regex {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "is none")
     }

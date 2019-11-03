@@ -173,13 +173,17 @@ impl Type {
             Self::U128 => Value::U128(decode_buf!(buf, u128, read_u128)),
             Self::I128 => Value::I128(decode_buf!(buf, i128, read_u128)),
             Self::String(len) => {
-                let zero_len = match memchr::memchr(0, buf) {
-                    Some(index) => index,
-                    None => buf.len(),
+                let buf = match memchr::memchr(0, buf) {
+                    Some(len) => &buf[..len],
+                    None => buf,
                 };
 
-                let len = usize::min(len, zero_len);
-                Value::String(buf[..len].to_vec(), len)
+                let s = match std::str::from_utf8(buf) {
+                    Err(e) => std::str::from_utf8(&buf[..e.valid_up_to()]).expect("valid utf-8"),
+                    Ok(s) => s,
+                };
+
+                Value::String(s.to_string(), len)
             }
             Self::Bytes(..) => Value::Bytes(buf.to_vec()),
         })

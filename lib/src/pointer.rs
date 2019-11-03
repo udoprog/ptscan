@@ -39,7 +39,7 @@ impl fmt::Display for PointerBase {
         match self {
             PointerBase::Address { address } => fmt::Display::fmt(address, fmt),
             PointerBase::Module { name, offset } => {
-                write!(fmt, "{}", EscapeString(name.as_bytes()))?;
+                write!(fmt, "{}", EscapeString(name))?;
 
                 if offset.abs() > 0 {
                     match offset.sign() {

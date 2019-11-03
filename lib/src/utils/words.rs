@@ -64,8 +64,6 @@ impl<'a> Words<'a> {
             't' => self.buffer.push('\t'),
             'r' => self.buffer.push('\r'),
             'n' => self.buffer.push('\n'),
-            '\'' => self.buffer.push('\''),
-            '"' => self.buffer.push('"'),
             o => self.buffer.push(o),
         }
     }

@@ -38,7 +38,7 @@ pub enum Value {
     #[serde(rename = "i128")]
     I128(i128),
     #[serde(rename = "string")]
-    String(Vec<u8>, usize),
+    String(String, usize),
     #[serde(rename = "bytes")]
     Bytes(Vec<u8>),
 }
@@ -73,7 +73,8 @@ impl Value {
             Self::I64(value) => value == 0,
             Self::U128(value) => value == 0,
             Self::I128(value) => value == 0,
-            Self::String(ref bytes, ..) | Self::Bytes(ref bytes) => bytes.iter().all(|c| *c == 0),
+            Self::String(ref s, ..) => s.as_bytes().iter().all(|c| *c == 0),
+            Self::Bytes(ref bytes) => bytes.iter().all(|c| *c == 0),
         })
     }
 
@@ -174,7 +175,11 @@ impl Value {
             Self::I64(value) => process.encode_u64(buf, value as u64),
             Self::U128(value) => process.encode_u128(buf, value),
             Self::I128(value) => process.encode_u128(buf, value as u128),
-            Self::String(ref bytes, ..) | Self::Bytes(ref bytes) => {
+            Self::String(ref s, ..) => {
+                let len = usize::min(s.len(), buf.len());
+                buf[..len].clone_from_slice(&s.as_bytes()[..len]);
+            }
+            Self::Bytes(ref bytes) => {
                 let len = usize::min(bytes.len(), buf.len());
                 buf[..len].clone_from_slice(&bytes[..len]);
             }
@@ -218,7 +223,7 @@ impl Value {
             Self::I64(..) => Type::I64,
             Self::U128(..) => Type::U128,
             Self::I128(..) => Type::I128,
-            Self::String(.., len) => Type::String(len),
+            Self::String(_, len) => Type::String(len),
             Self::Bytes(ref bytes) => Type::Bytes(bytes.len()),
         }
     }

@@ -2,13 +2,13 @@
 
 use crate::{
     error::Error, filter, Address, AddressRange, Pointer, PointerBase, ProcessHandle, Size, Token,
-    Type, Value, ValueExpr,
+    Value, ValueExpr,
 };
 use serde::{Deserialize, Serialize};
 use std::{
     convert::TryFrom as _,
     ops, slice,
-    sync::{mpsc, Arc},
+    sync::mpsc,
     time::{Duration, Instant},
 };
 
@@ -28,45 +28,37 @@ pub trait ScanProgress {
 }
 
 /// A scan responsible for finding results in memory.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scan {
-    /// Thread pool this scan uses.
-    pub thread_pool: Arc<rayon::ThreadPool>,
     /// Only scan for aligned values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aligned: Option<bool>,
     /// If this scan has a set of initial results.
     pub initial: bool,
-    /// Last type used during a scan.
-    pub last_type: Option<Type>,
     /// Scan results.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub results: Vec<Box<ScanResult>>,
     /// Value expression being used for resolving the current value.
+    #[serde(default, skip_serializing_if = "ValueExpr::is_default")]
     pub value_expr: ValueExpr,
 }
 
 impl Scan {
     /// Construct a new scan associated with a thread pool.
-    pub fn new(thread_pool: &Arc<rayon::ThreadPool>) -> Self {
+    pub fn new() -> Self {
         Self {
             aligned: None,
             initial: true,
-            last_type: None,
-            thread_pool: Arc::clone(thread_pool),
             results: Vec::new(),
             value_expr: ValueExpr::Value,
         }
     }
 
     /// Construct a scan from an already existing collection of results.
-    pub fn from_results(
-        thread_pool: &Arc<rayon::ThreadPool>,
-        last_type: Type,
-        results: Vec<Box<ScanResult>>,
-    ) -> Self {
+    pub fn from_results(results: Vec<Box<ScanResult>>) -> Self {
         Self {
             aligned: None,
             initial: false,
-            last_type: Some(last_type),
-            thread_pool: Arc::clone(thread_pool),
             results,
             value_expr: ValueExpr::Value,
         }
@@ -98,23 +90,21 @@ impl Scan {
     /// rescan a set of results.
     pub fn scan(
         &mut self,
+        thread_pool: &rayon::ThreadPool,
         handle: &ProcessHandle,
         filter: &filter::Filter,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
     ) -> anyhow::Result<()> {
         let mut results = Vec::new();
-
         handle.rescan_values(
-            &*self.thread_pool,
+            thread_pool,
             &self.results,
             &mut results,
             filter,
             cancel,
             progress,
         )?;
-
-        self.last_type = Some(filter.ty);
         self.results = results;
         Ok(())
     }
@@ -135,6 +125,7 @@ impl Scan {
     /// error will be propagated to the user.
     pub fn initial_scan(
         &mut self,
+        thread_pool: &rayon::ThreadPool,
         handle: &ProcessHandle,
         filter: &filter::Filter,
         cancel: Option<&Token>,
@@ -152,12 +143,9 @@ impl Scan {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        self.last_type = Some(filter.ty);
-
         let Scan {
             ref mut results,
             aligned,
-            ref thread_pool,
             ..
         } = *self;
 
@@ -400,6 +388,12 @@ impl Scan {
                 *to_align -= rem;
             }
         }
+    }
+}
+
+impl Default for Scan {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

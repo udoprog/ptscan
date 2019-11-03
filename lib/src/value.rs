@@ -38,7 +38,7 @@ pub enum Value {
     #[serde(rename = "i128")]
     I128(i128),
     #[serde(rename = "string")]
-    String(Vec<u8>),
+    String(Vec<u8>, usize),
     #[serde(rename = "bytes")]
     Bytes(Vec<u8>),
 }
@@ -73,7 +73,7 @@ impl Value {
             Self::I64(value) => value == 0,
             Self::U128(value) => value == 0,
             Self::I128(value) => value == 0,
-            Self::String(ref bytes) | Self::Bytes(ref bytes) => bytes.iter().all(|c| *c == 0),
+            Self::String(ref bytes, ..) | Self::Bytes(ref bytes) => bytes.iter().all(|c| *c == 0),
         })
     }
 
@@ -174,7 +174,7 @@ impl Value {
             Self::I64(value) => process.encode_u64(buf, value as u64),
             Self::U128(value) => process.encode_u128(buf, value),
             Self::I128(value) => process.encode_u128(buf, value as u128),
-            Self::String(ref bytes) | Self::Bytes(ref bytes) => {
+            Self::String(ref bytes, ..) | Self::Bytes(ref bytes) => {
                 let len = usize::min(bytes.len(), buf.len());
                 buf[..len].clone_from_slice(&bytes[..len]);
             }
@@ -205,8 +205,8 @@ impl Value {
 
     /// Get the type of the value.
     pub fn ty(&self) -> Type {
-        match self {
-            Self::None(ty) => *ty,
+        match *self {
+            Self::None(ty) => ty,
             Self::Pointer(..) => Type::Pointer,
             Self::U8(..) => Type::U8,
             Self::I8(..) => Type::I8,
@@ -218,8 +218,8 @@ impl Value {
             Self::I64(..) => Type::I64,
             Self::U128(..) => Type::U128,
             Self::I128(..) => Type::I128,
-            Self::String(string) => Type::String(string.len()),
-            Self::Bytes(bytes) => Type::Bytes(bytes.len()),
+            Self::String(.., len) => Type::String(len),
+            Self::Bytes(ref bytes) => Type::Bytes(bytes.len()),
         }
     }
 
@@ -238,7 +238,7 @@ impl Value {
             Self::I64(..) => mem::size_of::<i64>(),
             Self::U128(..) => mem::size_of::<u128>(),
             Self::I128(..) => mem::size_of::<i128>(),
-            Self::String(string) => string.len(),
+            Self::String(string, ..) => string.len(),
             Self::Bytes(bytes) => bytes.len(),
         }
     }
@@ -319,8 +319,8 @@ impl fmt::Display for Value {
             Value::I64(value) => write!(fmt, "{}", value),
             Value::U128(value) => write!(fmt, "{}", value),
             Value::I128(value) => write!(fmt, "{}", value),
-            Value::String(string) => write!(fmt, "{}", EscapeString(&*string)),
-            Value::Bytes(bytes) => write!(fmt, "{}", Hex(&*bytes)),
+            Value::String(string, ..) => write!(fmt, "{}", EscapeString(&*string)),
+            Value::Bytes(bytes) => write!(fmt, "{{{}}}", Hex(&*bytes)),
         }
     }
 }

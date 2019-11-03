@@ -50,6 +50,7 @@ Filter: Expression = {
     <lhs:ValueExpr> ">=" <rhs:ValueExpr> => Expression::Binary(Op::Gte, lhs, rhs),
     <lhs:ValueExpr> "<" <rhs:ValueExpr> => Expression::Binary(Op::Lt, lhs, rhs),
     <lhs:ValueExpr> ">" <rhs:ValueExpr> => Expression::Binary(Op::Gt, lhs, rhs),
+    <lhs:ValueExpr> "^" <rhs:ValueExpr> => Expression::Binary(Op::StartsWith, lhs, rhs),
 };
 
 extern {
@@ -70,6 +71,7 @@ extern {
         ">=" => Token::Gte,
         "<" => Token::Lt,
         ">" => Token::Gt,
+        "^" => Token::Caret,
         "(" => Token::OpenParen,
         ")" => Token::CloseParen,
         "*" => Token::Deref,

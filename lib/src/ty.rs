@@ -60,7 +60,7 @@ impl Type {
             Self::I64 => Value::I64(Default::default()),
             Self::U128 => Value::U128(Default::default()),
             Self::I128 => Value::I128(Default::default()),
-            Self::String(..) => Value::String(Default::default()),
+            Self::String(len) => Value::String(Default::default(), len),
             Self::Bytes(..) => Value::Bytes(Default::default()),
         }
     }
@@ -172,7 +172,15 @@ impl Type {
             Self::I64 => Value::I64(decode_buf!(buf, i64, read_u64)),
             Self::U128 => Value::U128(decode_buf!(buf, u128, read_u128)),
             Self::I128 => Value::I128(decode_buf!(buf, i128, read_u128)),
-            Self::String(..) => Value::String(buf.to_vec()),
+            Self::String(len) => {
+                let zero_len = match memchr::memchr(0, buf) {
+                    Some(index) => index,
+                    None => buf.len(),
+                };
+
+                let len = usize::min(len, zero_len);
+                Value::String(buf[..len].to_vec(), len)
+            }
             Self::Bytes(..) => Value::Bytes(buf.to_vec()),
         })
     }

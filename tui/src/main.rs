@@ -7,7 +7,6 @@ use ptscan::{
     PointerBase, ProcessHandle, ProcessId, Scan, ScanProgress, ScanResult, Size, Token, Type,
     Value, ValueExpr,
 };
-use serde::{Deserialize, Serialize};
 use std::{collections::VecDeque, fs::File, io, path::PathBuf, sync::Arc, time::Instant};
 
 use crossterm::{
@@ -227,7 +226,7 @@ impl Application {
         action: Action,
     ) -> anyhow::Result<bool> {
         match action {
-            Action::ScanList => {
+            Action::List => {
                 if self.scans.is_empty() {
                     self.term.write_line("No scans")?;
                     return Ok(false);
@@ -240,23 +239,7 @@ impl Application {
                         .write_line(format!(" - `{}` with {} result(s)", key, s.len()))?;
                 }
             }
-            Action::ScanNew { name } => {
-                if self.scans.contains_key(&name) {
-                    bail!("there is already a scan named `{}`", name);
-                }
-
-                self.scans
-                    .insert(name.clone(), Scan::new(&self.thread_pool));
-                self.current_scan = name;
-            }
-            Action::ScanDel { name } => {
-                if self.scans.remove(&name).is_none() {
-                    bail!("no such scan `{}`", name);
-                }
-
-                self.term.write_line(format!("removed scan `{}`", name))?;
-            }
-            Action::ScanSwitch { name } => {
+            Action::Switch { name } => {
                 self.term.write_line(format!("Switch to scan `{}`", name))?;
                 self.current_scan = name;
             }
@@ -298,7 +281,7 @@ impl Application {
 
                 handle.process.resume()?;
             }
-            Action::Print { limit, expr } => {
+            Action::Print { limit, expr, ty } => {
                 if let Some(limit) = limit {
                     self.limit = limit;
                 }
@@ -308,13 +291,10 @@ impl Application {
                     None => bail!("No active scan"),
                 };
 
-                if let (Some(expr), Some(handle)) = (&expr, self.handle.as_ref()) {
-                    let (last_type, value_expr) =
-                        ValueExpr::parse(expr, scan.last_type, &handle.process)?;
-
-                    // update value expression used.
-                    scan.last_type = Some(last_type);
-                    scan.value_expr = value_expr;
+                let value_expr = if let (Some(expr), Some(handle)) = (&expr, self.handle.as_ref()) {
+                    ValueExpr::parse(expr, ty, &handle.process)?
+                } else {
+                    ValueExpr::Value
                 };
 
                 let mut stored;
@@ -326,9 +306,9 @@ impl Application {
                         &self.thread_pool,
                         &mut stored,
                         None,
-                        scan.last_type,
+                        ty,
                         NoopProgress,
-                        &scan.value_expr,
+                        &value_expr,
                     )?;
                     results = &stored;
                 }
@@ -370,20 +350,13 @@ impl Application {
             Action::Add { mut pointer, ty } => {
                 let Application {
                     ref mut scans,
-                    ref thread_pool,
                     ref current_scan,
                     ..
                 } = self;
 
-                let scan = scans
-                    .entry(current_scan.clone())
-                    .or_insert_with(|| Scan::new(thread_pool));
+                let scan = scans.entry(current_scan.clone()).or_default();
 
-                if let Some(ty) = ty {
-                    scan.last_type = Some(ty);
-                }
-
-                let ty = scan.last_type.unwrap_or(Type::U32);
+                let ty = ty.unwrap_or(Type::U32);
 
                 let (last_address, value) = match self.handle.as_ref() {
                     Some(handle) => handle.address_proxy(&pointer).eval(ty)?,
@@ -408,7 +381,7 @@ impl Application {
             Action::Scan { filter, config } => {
                 self.scan(&filter, None, config)?;
             }
-            Action::Refresh { new_type } => {
+            Action::Refresh { ty, expr, indexes } => {
                 let handle = match self.handle.as_ref() {
                     Some(handle) => handle,
                     None => bail!("not attached to a process"),
@@ -419,17 +392,36 @@ impl Application {
                     None => bail!("no active scan to refresh!"),
                 };
 
+                let mut stored = vec![];
+                let mut replace = vec![];
+                let mut results = &mut scan.results[..];
+
+                if !indexes.is_empty() {
+                    for index in indexes {
+                        if let Some(result) = scan.results.get_mut(index) {
+                            stored.push(result.clone());
+                            replace.push(index);
+                        }
+                    }
+
+                    results = &mut stored[..];
+                }
+
+                if let (Some(expr), Some(handle)) = (&expr, self.handle.as_ref()) {
+                    scan.value_expr = ValueExpr::parse(expr, ty, &handle.process)?;
+                };
+
                 handle.refresh_values(
                     &self.thread_pool,
-                    &mut scan.results,
+                    results,
                     None,
-                    new_type,
+                    ty,
                     SimpleProgress::new(&mut self.term, "Refreshing values"),
                     &scan.value_expr,
                 )?;
 
-                if let Some(new_type) = new_type {
-                    scan.last_type = Some(new_type);
+                for (index, result) in replace.into_iter().zip(stored.into_iter()) {
+                    scan.results[index] = result;
                 }
 
                 let len = usize::min(scan.len(), self.limit);
@@ -449,16 +441,22 @@ impl Application {
                 let value_type = value_type.unwrap_or(Type::None);
                 self.pointer_scan(name, address, append, value_type)?;
             }
-            Action::Reset => match self.scans.get_mut(&self.current_scan) {
-                Some(scan) => {
-                    scan.clear();
-                    scan.initial = true;
-                    scan.last_type = None;
+            Action::Reset { name } => {
+                let name = name
+                    .as_ref()
+                    .map(String::as_str)
+                    .unwrap_or(self.current_scan.as_str());
+
+                match self.scans.get_mut(name) {
+                    Some(scan) => {
+                        scan.clear();
+                        scan.initial = true;
+                    }
+                    None => {
+                        self.term.write_line(format!("no scan in use"))?;
+                    }
                 }
-                None => {
-                    self.term.write_line(format!("no scan in use"))?;
-                }
-            },
+            }
             Action::Save {
                 file,
                 scan,
@@ -510,23 +508,6 @@ impl Application {
 
                 scan.results.sort_by(|a, b| a.pointer.cmp(&b.pointer));
             }
-            Action::Set(pointer, value) => {
-                let handle = match self.handle.as_ref() {
-                    Some(handle) => handle,
-                    None => bail!("not attached to a process"),
-                };
-
-                let address = pointer.follow_default(handle)?;
-
-                if let Some(address) = address {
-                    let mut buf = vec![0u8; value.size(&handle.process)];
-                    value.encode(&handle.process, &mut buf)?;
-                    handle.process.write_process_memory(address, &buf)?;
-                } else {
-                    self.term
-                        .write_line(format!("Invalid address to write to"))?;
-                }
-            }
         }
 
         Ok(false)
@@ -536,7 +517,6 @@ impl Application {
         use flate2::{write::GzEncoder, Compression};
 
         let Self {
-            ref thread_pool,
             ref mut scans,
             ref current_file,
             ..
@@ -545,25 +525,17 @@ impl Application {
         let scan = scan.unwrap_or(self.current_scan.as_str());
 
         let count = {
-            let scan = scans
-                .entry(scan.to_string())
-                .or_insert_with(|| Scan::new(thread_pool));
-
-            let serialized = SerializedScan {
-                results: &scan.results,
-                last_type: scan.last_type,
-                value_expr: &scan.value_expr,
-            };
+            let scan = scans.entry(scan.to_string()).or_default();
 
             let mut f = File::create(current_file)
                 .with_context(|| anyhow!("failed to create file `{}`", current_file.display()))?;
 
             if self.current_compress {
                 let mut f = GzEncoder::new(&mut f, Compression::default());
-                self.current_format.serialize(&mut f, &serialized)?;
+                self.current_format.serialize(&mut f, scan)?;
                 f.finish()?;
             } else {
-                self.current_format.serialize(&mut f, &serialized)?
+                self.current_format.serialize(&mut f, scan)?
             };
 
             scan.results.len()
@@ -576,22 +548,13 @@ impl Application {
             current_file.display()
         ))?;
 
-        return Ok(());
-
-        #[derive(Serialize)]
-        struct SerializedScan<'a> {
-            results: &'a [Box<ScanResult>],
-            #[serde(default, skip_serializing_if = "Option::is_none")]
-            last_type: Option<Type>,
-            value_expr: &'a ValueExpr,
-        }
+        Ok(())
     }
 
     fn load(&mut self, scan: Option<&str>, append: bool) -> anyhow::Result<()> {
         use flate2::read::GzDecoder;
 
         let Self {
-            ref thread_pool,
             ref mut scans,
             ref current_file,
             ..
@@ -603,16 +566,14 @@ impl Application {
             let mut f = File::open(current_file)
                 .with_context(|| anyhow!("Failed to open file `{}`", current_file.display()))?;
 
-            let deserialized: DeserializedScan = if self.current_compress {
+            let deserialized: Scan = if self.current_compress {
                 self.current_format
                     .deserialize(&mut GzDecoder::new(&mut f))?
             } else {
                 self.current_format.deserialize(&mut f)?
             };
 
-            let scan = scans
-                .entry(scan.to_string())
-                .or_insert_with(|| Scan::new(thread_pool));
+            let scan = scans.entry(scan.to_string()).or_default();
 
             if append {
                 scan.results.extend(deserialized.results);
@@ -620,9 +581,9 @@ impl Application {
                 scan.results = deserialized.results;
             }
 
-            scan.last_type = deserialized.last_type;
             scan.value_expr = deserialized.value_expr;
-            scan.initial = false;
+            scan.initial = scan.initial;
+            scan.aligned = scan.aligned;
         }
 
         self.term.write_line(format!(
@@ -631,16 +592,7 @@ impl Application {
             current_file.display()
         ))?;
 
-        return Ok(());
-
-        #[derive(Deserialize)]
-        struct DeserializedScan {
-            results: Vec<Box<ScanResult>>,
-            #[serde(default, skip_serializing_if = "Option::is_none")]
-            last_type: Option<Type>,
-            #[serde(default)]
-            value_expr: ValueExpr,
-        }
+        Ok(())
     }
 
     fn watch(
@@ -662,10 +614,7 @@ impl Application {
             None => bail!("not attached to a process"),
         };
 
-        let scan = self
-            .scans
-            .entry(self.current_scan.to_string())
-            .or_insert_with(|| Scan::new(thread_pool));
+        let scan = self.scans.entry(self.current_scan.to_string()).or_default();
 
         if scan.results.is_empty() {
             self.term.write_line("cannot watch, scan is empty")?;
@@ -1002,9 +951,10 @@ impl Application {
         // Filter to find all pointers.
         let pointers = Filter::pointer(Type::Pointer, ValueExpr::Value, &handle.process)?;
 
-        let mut scan = Scan::new(&self.thread_pool);
+        let mut scan = Scan::new();
 
         scan.initial_scan(
+            &self.thread_pool,
             handle,
             &pointers,
             None,
@@ -1089,19 +1039,11 @@ impl Application {
             }
         }
 
-        let Self {
-            ref mut scans,
-            ref thread_pool,
-            ..
-        } = self;
+        let Self { ref mut scans, .. } = self;
 
         let len = results.len();
 
-        let scan = scans
-            .entry(name.to_string())
-            .or_insert_with(|| Scan::new(thread_pool));
-
-        scan.last_type = Some(Type::Pointer);
+        let scan = scans.entry(name.to_string()).or_default();
 
         if append {
             scan.results.extend(results);
@@ -1133,21 +1075,17 @@ impl Application {
         }
 
         let Self {
-            ref thread_pool,
-            ref current_scan,
-            ..
+            ref current_scan, ..
         } = self;
 
-        let scan = self
-            .scans
-            .entry(current_scan.to_string())
-            .or_insert_with(|| Scan::new(thread_pool));
+        let scan = self.scans.entry(current_scan.to_string()).or_default();
 
         let result = if scan.initial {
             let mut c = InitialScanConfig::default();
             c.modules_only = config.modules_only;
 
             let result = scan.initial_scan(
+                &self.thread_pool,
                 handle,
                 filter,
                 cancel,
@@ -1160,6 +1098,7 @@ impl Application {
             result
         } else {
             scan.scan(
+                &self.thread_pool,
                 handle,
                 filter,
                 cancel,
@@ -1333,10 +1272,26 @@ impl Application {
 
         let app = app.subcommand(
             App::new("refresh")
+                .alias("r")
                 .about("Refresh values in a scan, optionally setting a new type for them.")
                 .arg(type_argument(
                     "The type of the filter, if it can't be derived.",
-                )),
+                ))
+                .arg(
+                    Arg::with_name("index")
+                        .help("The result index to refresh (optional).")
+                        .long("index")
+                        .short("i")
+                        .value_name("index")
+                        .takes_value(true)
+                        .multiple(true),
+                )
+                .arg(
+                    Arg::with_name("expr")
+                        .help("Value expression to use when printing.")
+                        .value_name("expr")
+                        .multiple(true),
+                ),
         );
 
         let app = app.subcommand(
@@ -1395,7 +1350,7 @@ impl Application {
 
         let app = app.subcommand(App::new("resume").about("Resume the attached to process."));
 
-        let app = app.subcommand(App::new("exit").about("Exit the application"));
+        let app = app.subcommand(App::new("exit").alias("q").about("Exit the application"));
 
         let app = app.subcommand(
             App::new("print")
@@ -1413,7 +1368,8 @@ impl Application {
                         .help("Value expression to use when printing.")
                         .value_name("expr")
                         .multiple(true),
-                ),
+                )
+                .arg(type_argument("The type of the expression to print.")),
         );
 
         let app = app.subcommand(
@@ -1451,7 +1407,13 @@ impl Application {
 
         let app = app.subcommand(App::new("help").about("Print help"));
 
-        let app = app.subcommand(App::new("reset").about("Reset the current scan."));
+        let app = app.subcommand(
+            App::new("reset").about("Reset the current scan.").arg(
+                Arg::with_name("scan")
+                    .help("The scan to reset.")
+                    .value_name("scan"),
+            ),
+        );
 
         let app = app.subcommand(
             App::new("save")
@@ -1625,23 +1587,21 @@ impl Application {
                     None => None,
                 };
 
-                return Ok(Action::Print { limit, expr });
+                let ty = m.value_of("type").map(str::parse).transpose()?;
+                return Ok(Action::Print { limit, expr, ty });
             }
             ("watch", Some(m)) => {
                 let limit = m.value_of("limit").map(str::parse).transpose()?;
 
                 let filter = match m.value_of("filter") {
                     Some(filter) => {
-                        let last_type =
-                            self.scans.get(&self.current_scan).and_then(|s| s.last_type);
-
                         let process = self
                             .handle
                             .as_ref()
                             .map(|h| &h.process)
                             .ok_or_else(|| anyhow!("must be attached to process"))?;
 
-                        Some(Filter::parse(&filter, last_type, process)?)
+                        Some(Filter::parse(&filter, None, process)?)
                     }
                     None => None,
                 };
@@ -1667,28 +1627,10 @@ impl Application {
                     .ok_or_else(|| anyhow!("misssing <scan>"))?
                     .to_string();
 
-                return Ok(Action::ScanSwitch { name });
+                return Ok(Action::Switch { name });
             }
-            ("list", _) => return Ok(Action::ScanList),
+            ("list", _) => return Ok(Action::List),
             ("scan", Some(m)) => {
-                if let Some(name) = m.value_of("new") {
-                    return Ok(Action::ScanNew {
-                        name: name.to_string(),
-                    });
-                }
-
-                if m.is_present("del") {
-                    return Ok(Action::ScanDel {
-                        name: self.current_scan.to_string(),
-                    });
-                }
-
-                if let Some(name) = m.value_of("del") {
-                    return Ok(Action::ScanDel {
-                        name: name.to_string(),
-                    });
-                }
-
                 let ty = match m.value_of("type").map(str::parse).transpose()? {
                     Some(ty) => Some(ty),
                     None => None,
@@ -1699,15 +1641,13 @@ impl Application {
                     None => String::new(),
                 };
 
-                let last_type = self.scans.get(&self.current_scan).and_then(|s| s.last_type);
-
                 let process = self
                     .handle
                     .as_ref()
                     .map(|h| &h.process)
                     .ok_or_else(|| anyhow!("must be attached to process"))?;
 
-                let filter = Filter::parse(&filter, ty.or(last_type), process)?;
+                let filter = Filter::parse(&filter, ty, process)?;
 
                 let mut config = ScanConfig::default();
                 config.modules_only = m.is_present("modules-only");
@@ -1716,12 +1656,25 @@ impl Application {
             }
 
             ("refresh", Some(m)) => {
-                let new_type = match m.value_of("type").map(str::parse).transpose()? {
+                let ty = match m.value_of("type").map(str::parse).transpose()? {
                     Some(ty) => Some(ty),
                     None => None,
                 };
 
-                return Ok(Action::Refresh { new_type });
+                let expr = match m.values_of("expr") {
+                    Some(values) => Some(values.collect::<Vec<_>>().join(" ")),
+                    None => None,
+                };
+
+                let indexes = match m.values_of("index") {
+                    Some(values) => values
+                        .into_iter()
+                        .map(|s| str::parse(s).map_err(Into::into))
+                        .collect::<anyhow::Result<Vec<_>>>()?,
+                    None => vec![],
+                };
+
+                return Ok(Action::Refresh { ty, expr, indexes });
             }
             ("attach", Some(m)) => {
                 let name = m.value_of("name").map(|s| s.to_string());
@@ -1734,7 +1687,9 @@ impl Application {
                 return Ok(Action::Resume);
             }
             ("reset", _) => {
-                return Ok(Action::Reset);
+                let name = m.value_of("scan").map(|s| s.to_string());
+
+                return Ok(Action::Reset { name });
             }
             ("save", Some(m)) => {
                 let file = m.value_of("file").map(PathBuf::from);
@@ -1903,12 +1858,17 @@ pub enum Action {
         config: ScanConfig,
     },
     /// Reset the state of the scan.
-    Reset,
+    Reset {
+        /// The name of the scan to reset.
+        name: Option<String>,
+    },
     /// Print results from scan.
     Print {
         limit: Option<usize>,
         /// Expression to use when printing.
         expr: Option<String>,
+        /// The type to print the values as.
+        ty: Option<Type>,
     },
     /// Watch changes to the scan.
     Watch {
@@ -1926,20 +1886,10 @@ pub enum Action {
         pointer: Pointer,
         ty: Option<Type>,
     },
-    /// Write the value at the given address.
-    Set(Pointer, Value),
     /// List all scans.
-    ScanList,
-    /// Create a new scan with the given name.
-    ScanNew {
-        name: String,
-    },
-    /// Delete the scan with the given name.
-    ScanDel {
-        name: String,
-    },
+    List,
     /// Switch to the given scan.
-    ScanSwitch {
+    Switch {
         name: String,
     },
     /// Perform a pointer path scan with the given name, for the specified address.
@@ -1965,6 +1915,8 @@ pub enum Action {
     },
     Sort,
     Refresh {
-        new_type: Option<Type>,
+        ty: Option<Type>,
+        expr: Option<String>,
+        indexes: Vec<usize>,
     },
 }

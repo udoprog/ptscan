@@ -86,20 +86,24 @@ pub enum ValueExpr {
 }
 
 impl ValueExpr {
+    /// If this is a default expression.
+    pub fn is_default(&self) -> bool {
+        match self {
+            ValueExpr::Value => true,
+            _ => false,
+        }
+    }
+
     /// Parse a value expression to use.
-    pub fn parse(
-        input: &str,
-        ty: Option<Type>,
-        process: &Process,
-    ) -> anyhow::Result<(Type, ValueExpr)> {
+    pub fn parse(input: &str, ty: Option<Type>, process: &Process) -> anyhow::Result<ValueExpr> {
         let expr = parser::ValueExprParser::new().parse(lexer::Lexer::new(input))?;
 
-        let ty = expr
-            .type_from_hint(ty)
+        let ty = ty
+            .or_else(|| expr.type_from_hint())
             .ok_or_else(|| anyhow!("can't determine type of expression"))?;
 
         let value = expr.eval(ty, process)?;
-        Ok((ty, value))
+        Ok(value)
     }
 
     /// Get relevant traits of the expression.
@@ -323,8 +327,8 @@ impl Matcher {
     pub fn parse(input: &str, ty: Option<Type>, process: &Process) -> anyhow::Result<(Type, Self)> {
         let expr = parser::OrParser::new().parse(lexer::Lexer::new(input))?;
 
-        let ty = expr
-            .type_from_hint(ty)
+        let ty = ty
+            .or_else(|| expr.type_from_hint())
             .ok_or_else(|| anyhow!("can't determine type of expression"))?;
 
         Ok((ty, expr.into_matcher(ty, process)?))
@@ -402,7 +406,7 @@ impl Binary {
                         let $b = &$b[..len];
                         $a $op $b
                     },
-                    Value::String($b) => {
+                    Value::String($b, ..) => {
                         let len = usize::min($a.len(), $b.len());
                         let $a = &$a[..len];
                         let $b = &$b[..len];
@@ -427,7 +431,16 @@ impl Binary {
                     Value::I32($a) => binary_numeric!($expr_b, i32, $a $op $b),
                     Value::I16($a) => binary_numeric!($expr_b, i16, $a $op $b),
                     Value::I8($a) => binary_numeric!($expr_b, i8, $a $op $b),
-                    Value::String($a) => binary_bytes!($expr_b, $a $op $b),
+                    Value::String($a, ..) => match $expr_b {
+                        Value::Bytes($b) => {
+                            let len = usize::min($a.len(), $b.len());
+                            let $a = &$a[..len];
+                            let $b = &$b[..len];
+                            $a $op $b
+                        },
+                        Value::String($b, ..) => $a $op $b,
+                        _ => false,
+                    },
                     Value::Bytes($a) => binary_bytes!($expr_b, $a $op $b),
                     _ => false,
                 }
@@ -451,6 +464,19 @@ impl Binary {
             Op::Lte => binary!(lhs, rhs, a <= b),
             Op::Gt => binary!(lhs, rhs, a > b),
             Op::Gte => binary!(lhs, rhs, a >= b),
+            Op::StartsWith => match lhs {
+                Value::String(lhs, ..) => match rhs {
+                    Value::String(rhs, ..) => lhs.starts_with(&rhs),
+                    Value::Bytes(rhs) => lhs.starts_with(&rhs),
+                    _ => false,
+                },
+                Value::Bytes(lhs, ..) => match rhs {
+                    Value::String(rhs, ..) => lhs.starts_with(&rhs),
+                    Value::Bytes(rhs) => lhs.starts_with(&rhs),
+                    _ => false,
+                },
+                _ => false,
+            },
         })
     }
 

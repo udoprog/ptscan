@@ -61,7 +61,7 @@ pub enum Error {
     TypeBadBase,
     #[error("bad size in type specification, `string/255`")]
     TypeBadSize,
-    #[error("numeric type {0} does not fit within type {1}")]
+    #[error("number `{0}` does not fit within type {1}")]
     ValueNumberConversion(num_bigint::BigInt, Type),
     #[error("unsupported pointer width: {0}")]
     UnsupportedPointerWidth(usize),

@@ -15,6 +15,7 @@ pub enum Op {
     Gte,
     Lt,
     Lte,
+    StartsWith,
 }
 
 impl fmt::Display for Op {
@@ -26,6 +27,7 @@ impl fmt::Display for Op {
             Op::Gte => ">=".fmt(fmt),
             Op::Lt => "<".fmt(fmt),
             Op::Lte => "<=".fmt(fmt),
+            Op::StartsWith => "^".fmt(fmt),
         }
     }
 }
@@ -54,7 +56,7 @@ pub enum ValueExpr {
 
 impl ValueExpr {
     /// Get a hint at what type to use for this expression.
-    pub fn type_from_hint(&self, external: Option<Type>) -> Option<Type> {
+    pub fn type_from_hint(&self) -> Option<Type> {
         let implicit = match self {
             Self::Number(.., ty) => Some(ty.unwrap_or(Type::U32)),
             Self::String(s) => Some(Type::String(s.len())),
@@ -68,7 +70,7 @@ impl ValueExpr {
             _ => None,
         };
 
-        explicit.or(external).or(implicit)
+        explicit.or(implicit)
     }
 
     /// Evaluate the expression.
@@ -126,13 +128,13 @@ pub enum Expression {
 }
 
 impl Expression {
-    pub fn type_from_hint(&self, ty: Option<Type>) -> Option<Type> {
+    pub fn type_from_hint(&self) -> Option<Type> {
         match self {
-            Self::Not(expr) => expr.type_from_hint(ty),
+            Self::Not(expr) => expr.type_from_hint(),
             Self::IsType(_, ty) => Some(*ty),
-            Self::Binary(_, lhs, rhs) => lhs.type_from_hint(ty).or(rhs.type_from_hint(ty)),
+            Self::Binary(_, lhs, rhs) => lhs.type_from_hint().or(rhs.type_from_hint()),
             Self::And(exprs) | Self::Or(exprs) => {
-                exprs.iter().flat_map(|e| e.type_from_hint(ty)).next()
+                exprs.iter().flat_map(|e| e.type_from_hint()).next()
             }
         }
     }

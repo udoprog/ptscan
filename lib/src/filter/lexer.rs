@@ -40,6 +40,8 @@ pub enum Token {
     Lt,
     /// `>`.
     Gt,
+    /// `^`.
+    Caret,
     /// `(`.
     OpenParen,
     /// `)`.
@@ -226,13 +228,18 @@ impl<'a> Lexer<'a> {
 
         while let Some((_, c)) = self.peek() {
             match c {
+                ' ' => (),
                 'a'..='f' => {
                     self.buf.extend(c.to_uppercase());
                 }
                 '0'..='9' | 'A'..='F' => {
                     self.buf.push(c);
                 }
-                _ => break,
+                '}' => {
+                    self.step();
+                    break;
+                }
+                c => return Err(self.err(format!("unexpected character: {}", c))),
             }
 
             self.step();
@@ -295,44 +302,57 @@ impl<'a> Lexer<'a> {
 
         self.buf.clear();
 
+        let mut hex = false;
+
+        if let Some((_, '0', 'x')) = self.peek2() {
+            hex = true;
+            self.step_n(2);
+        }
+
         let mut ty = None;
 
         while let Some((_, c)) = self.peek() {
             match c {
                 ' ' => break,
-                '0'..='9' => {
+                '0'..='9' | 'a'..='f' | 'A'..='F' if hex => {
                     self.step();
                     self.buf.push(c);
                 }
-                'u' => {
+                '0'..='9' if !hex => {
                     self.step();
-
-                    ty = Some(match self.peek3() {
-                        Some((_, '8', _, _)) => Type::U8,
-                        Some((_, '1', Some('6'), _)) => Type::U16,
-                        Some((_, '3', Some('2'), _)) => Type::U32,
-                        Some((_, '6', Some('4'), _)) => Type::U64,
-                        Some((_, '1', Some('2'), Some('8'))) => Type::U128,
-                        _ => return Err(self.err("unexpected suffix")),
-                    });
+                    self.buf.push(c);
                 }
-                'i' => {
+                'i' | 'u' => {
                     self.step();
 
-                    ty = Some(match self.peek3() {
-                        Some((_, '8', _, _)) => Type::I8,
-                        Some((_, '1', Some('6'), _)) => Type::I16,
-                        Some((_, '3', Some('2'), _)) => Type::I32,
-                        Some((_, '6', Some('4'), _)) => Type::I64,
-                        Some((_, '1', Some('2'), Some('8'))) => Type::I128,
+                    let (step, inferred_ty) = match (c, self.peek3()) {
+                        ('i', Some((_, '8', _, _))) => (1, Type::I8),
+                        ('i', Some((_, '1', Some('6'), _))) => (2, Type::I16),
+                        ('i', Some((_, '3', Some('2'), _))) => (2, Type::I32),
+                        ('i', Some((_, '6', Some('4'), _))) => (2, Type::I64),
+                        ('i', Some((_, '1', Some('2'), Some('8')))) => (3, Type::I128),
+                        ('u', Some((_, '8', _, _))) => (1, Type::U8),
+                        ('u', Some((_, '1', Some('6'), _))) => (2, Type::U16),
+                        ('u', Some((_, '3', Some('2'), _))) => (2, Type::U32),
+                        ('u', Some((_, '6', Some('4'), _))) => (2, Type::U64),
+                        ('u', Some((_, '1', Some('2'), Some('8')))) => (3, Type::U128),
                         _ => return Err(self.err("unexpected suffix")),
-                    });
+                    };
+
+                    self.step_n(step);
+                    ty = Some(inferred_ty);
+                    break;
                 }
                 _ => return Err(self.err("unexpected character in identifier")),
             }
         }
 
-        let result = BigInt::from_str_radix(&self.buf, 10);
+        let result = if hex {
+            BigInt::from_str_radix(&self.buf, 16)
+        } else {
+            BigInt::from_str_radix(&self.buf, 10)
+        };
+
         Ok((result.map_err(|e| self.err(e.to_string()))?, ty))
     }
 }
@@ -368,12 +388,6 @@ impl<'a> Iterator for Lexer<'a> {
                     let e = self.step_n(2);
                     return Some(Ok((s, Token::Gte, e)));
                 }
-                Some((s, '0', 'x')) => {
-                    self.step_n(2);
-                    let bytes = try_iter!(self.scan_bytes());
-                    let e = self.pos();
-                    return Some(Ok((s, Token::Bytes(bytes), e)));
-                }
                 _ => {}
             }
 
@@ -396,6 +410,17 @@ impl<'a> Iterator for Lexer<'a> {
                     self.step();
                     let e = self.pos();
                     return Some(Ok((s, Token::Gt, e)));
+                }
+                '^' => {
+                    self.step();
+                    let e = self.pos();
+                    return Some(Ok((s, Token::Caret, e)));
+                }
+                '{' => {
+                    self.step();
+                    let bytes = try_iter!(self.scan_bytes());
+                    let e = self.pos();
+                    return Some(Ok((s, Token::Bytes(bytes), e)));
                 }
                 '(' => {
                     self.step();

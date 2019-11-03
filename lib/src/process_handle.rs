@@ -341,7 +341,7 @@ impl ProcessHandle {
                                 let proxy = self.address_proxy(&result.pointer);
 
                                 if filter.test(&result.value, proxy)? {
-                                    let (last_address, value) = proxy.eval(filter.ty)?;
+                                    let (last_address, value) = proxy.eval(result.value.ty())?;
                                     let mut pointer = result.pointer.clone();
                                     pointer.last_address = last_address;
 

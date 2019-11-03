@@ -220,8 +220,6 @@ impl<'a> Lexer<'a> {
         self.buf.clear();
 
         while let Some((_, c)) = self.peek() {
-            println!("{}", c);
-
             self.step();
 
             match c {

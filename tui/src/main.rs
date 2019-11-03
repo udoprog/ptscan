@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail, Context as _};
 use hashbrown::HashMap;
 use ptscan::{
     filter, Address, Filter, InitialScanConfig, Location, MemoryInformation, Offset, Pointer,
-    PointerBase, ProcessHandle, ProcessId, Scan, ScanProgress, ScanResult, Size, Token, Type,
+    PointerBase, ProcessHandle, ProcessId, Scan, ScanProgress, ScanResult, Size, Test, Token, Type,
     Value, ValueExpr,
 };
 use std::{collections::VecDeque, fs::File, io, path::PathBuf, sync::Arc, time::Instant};
@@ -647,6 +647,7 @@ impl Application {
                     values,
                     changed: true,
                     removed: false,
+                    last: None,
                 }
             })
             .collect::<Vec<_>>();
@@ -724,6 +725,7 @@ impl Application {
             values: VecDeque<(Instant, Value)>,
             changed: bool,
             removed: bool,
+            last: Option<Value>,
         }
 
         fn refresh_loop(
@@ -741,20 +743,12 @@ impl Application {
             incremental: bool,
             value_expr: &ValueExpr,
         ) -> anyhow::Result<()> {
+            let none = Value::default();
+
             let pointers = updates
                 .iter()
                 .map(|r| r.pointer.clone())
                 .collect::<Vec<_>>();
-
-            if let Some(filter) = filter {
-                for (result, state) in updates.iter().zip(states.iter_mut()) {
-                    let proxy = handle.address_proxy(&result.pointer);
-
-                    if !filter.test(&result.value, proxy)? {
-                        state.removed = true;
-                    }
-                }
-            }
 
             let info = format!(
                 "Refresh rate: {:?} (Press `q` or CTRL+C to stop watching)",
@@ -794,16 +788,30 @@ impl Application {
                         continue;
                     }
 
-                    if let Some(last) = state.values.back().map(|v| &v.1) {
-                        if result.value != *last {
-                            if let Some(filter) = filter {
-                                let proxy = handle.address_proxy(&result.pointer);
+                    if let Some(filter) = filter {
+                        let proxy = handle.address_proxy(&result.pointer);
 
-                                if !filter.test(last, proxy)? {
-                                    state.removed = true;
-                                }
+                        if let Some(last) = &mut state.last {
+                            if let Test::False = filter.test(last, proxy)? {
+                                any_changed = true;
+                                state.removed = true;
                             }
 
+                            if *last != result.value {
+                                *last = result.value.clone();
+                            }
+                        } else {
+                            if let Test::False = filter.test(&none, proxy)? {
+                                any_changed = true;
+                                state.removed = true;
+                            }
+
+                            state.last = Some(result.value.clone());
+                        }
+                    }
+
+                    if let Some(last) = state.values.back().map(|v| &v.1) {
+                        if result.value != *last {
                             state.changed = true;
                             any_changed = true;
 

@@ -1,8 +1,8 @@
 //! Predicates used for matching against memory.
 
 use crate::{
-    error::Error, filter, Address, AddressRange, Pointer, PointerBase, ProcessHandle, Size, Token,
-    Value, ValueExpr,
+    error::Error, filter, Address, AddressRange, Pointer, PointerBase, ProcessHandle, Size, Test,
+    Token, Value, ValueExpr,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -346,7 +346,7 @@ impl Scan {
                     Pointer::new(PointerBase::Address { address }, vec![], Some(address));
                 let proxy = handle.address_proxy(&pointer);
 
-                if filter.test(none, proxy)? {
+                if let Test::True = filter.test(none, proxy)? {
                     *hits += 1;
                     let (last_address, value) = proxy.eval(filter.ty)?;
                     pointer.base = handle.address_to_pointer_base(address)?;

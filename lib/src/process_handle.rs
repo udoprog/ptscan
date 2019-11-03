@@ -7,7 +7,8 @@ use crate::{
     scan::{self, ScanProgress, ScanResult},
     system,
     thread::Thread,
-    Address, AddressRange, Pointer, PointerBase, Process, ProcessId, Size, Token, Type, Value,
+    Address, AddressRange, Pointer, PointerBase, Process, ProcessId, Size, Test, Token, Type,
+    Value,
 };
 use anyhow::{bail, Context as _};
 use hashbrown::HashMap;
@@ -340,7 +341,7 @@ impl ProcessHandle {
                             let mut work = || {
                                 let proxy = self.address_proxy(&result.pointer);
 
-                                if filter.test(&result.value, proxy)? {
+                                if let Test::True = filter.test(&result.value, proxy)? {
                                     let (last_address, value) = proxy.eval(result.value.ty())?;
                                     let mut pointer = result.pointer.clone();
                                     pointer.last_address = last_address;

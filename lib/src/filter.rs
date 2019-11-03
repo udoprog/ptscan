@@ -276,6 +276,35 @@ impl Special {
     }
 }
 
+/// The result of a filter test.
+#[derive(Debug, Clone, Copy)]
+pub enum Test {
+    True,
+    False,
+    Undefined,
+}
+
+impl Test {
+    /// Invert the truth value of the test result.
+    pub fn invert(self) -> Self {
+        match self {
+            Self::True => Self::False,
+            Self::False => Self::True,
+            Self::Undefined => Self::Undefined,
+        }
+    }
+}
+
+impl From<bool> for Test {
+    fn from(value: bool) -> Test {
+        if value {
+            Test::True
+        } else {
+            Test::False
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Filter {
     pub ty: Type,
@@ -303,7 +332,7 @@ impl Filter {
     }
 
     /// Test the given bytes against this filter.
-    pub fn test(&self, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+    pub fn test(&self, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
         Ok(self.matcher.test(self.ty, last, proxy)?)
     }
 
@@ -335,7 +364,7 @@ impl Matcher {
     }
 
     /// Test the specified memory region.
-    fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+    fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
         match self {
             Self::Binary(m) => m.test(ty, last, proxy),
             Self::All(m) => m.test(ty, last, proxy),
@@ -377,10 +406,11 @@ impl fmt::Display for Matcher {
 pub struct Binary(Op, ValueExpr, ValueExpr);
 
 impl Binary {
-    fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+    fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
         macro_rules! binary_numeric {
             ($expr:expr, $ty:ty, $a:ident $op:tt $b:ident) => {
                 match $expr {
+                    Value::None(..) => return Ok(Test::Undefined),
                     Value::Pointer(Address($b)) => $a $op ($b as $ty),
                     Value::U128($b) => $a $op ($b as $ty),
                     Value::U64($b) => $a $op ($b as $ty),
@@ -392,7 +422,8 @@ impl Binary {
                     Value::I32($b) => $a $op ($b as $ty),
                     Value::I16($b) => $a $op ($b as $ty),
                     Value::I8($b) => $a $op ($b as $ty),
-                    _ => false,
+                    Value::String(..) => false,
+                    Value::Bytes(..) => false,
                 }
             }
         }
@@ -412,6 +443,7 @@ impl Binary {
                         let $b = &$b[..len];
                         $a $op $b
                     },
+                    Value::None(..) => return Ok(Test::Undefined),
                     _ => false,
                 }
             }
@@ -442,7 +474,7 @@ impl Binary {
                         _ => false,
                     },
                     Value::Bytes($a) => binary_bytes!($expr_b, $a $op $b),
-                    _ => false,
+                    Value::None(..) => return Ok(Test::Undefined),
                 }
             };
         }
@@ -454,7 +486,8 @@ impl Binary {
 
         // NB: we treat 'none' specially:
         // The only allowed match on none is to compare against something which is strictly not equal to it, like value != none.
-        Ok(match op {
+
+        let result = match op {
             Op::Eq => binary!(lhs, rhs, a == b),
             Op::Neq => match (lhs, rhs) {
                 (Value::None(..), other) | (other, Value::None(..)) if other.is_some() => true,
@@ -475,9 +508,12 @@ impl Binary {
                     Value::Bytes(rhs) => lhs.starts_with(&rhs),
                     _ => false,
                 },
+                Value::None(..) => return Ok(Test::Undefined),
                 _ => false,
             },
-        })
+        };
+
+        Ok(result.into())
     }
 
     fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {
@@ -566,14 +602,16 @@ impl All {
         Ok(all.into_iter().next())
     }
 
-    fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+    fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
         for m in &self.0 {
-            if !m.test(ty, last, proxy)? {
-                return Ok(false);
+            match m.test(ty, last, proxy)? {
+                Test::False => return Ok(Test::False),
+                Test::Undefined => return Ok(Test::Undefined),
+                _ => (),
             }
         }
 
-        Ok(true)
+        Ok(Test::True)
     }
 }
 
@@ -619,14 +657,16 @@ impl Any {
         Ok(any.into_iter().next())
     }
 
-    fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+    fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
         for m in &self.0 {
-            if m.test(ty, last, proxy)? {
-                return Ok(true);
+            match m.test(ty, last, proxy)? {
+                Test::True => return Ok(Test::True),
+                Test::Undefined => return Ok(Test::Undefined),
+                _ => (),
             }
         }
 
-        Ok(false)
+        Ok(Test::False)
     }
 }
 
@@ -670,19 +710,23 @@ impl IsPointer {
         })
     }
 
-    pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+    pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
         let (_, value) = self.expr.eval(ty, last, proxy)?;
 
         let address = match value {
             Value::Pointer(address) => address,
-            _ => return Ok(false),
+            _ => return Ok(Test::False),
         };
 
         if address.is_null() {
-            return Ok(false);
+            return Ok(Test::False);
         }
 
-        Ok(AddressRange::find_in_range(&self.memory_regions, |m| &m.range, address).is_some())
+        Ok(
+            AddressRange::find_in_range(&self.memory_regions, |m| &m.range, address)
+                .is_some()
+                .into(),
+        )
     }
 }
 
@@ -702,9 +746,9 @@ impl IsNone {
         Ok(Self { expr })
     }
 
-    pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
+    pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
         let (_, value) = self.expr.eval(ty, last, proxy)?;
-        Ok(value.is_none())
+        Ok(value.is_none().into())
     }
 }
 
@@ -720,8 +764,8 @@ pub struct Not {
 }
 
 impl Not {
-    fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<bool> {
-        Ok(!self.matcher.test(ty, last, proxy)?)
+    fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
+        Ok(self.matcher.test(ty, last, proxy)?.invert())
     }
 
     pub fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {

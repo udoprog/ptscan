@@ -22,7 +22,7 @@ pub type ThreadId = DWORD;
 
 pub use self::address::{Address, AddressRange, Offset, Size};
 pub use self::error::Error;
-pub use self::filter::{Filter, Matcher, ValueExpr};
+pub use self::filter::{Filter, Matcher, Test, ValueExpr};
 pub use self::module::Module;
 pub use self::pointer::{Pointer, PointerBase};
 pub use self::process::{MemoryInformation, MemoryState, MemoryType, Process};

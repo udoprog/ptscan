@@ -16,13 +16,14 @@ mod thread;
 mod token;
 mod ty;
 mod value;
+mod value_expr;
 
 pub type ProcessId = DWORD;
 pub type ThreadId = DWORD;
 
 pub use self::address::{Address, AddressRange, Offset, Size};
 pub use self::error::Error;
-pub use self::filter::{Filter, Matcher, Test, ValueExpr};
+pub use self::filter::{Filter, Test};
 pub use self::module::Module;
 pub use self::pointer::{Pointer, PointerBase};
 pub use self::process::{MemoryInformation, MemoryState, MemoryType, Process};
@@ -33,3 +34,4 @@ pub use self::token::Token;
 pub use self::ty::Type;
 pub use self::utils::IteratorExtension;
 pub use self::value::Value;
+pub use self::value_expr::ValueExpr;

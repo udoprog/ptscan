@@ -2,13 +2,13 @@
 
 use crate::{
     error::Error,
-    filter::{self, ValueExpr},
+    filter,
     process::MemoryInformation,
     scan::{self, ScanProgress, ScanResult},
     system,
     thread::Thread,
     Address, AddressRange, Pointer, PointerBase, Process, ProcessId, Size, Test, Token, Type,
-    Value,
+    Value, ValueExpr,
 };
 use anyhow::{bail, Context as _};
 use hashbrown::HashMap;

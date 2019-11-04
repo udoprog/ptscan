@@ -1,333 +1,21 @@
-use self::ast::{EscapeString, Hex, Op, ValueTrait};
+use self::ast::{Op, ValueTrait};
 use crate::{
-    pointer,
     process::{MemoryInformation, Process},
     value,
     value::Value,
-    Address, AddressProxy, AddressRange, Offset, Type,
+    value_expr::ValueExpr,
+    Address, AddressProxy, AddressRange, Type,
 };
-use anyhow::{anyhow, bail};
-use num_bigint::{BigInt, Sign};
-use serde::{Deserialize, Serialize};
+use anyhow::anyhow;
+use num_bigint::Sign;
 use std::fmt;
 
+pub use self::special::Special;
+
 pub mod ast;
-mod lexer;
-lalrpop_util::lalrpop_mod!(parser, "/filter/parser.rs");
-
-const ZERO: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-
-/// test if the given slice contains all zeros.
-/// Hopefully this gets vectorized (please check!).
-fn is_all_zeros(mut data: &[u8]) -> bool {
-    while !data.is_empty() {
-        let len = usize::min(data.len(), ZERO.len());
-
-        if &data[..len] != &ZERO[..len] {
-            return false;
-        }
-
-        data = &data[len..];
-    }
-
-    true
-}
-
-/// Find first nonzero byte in a slice.
-fn find_first_nonzero(mut data: &[u8]) -> Option<usize> {
-    let mut local = 0;
-
-    while !data.is_empty() {
-        let len = usize::min(data.len(), ZERO.len());
-
-        if &data[..len] != &ZERO[..len] {
-            break;
-        }
-
-        data = &data[len..];
-        local += len;
-    }
-
-    if data.is_empty() {
-        return None;
-    }
-
-    let index = match data.iter().position(|c| *c != 0) {
-        Some(index) => index,
-        None => return None,
-    };
-
-    Some(local + index)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum ValueExpr {
-    /// The value of the address.
-    #[serde(rename = "value")]
-    Value,
-    /// The last known value.
-    #[serde(rename = "value")]
-    Last,
-    /// *<value>
-    #[serde(rename = "deref")]
-    Deref { value: Box<ValueExpr> },
-    /// &<value>
-    #[serde(rename = "address-of")]
-    AddressOf { value: Box<ValueExpr> },
-    /// Offset
-    #[serde(rename = "offset")]
-    Offset {
-        value: Box<ValueExpr>,
-        offset: Offset,
-    },
-    /// A numerical literal.
-    #[serde(rename = "number")]
-    Number { value: BigInt },
-    /// A string literal.
-    #[serde(rename = "number")]
-    String { value: String },
-    /// A number of raw bytes.
-    #[serde(rename = "number")]
-    Bytes { value: Vec<u8> },
-    /// Cast expression.
-    #[serde(rename = "as")]
-    As {
-        expr: Box<ValueExpr>,
-        #[serde(rename = "as_type")]
-        ty: Type,
-    },
-}
-
-impl ValueExpr {
-    /// If this is a default expression.
-    pub fn is_default(&self) -> bool {
-        match self {
-            ValueExpr::Value => true,
-            _ => false,
-        }
-    }
-
-    /// Parse a value expression to use.
-    pub fn parse(input: &str, process: &Process) -> anyhow::Result<ValueExpr> {
-        let expr = parser::ValueExprParser::new().parse(lexer::Lexer::new(input))?;
-        Ok(expr.eval(process)?)
-    }
-
-    /// Get relevant traits of the expression.
-    pub fn traits(&self) -> (ValueTrait, Sign) {
-        use num_traits::Zero as _;
-
-        let value_trait = match self {
-            Self::Value => ValueTrait::IsValue,
-            Self::Deref { value } if **value == ValueExpr::Value => ValueTrait::IsDeref,
-            Self::Number { value } => {
-                if value.is_zero() {
-                    ValueTrait::Zero
-                } else {
-                    ValueTrait::NonZero
-                }
-            }
-            Self::String { value } => {
-                if value.as_bytes().iter().all(|c| *c == 0) {
-                    ValueTrait::Zero
-                } else {
-                    ValueTrait::NonZero
-                }
-            }
-            Self::Bytes { value } => {
-                if value.iter().all(|c| *c == 0) {
-                    ValueTrait::Zero
-                } else {
-                    ValueTrait::NonZero
-                }
-            }
-            _ => ValueTrait::NonZero,
-        };
-
-        let sign = match self {
-            Self::Number { value } => value.sign(),
-            _ => Sign::NoSign,
-        };
-
-        (value_trait, sign)
-    }
-
-    /// Get the address of a value expression.
-    pub fn address_of(&self, address: AddressProxy<'_>) -> anyhow::Result<Option<Address>> {
-        match self {
-            Self::Value => Ok(address.follow_default()?),
-            Self::Last => Ok(address.follow_default()?),
-            other => bail!("cannot get address of: {}", other),
-        }
-    }
-
-    /// Get the type of the expression.
-    pub fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
-        match self {
-            Self::Value => value_type,
-            Self::Last => last_type,
-            Self::Number { .. } => Some(Type::U32),
-            Self::String { value } => Some(Type::String(value.len())),
-            Self::Bytes { value } => Some(Type::Bytes(value.len())),
-            Self::Deref { .. } => None,
-            Self::AddressOf { .. } => Some(Type::Pointer),
-            Self::Offset { value, .. } => value.type_of(last_type, value_type),
-            Self::As { ty, .. } => Some(*ty),
-        }
-    }
-
-    pub fn eval(
-        &self,
-        ty: Type,
-        last: &Value,
-        proxy: AddressProxy<'_>,
-    ) -> anyhow::Result<(Option<Address>, Value)> {
-        match self {
-            Self::Value => Ok(proxy.eval(ty)?),
-            Self::Last => Ok((None, last.clone())),
-            Self::Number { value } => Ok((None, Value::from_bigint(ty, value)?)),
-            Self::String { value } => Ok((None, Value::String(value.to_owned(), value.len()))),
-            Self::Bytes { value } => Ok((None, Value::Bytes(value.clone()))),
-            Self::Deref { value } => {
-                let new_address = match proxy.eval(Type::Pointer)? {
-                    (_, Value::Pointer(address)) => address,
-                    _ => return Ok((None, Value::None(ty))),
-                };
-
-                let pointer = pointer::Pointer::from_address(new_address);
-                let address = proxy.handle.address_proxy(&pointer);
-                Ok(value.eval(ty, last, address)?)
-            }
-            Self::AddressOf { value } => {
-                let new_address = match value.address_of(proxy)? {
-                    Some(address) => address,
-                    None => return Ok((None, Value::None(ty))),
-                };
-
-                Ok((None, Value::Pointer(new_address)))
-            }
-            Self::As { expr, .. } => expr.eval(ty, last, proxy),
-            _ => bail!("can't evaluate expression yet: {}", self),
-        }
-    }
-}
-
-impl Default for ValueExpr {
-    fn default() -> Self {
-        Self::Value
-    }
-}
-
-impl fmt::Display for ValueExpr {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Value => "value".fmt(fmt),
-            Self::Last => "last".fmt(fmt),
-            Self::Deref { value } => write!(fmt, "*{}", value),
-            Self::AddressOf { value } => write!(fmt, "&{}", value),
-            Self::Offset { value, offset } => write!(fmt, "{}{}", value, offset),
-            Self::Number { value } => write!(fmt, "{}", value),
-            Self::String { value } => write!(fmt, "{}", EscapeString(value)),
-            Self::Bytes { value } => write!(fmt, "{}", Hex(value)),
-            Self::As { expr, ty } => write!(fmt, "{} as {}", expr, ty),
-        }
-    }
-}
-
-pub enum Special {
-    Bytes(Vec<u8>),
-    NotBytes(Vec<u8>),
-    Zero(usize),
-    NonZero(usize),
-    /// All the inner specials must match.
-    All(Vec<Special>),
-    /// Any of the inner specials match.
-    Any(Vec<Special>),
-    /// Special seek for a regular expression.
-    Regex(regex::bytes::Regex),
-}
-
-impl Special {
-    pub fn test(&self, mut data: &[u8]) -> Option<usize> {
-        match *self {
-            Self::All(ref all) => all.iter().flat_map(|s| s.test(data)).max(),
-            Self::Any(ref any) => any.iter().flat_map(|s| s.test(data)).min(),
-            Self::Bytes(ref bytes) => {
-                if bytes.is_empty() {
-                    return None;
-                }
-
-                let first = bytes[0];
-                let mut local = 0usize;
-
-                while !data.is_empty() {
-                    let index = match memchr::memchr(first, data) {
-                        Some(index) => index,
-                        None => {
-                            return None;
-                        }
-                    };
-
-                    data = &data[index..];
-                    let len = usize::min(data.len(), bytes.len());
-
-                    if &data[..len] == &bytes[..len] {
-                        return Some(local + index);
-                    }
-
-                    local += index + 1;
-                    data = &data[1..];
-                }
-
-                None
-            }
-            Self::NotBytes(..) => None,
-            Self::NonZero(..) => find_first_nonzero(data),
-            Self::Zero(width) => {
-                if width == 0 {
-                    return None;
-                }
-
-                let mut local = 0usize;
-
-                while !data.is_empty() {
-                    let index = match memchr::memchr(0, data) {
-                        Some(index) => index,
-                        None => {
-                            return Some(local + data.len());
-                        }
-                    };
-
-                    local += index;
-                    data = &data[index..];
-
-                    if data.len() < width {
-                        return Some(local);
-                    }
-
-                    if is_all_zeros(&data[..width]) {
-                        return Some(local);
-                    }
-
-                    let offset = match data[..width].iter().position(|c| *c != 0) {
-                        Some(offset) => offset,
-                        None => width,
-                    };
-
-                    local += offset;
-                    data = &data[offset..];
-                }
-
-                None
-            }
-            Self::Regex(ref regex) => match regex.find(data) {
-                Some(m) => Some(m.start()),
-                None => None,
-            },
-        }
-    }
-}
+pub(crate) mod lexer;
+pub mod special;
+lalrpop_util::lalrpop_mod!(pub parser, "/filter/parser.rs");
 
 /// The result of a filter test.
 #[derive(Debug, Clone, Copy)]
@@ -358,46 +46,8 @@ impl From<bool> for Test {
     }
 }
 
-#[derive(Debug)]
-pub struct Filter {
-    pub matcher: Matcher,
-}
-
-impl Filter {
-    /// Construct a new, typed filter.
-    pub fn new(matcher: Matcher) -> Self {
-        Self { matcher }
-    }
-
-    pub fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
-        self.matcher.type_of(last_type, value_type)
-    }
-
-    /// Parse the given filter.
-    pub fn parse(filter: &str, process: &Process) -> anyhow::Result<Self> {
-        let matcher = Matcher::parse(filter, process)?;
-        Ok(Self::new(matcher))
-    }
-
-    /// Construct a new pointer filter.
-    pub fn pointer(expr: ValueExpr, process: &Process) -> anyhow::Result<Filter> {
-        Ok(Filter {
-            matcher: Matcher::IsPointer(IsPointer::new(expr, process)?),
-        })
-    }
-
-    /// Test the given bytes against this filter.
-    pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
-        Ok(self.matcher.test(ty, last, proxy)?)
-    }
-
-    pub fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {
-        self.matcher.special(process, ty)
-    }
-}
-
 #[derive(Debug, Clone)]
-pub enum Matcher {
+pub enum Filter {
     Binary(Binary),
     All(All),
     Any(Any),
@@ -407,8 +57,18 @@ pub enum Matcher {
     Regex(Regex),
 }
 
-impl Matcher {
-    fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
+impl Filter {
+    /// Parse a a string into a filter.
+    pub fn parse(input: &str, process: &Process) -> anyhow::Result<Self> {
+        let expr = parser::OrParser::new().parse(lexer::Lexer::new(input))?;
+        Ok(expr.into_filter(process)?)
+    }
+
+    pub fn pointer(expr: ValueExpr, process: &Process) -> anyhow::Result<Filter> {
+        Ok(Filter::IsPointer(IsPointer::new(expr, process)?))
+    }
+
+    pub fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
         match self {
             Self::Binary(m) => m.type_of(last_type, value_type),
             Self::All(m) => m.type_of(last_type, value_type),
@@ -420,14 +80,8 @@ impl Matcher {
         }
     }
 
-    /// Parse a a string into a matcher.
-    pub fn parse(input: &str, process: &Process) -> anyhow::Result<Self> {
-        let expr = parser::OrParser::new().parse(lexer::Lexer::new(input))?;
-        Ok(expr.into_matcher(process)?)
-    }
-
     /// Test the specified memory region.
-    fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
+    pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
         match self {
             Self::Binary(m) => m.test(ty, last, proxy),
             Self::All(m) => m.test(ty, last, proxy),
@@ -439,8 +93,8 @@ impl Matcher {
         }
     }
 
-    /// Construct a special matcher.
-    fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {
+    /// Construct a special filter.
+    pub fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {
         match self {
             Self::Binary(m) => m.special(process, ty),
             Self::All(m) => m.special(process, ty),
@@ -453,7 +107,7 @@ impl Matcher {
     }
 }
 
-impl fmt::Display for Matcher {
+impl fmt::Display for Filter {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Binary(m) => m.fmt(fmt),
@@ -662,7 +316,7 @@ impl fmt::Display for Binary {
 
 /// Only matches when all nested filters match.
 #[derive(Debug, Clone)]
-pub struct All(Vec<Matcher>);
+pub struct All(Vec<Filter>);
 
 impl All {
     fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
@@ -672,7 +326,7 @@ impl All {
             .next()
     }
 
-    pub fn new(filters: impl IntoIterator<Item = Matcher>) -> Self {
+    pub fn new(filters: impl IntoIterator<Item = Filter>) -> Self {
         All(filters.into_iter().collect())
     }
 
@@ -723,7 +377,7 @@ impl fmt::Display for All {
 
 /// Only matches when any nested filter match.
 #[derive(Debug, Clone)]
-pub struct Any(Vec<Matcher>);
+pub struct Any(Vec<Filter>);
 
 impl Any {
     fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
@@ -733,7 +387,7 @@ impl Any {
             .next()
     }
 
-    pub fn new(filters: impl IntoIterator<Item = Matcher>) -> Self {
+    pub fn new(filters: impl IntoIterator<Item = Filter>) -> Self {
         Any(filters.into_iter().collect())
     }
 
@@ -904,21 +558,21 @@ impl fmt::Display for Regex {
 
 #[derive(Debug, Clone)]
 pub struct Not {
-    matcher: Box<Matcher>,
+    filter: Box<Filter>,
 }
 
 impl Not {
     fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
-        Ok(self.matcher.test(ty, last, proxy)?.invert())
+        Ok(self.filter.test(ty, last, proxy)?.invert())
     }
 
     fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
-        self.matcher.type_of(last_type, value_type)
+        self.filter.type_of(last_type, value_type)
     }
 
     pub fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {
         // erase or fix specializations produced.
-        let special = match self.matcher.special(process, ty)? {
+        let special = match self.filter.special(process, ty)? {
             Some(special) => special,
             None => return Ok(None),
         };
@@ -938,8 +592,8 @@ impl Not {
 
 impl fmt::Display for Not {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &*self.matcher {
-            Matcher::IsPointer(..) => write!(fmt, "is not pointer"),
+        match &*self.filter {
+            Filter::IsPointer(..) => write!(fmt, "is not pointer"),
             other => write!(fmt, "not {}", other),
         }
     }
@@ -947,8 +601,7 @@ impl fmt::Display for Not {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_first_nonzero, is_all_zeros, lexer, parser};
-    use std::iter;
+    use super::{lexer, parser};
 
     #[test]
     fn test_basic_parsing() -> anyhow::Result<()> {
@@ -961,37 +614,6 @@ mod tests {
         dbg!(b);
         dbg!(c);
 
-        Ok(())
-    }
-
-    #[test]
-    fn test_find_first_nonzero() -> anyhow::Result<()> {
-        assert_eq!(Some(4), find_first_nonzero(&[0, 0, 0, 0, 5, 0, 0]));
-        assert_eq!(
-            None,
-            find_first_nonzero(&iter::repeat(0u8).take(127).collect::<Vec<_>>())
-        );
-        let test = iter::repeat(0u8)
-            .take(126)
-            .chain(iter::once(8))
-            .collect::<Vec<_>>();
-        assert_eq!(Some(126), find_first_nonzero(&test));
-        assert_ne!(0, test[126]);
-        Ok(())
-    }
-
-    #[test]
-    fn test_is_all_zeros() -> anyhow::Result<()> {
-        assert_eq!(false, is_all_zeros(&[0, 0, 0, 0, 5, 0, 0]));
-        assert_eq!(
-            true,
-            is_all_zeros(&iter::repeat(0u8).take(127).collect::<Vec<_>>())
-        );
-        let test = iter::repeat(0u8)
-            .take(126)
-            .chain(iter::once(8))
-            .collect::<Vec<_>>();
-        assert_eq!(false, is_all_zeros(&test));
         Ok(())
     }
 }

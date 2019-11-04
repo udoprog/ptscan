@@ -1,9 +1,7 @@
 mod lexer;
 lalrpop_util::lalrpop_mod!(parser, "/pointer/parser.rs");
 
-use crate::{
-    address::Sign, filter::ast::EscapeString, process_handle::ProcessHandle, Address, Offset,
-};
+use crate::{address::Sign, process_handle::ProcessHandle, utils::EscapeString, Address, Offset};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

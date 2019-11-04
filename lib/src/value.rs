@@ -1,7 +1,7 @@
 use crate::{
     error::Error,
-    filter::ast::{EscapeString, Hex},
     process::Process,
+    utils::{EscapeString, Hex},
     Address, Type,
 };
 use anyhow::bail;

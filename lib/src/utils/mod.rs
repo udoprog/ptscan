@@ -1,6 +1,6 @@
 mod words;
 
-use std::{ffi::OsString, ops};
+use std::{ffi::OsString, fmt, ops};
 
 use crate::{
     error::Error,
@@ -267,5 +267,48 @@ where
 
             return Some(Ok((memory_info.clone(), range)));
         }
+    }
+}
+
+pub struct Hex<'a>(pub &'a [u8]);
+
+impl fmt::Display for Hex<'_> {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut it = self.0.iter().cloned();
+
+        let last = it.next_back();
+
+        while let Some(c) = it.next() {
+            write!(fmt, "{:02X} ", c)?;
+        }
+
+        if let Some(c) = last {
+            write!(fmt, "{:02X}", c)?;
+        }
+
+        Ok(())
+    }
+}
+
+pub struct EscapeString<'a>(pub &'a str);
+
+impl fmt::Display for EscapeString<'_> {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "\"")?;
+
+        for c in self.0.chars() {
+            match c {
+                '\\' => write!(fmt, "\\\\")?,
+                '"' => write!(fmt, "\\\"")?,
+                ' ' => write!(fmt, " ")?,
+                '\t' => write!(fmt, "\\t")?,
+                '\n' => write!(fmt, "\\n")?,
+                '\r' => write!(fmt, "\\r")?,
+                c => write!(fmt, "{}", c)?,
+            }
+        }
+
+        write!(fmt, "\"")?;
+        Ok(())
     }
 }

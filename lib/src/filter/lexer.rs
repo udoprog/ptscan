@@ -508,13 +508,13 @@ mod tests {
         );
 
         assert_eq!(
-            vec![(0, Token::Bytes(vec![0x42, 0x41, 0x40]), 8)],
+            vec![(0, Token::Literal(BigInt::from(0x424140), None), 8)],
             tokenize("0x424140")?
         );
 
         assert_eq!(
             vec![
-                (0, Token::Bytes(vec![0x42]), 4),
+                (0, Token::Literal(BigInt::from(0x42), None), 4),
                 (5, Token::Literal(BigInt::from(83), None), 7)
             ],
             tokenize("0x42 83")?

@@ -295,6 +295,7 @@ impl ProcessHandle {
         results: &[Box<ScanResult>],
         results_output: &mut Vec<Box<ScanResult>>,
         filter: &filter::Filter,
+        new_type: Option<Type>,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
     ) -> anyhow::Result<()> {
@@ -340,9 +341,10 @@ impl ProcessHandle {
 
                             let mut work = || {
                                 let proxy = self.address_proxy(&result.pointer);
+                                let ty = new_type.unwrap_or_else(|| result.value.ty());
 
-                                if let Test::True = filter.test(&result.value, proxy)? {
-                                    let (last_address, value) = proxy.eval(result.value.ty())?;
+                                if let Test::True = filter.test(ty, &result.value, proxy)? {
+                                    let (last_address, value) = proxy.eval(ty)?;
                                     let mut pointer = result.pointer.clone();
                                     pointer.last_address = last_address;
 

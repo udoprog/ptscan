@@ -90,6 +90,13 @@ pub enum ValueExpr {
     /// A number of raw bytes.
     #[serde(rename = "number")]
     Bytes { value: Vec<u8> },
+    /// Cast expression.
+    #[serde(rename = "as")]
+    As {
+        expr: Box<ValueExpr>,
+        #[serde(rename = "as_type")]
+        ty: Type,
+    },
 }
 
 impl ValueExpr {
@@ -102,15 +109,9 @@ impl ValueExpr {
     }
 
     /// Parse a value expression to use.
-    pub fn parse(input: &str, ty: Option<Type>, process: &Process) -> anyhow::Result<ValueExpr> {
+    pub fn parse(input: &str, process: &Process) -> anyhow::Result<ValueExpr> {
         let expr = parser::ValueExprParser::new().parse(lexer::Lexer::new(input))?;
-
-        let ty = ty
-            .or_else(|| expr.type_from_hint())
-            .ok_or_else(|| anyhow!("can't determine type of expression"))?;
-
-        let value = expr.eval(ty, process)?;
-        Ok(value)
+        Ok(expr.eval(process)?)
     }
 
     /// Get relevant traits of the expression.
@@ -161,6 +162,21 @@ impl ValueExpr {
         }
     }
 
+    /// Get the type of the expression.
+    pub fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
+        match self {
+            Self::Value => value_type,
+            Self::Last => last_type,
+            Self::Number { .. } => Some(Type::U32),
+            Self::String { value } => Some(Type::String(value.len())),
+            Self::Bytes { value } => Some(Type::Bytes(value.len())),
+            Self::Deref { .. } => None,
+            Self::AddressOf { .. } => Some(Type::Pointer),
+            Self::Offset { value, .. } => value.type_of(last_type, value_type),
+            Self::As { ty, .. } => Some(*ty),
+        }
+    }
+
     pub fn eval(
         &self,
         ty: Type,
@@ -191,7 +207,8 @@ impl ValueExpr {
 
                 Ok((None, Value::Pointer(new_address)))
             }
-            other => bail!("can't evaluate value yet: {}", other),
+            Self::As { expr, .. } => expr.eval(ty, last, proxy),
+            _ => bail!("can't evaluate expression yet: {}", self),
         }
     }
 }
@@ -213,6 +230,7 @@ impl fmt::Display for ValueExpr {
             Self::Number { value } => write!(fmt, "{}", value),
             Self::String { value } => write!(fmt, "{}", EscapeString(value)),
             Self::Bytes { value } => write!(fmt, "{}", Hex(value)),
+            Self::As { expr, ty } => write!(fmt, "{} as {}", expr, ty),
         }
     }
 }
@@ -342,37 +360,39 @@ impl From<bool> for Test {
 
 #[derive(Debug)]
 pub struct Filter {
-    pub ty: Type,
     pub matcher: Matcher,
 }
 
 impl Filter {
     /// Construct a new, typed filter.
-    pub fn new(ty: Type, matcher: Matcher) -> Self {
-        Self { ty, matcher }
+    pub fn new(matcher: Matcher) -> Self {
+        Self { matcher }
+    }
+
+    pub fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
+        self.matcher.type_of(last_type, value_type)
     }
 
     /// Parse the given filter.
-    pub fn parse(filter: &str, ty: Option<Type>, process: &Process) -> anyhow::Result<Self> {
-        let (ty, matcher) = Matcher::parse(filter, ty, process)?;
-        Ok(Self::new(ty, matcher))
+    pub fn parse(filter: &str, process: &Process) -> anyhow::Result<Self> {
+        let matcher = Matcher::parse(filter, process)?;
+        Ok(Self::new(matcher))
     }
 
     /// Construct a new pointer filter.
-    pub fn pointer(ty: Type, expr: ValueExpr, process: &Process) -> anyhow::Result<Filter> {
+    pub fn pointer(expr: ValueExpr, process: &Process) -> anyhow::Result<Filter> {
         Ok(Filter {
-            ty,
             matcher: Matcher::IsPointer(IsPointer::new(expr, process)?),
         })
     }
 
     /// Test the given bytes against this filter.
-    pub fn test(&self, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
-        Ok(self.matcher.test(self.ty, last, proxy)?)
+    pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
+        Ok(self.matcher.test(ty, last, proxy)?)
     }
 
-    pub fn special(&self, process: &Process) -> anyhow::Result<Option<Special>> {
-        self.matcher.special(process, self.ty)
+    pub fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {
+        self.matcher.special(process, ty)
     }
 }
 
@@ -388,15 +408,22 @@ pub enum Matcher {
 }
 
 impl Matcher {
+    fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
+        match self {
+            Self::Binary(m) => m.type_of(last_type, value_type),
+            Self::All(m) => m.type_of(last_type, value_type),
+            Self::Any(m) => m.type_of(last_type, value_type),
+            Self::IsPointer(m) => m.type_of(last_type, value_type),
+            Self::IsNone(m) => m.type_of(last_type, value_type),
+            Self::Not(m) => m.type_of(last_type, value_type),
+            Self::Regex(m) => m.type_of(last_type, value_type),
+        }
+    }
+
     /// Parse a a string into a matcher.
-    pub fn parse(input: &str, ty: Option<Type>, process: &Process) -> anyhow::Result<(Type, Self)> {
+    pub fn parse(input: &str, process: &Process) -> anyhow::Result<Self> {
         let expr = parser::OrParser::new().parse(lexer::Lexer::new(input))?;
-
-        let ty = ty
-            .or_else(|| expr.type_from_hint())
-            .ok_or_else(|| anyhow!("can't determine type of expression"))?;
-
-        Ok((ty, expr.into_matcher(ty, process)?))
+        Ok(expr.into_matcher(process)?)
     }
 
     /// Test the specified memory region.
@@ -445,6 +472,12 @@ impl fmt::Display for Matcher {
 pub struct Binary(Op, ValueExpr, ValueExpr);
 
 impl Binary {
+    fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
+        self.1
+            .type_of(last_type, value_type)
+            .or_else(|| self.2.type_of(last_type, value_type))
+    }
+
     fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
         macro_rules! binary_numeric {
             ($expr:expr, $ty:ty, $a:ident $op:tt $b:ident) => {
@@ -513,6 +546,10 @@ impl Binary {
         }
 
         let Binary(op, lhs, rhs) = self;
+
+        let ty = self
+            .type_of(Some(last.ty()), Some(ty))
+            .ok_or_else(|| anyhow!("cannot determine type of binary expression: {}", self))?;
 
         let (_, lhs) = lhs.eval(ty, last, proxy)?;
         let (_, rhs) = rhs.eval(ty, last, proxy)?;
@@ -628,6 +665,13 @@ impl fmt::Display for Binary {
 pub struct All(Vec<Matcher>);
 
 impl All {
+    fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
+        self.0
+            .iter()
+            .flat_map(|m| m.type_of(last_type, value_type))
+            .next()
+    }
+
     pub fn new(filters: impl IntoIterator<Item = Matcher>) -> Self {
         All(filters.into_iter().collect())
     }
@@ -682,6 +726,13 @@ impl fmt::Display for All {
 pub struct Any(Vec<Matcher>);
 
 impl Any {
+    fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
+        self.0
+            .iter()
+            .flat_map(|m| m.type_of(last_type, value_type))
+            .next()
+    }
+
     pub fn new(filters: impl IntoIterator<Item = Matcher>) -> Self {
         Any(filters.into_iter().collect())
     }
@@ -756,6 +807,10 @@ impl IsPointer {
         })
     }
 
+    fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
+        self.expr.type_of(last_type, value_type)
+    }
+
     pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
         let (_, value) = self.expr.eval(ty, last, proxy)?;
 
@@ -792,6 +847,10 @@ impl IsNone {
         Ok(Self { expr })
     }
 
+    fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
+        self.expr.type_of(last_type, value_type)
+    }
+
     pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
         let (_, value) = self.expr.eval(ty, last, proxy)?;
         Ok(value.is_none().into())
@@ -813,6 +872,10 @@ pub struct Regex {
 impl Regex {
     pub fn new(expr: ValueExpr, regex: regex::bytes::Regex) -> Self {
         Self { expr, regex }
+    }
+
+    fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
+        self.expr.type_of(last_type, value_type)
     }
 
     pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
@@ -847,6 +910,10 @@ pub struct Not {
 impl Not {
     fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
         Ok(self.matcher.test(ty, last, proxy)?.invert())
+    }
+
+    fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
+        self.matcher.type_of(last_type, value_type)
     }
 
     pub fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {

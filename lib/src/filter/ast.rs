@@ -55,45 +55,33 @@ pub enum ValueExpr {
 }
 
 impl ValueExpr {
-    /// Get a hint at what type to use for this expression.
-    pub fn type_from_hint(&self) -> Option<Type> {
-        let implicit = match self {
-            Self::Number(.., ty) => Some(ty.unwrap_or(Type::U32)),
-            Self::String(s) => Some(Type::String(s.len())),
-            Self::Bytes(s) => Some(Type::Bytes(s.len())),
-            Self::AddressOf(..) => Some(Type::Pointer),
-            _ => None,
-        };
-
-        let explicit = match self {
-            Self::As(_, ty) => Some(*ty),
-            _ => None,
-        };
-
-        explicit.or(implicit)
-    }
-
     /// Evaluate the expression.
-    pub fn eval(self, ty: Type, process: &Process) -> anyhow::Result<filter::ValueExpr> {
+    pub fn eval(self, process: &Process) -> anyhow::Result<filter::ValueExpr> {
         use filter::ValueExpr::*;
 
         Ok(match self {
             Self::Value => Value,
             Self::Last => Last,
             Self::Offset(value, offset) => Offset {
-                value: Box::new(value.eval(ty, process)?),
+                value: Box::new(value.eval(process)?),
                 offset,
             },
             Self::Number(value, _) => Number { value },
             Self::String(value) => String { value },
             Self::Bytes(value) => Bytes { value },
-            Self::As(value, ty) => value.eval(ty, process)?,
             Self::AddressOf(value) => AddressOf {
-                value: Box::new(value.eval(ty, process)?),
+                value: Box::new(value.eval(process)?),
             },
             Self::Deref(value) => Deref {
-                value: Box::new(value.eval(ty, process)?),
+                value: Box::new(value.eval(process)?),
             },
+            Self::As(expr, ty) => {
+                let expr = expr.eval(process)?;
+                As {
+                    expr: Box::new(expr),
+                    ty,
+                }
+            }
         })
     }
 }
@@ -141,35 +129,23 @@ pub enum Expression {
 }
 
 impl Expression {
-    pub fn type_from_hint(&self) -> Option<Type> {
-        match self {
-            Self::Not(expr) => expr.type_from_hint(),
-            Self::IsType(_, ty) => Some(*ty),
-            Self::Binary(_, lhs, rhs) => lhs.type_from_hint().or(rhs.type_from_hint()),
-            Self::And(exprs) | Self::Or(exprs) => {
-                exprs.iter().flat_map(|e| e.type_from_hint()).next()
-            }
-            Self::Regex(..) => Some(Type::String(255)),
-        }
-    }
-
     /// Convert expression into a matcher.
-    pub fn into_matcher(self, ty: Type, process: &Process) -> anyhow::Result<Matcher> {
+    pub fn into_matcher(self, process: &Process) -> anyhow::Result<Matcher> {
         Ok(match self {
             Self::Not(expr) => {
-                let matcher = expr.into_matcher(ty, process)?;
+                let matcher = expr.into_matcher(process)?;
 
                 Matcher::Not(filter::Not {
                     matcher: Box::new(matcher),
                 })
             }
             Self::Binary(op, lhs, rhs) => {
-                let lhs = lhs.eval(ty, process)?;
-                let rhs = rhs.eval(ty, process)?;
+                let lhs = lhs.eval(process)?;
+                let rhs = rhs.eval(process)?;
                 Matcher::Binary(filter::Binary(op, lhs, rhs))
             }
             Self::IsType(expr, ty) => {
-                let expr = expr.eval(ty, process)?;
+                let expr = expr.eval(process)?;
 
                 match ty {
                     Type::Pointer => Matcher::IsPointer(filter::IsPointer::new(expr, process)?),
@@ -180,19 +156,19 @@ impl Expression {
             Self::And(expressions) => {
                 let filters = expressions
                     .into_iter()
-                    .map(|e| e.into_matcher(ty, process))
+                    .map(|e| e.into_matcher(process))
                     .collect::<anyhow::Result<Vec<Matcher>>>()?;
                 Matcher::All(filter::All::new(filters))
             }
             Self::Or(expressions) => {
                 let filters = expressions
                     .into_iter()
-                    .map(|e| e.into_matcher(ty, process))
+                    .map(|e| e.into_matcher(process))
                     .collect::<anyhow::Result<Vec<Matcher>>>()?;
                 Matcher::Any(filter::Any::new(filters))
             }
             Self::Regex(expr, pattern) => {
-                let expr = expr.eval(ty, process)?;
+                let expr = expr.eval(process)?;
 
                 let regex = match pattern {
                     ValueExpr::String(s) => regex::bytes::Regex::new(&s)?,

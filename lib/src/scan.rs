@@ -2,7 +2,7 @@
 
 use crate::{
     error::Error, filter, Address, AddressRange, Pointer, PointerBase, ProcessHandle, Size, Test,
-    Token, Value, ValueExpr,
+    Token, Type, Value, ValueExpr,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -93,6 +93,7 @@ impl Scan {
         thread_pool: &rayon::ThreadPool,
         handle: &ProcessHandle,
         filter: &filter::Filter,
+        new_type: Option<Type>,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
     ) -> anyhow::Result<()> {
@@ -102,6 +103,7 @@ impl Scan {
             &self.results,
             &mut results,
             filter,
+            new_type,
             cancel,
             progress,
         )?;
@@ -128,6 +130,7 @@ impl Scan {
         thread_pool: &rayon::ThreadPool,
         handle: &ProcessHandle,
         filter: &filter::Filter,
+        ty: Type,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
         config: InitialScanConfig,
@@ -153,10 +156,10 @@ impl Scan {
 
         let mut last_error = None;
 
-        let type_size = filter.ty.size(&handle.process);
-        let aligned = aligned.unwrap_or(filter.ty.is_default_aligned());
+        let type_size = ty.size(&handle.process);
+        let aligned = aligned.unwrap_or(ty.is_default_aligned());
 
-        let special = filter.special(&handle.process)?;
+        let special = filter.special(&handle.process, ty)?;
         let special = special.as_ref();
 
         let tasks = config
@@ -203,7 +206,7 @@ impl Scan {
                     s.spawn(move |_| {
                         let start = Instant::now();
                         let result = work(
-                            handle, &tx, ranges, filter, special, aligned, type_size, cancel,
+                            handle, &tx, ranges, filter, ty, special, aligned, type_size, cancel,
                         );
 
                         let now = Instant::now();
@@ -260,6 +263,7 @@ impl Scan {
             tx: &mpsc::Sender<Task>,
             ranges: &[AddressRange],
             filter: &filter::Filter,
+            ty: Type,
             special: Option<&filter::Special>,
             aligned: bool,
             type_size: usize,
@@ -293,6 +297,7 @@ impl Scan {
                         process_one(
                             handle,
                             filter,
+                            ty,
                             &mut results,
                             &mut hits,
                             base,
@@ -319,6 +324,7 @@ impl Scan {
         fn process_one(
             handle: &ProcessHandle,
             filter: &filter::Filter,
+            ty: Type,
             results: &mut Vec<Box<ScanResult>>,
             hits: &mut u64,
             base: Address,
@@ -346,9 +352,9 @@ impl Scan {
                     Pointer::new(PointerBase::Address { address }, vec![], Some(address));
                 let proxy = handle.address_proxy(&pointer);
 
-                if let Test::True = filter.test(none, proxy)? {
+                if let Test::True = filter.test(ty, none, proxy)? {
                     *hits += 1;
-                    let (last_address, value) = proxy.eval(filter.ty)?;
+                    let (last_address, value) = proxy.eval(ty)?;
                     pointer.base = handle.address_to_pointer_base(address)?;
                     pointer.last_address = last_address;
                     results.push(Box::new(ScanResult { pointer, value }));

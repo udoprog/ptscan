@@ -418,16 +418,18 @@ impl Application {
                 };
 
                 let value_expr = if let (Some(expr), Some(handle)) = (&expr, self.handle.as_ref()) {
-                    ValueExpr::parse(expr, ty, &handle.process)?
+                    ValueExpr::parse(expr, &handle.process)?
                 } else {
                     ValueExpr::Value
                 };
 
                 let mut stored;
-                let mut results = &scan[..usize::min(scan.len(), self.limit)];
+                let results = &scan[..usize::min(scan.len(), self.limit)];
+                // NB: possibly updated values.
+                let mut current = results;
 
                 if let Some(handle) = self.handle.as_ref() {
-                    stored = results.to_vec();
+                    stored = current.to_vec();
                     handle.refresh_values(
                         &self.thread_pool,
                         &mut stored,
@@ -436,7 +438,7 @@ impl Application {
                         NoopProgress,
                         &value_expr,
                     )?;
-                    results = &stored;
+                    current = &stored;
                 }
 
                 self.term
@@ -445,7 +447,8 @@ impl Application {
                 Self::print(
                     &mut self.term,
                     scan.len(),
-                    results.iter().map(|r| &**r).enumerate(),
+                    current.iter().map(|r| &**r).enumerate(),
+                    Some(&results[..]),
                     &scan.value_expr,
                 )?;
             }
@@ -505,8 +508,8 @@ impl Application {
                 scan.push(Box::new(ScanResult { pointer, value }));
                 scan.initial = false;
             }
-            Action::Scan { filter, config } => {
-                self.scan(&filter, config)?;
+            Action::Scan { filter, ty, config } => {
+                self.scan(&filter, ty, config)?;
             }
             Action::Refresh { ty, expr, indexes } => {
                 let handle = match self.handle.as_ref() {
@@ -535,8 +538,10 @@ impl Application {
                 }
 
                 if let (Some(expr), Some(handle)) = (&expr, self.handle.as_ref()) {
-                    scan.value_expr = ValueExpr::parse(expr, ty, &handle.process)?;
+                    scan.value_expr = ValueExpr::parse(expr, &handle.process)?;
                 };
+
+                let ty = scan.value_expr.type_of(None, ty);
 
                 handle.refresh_values(
                     &self.thread_pool,
@@ -556,6 +561,7 @@ impl Application {
                     &mut self.term,
                     scan.len(),
                     scan.results.iter().take(len).map(|r| &**r).enumerate(),
+                    None,
                     &scan.value_expr,
                 )?;
             }
@@ -877,9 +883,10 @@ impl Application {
 
                     if let Some(filter) = filter {
                         let proxy = handle.address_proxy(&result.pointer);
+                        let ty = result.value.ty();
 
                         if let Some(last) = &mut state.last {
-                            if let Test::False = filter.test(last, proxy)? {
+                            if let Test::False = filter.test(ty, last, proxy)? {
                                 any_changed = true;
                                 state.removed = true;
                             }
@@ -888,7 +895,7 @@ impl Application {
                                 *last = result.value.clone();
                             }
                         } else {
-                            if let Test::False = filter.test(&none, proxy)? {
+                            if let Test::False = filter.test(ty, &none, proxy)? {
                                 any_changed = true;
                                 state.removed = true;
                             }
@@ -1050,7 +1057,7 @@ impl Application {
         };
 
         // Filter to find all pointers.
-        let pointers = Filter::pointer(Type::Pointer, ValueExpr::Value, &handle.process)?;
+        let pointers = Filter::pointer(ValueExpr::Value, &handle.process)?;
 
         let mut scan = Scan::new();
 
@@ -1058,6 +1065,7 @@ impl Application {
             &self.thread_pool,
             handle,
             &pointers,
+            Type::Pointer,
             None,
             SimpleProgress::new(&mut self.term, "Performing initial pointer scan", None),
             Default::default(),
@@ -1160,7 +1168,12 @@ impl Application {
     }
 
     /// Scan memory using the given filter and the currently selected scan.
-    fn scan(&mut self, filter: &filter::Filter, config: ScanConfig) -> anyhow::Result<()> {
+    fn scan(
+        &mut self,
+        filter: &filter::Filter,
+        ty: Option<Type>,
+        config: ScanConfig,
+    ) -> anyhow::Result<()> {
         let handle = match self.handle.as_ref() {
             Some(handle) => handle,
             None => bail!("not attached to a process"),
@@ -1179,6 +1192,10 @@ impl Application {
         let scan = self.scans.entry(current_scan.to_string()).or_default();
 
         let result = if scan.initial {
+            let ty = filter
+                .type_of(None, ty)
+                .ok_or_else(|| anyhow!("must specify type for initial scan"))?;
+
             let mut c = InitialScanConfig::default();
             c.modules_only = config.modules_only;
 
@@ -1187,6 +1204,7 @@ impl Application {
                     thread_pool,
                     handle,
                     filter,
+                    ty,
                     Some(token),
                     SimpleProgress::new(term, "Performing initial scan", Some(token)),
                     c,
@@ -1202,6 +1220,7 @@ impl Application {
                     thread_pool,
                     handle,
                     filter,
+                    ty,
                     Some(token),
                     SimpleProgress::new(term, "Rescanning", Some(token)),
                 )
@@ -1219,6 +1238,7 @@ impl Application {
             &mut self.term,
             scan.len(),
             scan[..len].iter().map(|r| &**r).enumerate(),
+            None,
             &scan.value_expr,
         )?;
 
@@ -1309,6 +1329,7 @@ impl Application {
         term: &mut Term,
         len: usize,
         results: impl IntoIterator<Item = (usize, &'a ScanResult)>,
+        recorded: Option<&[Box<ScanResult>]>,
         value_expr: &ValueExpr,
     ) -> anyhow::Result<()> {
         use std::fmt::Write as _;
@@ -1327,7 +1348,15 @@ impl Application {
                 write!(buf, " : {}", value_expr)?;
             }
 
-            write!(buf, " = {}", result.value)?;
+            write!(buf, " = ")?;
+
+            if let Some(recorded) = recorded.and_then(|r| r.get(index)) {
+                if recorded.value != result.value {
+                    write!(buf, "{} -> ", recorded.value)?;
+                }
+            }
+
+            write!(buf, "{}", result.value)?;
 
             term.clear(ClearType::CurrentLine)?;
             term.print_line(&buf)?;
@@ -1421,9 +1450,7 @@ impl Application {
                         .value_name("name")
                         .takes_value(true),
                 )
-                .arg(type_argument(
-                    "The type of the filter, if it can't be derived.",
-                ))
+                .arg(type_argument("The type of the value to scan for."))
                 .arg(
                     Arg::with_name("modules-only")
                         .help("Only include modules in the initial scan.")
@@ -1706,7 +1733,7 @@ impl Application {
                             .map(|h| &h.process)
                             .ok_or_else(|| anyhow!("must be attached to process"))?;
 
-                        Some(Filter::parse(&filter, None, process)?)
+                        Some(Filter::parse(&filter, process)?)
                     }
                     None => None,
                 };
@@ -1736,10 +1763,7 @@ impl Application {
             }
             ("list", _) => return Ok(Action::List),
             ("scan", Some(m)) => {
-                let ty = match m.value_of("type").map(str::parse).transpose()? {
-                    Some(ty) => Some(ty),
-                    None => None,
-                };
+                let ty = m.value_of("type").map(str::parse).transpose()?;
 
                 let filter = match m.values_of("filter") {
                     Some(values) => values.collect::<Vec<_>>().join(" "),
@@ -1752,12 +1776,12 @@ impl Application {
                     .map(|h| &h.process)
                     .ok_or_else(|| anyhow!("must be attached to process"))?;
 
-                let filter = Filter::parse(&filter, ty, process)?;
+                let filter = Filter::parse(&filter, process)?;
 
                 let mut config = ScanConfig::default();
                 config.modules_only = m.is_present("modules-only");
                 config.suspend = m.is_present("suspend");
-                return Ok(Action::Scan { filter, config });
+                return Ok(Action::Scan { filter, ty, config });
             }
 
             ("refresh", Some(m)) => {
@@ -1962,6 +1986,7 @@ pub enum Action {
     /// Initialize or refine the existing scan.
     Scan {
         filter: filter::Filter,
+        ty: Option<Type>,
         config: ScanConfig,
     },
     /// Reset the state of the scan.

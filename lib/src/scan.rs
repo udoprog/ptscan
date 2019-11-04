@@ -278,7 +278,7 @@ impl Scan {
                 let mut offset = 0usize;
                 let range_size = range.size.as_usize();
 
-                while offset < range_size {
+                while offset < range_size && !cancel.test() {
                     let data = {
                         let len = usize::min(data.len(), range_size - offset);
                         &mut data[..len]

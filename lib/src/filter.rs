@@ -1,12 +1,13 @@
-use self::ast::{Op, ValueTrait};
+use self::ast::{EscapeString, Hex, Op, ValueTrait};
 use crate::{
     pointer,
     process::{MemoryInformation, Process},
+    value,
     value::Value,
     Address, AddressProxy, AddressRange, Offset, Type,
 };
 use anyhow::{anyhow, bail};
-use num_bigint::Sign;
+use num_bigint::{BigInt, Sign};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -80,9 +81,15 @@ pub enum ValueExpr {
         value: Box<ValueExpr>,
         offset: Offset,
     },
-    /// A literal value.
-    #[serde(rename = "literal")]
-    Literal { value: Value },
+    /// A numerical literal.
+    #[serde(rename = "number")]
+    Number { value: BigInt },
+    /// A string literal.
+    #[serde(rename = "number")]
+    String { value: String },
+    /// A number of raw bytes.
+    #[serde(rename = "number")]
+    Bytes { value: Vec<u8> },
 }
 
 impl ValueExpr {
@@ -108,19 +115,37 @@ impl ValueExpr {
 
     /// Get relevant traits of the expression.
     pub fn traits(&self) -> (ValueTrait, Sign) {
+        use num_traits::Zero as _;
+
         let value_trait = match self {
             Self::Value => ValueTrait::IsValue,
             Self::Deref { value } if **value == ValueExpr::Value => ValueTrait::IsDeref,
-            Self::Literal { value } => match value.is_zero() {
-                Some(true) => ValueTrait::Zero,
-                Some(false) => ValueTrait::NonZero,
-                _ => ValueTrait::IsNone,
-            },
+            Self::Number { value } => {
+                if value.is_zero() {
+                    ValueTrait::Zero
+                } else {
+                    ValueTrait::NonZero
+                }
+            }
+            Self::String { value } => {
+                if value.as_bytes().iter().all(|c| *c == 0) {
+                    ValueTrait::Zero
+                } else {
+                    ValueTrait::NonZero
+                }
+            }
+            Self::Bytes { value } => {
+                if value.iter().all(|c| *c == 0) {
+                    ValueTrait::Zero
+                } else {
+                    ValueTrait::NonZero
+                }
+            }
             _ => ValueTrait::NonZero,
         };
 
         let sign = match self {
-            Self::Literal { value } => value.sign(),
+            Self::Number { value } => value.sign(),
             _ => Sign::NoSign,
         };
 
@@ -145,7 +170,9 @@ impl ValueExpr {
         match self {
             Self::Value => Ok(proxy.eval(ty)?),
             Self::Last => Ok((None, last.clone())),
-            Self::Literal { value } => Ok((None, value.clone())),
+            Self::Number { value } => Ok((None, Value::from_bigint(ty, value)?)),
+            Self::String { value } => Ok((None, Value::String(value.to_owned(), value.len()))),
+            Self::Bytes { value } => Ok((None, Value::Bytes(value.clone()))),
             Self::Deref { value } => {
                 let new_address = match proxy.eval(Type::Pointer)? {
                     (_, Value::Pointer(address)) => address,
@@ -183,7 +210,9 @@ impl fmt::Display for ValueExpr {
             Self::Deref { value } => write!(fmt, "*{}", value),
             Self::AddressOf { value } => write!(fmt, "&{}", value),
             Self::Offset { value, offset } => write!(fmt, "{}{}", value, offset),
-            Self::Literal { value } => write!(fmt, "{}", value),
+            Self::Number { value } => write!(fmt, "{}", value),
+            Self::String { value } => write!(fmt, "{}", EscapeString(value)),
+            Self::Bytes { value } => write!(fmt, "{}", Hex(value)),
         }
     }
 }
@@ -528,10 +557,22 @@ impl Binary {
         let Binary(op, lhs, rhs) = self;
 
         let exact = match (op, lhs, rhs) {
-            (Op::Eq, Literal { value }, Value) | (Op::Eq, Value, Literal { value }) => {
-                Some(value.clone())
+            (Op::Eq, Number { value }, Value) | (Op::Eq, Value, Number { value }) => {
+                Some(value::Value::from_bigint(ty, value)?)
             }
-            (Op::StartsWith, Value, Literal { value }) => Some(value.clone()),
+            (Op::Eq, String { value }, Value) | (Op::Eq, Value, String { value }) => {
+                Some(value::Value::String(value.to_owned(), value.len()))
+            }
+            (Op::Eq, Bytes { value }, Value) | (Op::Eq, Value, Bytes { value }) => {
+                Some(value::Value::Bytes(value.clone()))
+            }
+            (Op::StartsWith, Value, Number { value }) => {
+                Some(value::Value::from_bigint(ty, value)?)
+            }
+            (Op::StartsWith, Value, String { value }) => {
+                Some(value::Value::String(value.to_owned(), value.len()))
+            }
+            (Op::StartsWith, Value, Bytes { value }) => Some(value::Value::Bytes(value.clone())),
             _ => None,
         };
 

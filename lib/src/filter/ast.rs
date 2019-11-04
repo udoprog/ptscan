@@ -1,7 +1,7 @@
 use crate::{
     filter::{self, Matcher},
     process::Process,
-    value, Offset, Type,
+    Offset, Type,
 };
 use anyhow::bail;
 use num_bigint::BigInt;
@@ -84,15 +84,9 @@ impl ValueExpr {
                 value: Box::new(value.eval(ty, process)?),
                 offset,
             },
-            Self::Number(number, _) => Literal {
-                value: value::Value::from_bigint(ty, &number)?,
-            },
-            Self::String(string) => Literal {
-                value: ty.decode(process, string.as_bytes())?,
-            },
-            Self::Bytes(bytes) => Literal {
-                value: ty.decode(process, &bytes)?,
-            },
+            Self::Number(value, _) => Number { value },
+            Self::String(value) => String { value },
+            Self::Bytes(value) => Bytes { value },
             Self::As(value, ty) => value.eval(ty, process)?,
             Self::AddressOf(value) => AddressOf {
                 value: Box::new(value.eval(ty, process)?),

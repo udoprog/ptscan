@@ -693,7 +693,7 @@ impl Application {
             let mut f = File::open(current_file)
                 .with_context(|| anyhow!("Failed to open file `{}`", current_file.display()))?;
 
-            let deserialized: Scan = if self.current_compress {
+            let mut deserialized: Scan = if self.current_compress {
                 self.current_format
                     .deserialize(&mut GzDecoder::new(&mut f))?
             } else {
@@ -703,14 +703,14 @@ impl Application {
             let scan = scans.entry(scan.to_string()).or_default();
 
             if append {
-                scan.results.extend(deserialized.results);
+                scan.results.append(&mut deserialized.results);
             } else {
                 scan.results = deserialized.results;
             }
 
             scan.value_expr = deserialized.value_expr;
-            scan.initial = scan.initial;
-            scan.aligned = scan.aligned;
+            scan.initial = deserialized.initial;
+            scan.aligned = deserialized.aligned;
         }
 
         self.term.print_line(format!(
@@ -749,7 +749,7 @@ impl Application {
         let mut updates = results.to_vec();
 
         let line_below = results.len() as u16;
-        let info_line = line_below * 2;
+        let info_line = line_below;
         let error_line = info_line + 1;
 
         let mut states = updates
@@ -945,8 +945,11 @@ impl Application {
                     // write!(buf, "{}", Colored::Fg(Color::Red))?;
                 }
 
-                writeln!(buf, "{:03} : {}", index, pointer)?;
-                write!(buf, " = ")?;
+                if let Some(address) = pointer.address() {
+                    write!(buf, "{:03} : {} = ", index, address)?;
+                } else {
+                    write!(buf, "{:03} : ? = ", index)?;
+                }
 
                 let mut it = state.values.iter();
                 let last = it.next_back();
@@ -976,7 +979,7 @@ impl Application {
                 }
 
                 if !incremental {
-                    term.goto(0, (index as u16) * 2)?;
+                    term.goto(0, index as u16)?;
                     term.clear(ClearType::CurrentLine)?;
                 }
 
@@ -1144,7 +1147,7 @@ impl Application {
         let scan = scans.entry(name.to_string()).or_default();
 
         if append {
-            scan.results.extend(results);
+            scan.results.append(&mut results);
             self.term
                 .print_line(format!("Appended {} paths to scan `{}`", len, name))?;
         } else {

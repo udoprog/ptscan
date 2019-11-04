@@ -77,6 +77,14 @@ impl Pointer {
         }
     }
 
+    /// Get the best known address for the current pointer.
+    pub fn address(&self) -> Option<Address> {
+        match self.base {
+            PointerBase::Address { address } => Some(address),
+            PointerBase::Module { .. } => self.last_address,
+        }
+    }
+
     /// Construct a new pointer from an address.
     pub fn from_address(address: Address) -> Self {
         Self::new(PointerBase::Address { address }, vec![], None)

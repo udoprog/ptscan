@@ -27,7 +27,7 @@ serde_cbor = "0.10.2"
 serde_yaml = "0.8.11"
 serde = {version = "1.0.102", features = ["rc", "derive"]}
 flate2 = "1.0.12"
-crossterm = {version = "0.13.0", git = "https://github.com/udoprog/crossterm", branch = "fix-read-async"}
+crossterm = "0.13.0"
 num_cpus = "1.11.0"
 
 [build-dependencies]

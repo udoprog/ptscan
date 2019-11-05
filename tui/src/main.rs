@@ -7,7 +7,14 @@ use ptscan::{
     PointerBase, ProcessHandle, ProcessId, Scan, ScanProgress, ScanResult, Size, Test, Token, Type,
     Value, ValueExpr,
 };
-use std::{collections::VecDeque, fs::File, io, path::PathBuf, sync::Arc, time::Instant};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    fs::File,
+    io,
+    path::PathBuf,
+    sync::Arc,
+    time::Instant,
+};
 
 use crossterm::{
     cursor,
@@ -28,11 +35,11 @@ fn try_main() -> anyhow::Result<()> {
             .build()?,
     );
 
-    let stdout = std::io::stdout();
+    let output = io::stdout();
 
     let term = Term {
         input: input(),
-        stdout,
+        output,
     };
 
     let mut app = Application::new(term, thread_pool, opts.suspend);
@@ -79,14 +86,27 @@ impl ScanProgress for NoopProgress {
 }
 
 struct SimpleProgress<'a> {
+    width: usize,
     term: &'a mut Term,
     what: &'static str,
     token: Option<&'a Token>,
+    colors: &'a BTreeMap<usize, style::Color>,
 }
 
 impl<'a> SimpleProgress<'a> {
-    fn new(term: &'a mut Term, what: &'static str, token: Option<&'a Token>) -> SimpleProgress<'a> {
-        Self { term, what, token }
+    fn new(
+        term: &'a mut Term,
+        what: &'static str,
+        token: Option<&'a Token>,
+        colors: &'a BTreeMap<usize, style::Color>,
+    ) -> SimpleProgress<'a> {
+        Self {
+            width: 20,
+            term,
+            what,
+            token,
+            colors,
+        }
     }
 }
 
@@ -97,24 +117,48 @@ impl<'a> ScanProgress for SimpleProgress<'a> {
     }
 
     fn report(&mut self, percentage: usize, count: u64) -> anyhow::Result<()> {
+        use std::fmt::Write as _;
         use std::iter;
 
         self.term.save_position()?;
         self.term.clear(ClearType::CurrentLine)?;
 
-        let repr = iter::repeat('#').take(percentage / 10).collect::<String>();
+        let amount = (percentage * self.width) / 100;
 
-        self.term.print(format!(
-            "{}: {}% ({} results): {}",
-            repr, percentage, count, self.what
-        ))?;
+        let start = iter::repeat('■')
+            .enumerate()
+            .map(|(i, c)| {
+                let color = self
+                    .colors
+                    .range(i..)
+                    .next()
+                    .map(|e| *e.1)
+                    .unwrap_or(style::Color::White);
+                style::style(c).with(color).to_string()
+            })
+            .take(amount)
+            .collect::<String>();
+
+        let padding = iter::repeat(' ')
+            .take(self.width - amount)
+            .collect::<String>();
+
+        let mut buf = format!(
+            "[{}{}] {:>3}% ({} results): {}",
+            start, padding, percentage, count, self.what
+        );
 
         if let Some(token) = self.token {
             if token.test() {
-                self.term.print(" (cancelled)")?;
+                write!(
+                    buf,
+                    "{}",
+                    style::style(" (cancelled)").with(style::Color::DarkRed)
+                )?;
             }
         }
 
+        self.term.print(buf)?;
         self.term.restore_position()?;
         self.term.flush()?;
         Ok(())
@@ -124,7 +168,7 @@ impl<'a> ScanProgress for SimpleProgress<'a> {
 /// Very simple terminal wrapper around crossterm.
 struct Term {
     input: TerminalInput,
-    stdout: std::io::Stdout,
+    output: io::Stdout,
 }
 
 impl Term {
@@ -133,8 +177,8 @@ impl Term {
     where
         D: std::fmt::Display + Clone,
     {
-        use crossterm::style::style;
-        self.stdout.queue(style::PrintStyledContent(style(line)))?;
+        use std::io::Write as _;
+        write!(self.output, "{}", line)?;
         Ok(())
     }
 
@@ -143,10 +187,8 @@ impl Term {
     where
         D: std::fmt::Display + Clone,
     {
-        self.stdout
-            .queue(style::PrintStyledContent(style::style(line)))?;
-        self.stdout
-            .queue(style::PrintStyledContent(style::style("\n")))?;
+        use std::io::Write as _;
+        writeln!(self.output, "{}", line)?;
         self.flush()?;
         Ok(())
     }
@@ -156,49 +198,49 @@ impl Term {
     where
         D: std::fmt::Display + Clone,
     {
-        self.stdout.queue(cursor::MoveTo(0, row))?;
+        self.output.queue(cursor::MoveTo(0, row))?;
         self.print_line(line)?;
         Ok(())
     }
 
     /// Hide the terminal cursor.
     fn hide(&mut self) -> anyhow::Result<()> {
-        self.stdout.queue(cursor::Hide)?;
+        self.output.queue(cursor::Hide)?;
         Ok(())
     }
 
     /// Show the terminal cursor.
     fn show(&mut self) -> anyhow::Result<()> {
-        self.stdout.queue(cursor::Show)?;
+        self.output.queue(cursor::Show)?;
         Ok(())
     }
 
     /// Queue up command to go to the given position in terminal.
     fn goto(&mut self, col: u16, row: u16) -> anyhow::Result<()> {
-        self.stdout.queue(cursor::MoveTo(col, row))?;
+        self.output.queue(cursor::MoveTo(col, row))?;
         Ok(())
     }
 
     /// Queue up a clear command.
     fn clear(&mut self, ty: ClearType) -> anyhow::Result<()> {
-        self.stdout.queue(terminal::Clear(ty))?;
+        self.output.queue(terminal::Clear(ty))?;
         Ok(())
     }
 
     fn save_position(&mut self) -> anyhow::Result<()> {
-        self.stdout.queue(cursor::SavePosition)?;
+        self.output.queue(cursor::SavePosition)?;
         Ok(())
     }
 
     fn restore_position(&mut self) -> anyhow::Result<()> {
-        self.stdout.queue(cursor::RestorePosition)?;
+        self.output.queue(cursor::RestorePosition)?;
         Ok(())
     }
 
     /// Flush the output.
     fn flush(&mut self) -> anyhow::Result<()> {
         use std::io::Write as _;
-        self.stdout.flush()?;
+        self.output.flush()?;
         Ok(())
     }
 
@@ -272,6 +314,8 @@ struct Application {
     current_compress: bool,
     /// The current active limit.
     limit: usize,
+    /// Get the color mapped to the given index.
+    colors: BTreeMap<usize, style::Color>,
 }
 
 impl Application {
@@ -289,7 +333,27 @@ impl Application {
             current_format: FileFormat::Cbor,
             current_compress: true,
             limit: DEFAULT_LIMIT,
+            colors: Self::colors(),
         }
+    }
+
+    fn colors() -> BTreeMap<usize, style::Color> {
+        let mut m = BTreeMap::new();
+
+        for i in 0..20usize {
+            let current = (i * 0x80) / 20;
+
+            m.insert(
+                i,
+                style::Color::Rgb {
+                    r: 0x40,
+                    g: 0x40,
+                    b: 0x80 + current as u8,
+                },
+            );
+        }
+
+        m
     }
 
     /// Run the application in a loop.
@@ -298,7 +362,11 @@ impl Application {
         let mut app = Self::app();
 
         loop {
-            self.term.print("ptscan> ")?;
+            self.term.print(
+                style::style("ptscan> ")
+                    .with(style::Color::Green)
+                    .attribute(style::Attribute::Bold),
+            )?;
             self.term.flush()?;
             let line = self.term.input.read_line()?;
 
@@ -548,7 +616,7 @@ impl Application {
                     results,
                     None,
                     ty,
-                    SimpleProgress::new(&mut self.term, "Refreshing values", None),
+                    SimpleProgress::new(&mut self.term, "Refreshing values", None, &self.colors),
                     &scan.value_expr,
                 )?;
 
@@ -760,15 +828,12 @@ impl Application {
 
         let mut states = updates
             .iter()
-            .map(|r| {
-                let mut values = VecDeque::new();
-                values.push_back((Instant::now(), r.value.clone()));
-                State {
-                    values,
-                    changed: true,
-                    removed: false,
-                    last: None,
-                }
+            .map(|r| State {
+                initial: r.value.clone(),
+                values: VecDeque::new(),
+                changed: true,
+                removed: false,
+                capped: 0,
             })
             .collect::<Vec<_>>();
 
@@ -815,10 +880,18 @@ impl Application {
         return Ok(());
 
         struct State {
+            initial: Value,
             values: VecDeque<(Instant, Value)>,
             changed: bool,
             removed: bool,
-            last: Option<Value>,
+            capped: usize,
+        }
+
+        impl State {
+            /// Get the last known value.
+            pub fn last(&self) -> &Value {
+                self.values.back().map(|v| &v.1).unwrap_or(&self.initial)
+            }
         }
 
         fn refresh_loop(
@@ -836,8 +909,6 @@ impl Application {
             incremental: bool,
             value_expr: &ValueExpr,
         ) -> anyhow::Result<()> {
-            let none = Value::default();
-
             let pointers = updates
                 .iter()
                 .map(|r| r.pointer.clone())
@@ -885,37 +956,23 @@ impl Application {
                         let proxy = handle.address_proxy(&result.pointer);
                         let ty = result.value.ty();
 
-                        if let Some(last) = &mut state.last {
-                            if let Test::False = filter.test(ty, last, proxy)? {
-                                any_changed = true;
-                                state.removed = true;
-                            }
-
-                            if *last != result.value {
-                                *last = result.value.clone();
-                            }
-                        } else {
-                            if let Test::False = filter.test(ty, &none, proxy)? {
-                                any_changed = true;
-                                state.removed = true;
-                            }
-
-                            state.last = Some(result.value.clone());
+                        if let Test::False = filter.test(ty, state.last(), proxy)? {
+                            any_changed = true;
+                            state.removed = true;
                         }
                     }
 
-                    if let Some(last) = state.values.back().map(|v| &v.1) {
-                        if result.value != *last {
-                            state.changed = true;
-                            any_changed = true;
+                    if result.value != *state.last() {
+                        state.changed = true;
+                        any_changed = true;
 
-                            state
-                                .values
-                                .push_back((Instant::now(), result.value.clone()));
+                        state
+                            .values
+                            .push_back((Instant::now(), result.value.clone()));
 
-                            while state.values.len() > change_length {
-                                state.values.pop_front();
-                            }
+                        while state.values.len() > change_length {
+                            state.values.pop_front();
+                            state.capped += 1;
                         }
                     }
                 }
@@ -947,11 +1004,6 @@ impl Application {
 
                 let mut buf = String::new();
 
-                if state.removed {
-                    // TODO: color read.
-                    // write!(buf, "{}", Colored::Fg(Color::Red))?;
-                }
-
                 if let Some(address) = pointer.address() {
                     write!(buf, "{:03} : {} = ", index, address)?;
                 } else {
@@ -962,27 +1014,49 @@ impl Application {
                 let last = it.next_back();
                 let mut last_change = None;
 
+                write!(buf, "{}", state.initial)?;
+
+                if state.capped > 0 {
+                    write!(buf, " ... {}", state.capped)?;
+                }
+
                 while let Some((when, v)) = it.next() {
                     if let Some(last) = last_change {
                         let duration = when.duration_since(last);
-                        write!(buf, " ({:.0?}) -> ", duration)?;
+                        write!(buf, " ({:.0?})", duration)?;
                     }
 
-                    write!(buf, "{}", v)?;
+                    write!(buf, " -> {}", v)?;
                     last_change = Some(*when);
                 }
 
                 if let Some((when, last)) = last {
                     if let Some(last) = last_change {
                         let duration = when.duration_since(last);
-                        write!(buf, " ({:.0?}) -> ", duration)?;
+                        write!(buf, " ({:.0?})", duration)?;
                     }
 
-                    write!(buf, "{}", last)?;
+                    if !state.removed {
+                        write!(
+                            buf,
+                            " -> {}",
+                            style::style(last)
+                                .with(style::Color::Blue)
+                                .attribute(style::Attribute::Bold)
+                        )?;
+                    } else {
+                        write!(buf, " -> {}", last)?;
+                    }
                 }
 
                 if state.removed {
-                    write!(buf, " (filtered)")?;
+                    write!(
+                        buf,
+                        " {}",
+                        style::style("(filtered)")
+                            .with(style::Color::Red)
+                            .attribute(style::Attribute::Bold)
+                    )?;
                 }
 
                 if !incremental {
@@ -1049,7 +1123,7 @@ impl Application {
         append: bool,
         ty: Type,
     ) -> anyhow::Result<()> {
-        use std::collections::{BTreeMap, HashSet};
+        use std::collections::HashSet;
 
         let handle = match self.handle.as_ref() {
             Some(handle) => handle,
@@ -1067,7 +1141,12 @@ impl Application {
             &pointers,
             Type::Pointer,
             None,
-            SimpleProgress::new(&mut self.term, "Performing initial pointer scan", None),
+            SimpleProgress::new(
+                &mut self.term,
+                "Performing initial pointer scan",
+                None,
+                &self.colors,
+            ),
             Default::default(),
         )?;
 
@@ -1191,6 +1270,12 @@ impl Application {
 
         let scan = self.scans.entry(current_scan.to_string()).or_default();
 
+        let Self {
+            ref mut term,
+            ref colors,
+            ..
+        } = *self;
+
         let result = if scan.initial {
             let ty = filter
                 .type_of(None, ty)
@@ -1199,14 +1284,14 @@ impl Application {
             let mut c = InitialScanConfig::default();
             c.modules_only = config.modules_only;
 
-            let result = self.term.work(|term, token| {
+            let result = term.work(|term, token| {
                 scan.initial_scan(
                     thread_pool,
                     handle,
                     filter,
                     ty,
                     Some(token),
-                    SimpleProgress::new(term, "Performing initial scan", Some(token)),
+                    SimpleProgress::new(term, "Performing initial scan", Some(token), colors),
                     c,
                 )
             });
@@ -1215,14 +1300,14 @@ impl Application {
 
             result
         } else {
-            self.term.work(|term, token| {
+            term.work(|term, token| {
                 scan.scan(
                     thread_pool,
                     handle,
                     filter,
                     ty,
                     Some(token),
-                    SimpleProgress::new(term, "Rescanning", Some(token)),
+                    SimpleProgress::new(term, "Rescanning", Some(token), colors),
                 )
             })
         };

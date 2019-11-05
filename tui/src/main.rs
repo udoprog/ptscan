@@ -8,7 +8,7 @@ use ptscan::{
     Value, ValueExpr,
 };
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, HashSet, VecDeque},
     fs::File,
     io,
     path::PathBuf,
@@ -819,56 +819,37 @@ impl Application {
         }
 
         let refresh_rate = Duration::from_millis(500);
-        let results = &scan[..usize::min(scan.len(), self.limit)];
-        let mut updates = results.to_vec();
 
-        let line_below = results.len() as u16;
-        let info_line = line_below;
-        let error_line = info_line + 1;
-
-        let mut states = updates
-            .iter()
-            .map(|r| State {
-                initial: r.value.clone(),
-                values: VecDeque::new(),
-                changed: true,
-                removed: false,
-                capped: 0,
-            })
-            .collect::<Vec<_>>();
-
-        let borrowed_stated = &mut states;
-        let value_expr = &scan.value_expr;
+        let limit = self.limit;
 
         self.term.clear(ClearType::All)?;
 
-        self.term.work(|term, token| {
-            refresh_loop(
-                term,
-                token,
-                &*thread_pool,
-                info_line,
-                error_line,
-                refresh_rate,
-                &mut updates,
-                borrowed_stated,
-                &handle,
-                change_length,
-                filter,
-                incremental,
-                value_expr,
-            )
-        })?;
-
-        let mut removed = 0;
-
-        // remove removed items from watch.
-        for (index, state) in states.into_iter().enumerate().rev() {
-            if state.removed {
-                removed += 1;
-                scan.results.swap_remove(index);
+        let removed = self.term.work(|term, token| {
+            if incremental {
+                incremental_refresh_loop(
+                    &*thread_pool,
+                    &handle,
+                    term,
+                    token,
+                    scan,
+                    refresh_rate,
+                    filter,
+                    limit,
+                )
+            } else {
+                refresh_loop(
+                    &*thread_pool,
+                    &handle,
+                    term,
+                    token,
+                    scan,
+                    refresh_rate,
+                    change_length,
+                    filter,
+                    limit,
+                )
             }
-        }
+        })?;
 
         if removed > 0 {
             self.term.print_line(format!(
@@ -894,21 +875,149 @@ impl Application {
             }
         }
 
-        fn refresh_loop(
+        fn incremental_refresh_loop(
+            thread_pool: &rayon::ThreadPool,
+            handle: &ProcessHandle,
             term: &mut Term,
             token: &Token,
-            thread_pool: &rayon::ThreadPool,
-            info_line: u16,
-            error_line: u16,
+            scan: &mut Scan,
             refresh_rate: Duration,
-            updates: &mut [Box<ScanResult>],
-            states: &mut [State],
+            filter: Option<&Filter>,
+            limit: usize,
+        ) -> anyhow::Result<usize> {
+            use std::fmt::Write as _;
+            use std::io::Write as _;
+
+            let mut last = Vec::with_capacity(limit);
+            let mut offset = 0;
+            let mut to_remove = Vec::new();
+            let mut buf = String::new();
+
+            term.clear(ClearType::All)?;
+            term.goto(0, 0)?;
+            ter.hide()?;
+
+            writeln!(
+                term.output,
+                "Refresh rate: {:?} (Press `q` or CTRL+C to stop watching)",
+                refresh_rate,
+            )?;
+
+            while !token.test() && !scan.results.is_empty() {
+                // wrap around.
+                if offset >= limit {
+                    offset = 0;
+                }
+
+                let len = usize::min(scan.results.len().saturating_sub(offset), limit);
+
+                let mut results = &mut scan.results[..len];
+                last.extend(results.iter().map(|v| v.value.clone()));
+
+                handle.refresh_values(
+                    thread_pool,
+                    &mut results,
+                    None,
+                    None,
+                    NoopProgress,
+                    &scan.value_expr,
+                )?;
+
+                for (o, (last, result)) in last.iter().zip(results).enumerate() {
+                    let index = offset + o;
+
+                    let mut removed = false;
+                    let mut changed = false;
+
+                    if let Some(filter) = filter {
+                        let proxy = handle.address_proxy(&result.pointer);
+                        let ty = result.value.ty();
+
+                        if let Test::False = filter.test(ty, last, proxy)? {
+                            to_remove.push(index);
+                            removed = true;
+                        }
+                    }
+
+                    if *last != result.value {
+                        changed = true;
+                    }
+
+                    if removed || changed {
+                        if let Some(address) = result.pointer.address() {
+                            write!(buf, "{:03} : {} = ", index, address)?;
+                        } else {
+                            write!(buf, "{:03} : ? = ", index)?;
+                        }
+
+                        if changed {
+                            write!(buf, "{} -> ", last)?;
+                        }
+
+                        if removed {
+                            write!(
+                                buf,
+                                "{} (filtered)",
+                                style::style(&result.value).with(style::Color::Red)
+                            )?;
+                        } else {
+                            write!(
+                                buf,
+                                "{}",
+                                style::style(&result.value).with(style::Color::Blue)
+                            )?;
+                        }
+
+                        writeln!(term.output, "{}", buf)?;
+                        buf.clear();
+                    }
+                }
+
+                for i in to_remove.iter().rev() {
+                    scan.results.swap_remove(*i);
+                }
+
+                last.clear();
+                to_remove.clear();
+                offset += limit;
+
+                if !token.test() && !scan.results.is_empty() {
+                    thread::sleep(refresh_rate);
+                }
+            }
+
+            Ok(0)
+        }
+
+        fn refresh_loop(
+            thread_pool: &rayon::ThreadPool,
             handle: &ProcessHandle,
+            term: &mut Term,
+            token: &Token,
+            scan: &mut Scan,
+            refresh_rate: Duration,
             change_length: usize,
             filter: Option<&Filter>,
-            incremental: bool,
-            value_expr: &ValueExpr,
-        ) -> anyhow::Result<()> {
+            limit: usize,
+        ) -> anyhow::Result<usize> {
+            let results = &scan[..usize::min(scan.len(), limit)];
+            let mut updates = results.to_vec();
+
+            let line_below = results.len() as u16;
+            let info_line = line_below;
+            let error_line = info_line + 1;
+
+            let mut states = updates
+                .iter()
+                .map(|r| State {
+                    initial: r.value.clone(),
+                    values: VecDeque::new(),
+                    changed: true,
+                    removed: false,
+                    capped: 0,
+                })
+                .collect::<Vec<_>>();
+
             let pointers = updates
                 .iter()
                 .map(|r| r.pointer.clone())
@@ -919,30 +1028,23 @@ impl Application {
                 refresh_rate,
             );
 
-            if incremental {
-                term.print_line(info)?;
-            } else {
-                term.write_on_line(info_line, info)?;
-            }
+            term.clear(ClearType::All)?;
+            term.goto(0, 0)?;
 
-            write_results(term, &pointers, states, incremental)?;
+            term.write_on_line(info_line, info)?;
+            write_results(term, &pointers, &mut states)?;
 
             while !token.test() {
                 if let Err(e) = handle.refresh_values(
                     thread_pool,
-                    updates,
+                    &mut updates,
                     None,
                     None,
                     NoopProgress,
-                    value_expr,
+                    &scan.value_expr,
                 ) {
                     let m = format!("Error refreshing values: {}", e);
-
-                    if incremental {
-                        term.print_line(m)?;
-                    } else {
-                        term.write_on_line(error_line, m)?;
-                    }
+                    term.write_on_line(error_line, m)?;
                 }
 
                 let mut any_changed = false;
@@ -978,7 +1080,7 @@ impl Application {
                 }
 
                 if any_changed {
-                    write_results(term, &pointers, states, incremental)?;
+                    write_results(term, &pointers, &mut states)?;
                     term.goto(0, info_line)?;
                 }
 
@@ -986,14 +1088,23 @@ impl Application {
                 thread::sleep(refresh_rate);
             }
 
-            Ok(())
+            let mut removed = 0;
+
+            // remove removed items from watch.
+            for (index, state) in states.into_iter().enumerate().rev() {
+                if state.removed {
+                    removed += 1;
+                    scan.results.swap_remove(index);
+                }
+            }
+
+            Ok(removed)
         }
 
         fn write_results(
             term: &mut Term,
             pointers: &[Pointer],
             states: &mut [State],
-            incremental: bool,
         ) -> anyhow::Result<()> {
             use std::fmt::Write as _;
 
@@ -1059,15 +1170,11 @@ impl Application {
                     )?;
                 }
 
-                if !incremental {
-                    term.goto(0, index as u16)?;
-                    term.clear(ClearType::CurrentLine)?;
-                }
-
-                term.print_line(buf)?;
+                term.write_on_line(index as u16, buf)?;
                 state.changed = false;
             }
 
+            term.hide()?;
             term.flush()?;
             Ok(())
         }
@@ -1123,8 +1230,6 @@ impl Application {
         append: bool,
         ty: Type,
     ) -> anyhow::Result<()> {
-        use std::collections::HashSet;
-
         let handle = match self.handle.as_ref() {
             Some(handle) => handle,
             None => bail!("not attached to a process"),

@@ -29,6 +29,10 @@ pub enum Type {
     U128,
     #[serde(rename = "i128")]
     I128,
+    #[serde(rename = "f32")]
+    F32,
+    #[serde(rename = "f64")]
+    F64,
     #[serde(rename = "string")]
     String(usize),
     #[serde(rename = "bytes")]
@@ -60,6 +64,8 @@ impl Type {
             Self::I64 => Value::I64(Default::default()),
             Self::U128 => Value::U128(Default::default()),
             Self::I128 => Value::I128(Default::default()),
+            Self::F32 => Value::F32(Default::default()),
+            Self::F64 => Value::F64(Default::default()),
             Self::String(len) => Value::String(Default::default(), len),
             Self::Bytes(..) => Value::Bytes(Default::default()),
         }
@@ -84,6 +90,16 @@ impl Type {
             Self::I64 => str::parse::<i64>(input).map(Value::I64),
             Self::U128 => str::parse::<u128>(input).map(Value::U128),
             Self::I128 => str::parse::<i128>(input).map(Value::I128),
+            Self::F32 => {
+                return Ok(Value::F32(
+                    str::parse::<f32>(input).map_err(|_| Error::TypeParseError)?,
+                ))
+            }
+            Self::F64 => {
+                return Ok(Value::F64(
+                    str::parse::<f64>(input).map_err(|_| Error::TypeParseError)?,
+                ))
+            }
             Self::String(..) => return Err(Error::TypeParseString),
             Self::Bytes(..) => return Err(Error::TypeParseBytes),
         };
@@ -108,6 +124,8 @@ impl Type {
             Self::I64 => i64::from_str_radix(input, 16).map(Value::I64),
             Self::U128 => u128::from_str_radix(input, 16).map(Value::U128),
             Self::I128 => i128::from_str_radix(input, 16).map(Value::I128),
+            Self::F32 => return Err(Error::TypeParseFloat),
+            Self::F64 => return Err(Error::TypeParseFloat),
             Self::String(..) => return Err(Error::TypeParseString),
             Self::Bytes(..) => return Err(Error::TypeParseBytes),
         };
@@ -131,6 +149,8 @@ impl Type {
             Self::I64 => mem::size_of::<i64>(),
             Self::U128 => mem::size_of::<u128>(),
             Self::I128 => mem::size_of::<i128>(),
+            Self::F32 => mem::size_of::<f32>(),
+            Self::F64 => mem::size_of::<f64>(),
             Self::String(len) => len,
             Self::Bytes(len) => len,
         }
@@ -172,6 +192,8 @@ impl Type {
             Self::I64 => Value::I64(decode_buf!(buf, i64, read_u64)),
             Self::U128 => Value::U128(decode_buf!(buf, u128, read_u128)),
             Self::I128 => Value::I128(decode_buf!(buf, i128, read_u128)),
+            Self::F32 => Value::F32(decode_buf!(buf, f32, read_f32)),
+            Self::F64 => Value::F64(decode_buf!(buf, f64, read_f64)),
             Self::String(len) => {
                 let buf = match memchr::memchr(0, buf) {
                     Some(len) => &buf[..len],
@@ -216,6 +238,8 @@ impl fmt::Display for Type {
             Type::I64 => "i64",
             Type::U128 => "u128",
             Type::I128 => "i128",
+            Type::F32 => "f32",
+            Type::F64 => "f64",
             Type::String(len) => return write!(fmt, "string/{}", len),
             Type::Bytes(len) => return write!(fmt, "bytes/{}", len),
         };
@@ -247,6 +271,8 @@ impl str::FromStr for Type {
             "i64" => Type::I64,
             "u128" => Type::U128,
             "i128" => Type::I128,
+            "f32" => Type::F32,
+            "f64" => Type::F64,
             "string" => {
                 let size = match it.next() {
                     Some(size) => str::parse::<usize>(size).map_err(|_| Error::TypeBadSize)?,
@@ -291,6 +317,8 @@ impl fmt::Display for HumanDisplay {
             Type::I64 => write!(fmt, "signed 64-bit number"),
             Type::U128 => write!(fmt, "unsigned 128-bit number"),
             Type::I128 => write!(fmt, "signed 128-bit number"),
+            Type::F32 => write!(fmt, "32-bit floating point number"),
+            Type::F64 => write!(fmt, "64-bit floating point number"),
             Type::String(len) => write!(fmt, "utf-8-encoded string of length {}", len),
             Type::Bytes(len) => write!(fmt, "a byte array of length {}", len),
         }

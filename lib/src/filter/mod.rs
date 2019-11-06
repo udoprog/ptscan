@@ -52,7 +52,8 @@ pub enum Filter {
     All(All),
     Any(Any),
     IsPointer(IsPointer),
-    IsNone(IsNone),
+    IsType(IsType),
+    IsNan(IsNan),
     Not(Not),
     Regex(Regex),
 }
@@ -74,7 +75,8 @@ impl Filter {
             Self::All(m) => m.type_of(last_type, value_type),
             Self::Any(m) => m.type_of(last_type, value_type),
             Self::IsPointer(m) => m.type_of(last_type, value_type),
-            Self::IsNone(m) => m.type_of(last_type, value_type),
+            Self::IsType(m) => m.type_of(last_type, value_type),
+            Self::IsNan(m) => m.type_of(last_type, value_type),
             Self::Not(m) => m.type_of(last_type, value_type),
             Self::Regex(m) => m.type_of(last_type, value_type),
         }
@@ -87,7 +89,8 @@ impl Filter {
             Self::All(m) => m.test(ty, last, proxy),
             Self::Any(m) => m.test(ty, last, proxy),
             Self::IsPointer(m) => m.test(ty, last, proxy),
-            Self::IsNone(m) => m.test(ty, last, proxy),
+            Self::IsType(m) => m.test(ty, last, proxy),
+            Self::IsNan(m) => m.test(ty, last, proxy),
             Self::Not(m) => m.test(ty, last, proxy),
             Self::Regex(m) => m.test(ty, last, proxy),
         }
@@ -100,7 +103,8 @@ impl Filter {
             Self::All(m) => m.special(process, ty),
             Self::Any(m) => m.special(process, ty),
             Self::IsPointer(..) => Ok(Some(Special::NonZero(ty.size(process)))),
-            Self::IsNone(..) => Ok(None),
+            Self::IsType(..) => Ok(None),
+            Self::IsNan(is_nan) => is_nan.special(process, ty),
             Self::Not(m) => m.special(process, ty),
             Self::Regex(m) => m.special(),
         }
@@ -114,7 +118,8 @@ impl fmt::Display for Filter {
             Self::All(m) => m.fmt(fmt),
             Self::Any(m) => m.fmt(fmt),
             Self::IsPointer(m) => m.fmt(fmt),
-            Self::IsNone(m) => m.fmt(fmt),
+            Self::IsType(m) => m.fmt(fmt),
+            Self::IsNan(m) => m.fmt(fmt),
             Self::Not(m) => m.fmt(fmt),
             Self::Regex(m) => m.fmt(fmt),
         }
@@ -148,6 +153,8 @@ impl Binary {
                     Value::I32($b) => $a $op ($b as $ty),
                     Value::I16($b) => $a $op ($b as $ty),
                     Value::I8($b) => $a $op ($b as $ty),
+                    Value::F32($b) => $a $op ($b as $ty),
+                    Value::F64($b) => $a $op ($b as $ty),
                     Value::String(..) => false,
                     Value::Bytes(..) => false,
                 }
@@ -168,6 +175,8 @@ impl Binary {
                     Value::I32($a) => binary_numeric!($expr_b, i32, $a $op $b),
                     Value::I16($a) => binary_numeric!($expr_b, i16, $a $op $b),
                     Value::I8($a) => binary_numeric!($expr_b, i8, $a $op $b),
+                    Value::F32($a) => binary_numeric!($expr_b, f32, $a $op $b),
+                    Value::F64($a) => binary_numeric!($expr_b, f64, $a $op $b),
                     Value::String($a, ..) => match $expr_b {
                         Value::Bytes($b) => {
                             let len = usize::min($a.len(), $b.len());
@@ -248,17 +257,17 @@ impl Binary {
         let Binary(op, lhs, rhs) = self;
 
         let exact = match (op, lhs, rhs) {
-            (Op::Eq, Number { value }, Value) | (Op::Eq, Value, Number { value }) => {
+            (Op::Eq, Number { value, .. }, Value) | (Op::Eq, Value, Number { value, .. }) => {
                 Some(value::Value::from_bigint(ty, value)?)
+            }
+            (Op::Eq, Decimal { value, .. }, Value) | (Op::Eq, Value, Decimal { value, .. }) => {
+                Some(value::Value::from_bigdecimal(ty, value)?)
             }
             (Op::Eq, String { value }, Value) | (Op::Eq, Value, String { value }) => {
                 Some(value::Value::String(value.to_owned(), value.len()))
             }
             (Op::Eq, Bytes { value }, Value) | (Op::Eq, Value, Bytes { value }) => {
                 Some(value::Value::Bytes(value.clone()))
-            }
-            (Op::StartsWith, Value, Number { value }) => {
-                Some(value::Value::from_bigint(ty, value)?)
             }
             (Op::StartsWith, Value, String { value }) => {
                 Some(value::Value::String(value.to_owned(), value.len()))
@@ -492,28 +501,70 @@ impl fmt::Display for IsPointer {
 }
 
 #[derive(Debug, Clone)]
-pub struct IsNone {
+pub struct IsType {
     expr: ValueExpr,
+    ty: Type,
 }
 
-impl IsNone {
-    pub fn new(expr: ValueExpr) -> anyhow::Result<Self> {
-        Ok(Self { expr })
+impl IsType {
+    pub fn new(expr: ValueExpr, ty: Type) -> anyhow::Result<Self> {
+        Ok(Self { expr, ty })
     }
 
-    fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
-        self.expr.type_of(last_type, value_type)
+    fn type_of(&self, _: Option<Type>, _: Option<Type>) -> Option<Type> {
+        Some(self.ty)
     }
 
     pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
         let (_, value) = self.expr.eval(ty, last, proxy)?;
-        Ok(value.is_none().into())
+        Ok((value.ty() == self.ty).into())
     }
 }
 
-impl fmt::Display for IsNone {
+impl fmt::Display for IsType {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "is none")
+        write!(fmt, "is {}", self.ty)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct IsNan {
+    expr: ValueExpr,
+}
+
+impl IsNan {
+    pub fn new(expr: ValueExpr) -> anyhow::Result<Self> {
+        Ok(Self { expr })
+    }
+
+    pub fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {
+        Ok(Some(Special::NonZero(ty.size(process))))
+    }
+
+    fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
+        Some(
+            self.expr
+                .type_of(last_type, value_type)
+                .unwrap_or(Type::F32),
+        )
+    }
+
+    pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
+        let (_, value) = self.expr.eval(ty, last, proxy)?;
+
+        let value = match value {
+            Value::F32(value) => value.is_nan(),
+            Value::F64(value) => value.is_nan(),
+            _ => false,
+        };
+
+        Ok(value.into())
+    }
+}
+
+impl fmt::Display for IsNan {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "is nan")
     }
 }
 
@@ -594,6 +645,8 @@ impl fmt::Display for Not {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &*self.filter {
             Filter::IsPointer(..) => write!(fmt, "is not pointer"),
+            Filter::IsType(is_type) => write!(fmt, "is not {}", is_type.ty),
+            Filter::IsNan(..) => write!(fmt, "is not nan"),
             other => write!(fmt, "not {}", other),
         }
     }

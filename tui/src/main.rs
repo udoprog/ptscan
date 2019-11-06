@@ -813,10 +813,10 @@ impl Application {
 
         let scan = self.scans.entry(self.current_scan.to_string()).or_default();
 
-        if scan.results.is_empty() {
+        /*if scan.results.is_empty() {
             self.term.print_line("cannot watch, scan is empty")?;
             return Ok(());
-        }
+        }*/
 
         let refresh_rate = Duration::from_millis(500);
 
@@ -895,7 +895,7 @@ impl Application {
 
             term.clear(ClearType::All)?;
             term.goto(0, 0)?;
-            ter.hide()?;
+            term.hide()?;
 
             writeln!(
                 term.output,

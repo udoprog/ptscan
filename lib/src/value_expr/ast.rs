@@ -3,6 +3,7 @@ use crate::{
     utils::{EscapeString, Hex},
     Offset, Type,
 };
+use bigdecimal::BigDecimal;
 use num_bigint::BigInt;
 use std::fmt;
 
@@ -18,8 +19,10 @@ pub enum ValueExpr {
     Deref(Box<ValueExpr>),
     /// Offset
     Offset(Box<ValueExpr>, Offset),
-    /// A numerical literal.
+    /// A whole number literal.
     Number(BigInt, Option<Type>),
+    /// A decimal literal.
+    Decimal(BigDecimal, Option<Type>),
     /// A string literal.
     String(String),
     /// A number of raw bytes.
@@ -40,7 +43,8 @@ impl ValueExpr {
                 value: Box::new(value.eval(process)?),
                 offset,
             },
-            Self::Number(value, _) => Number { value },
+            Self::Number(value, ty) => Number { value, ty },
+            Self::Decimal(value, ty) => Decimal { value, ty },
             Self::String(value) => String { value },
             Self::Bytes(value) => Bytes { value },
             Self::AddressOf(value) => AddressOf {
@@ -70,6 +74,8 @@ impl fmt::Display for ValueExpr {
             Self::Offset(expr, offset) => write!(fmt, "{} {}", expr, offset),
             Self::Number(number, Some(ty)) => write!(fmt, "{}{}", number, ty),
             Self::Number(number, None) => write!(fmt, "{}", number),
+            Self::Decimal(decimal, None) => write!(fmt, "{}", decimal),
+            Self::Decimal(decimal, Some(ty)) => write!(fmt, "{}{}", decimal, ty),
             Self::String(s) => EscapeString(s).fmt(fmt),
             Self::Bytes(bytes) => Hex(bytes).fmt(fmt),
             Self::As(expr, ty) => write!(fmt, "{} as {}", expr, ty),

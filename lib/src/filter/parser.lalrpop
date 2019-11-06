@@ -1,6 +1,7 @@
 // vim: ft=rust
 use crate::{Type, filter::{lexer::Token, ast::*}, value_expr::ast::*};
 use num_bigint::BigInt;
+use bigdecimal::BigDecimal;
 
 grammar<'input>;
 
@@ -30,6 +31,7 @@ InnerValueExpr: ValueExpr = {
     "value" => ValueExpr::Value,
     "last" => ValueExpr::Last,
     <number:number> => ValueExpr::Number(number.0, number.1),
+    <decimal:decimal> => ValueExpr::Decimal(decimal.0, decimal.1),
     <string:"string"> => ValueExpr::String(string),
     <bytes:bytes> => ValueExpr::Bytes(bytes),
     "*" <expr:InnerValueExpr> => ValueExpr::Deref(Box::new(expr)),
@@ -44,6 +46,8 @@ pub ValueExpr: ValueExpr = {
 Filter: Expression = {
     <expr:ValueExpr> is <ty:ty> => Expression::IsType(expr, ty),
     <expr:ValueExpr> is not <ty:ty> => Expression::Not(Box::new(Expression::IsType(expr, ty))),
+    <expr:ValueExpr> is nan => Expression::IsNan(expr),
+    <expr:ValueExpr> is not nan => Expression::Not(Box::new(Expression::IsNan(expr))),
     <lhs:ValueExpr> "==" <rhs:ValueExpr> => Expression::Binary(Op::Eq, lhs, rhs),
     <lhs:ValueExpr> "!=" <rhs:ValueExpr> => Expression::Binary(Op::Neq, lhs, rhs),
     <lhs:ValueExpr> "<=" <rhs:ValueExpr> => Expression::Binary(Op::Lte, lhs, rhs),
@@ -64,6 +68,7 @@ extern {
         and => Token::And,
         or => Token::Or,
         is => Token::Is,
+        nan => Token::Nan,
         as => Token::As,
         not => Token::Not,
         "==" => Token::Eq,
@@ -78,7 +83,8 @@ extern {
         ")" => Token::CloseParen,
         "*" => Token::Deref,
         "&" => Token::AddressOf,
-        number => Token::Literal(<BigInt>, <Option<Type>>),
+        number => Token::Number(<BigInt>, <Option<Type>>),
+        decimal => Token::Decimal(<BigDecimal>, <Option<Type>>),
         "string" => Token::String(<String>),
         bytes => Token::Bytes(<Vec<u8>>),
         ty => Token::Type(<Type>),

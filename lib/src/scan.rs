@@ -211,6 +211,7 @@ impl Scan {
 
                         let now = Instant::now();
                         let duration = now.duration_since(start);
+
                         tx.send(Task::Done(result, duration, now))
                             .expect("send done failed");
                     });
@@ -306,6 +307,7 @@ impl Scan {
                             &none,
                             aligned,
                             special,
+                            cancel,
                         )?;
                     }
 
@@ -333,6 +335,7 @@ impl Scan {
             none: &Value,
             aligned: bool,
             special: Option<&filter::Special>,
+            cancel: &Token,
         ) -> anyhow::Result<()> {
             let mut inner_offset = match special {
                 Some(special) => match special.test(data) {
@@ -346,7 +349,7 @@ impl Scan {
                 align(&mut inner_offset, type_size);
             }
 
-            while inner_offset < data.len() {
+            while inner_offset < data.len() && !cancel.test() {
                 let address = base.add(Size::try_from(inner_offset)?)?;
                 let mut pointer =
                     Pointer::new(PointerBase::Address { address }, vec![], Some(address));

@@ -1,4 +1,5 @@
 use crate::Type;
+use bigdecimal::BigDecimal;
 use num_bigint::BigInt;
 use std::{borrow::Cow, fmt, str};
 use thiserror::Error;
@@ -28,6 +29,8 @@ pub enum Token {
     Not,
     /// `is` keyword.
     Is,
+    /// `nan` keyword,
+    Nan,
     /// `==`.
     Eq,
     /// `!=`.
@@ -49,7 +52,9 @@ pub enum Token {
     /// `)`.
     CloseParen,
     /// A literal value, like `0x42`, or `128u32`.
-    Literal(BigInt, Option<Type>),
+    Number(BigInt, Option<Type>),
+    /// A bigdecimal type.
+    Decimal(BigDecimal, Option<Type>),
     /// A quoted string.
     String(String),
     /// A raw byte array.
@@ -299,12 +304,14 @@ impl<'a> Lexer<'a> {
     }
 
     /// Scan an identifier.
-    pub fn scan_literal(&mut self) -> Result<(BigInt, Option<Type>), Error> {
+    pub fn scan_literal(&mut self) -> Result<Token, Error> {
         use num::Num;
+        use std::str::FromStr as _;
 
         self.buf.clear();
 
         let mut hex = false;
+        let mut decimal = false;
 
         if let Some((_, '0', 'x')) = self.peek2() {
             hex = true;
@@ -324,7 +331,12 @@ impl<'a> Lexer<'a> {
                     self.step();
                     self.buf.push(c);
                 }
-                'i' | 'u' => {
+                '.' if !hex => {
+                    decimal = true;
+                    self.step();
+                    self.buf.push(c);
+                }
+                'i' | 'u' | 'f' => {
                     self.step();
 
                     let (step, inferred_ty) = match (c, self.peek3()) {
@@ -338,6 +350,8 @@ impl<'a> Lexer<'a> {
                         ('u', Some((_, '3', Some('2'), _))) => (2, Type::U32),
                         ('u', Some((_, '6', Some('4'), _))) => (2, Type::U64),
                         ('u', Some((_, '1', Some('2'), Some('8')))) => (3, Type::U128),
+                        ('f', Some((_, '3', Some('2'), _))) => (2, Type::F32),
+                        ('f', Some((_, '6', Some('4'), _))) => (2, Type::F64),
                         _ => return Err(self.err("unexpected suffix")),
                     };
 
@@ -349,13 +363,19 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        let result = if hex {
-            BigInt::from_str_radix(&self.buf, 16)
+        if decimal {
+            let decimal = BigDecimal::from_str(&self.buf).map_err(|e| self.err(e.to_string()))?;
+            Ok(Token::Decimal(decimal, ty))
         } else {
-            BigInt::from_str_radix(&self.buf, 10)
-        };
+            let result = if hex {
+                BigInt::from_str_radix(&self.buf, 16)
+            } else {
+                BigInt::from_str_radix(&self.buf, 10)
+            };
 
-        Ok((result.map_err(|e| self.err(e.to_string()))?, ty))
+            let number = result.map_err(|e| self.err(e.to_string()))?;
+            Ok(Token::Number(number, ty))
+        }
     }
 }
 
@@ -445,9 +465,9 @@ impl<'a> Iterator for Lexer<'a> {
                     return Some(Ok((s, Token::String(string), e)));
                 }
                 '-' | '+' | '0'..='9' => {
-                    let (literal, ty) = try_iter!(self.scan_literal());
+                    let literal = try_iter!(self.scan_literal());
                     let e = self.pos();
-                    return Some(Ok((s, Token::Literal(literal, ty), e)));
+                    return Some(Ok((s, literal, e)));
                 }
                 '*' => {
                     self.step();
@@ -475,6 +495,7 @@ impl<'a> Iterator for Lexer<'a> {
                         "or" => return Some(Ok((s, Token::Or, e))),
                         "is" => return Some(Ok((s, Token::Is, e))),
                         "as" => return Some(Ok((s, Token::As, e))),
+                        "nan" => return Some(Ok((s, Token::Nan, e))),
                         string => {
                             return Some(Ok((s, Token::String(string.to_string()), e)));
                         }

@@ -7,6 +7,7 @@ use crate::{
     Address, AddressProxy, Offset, Type,
 };
 use anyhow::bail;
+use bigdecimal::BigDecimal;
 use num_bigint::{BigInt, Sign};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -34,14 +35,25 @@ pub enum ValueExpr {
         value: Box<ValueExpr>,
         offset: Offset,
     },
-    /// A numerical literal.
+    /// A whole number literal.
     #[serde(rename = "number")]
-    Number { value: BigInt },
+    Number {
+        value: BigInt,
+        #[serde(rename = "type_hint")]
+        ty: Option<Type>,
+    },
+    /// A decimal literal.
+    #[serde(rename = "decimal")]
+    Decimal {
+        value: BigDecimal,
+        #[serde(rename = "type_hint")]
+        ty: Option<Type>,
+    },
     /// A string literal.
-    #[serde(rename = "number")]
+    #[serde(rename = "string")]
     String { value: String },
     /// A number of raw bytes.
-    #[serde(rename = "number")]
+    #[serde(rename = "bytes")]
     Bytes { value: Vec<u8> },
     /// Cast expression.
     #[serde(rename = "as")]
@@ -74,7 +86,14 @@ impl ValueExpr {
         let value_trait = match self {
             Self::Value => ValueTrait::IsValue,
             Self::Deref { value } if **value == ValueExpr::Value => ValueTrait::IsDeref,
-            Self::Number { value } => {
+            Self::Number { value, .. } => {
+                if value.is_zero() {
+                    ValueTrait::Zero
+                } else {
+                    ValueTrait::NonZero
+                }
+            }
+            Self::Decimal { value, .. } => {
                 if value.is_zero() {
                     ValueTrait::Zero
                 } else {
@@ -99,7 +118,7 @@ impl ValueExpr {
         };
 
         let sign = match self {
-            Self::Number { value } => value.sign(),
+            Self::Number { value, .. } => value.sign(),
             _ => Sign::NoSign,
         };
 
@@ -120,7 +139,8 @@ impl ValueExpr {
         match self {
             Self::Value => value_type,
             Self::Last => last_type,
-            Self::Number { .. } => Some(Type::U32),
+            Self::Number { ty, .. } => Some(ty.unwrap_or(Type::U32)),
+            Self::Decimal { ty, .. } => Some(ty.unwrap_or(Type::F32)),
             Self::String { value } => Some(Type::String(value.len())),
             Self::Bytes { value } => Some(Type::Bytes(value.len())),
             Self::Deref { .. } => None,
@@ -139,7 +159,8 @@ impl ValueExpr {
         match self {
             Self::Value => Ok(proxy.eval(ty)?),
             Self::Last => Ok((None, last.clone())),
-            Self::Number { value } => Ok((None, Value::from_bigint(ty, value)?)),
+            Self::Number { value, .. } => Ok((None, Value::from_bigint(ty, value)?)),
+            Self::Decimal { value, .. } => Ok((None, Value::from_bigdecimal(ty, value)?)),
             Self::String { value } => Ok((None, Value::String(value.to_owned(), value.len()))),
             Self::Bytes { value } => Ok((None, Value::Bytes(value.clone()))),
             Self::Deref { value } => {
@@ -180,7 +201,16 @@ impl fmt::Display for ValueExpr {
             Self::Deref { value } => write!(fmt, "*{}", value),
             Self::AddressOf { value } => write!(fmt, "&{}", value),
             Self::Offset { value, offset } => write!(fmt, "{}{}", value, offset),
-            Self::Number { value } => write!(fmt, "{}", value),
+            Self::Number { value, ty: None } => write!(fmt, "{}", value),
+            Self::Number {
+                value,
+                ty: Some(ty),
+            } => write!(fmt, "{}{}", value, ty),
+            Self::Decimal { value, ty: None } => write!(fmt, "{}", value),
+            Self::Decimal {
+                value,
+                ty: Some(ty),
+            } => write!(fmt, "{}{}", value, ty),
             Self::String { value } => write!(fmt, "{}", EscapeString(value)),
             Self::Bytes { value } => write!(fmt, "{}", Hex(value)),
             Self::As { expr, ty } => write!(fmt, "{} as {}", expr, ty),

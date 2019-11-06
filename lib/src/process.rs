@@ -53,6 +53,18 @@ impl Process {
         byteorder::NativeEndian::read_u128(buf)
     }
 
+    pub fn read_f32(&self, buf: &[u8]) -> f32 {
+        use byteorder::ByteOrder as _;
+        // FUTURE TODO: take endianness into account for remote scans.
+        byteorder::NativeEndian::read_f32(buf)
+    }
+
+    pub fn read_f64(&self, buf: &[u8]) -> f64 {
+        use byteorder::ByteOrder as _;
+        // FUTURE TODO: take endianness into account for remote scans.
+        byteorder::NativeEndian::read_f64(buf)
+    }
+
     pub fn encode_u16(&self, buf: &mut [u8], value: u16) {
         use byteorder::ByteOrder as _;
         byteorder::NativeEndian::write_u16(buf, value)
@@ -71,6 +83,16 @@ impl Process {
     pub fn encode_u128(&self, buf: &mut [u8], value: u128) {
         use byteorder::ByteOrder as _;
         byteorder::NativeEndian::write_u128(buf, value)
+    }
+
+    pub fn encode_f32(&self, buf: &mut [u8], value: f32) {
+        use byteorder::ByteOrder as _;
+        byteorder::NativeEndian::write_f32(buf, value)
+    }
+
+    pub fn encode_f64(&self, buf: &mut [u8], value: f64) {
+        use byteorder::ByteOrder as _;
+        byteorder::NativeEndian::write_f64(buf, value)
     }
 
     /// Encode a pointer into the specified buffer.

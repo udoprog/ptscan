@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::{fmt, mem, str};
 
 /// A single dynamic literal value.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
 pub enum Value {
     #[serde(rename = "none")]
@@ -37,6 +37,10 @@ pub enum Value {
     U128(u128),
     #[serde(rename = "i128")]
     I128(i128),
+    #[serde(rename = "f32")]
+    F32(f32),
+    #[serde(rename = "f64")]
+    F64(f64),
     #[serde(rename = "string")]
     String(String, usize),
     #[serde(rename = "bytes")]
@@ -73,6 +77,8 @@ impl Value {
             Self::I64(value) => value == 0,
             Self::U128(value) => value == 0,
             Self::I128(value) => value == 0,
+            Self::F32(value) => value == 0f32,
+            Self::F64(value) => value == 0f64,
             Self::String(ref s, ..) => s.as_bytes().iter().all(|c| *c == 0),
             Self::Bytes(ref bytes) => bytes.iter().all(|c| *c == 0),
         })
@@ -148,6 +154,7 @@ impl Value {
             Self::I64(value) => Address::try_from(value)?,
             Self::U128(value) => Address::try_from(value)?,
             Self::I128(value) => Address::try_from(value)?,
+            Self::F32(..) | Self::F64(..) => bail!("float cannot be made into address"),
             Self::None(..) => bail!("nothing cannot be made into address"),
             Self::String(..) => bail!("string cannot be made into address"),
             Self::Bytes(..) => bail!("bytes cannot be made into address"),
@@ -175,6 +182,8 @@ impl Value {
             Self::I64(value) => process.encode_u64(buf, value as u64),
             Self::U128(value) => process.encode_u128(buf, value),
             Self::I128(value) => process.encode_u128(buf, value as u128),
+            Self::F32(value) => process.encode_f32(buf, value),
+            Self::F64(value) => process.encode_f64(buf, value),
             Self::String(ref s, ..) => {
                 let len = usize::min(s.len(), buf.len());
                 buf[..len].clone_from_slice(&s.as_bytes()[..len]);
@@ -223,6 +232,8 @@ impl Value {
             Self::I64(..) => Type::I64,
             Self::U128(..) => Type::U128,
             Self::I128(..) => Type::I128,
+            Self::F32(..) => Type::F32,
+            Self::F64(..) => Type::F64,
             Self::String(_, len) => Type::String(len),
             Self::Bytes(ref bytes) => Type::Bytes(bytes.len()),
         }
@@ -243,6 +254,8 @@ impl Value {
             Self::I64(..) => mem::size_of::<i64>(),
             Self::U128(..) => mem::size_of::<u128>(),
             Self::I128(..) => mem::size_of::<i128>(),
+            Self::F32(..) => mem::size_of::<f32>(),
+            Self::F64(..) => mem::size_of::<f64>(),
             Self::String(string, ..) => string.len(),
             Self::Bytes(bytes) => bytes.len(),
         }
@@ -264,10 +277,26 @@ impl Value {
             Type::I64 => value.to_i64().map(Value::I64),
             Type::U128 => value.to_u128().map(Value::U128),
             Type::I128 => value.to_i128().map(Value::I128),
+            Type::F32 => value.to_f32().map(Value::F32),
+            Type::F64 => value.to_f64().map(Value::F64),
             _ => return Ok(Value::None(ty)),
         };
 
         let out = out.ok_or_else(|| Error::ValueNumberConversion(value.clone(), ty))?;
+        Ok(out)
+    }
+
+    /// Convert from a big decimal.
+    pub fn from_bigdecimal(ty: Type, value: &bigdecimal::BigDecimal) -> Result<Self, Error> {
+        use num_traits::cast::ToPrimitive as _;
+
+        let out = match ty {
+            Type::F32 => value.to_f32().map(Value::F32),
+            Type::F64 => value.to_f64().map(Value::F64),
+            _ => return Ok(Value::None(ty)),
+        };
+
+        let out = out.ok_or_else(|| Error::ValueDecimalConversion(value.clone(), ty))?;
         Ok(out)
     }
 }
@@ -324,6 +353,8 @@ impl fmt::Display for Value {
             Value::I64(value) => write!(fmt, "{}", value),
             Value::U128(value) => write!(fmt, "{}", value),
             Value::I128(value) => write!(fmt, "{}", value),
+            Value::F32(value) => write!(fmt, "{}", value),
+            Value::F64(value) => write!(fmt, "{}", value),
             Value::String(string, ..) => write!(fmt, "{}", EscapeString(&*string)),
             Value::Bytes(bytes) => write!(fmt, "{{{}}}", Hex(&*bytes)),
         }

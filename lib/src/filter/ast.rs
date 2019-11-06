@@ -47,6 +47,8 @@ pub enum Expression {
     Not(Box<Expression>),
     /// Value expression _is a pointer_.
     IsType(ValueExpr, Type),
+    /// Test if value is nan.
+    IsNan(ValueExpr),
     /// Test that the value equals the expected value.
     Binary(Op, ValueExpr, ValueExpr),
     /// Multiple expressions and:ed together.
@@ -78,9 +80,12 @@ impl Expression {
 
                 match ty {
                     Type::Pointer => Filter::IsPointer(filter::IsPointer::new(expr, process)?),
-                    Type::None => Filter::IsNone(filter::IsNone::new(expr)?),
-                    ty => bail!("cannot type check for {}", ty),
+                    ty => Filter::IsType(filter::IsType::new(expr, ty)?),
                 }
+            }
+            Self::IsNan(expr) => {
+                let expr = expr.eval(process)?;
+                Filter::IsNan(filter::IsNan::new(expr)?)
             }
             Self::And(expressions) => {
                 let filters = expressions

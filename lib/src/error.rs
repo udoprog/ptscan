@@ -55,6 +55,8 @@ pub enum Error {
     TypeParseBytes,
     #[error("failed to parse type")]
     TypeParseError,
+    #[error("cannot parse string as a float")]
+    TypeParseFloat,
     #[error("failed to decode utf-8 string")]
     NonUtf8,
     #[error("missing base in type specification, like `u8` or `string`")]
@@ -63,6 +65,8 @@ pub enum Error {
     TypeBadSize,
     #[error("number `{0}` does not fit within type {1}")]
     ValueNumberConversion(num_bigint::BigInt, Type),
+    #[error("decimal number `{0}` does not fit within type {1}")]
+    ValueDecimalConversion(bigdecimal::BigDecimal, Type),
     #[error("unsupported pointer width: {0}")]
     UnsupportedPointerWidth(usize),
     #[error("failed to convert address into native pointer")]

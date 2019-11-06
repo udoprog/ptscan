@@ -4,6 +4,7 @@ use crate::{
     error::Error, filter, Address, AddressRange, Pointer, PointerBase, ProcessHandle, Size, Test,
     Token, Type, Value, ValueExpr,
 };
+use crossbeam_queue::ArrayQueue;
 use serde::{Deserialize, Serialize};
 use std::{
     convert::TryFrom as _,
@@ -16,6 +17,7 @@ use std::{
 pub struct InitialScanConfig {
     pub modules_only: bool,
     pub tasks: Option<usize>,
+    pub buffer_size: Option<usize>,
 }
 
 /// A trait to track the progress of processes.
@@ -135,7 +137,7 @@ impl Scan {
         progress: (impl ScanProgress + Send),
         config: InitialScanConfig,
     ) -> anyhow::Result<()> {
-        const BUFFER_SIZE: usize = 0x10_000_000;
+        const DEFAULT_BUFFER_SIZE: usize = 0x1_000_000;
 
         use crate::utils::IteratorExtension;
 
@@ -166,6 +168,8 @@ impl Scan {
             .tasks
             .unwrap_or_else(|| thread_pool.current_num_threads());
 
+        let buffer_size = config.buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE);
+
         let mut bytes = Size::zero();
 
         let mut ranges = Vec::new();
@@ -183,30 +187,41 @@ impl Scan {
 
         ranges.extend(handle.modules.iter().map(|m| m.range.clone()));
 
-        // the size of a chunk to assign to each task.
-        let chunk = (ranges.len() + (tasks - 1)) / tasks;
+        let mut total = 0;
+
+        for range in &ranges {
+            bytes.add_assign(range.size)?;
+            total += range.size.as_usize();
+        }
+
+        let queue = ArrayQueue::new(ranges.len());
+
+        for range in ranges {
+            queue.push(range)?;
+        }
+
+        let queue = &queue;
 
         thread_pool.install(|| {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<Task>();
 
-                let mut total = 0;
-                let mut task_count = 0;
-
-                for ranges in ranges.chunks(chunk) {
-                    task_count += 1;
-
-                    for r in ranges {
-                        bytes.add_assign(r.size)?;
-                        total += r.size.as_usize();
-                    }
-
+                for _ in 0..tasks {
                     let tx = tx.clone();
 
                     s.spawn(move |_| {
                         let start = Instant::now();
                         let result = work(
-                            handle, &tx, ranges, filter, ty, special, aligned, type_size, cancel,
+                            handle,
+                            &tx,
+                            queue,
+                            filter,
+                            ty,
+                            special,
+                            aligned,
+                            type_size,
+                            buffer_size,
+                            cancel,
                         );
 
                         let now = Instant::now();
@@ -223,6 +238,8 @@ impl Scan {
 
                 let mut hits = 0u64;
 
+                let mut task_count = tasks;
+
                 while task_count > 0 {
                     match rx.recv().expect("channel closed") {
                         Task::Done(result, ..) => {
@@ -231,6 +248,7 @@ impl Scan {
                             }
 
                             task_count -= 1;
+                            println!("task done: {}", task_count);
 
                             if task_count == 0 {
                                 break;
@@ -262,20 +280,21 @@ impl Scan {
         fn work(
             handle: &ProcessHandle,
             tx: &mpsc::Sender<Task>,
-            ranges: &[AddressRange],
+            queue: &ArrayQueue<AddressRange>,
             filter: &filter::Filter,
             ty: Type,
             special: Option<&filter::Special>,
             aligned: bool,
             type_size: usize,
+            buffer_size: usize,
             cancel: &Token,
         ) -> anyhow::Result<Vec<Box<ScanResult>>> {
             let mut results = Vec::new();
 
-            let mut data = vec![0u8; BUFFER_SIZE];
+            let mut data = vec![0u8; buffer_size];
             let none = Value::default();
 
-            for range in ranges {
+            while let Ok(range) = queue.pop() {
                 if cancel.test() {
                     return Ok(results);
                 }
@@ -349,11 +368,19 @@ impl Scan {
                 align(&mut inner_offset, type_size);
             }
 
+            let mut last = None;
+
             while inner_offset < data.len() && !cancel.test() {
                 let address = base.add(Size::try_from(inner_offset)?)?;
                 let mut pointer =
                     Pointer::new(PointerBase::Address { address }, vec![], Some(address));
                 let proxy = handle.address_proxy(&pointer);
+
+                if let Some(last) = last {
+                    assert!(address > last, "address must always increase");
+                }
+
+                last = Some(address);
 
                 if let Test::True = filter.test(ty, none, proxy)? {
                     *hits += 1;

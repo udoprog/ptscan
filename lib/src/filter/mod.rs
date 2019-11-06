@@ -470,8 +470,8 @@ impl IsPointer {
         })
     }
 
-    fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
-        self.expr.type_of(last_type, value_type)
+    fn type_of(&self, _: Option<Type>, _: Option<Type>) -> Option<Type> {
+        Some(Type::Pointer)
     }
 
     pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {

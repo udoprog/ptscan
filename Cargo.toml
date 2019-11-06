@@ -3,3 +3,9 @@ members = [
     "lib",
     "tui",
 ]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

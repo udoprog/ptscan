@@ -1388,6 +1388,7 @@ impl Application {
 
             let mut c = InitialScanConfig::default();
             c.modules_only = config.modules_only;
+            c.tasks = config.tasks;
 
             let result = term.work(|term, token| {
                 scan.initial_scan(
@@ -1650,6 +1651,12 @@ impl Application {
                     Arg::with_name("suspend")
                         .help("Suspend the process during the scan.")
                         .long("suspend"),
+                )
+                .arg(
+                    Arg::with_name("tasks")
+                        .help("Number of tasks to use when scanning.")
+                        .long("tasks")
+                        .value_name("tasks"),
                 )
                 .arg(
                     Arg::with_name("filter")
@@ -1971,6 +1978,7 @@ impl Application {
                 let mut config = ScanConfig::default();
                 config.modules_only = m.is_present("modules-only");
                 config.suspend = m.is_present("suspend");
+                config.tasks = m.value_of("tasks").map(str::parse).transpose()?;
                 return Ok(Action::Scan { filter, ty, config });
             }
 
@@ -2109,6 +2117,7 @@ impl Application {
 pub struct ScanConfig {
     modules_only: bool,
     suspend: bool,
+    tasks: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]

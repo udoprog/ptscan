@@ -39,9 +39,16 @@ InnerValueExpr: ValueExpr = {
     "&" <expr:InnerValueExpr> => ValueExpr::AddressOf(Box::new(expr)),
 };
 
+SubAddValueExpr: ValueExpr = {
+    <value:InnerValueExpr> => value,
+    "(" <value:SubAddValueExpr> ")" => value,
+    <lhs:InnerValueExpr> "+" <rhs:SubAddValueExpr> => ValueExpr::Add(Box::new(lhs), Box::new(rhs)),
+    <lhs:InnerValueExpr> "-" <rhs:SubAddValueExpr> => ValueExpr::Sub(Box::new(lhs), Box::new(rhs)),
+};
+
 pub ValueExpr: ValueExpr = {
-    <expr:InnerValueExpr> => expr,
-    <expr:InnerValueExpr> as <ty:ty> => ValueExpr::As(Box::new(expr), ty),
+    <expr:SubAddValueExpr> => expr,
+    <expr:SubAddValueExpr> as <ty:ty> => ValueExpr::As(Box::new(expr), ty),
 }
 
 Filter: Expression = {
@@ -83,8 +90,10 @@ extern {
         "~" => Token::Tilde,
         "(" => Token::OpenParen,
         ")" => Token::CloseParen,
-        "*" => Token::Deref,
+        "*" => Token::Star,
         "&" => Token::AddressOf,
+        "+" => Token::Plus,
+        "-" => Token::Minus,
         number => Token::Number(<BigInt>, <Option<Type>>),
         decimal => Token::Decimal(<BigDecimal>, <Option<Type>>),
         "string" => Token::String(<String>),

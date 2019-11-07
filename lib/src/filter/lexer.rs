@@ -33,6 +33,12 @@ pub enum Token {
     Is,
     /// `nan` keyword,
     Nan,
+    /// `+`
+    Plus,
+    /// `-`
+    Minus,
+    /// `*`
+    Star,
     /// `==`.
     Eq,
     /// `!=`.
@@ -63,8 +69,6 @@ pub enum Token {
     Bytes(Vec<u8>),
     /// A type literal, like `u8`.
     Type(Type),
-    /// The deref operator `*`.
-    Deref,
     /// The addressof operator `&`.
     AddressOf,
 }
@@ -72,6 +76,14 @@ pub enum Token {
 impl fmt::Display for Token {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self, fmt)
+    }
+}
+
+/// Test if character qualifies as part of a number.
+fn is_numeric(c: char) -> bool {
+    match c {
+        '0'..='9' => true,
+        _ => false,
     }
 }
 
@@ -466,20 +478,34 @@ impl<'a> Iterator for Lexer<'a> {
                     let e = self.pos();
                     return Some(Ok((s, Token::String(string), e)));
                 }
-                '-' | '+' | '0'..='9' => {
-                    let literal = try_iter!(self.scan_literal());
-                    let e = self.pos();
-                    return Some(Ok((s, literal, e)));
-                }
                 '*' => {
                     self.step();
                     let e = self.pos();
-                    return Some(Ok((s, Token::Deref, e)));
+                    return Some(Ok((s, Token::Star, e)));
+                }
+                '+' => {
+                    self.step();
+                    let e = self.pos();
+                    return Some(Ok((s, Token::Plus, e)));
+                }
+                '-' if !self
+                    .peek2()
+                    .map(|(_, _, c)| !is_numeric(c))
+                    .unwrap_or_default() =>
+                {
+                    self.step();
+                    let e = self.pos();
+                    return Some(Ok((s, Token::Minus, e)));
                 }
                 '&' => {
                     self.step();
                     let e = self.pos();
                     return Some(Ok((s, Token::AddressOf, e)));
+                }
+                '-' | '0'..='9' => {
+                    let literal = try_iter!(self.scan_literal());
+                    let e = self.pos();
+                    return Some(Ok((s, literal, e)));
                 }
                 _ => {
                     let ident = try_iter!(self.scan_ident());

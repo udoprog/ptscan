@@ -4,7 +4,7 @@ use crate::{
     process::Process,
     utils::{EscapeString, Hex},
     value::Value,
-    Address, AddressProxy, Offset, Type,
+    Address, AddressProxy, Type,
 };
 use anyhow::bail;
 use bigdecimal::BigDecimal;
@@ -32,11 +32,17 @@ pub enum ValueExpr {
     /// &<value>
     #[serde(rename = "address-of")]
     AddressOf { value: Box<ValueExpr> },
-    /// Offset
-    #[serde(rename = "offset")]
-    Offset {
-        value: Box<ValueExpr>,
-        offset: Offset,
+    /// add two values together
+    #[serde(rename = "add")]
+    Add {
+        lhs: Box<ValueExpr>,
+        rhs: Box<ValueExpr>,
+    },
+    /// subtract two values.
+    #[serde(rename = "sub")]
+    Sub {
+        lhs: Box<ValueExpr>,
+        rhs: Box<ValueExpr>,
     },
     /// A whole number literal.
     #[serde(rename = "number")]
@@ -154,7 +160,12 @@ impl ValueExpr {
             Self::Bytes { value } => Some(Type::Bytes(value.len())),
             Self::Deref { .. } => None,
             Self::AddressOf { .. } => Some(Type::Pointer),
-            Self::Offset { value, .. } => value.type_of(initial_type, last_type, value_type),
+            Self::Add { lhs, rhs } => lhs
+                .type_of(initial_type, last_type, value_type)
+                .or_else(|| rhs.type_of(initial_type, last_type, value_type)),
+            Self::Sub { lhs, rhs } => lhs
+                .type_of(initial_type, last_type, value_type)
+                .or_else(|| rhs.type_of(initial_type, last_type, value_type)),
             Self::As { ty, .. } => Some(*ty),
         }
     }
@@ -195,7 +206,16 @@ impl ValueExpr {
                 Ok((None, Value::Pointer(new_address)))
             }
             Self::As { expr, .. } => expr.eval(ty, initial, last, proxy),
-            _ => bail!("can't evaluate expression yet: {}", self),
+            Self::Add { lhs, rhs } => {
+                let (_, lhs) = lhs.eval(ty, initial, last, proxy)?;
+                let (_, rhs) = rhs.eval(ty, initial, last, proxy)?;
+                Ok((None, lhs.add(rhs)?.unwrap_or_else(|| Value::None(ty))))
+            }
+            Self::Sub { lhs, rhs } => {
+                let (_, lhs) = lhs.eval(ty, initial, last, proxy)?;
+                let (_, rhs) = rhs.eval(ty, initial, last, proxy)?;
+                Ok((None, lhs.sub(rhs)?.unwrap_or_else(|| Value::None(ty))))
+            }
         }
     }
 }
@@ -214,7 +234,8 @@ impl fmt::Display for ValueExpr {
             Self::Initial => "initial".fmt(fmt),
             Self::Deref { value } => write!(fmt, "*{}", value),
             Self::AddressOf { value } => write!(fmt, "&{}", value),
-            Self::Offset { value, offset } => write!(fmt, "{}{}", value, offset),
+            Self::Add { lhs, rhs } => write!(fmt, "{} + {}", lhs, rhs),
+            Self::Sub { lhs, rhs } => write!(fmt, "{} - {}", lhs, rhs),
             Self::Number { value, ty: None } => write!(fmt, "{}", value),
             Self::Number {
                 value,

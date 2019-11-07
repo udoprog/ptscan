@@ -330,7 +330,7 @@ impl ProcessHandle {
                     let p_rx = p_rx.clone();
 
                     s.spawn(move |_| {
-                        loop {
+                        while !cancel.test() {
                             let (index, result) = match p_rx.recv().expect("failed to receive") {
                                 Some(task) => task,
                                 None => break,
@@ -379,10 +379,11 @@ impl ProcessHandle {
                     }
 
                     if let Some(result) = reporter.eval(result) {
-                        match result {
-                            Task::Accepted => (),
+                        count += match result {
+                            Task::Accepted => 1,
                             Task::Rejected(index) => {
                                 to_remove.push(index);
+                                0
                             }
                             Task::Done => {
                                 tasks -= 1;
@@ -391,7 +392,6 @@ impl ProcessHandle {
                         }
                     }
 
-                    count += 1;
                     reporter.tick(count);
                 }
 

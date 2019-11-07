@@ -1,7 +1,7 @@
 use crate::{
     process::Process,
     utils::{EscapeString, Hex},
-    Offset, Type,
+    Type,
 };
 use bigdecimal::BigDecimal;
 use num_bigint::BigInt;
@@ -19,8 +19,10 @@ pub enum ValueExpr {
     AddressOf(Box<ValueExpr>),
     /// deref `*<value>`
     Deref(Box<ValueExpr>),
-    /// Offset
-    Offset(Box<ValueExpr>, Offset),
+    /// add two values together.
+    Add(Box<ValueExpr>, Box<ValueExpr>),
+    /// subtract two values.
+    Sub(Box<ValueExpr>, Box<ValueExpr>),
     /// A whole number literal.
     Number(BigInt, Option<Type>),
     /// A decimal literal.
@@ -42,10 +44,22 @@ impl ValueExpr {
             Self::Value => Value,
             Self::Last => Last,
             Self::Initial => Initial,
-            Self::Offset(value, offset) => Offset {
-                value: Box::new(value.eval(process)?),
-                offset,
-            },
+            Self::Add(lhs, rhs) => {
+                let lhs = lhs.eval(process)?;
+                let rhs = rhs.eval(process)?;
+                Add {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                }
+            }
+            Self::Sub(lhs, rhs) => {
+                let lhs = lhs.eval(process)?;
+                let rhs = rhs.eval(process)?;
+                Sub {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                }
+            }
             Self::Number(value, ty) => Number { value, ty },
             Self::Decimal(value, ty) => Decimal { value, ty },
             Self::String(value) => String { value },
@@ -75,7 +89,8 @@ impl fmt::Display for ValueExpr {
             Self::Initial => "initial".fmt(fmt),
             Self::AddressOf(expr) => write!(fmt, "&{}", expr),
             Self::Deref(expr) => write!(fmt, "*{}", expr),
-            Self::Offset(expr, offset) => write!(fmt, "{} {}", expr, offset),
+            Self::Add(lhs, rhs) => write!(fmt, "{} + {}", lhs, rhs),
+            Self::Sub(lhs, rhs) => write!(fmt, "{} - {}", lhs, rhs),
             Self::Number(number, Some(ty)) => write!(fmt, "{}{}", number, ty),
             Self::Number(number, None) => write!(fmt, "{}", number),
             Self::Decimal(decimal, None) => write!(fmt, "{}", decimal),

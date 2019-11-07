@@ -7,7 +7,54 @@ use crate::{
 use anyhow::bail;
 use num_bigint::Sign;
 use serde::{Deserialize, Serialize};
+use std::convert::TryFrom as _;
 use std::{fmt, mem, str};
+
+macro_rules! numeric_op {
+    ($a:ident $op:tt $b:ident, $checked_op:ident) => {
+        numeric_op!(@a $a $op $b, $checked_op, {
+            [U8, u8],
+            [I8, i8],
+            [U16, u16],
+            [I16, i16],
+            [U32, u32],
+            [I32, i32],
+            [U64, u64],
+            [I64, i64],
+            [U128, u128],
+            [I128, i128]
+        })
+    };
+
+    (@a $a:ident $op:tt $b:ident, $checked_op:ident, {$([$variant:ident, $ty:ty]),*}) => {
+        numeric_op!(
+            @b $a $op $b,
+            $checked_op,
+            {
+                $(
+                    [$variant, $ty],
+                    [U8, I8, U16, I16, U32, I32, U64, I64, U128, I128]
+                ),*
+            }
+        )
+    };
+
+    (@b $a:ident $op:tt $b:ident, $checked_op:ident, {$([$variant:ident, $ty:ty], [$($variant2:ident),*]),*}) => {
+        match $a {
+            $(
+                Self::$variant(lhs) => match $b {
+                    $(
+                        Self::$variant2(rhs) => {
+                            lhs.$checked_op(<$ty>::try_from(rhs)?).map(Self::$variant)
+                        },
+                    )+
+                    _ => bail!("bad operation: {} {} {}", $a.ty(), stringify!($op), $b.ty()),
+                }
+            )*
+            _ => bail!("bad operation: {} {} {}", $a.ty(), stringify!($op), $b.ty()),
+        }
+    };
+}
 
 /// A single dynamic literal value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -298,6 +345,16 @@ impl Value {
 
         let out = out.ok_or_else(|| Error::ValueDecimalConversion(value.clone(), ty))?;
         Ok(out)
+    }
+
+    pub fn add(self, rhs: Value) -> anyhow::Result<Option<Value>> {
+        let lhs = self;
+        Ok(numeric_op!(lhs + rhs, checked_add))
+    }
+
+    pub fn sub(self, rhs: Value) -> anyhow::Result<Option<Value>> {
+        let lhs = self;
+        Ok(numeric_op!(lhs - rhs, checked_sub))
     }
 }
 

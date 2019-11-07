@@ -11,11 +11,11 @@ impl Token {
 
     /// Set the token.
     pub fn set(&self) {
-        self.0.store(true, Ordering::SeqCst);
+        self.0.store(true, Ordering::Release);
     }
 
     /// Test if the token is set and unset it if it is.
     pub fn test(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.0.load(Ordering::Acquire)
     }
 }

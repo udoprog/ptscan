@@ -7,6 +7,7 @@ use crate::{
 use crossbeam_queue::SegQueue;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::VecDeque,
     convert::TryFrom as _,
     ops, slice,
     sync::mpsc,
@@ -94,22 +95,19 @@ impl Scan {
         &mut self,
         thread_pool: &rayon::ThreadPool,
         handle: &ProcessHandle,
-        filter: &filter::Filter,
         new_type: Option<Type>,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
+        filter: &filter::Filter,
     ) -> anyhow::Result<()> {
-        let mut results = Vec::new();
         handle.rescan_values(
             thread_pool,
-            &self.results,
-            &mut results,
-            filter,
+            &mut self.results,
             new_type,
             cancel,
             progress,
+            filter,
         )?;
-        self.results = results;
         Ok(())
     }
 
@@ -381,7 +379,7 @@ impl Scan {
                     let (last_address, value) = proxy.eval(ty)?;
                     pointer.base = handle.address_to_pointer_base(address)?;
                     pointer.last_address = last_address;
-                    results.push(Box::new(ScanResult { pointer, value }));
+                    results.push(Box::new(ScanResult::new(pointer, value)));
                 }
 
                 if let Some(special) = special {
@@ -535,6 +533,29 @@ impl<'token, 'err, P> Reporter<'token, 'err, P> {
 pub struct ScanResult {
     /// Address where the scanned value lives.
     pub pointer: Pointer,
-    /// Value from last scan.
-    pub value: Value,
+    /// The initial value in the scan. Is not rotated out.
+    pub initial: Value,
+    /// Subsequent values. Might be rotated out in length sequence.
+    pub values: VecDeque<Value>,
+}
+
+impl ScanResult {
+    /// Construct a new scan result where the last value is specified.
+    pub fn new(pointer: Pointer, value: Value) -> Self {
+        Self {
+            pointer,
+            initial: value,
+            values: VecDeque::new(),
+        }
+    }
+
+    /// Access the initial value of this result.
+    pub fn initial(&self) -> &Value {
+        &self.initial
+    }
+
+    /// Access the last value of the scan.
+    pub fn last(&self) -> &Value {
+        self.values.back().unwrap_or(&self.initial)
+    }
 }

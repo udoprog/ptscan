@@ -10,7 +10,7 @@ use ptscan::{
 use std::{
     collections::{BTreeMap, VecDeque},
     fs::File,
-    io,
+    io::{self, Write as _},
     path::PathBuf,
     sync::Arc,
     time::Instant,
@@ -177,7 +177,6 @@ impl Term {
     where
         D: std::fmt::Display + Clone,
     {
-        use std::io::Write as _;
         write!(self.output, "{}", line)?;
         Ok(())
     }
@@ -187,7 +186,6 @@ impl Term {
     where
         D: std::fmt::Display + Clone,
     {
-        use std::io::Write as _;
         writeln!(self.output, "{}", line)?;
         self.flush()?;
         Ok(())
@@ -245,7 +243,6 @@ impl Term {
 
     /// Flush the output.
     fn flush(&mut self) -> anyhow::Result<()> {
-        use std::io::Write as _;
         self.output.flush()?;
         Ok(())
     }
@@ -546,7 +543,7 @@ impl Application {
                 if index < scan.results.len() {
                     let result = scan.results.swap_remove(index);
                     self.term.print_line("deleted:")?;
-                    self.print_result(&*result)?;
+                    writeln!(self.term.output, "{} = {}", result.pointer, result.last())?;
                 }
             }
             Action::Add { mut pointer, ty } => {
@@ -578,7 +575,7 @@ impl Application {
                     pointer.base = base;
                 }
 
-                scan.push(Box::new(ScanResult { pointer, value }));
+                scan.push(Box::new(ScanResult::new(pointer, value)));
                 scan.initial = false;
             }
             Action::Scan { filter, ty, config } => {
@@ -921,7 +918,6 @@ impl Application {
             limit: usize,
         ) -> anyhow::Result<usize> {
             use std::fmt::Write as _;
-            use std::io::Write as _;
 
             let mut last = Vec::with_capacity(limit);
             let mut offset = 0;
@@ -947,7 +943,7 @@ impl Application {
                 let len = usize::min(scan.results.len().saturating_sub(offset), limit);
 
                 let mut results = &mut scan.results[..len];
-                last.extend(results.iter().map(|v| v.value.clone()));
+                last.extend(results.iter().map(|v| v.last().clone()));
 
                 handle.refresh_values(
                     thread_pool,
@@ -966,7 +962,7 @@ impl Application {
 
                     if let Some(filter) = filter {
                         let proxy = handle.address_proxy(&result.pointer);
-                        let ty = result.value.ty();
+                        let ty = result.last().ty();
 
                         if let Test::False = filter.test(ty, last, proxy)? {
                             to_remove.push(index);
@@ -974,7 +970,7 @@ impl Application {
                         }
                     }
 
-                    if *last != result.value {
+                    if last != result.last() {
                         changed = true;
                     }
 
@@ -993,13 +989,13 @@ impl Application {
                             write!(
                                 buf,
                                 "{} (filtered)",
-                                style::style(&result.value).with(style::Color::Red)
+                                style::style(result.last()).with(style::Color::Red)
                             )?;
                         } else {
                             write!(
                                 buf,
                                 "{}",
-                                style::style(&result.value).with(style::Color::Blue)
+                                style::style(result.last()).with(style::Color::Blue)
                             )?;
                         }
 
@@ -1045,7 +1041,7 @@ impl Application {
             let mut states = updates
                 .iter()
                 .map(|r| State {
-                    initial: r.value.clone(),
+                    initial: r.last().clone(),
                     values: VecDeque::new(),
                     changed: true,
                     removed: false,
@@ -1091,7 +1087,7 @@ impl Application {
 
                     if let Some(filter) = filter {
                         let proxy = handle.address_proxy(&result.pointer);
-                        let ty = result.value.ty();
+                        let ty = result.last().ty();
 
                         if let Test::False = filter.test(ty, state.last(), proxy)? {
                             any_changed = true;
@@ -1099,13 +1095,13 @@ impl Application {
                         }
                     }
 
-                    if result.value != *state.last() {
+                    if result.last() != state.last() {
                         state.changed = true;
                         any_changed = true;
 
                         state
                             .values
-                            .push_back((Instant::now(), result.value.clone()));
+                            .push_back((Instant::now(), result.last().clone()));
 
                         while state.values.len() > change_length {
                             state.values.pop_front();
@@ -1272,7 +1268,6 @@ impl Application {
         max_depth: Option<usize>,
         max_offset: Option<u64>,
     ) -> anyhow::Result<()> {
-        use std::io::Write as _;
         type SVec = Vec<Offset>;
 
         let handle = match handle.as_ref() {
@@ -1315,7 +1310,7 @@ impl Application {
         let mut reverse = BTreeMap::new();
 
         for result in &scan.results {
-            let value = result.value.as_address()?;
+            let value = result.last().as_address()?;
 
             if let Some(address) = result.pointer.follow_default(handle)? {
                 forward.insert(address, value);
@@ -1385,10 +1380,7 @@ impl Application {
                             Some(needle),
                         );
 
-                        results.push(Box::new(ScanResult {
-                            pointer,
-                            value: Value::None(ty),
-                        }));
+                        results.push(Box::new(ScanResult::new(pointer, Value::None(ty))));
                     }
                     // ignore thread stacks
                     Location::Thread(..) => {
@@ -1461,10 +1453,7 @@ impl Application {
                             let pointer =
                                 Pointer::new(result.pointer.base.clone(), path, Some(needle));
 
-                            additions.push(Box::new(ScanResult {
-                                pointer,
-                                value: Value::None(ty),
-                            }));
+                            additions.push(Box::new(ScanResult::new(pointer, Value::None(ty))));
                         }
                     }
 
@@ -1626,10 +1615,10 @@ impl Application {
                 scan.scan(
                     thread_pool,
                     handle,
-                    filter,
                     ty,
                     Some(token),
                     SimpleProgress::new(term, "Rescanning", Some(token), colors),
+                    filter,
                 )
             })
         };
@@ -1725,12 +1714,6 @@ impl Application {
         Ok(())
     }
 
-    fn print_result(&mut self, result: &ScanResult) -> anyhow::Result<()> {
-        self.term
-            .print_line(format!("{} = {}", result.pointer, result.value))?;
-        Ok(())
-    }
-
     /// Print the current state of the scan.
     fn print<'a>(
         term: &mut Term,
@@ -1758,12 +1741,12 @@ impl Application {
             write!(buf, " = ")?;
 
             if let Some(recorded) = recorded.and_then(|r| r.get(index)) {
-                if recorded.value != result.value {
-                    write!(buf, "{} -> ", recorded.value)?;
+                if recorded.last() != result.last() {
+                    write!(buf, "{} -> ", recorded.last())?;
                 }
             }
 
-            write!(buf, "{}", result.value)?;
+            write!(buf, "{}", result.last())?;
 
             term.clear(ClearType::CurrentLine)?;
             term.print_line(&buf)?;

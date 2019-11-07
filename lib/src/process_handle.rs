@@ -292,12 +292,11 @@ impl ProcessHandle {
     pub fn rescan_values(
         &self,
         thread_pool: &rayon::ThreadPool,
-        results: &[Box<ScanResult>],
-        results_output: &mut Vec<Box<ScanResult>>,
-        filter: &filter::Filter,
+        results: &mut Vec<Box<ScanResult>>,
         new_type: Option<Type>,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
+        filter: &filter::Filter,
     ) -> anyhow::Result<()> {
         use std::sync::mpsc;
 
@@ -316,103 +315,83 @@ impl ProcessHandle {
         let mut reporter = scan::Reporter::new(progress, results.len(), cancel, &mut last_error);
 
         // how many tasks to run in parallel.
-        let tasks = 0x100usize;
+        let mut tasks = thread_pool.current_num_threads();
+
+        let mut to_remove = Vec::new();
 
         thread_pool.install(|| {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<Task>>();
-                let (p_tx, p_rx) = crossbeam_channel::unbounded::<Option<&ScanResult>>();
+                let (p_tx, p_rx) =
+                    crossbeam_channel::unbounded::<Option<(usize, &mut ScanResult)>>();
 
-                for _ in 0..thread_pool.current_num_threads() {
+                for _ in 0..tasks {
                     let tx = tx.clone();
                     let p_rx = p_rx.clone();
 
                     s.spawn(move |_| {
-                        let mut results = Vec::new();
-
                         loop {
-                            let result = match p_rx.recv().expect("closed") {
+                            let (index, result) = match p_rx.recv().expect("failed to receive") {
                                 Some(task) => task,
-                                None => {
-                                    tx.send(Ok(Task::Result(results))).expect("closed");
-                                    return;
-                                }
+                                None => break,
                             };
 
                             let mut work = || {
                                 let proxy = self.address_proxy(&result.pointer);
-                                let ty = new_type.unwrap_or_else(|| result.value.ty());
+                                let ty = new_type.unwrap_or_else(|| result.last().ty());
 
-                                if let Test::True = filter.test(ty, &result.value, proxy)? {
+                                if let Test::True = filter.test(ty, result.last(), proxy)? {
                                     let (last_address, value) = proxy.eval(ty)?;
-                                    let mut pointer = result.pointer.clone();
-                                    pointer.last_address = last_address;
-
-                                    results.push(Box::new(ScanResult { pointer, value }));
-
+                                    result.pointer.last_address = last_address;
+                                    result.values.push_back(value);
                                     return Ok(Task::Accepted);
                                 }
 
-                                Ok(Task::Rejected)
+                                Ok(Task::Rejected(index))
                             };
 
-                            tx.send(work()).expect("closed");
+                            tx.send(work()).expect("failed to send");
                         }
+
+                        tx.send(Ok(Task::Done)).expect("failed to send");
                     });
                 }
 
-                let mut it = results.iter();
+                let mut it = results.iter_mut().enumerate();
 
-                for result in (&mut it).take(tasks) {
-                    p_tx.send(Some(result)).expect("closed");
+                for (index, result) in (&mut it).take(tasks) {
+                    p_tx.send(Some((index, &mut *result)))
+                        .expect("failed to send");
                 }
 
                 let mut count = 0u64;
-                let mut expected = thread_pool.current_num_threads();
 
-                while !reporter.is_done() {
-                    if cancel.test() {
-                        break;
-                    }
-
+                while tasks > 0 {
                     let result = rx.recv().expect("closed");
 
-                    if let Some(result) = it.next() {
-                        p_tx.send(Some(result)).expect("closed");
+                    if let Some((index, result)) = it.next() {
+                        p_tx.send(Some((index, &mut **result)))
+                            .expect("failed to send");
+                    } else {
+                        p_tx.send(None).expect("failed to send");
                     }
 
-                    count += match reporter.eval(result).unwrap_or(Task::Rejected) {
-                        Task::Accepted => 1,
-                        Task::Rejected => 0,
-                        Task::Result(mut results) => {
-                            results_output.append(&mut results);
-                            expected -= 1;
-                            continue;
+                    if let Some(result) = reporter.eval(result) {
+                        match result {
+                            Task::Accepted => (),
+                            Task::Rejected(index) => {
+                                to_remove.push(index);
+                            }
+                            Task::Done => {
+                                tasks -= 1;
+                                continue;
+                            }
                         }
-                    };
+                    } else {
+                        continue;
+                    }
 
-                    reporter.tick(count);
-                }
-
-                // send indicator for threads to go.
-                for _ in 0..thread_pool.current_num_threads() {
-                    p_tx.send(None).expect("closed");
-                }
-
-                // reap threads.
-                while expected > 0 {
-                    let result = rx.recv().expect("closed");
-
-                    count += match reporter.eval(result).unwrap_or(Task::Rejected) {
-                        Task::Accepted => 1,
-                        Task::Rejected => 0,
-                        Task::Result(mut results) => {
-                            results_output.append(&mut results);
-                            expected -= 1;
-                            continue;
-                        }
-                    };
-
+                    count += 1;
                     reporter.tick(count);
                 }
 
@@ -421,6 +400,12 @@ impl ProcessHandle {
 
             Ok::<_, anyhow::Error>(())
         })?;
+
+        to_remove.sort_by(|a, b| b.cmp(a));
+
+        for index in to_remove {
+            results.swap_remove(index);
+        }
 
         if let Some(e) = last_error {
             return Err(e);
@@ -432,9 +417,9 @@ impl ProcessHandle {
             /// Address was accepted.
             Accepted,
             /// Address was rejected.
-            Rejected,
-            /// The result of a computation.
-            Result(Vec<Box<ScanResult>>),
+            Rejected(usize),
+            /// Task is done.
+            Done,
         }
     }
 
@@ -465,85 +450,71 @@ impl ProcessHandle {
         let mut reporter = scan::Reporter::new(progress, results.len(), cancel, &mut last_error);
 
         // how many tasks to run in parallel.
-        let tasks = 0x100usize;
+        let mut tasks = thread_pool.current_num_threads();
+        let cancel = &cancel;
 
         thread_pool.install(|| {
             rayon::scope(|s| {
-                let (tx, rx) = mpsc::channel();
+                let (tx, rx) = mpsc::channel::<anyhow::Result<bool>>();
                 let (p_tx, p_rx) = crossbeam_channel::unbounded::<Option<&mut ScanResult>>();
 
-                for _ in 0..thread_pool.current_num_threads() {
+                for _ in 0..tasks {
                     let tx = tx.clone();
                     let p_rx = p_rx.clone();
 
-                    s.spawn(move |_| loop {
-                        let result = match p_rx.recv().expect("closed") {
-                            Some(task) => task,
-                            None => {
-                                tx.send(None).expect("closed");
-                                return;
-                            }
-                        };
+                    s.spawn(move |_| {
+                        while !cancel.test() {
+                            let result = match p_rx.recv().expect("closed") {
+                                Some(task) => task,
+                                None => {
+                                    break;
+                                }
+                            };
 
-                        let ty = new_type.unwrap_or_else(|| result.value.ty());
+                            let ty = new_type.unwrap_or_else(|| result.last().ty());
 
-                        let mut work = move || {
-                            let proxy = self.address_proxy(&result.pointer);
-                            let (address, value) = expr.eval(ty, &result.value, proxy)?;
-                            result.value = value;
-                            result.pointer.last_address = address;
+                            let mut work = move || {
+                                let proxy = self.address_proxy(&result.pointer);
+                                let (address, value) = expr.eval(ty, result.last(), proxy)?;
+                                result.initial = value;
+                                result.values.clear();
+                                result.pointer.last_address = address;
+                                Ok(true)
+                            };
 
-                            if result.value.is_some() {
-                                Ok(1)
-                            } else {
-                                Ok(0)
-                            }
-                        };
+                            tx.send(work()).expect("failed to send");
+                        }
 
-                        tx.send(Some(work())).expect("closed");
+                        tx.send(Ok(false)).expect("failed to send");
                     });
                 }
 
                 let mut it = results.iter_mut();
 
                 for result in (&mut it).take(tasks) {
-                    p_tx.send(Some(result)).expect("closed");
+                    p_tx.send(Some(&mut **result)).expect("closed");
                 }
 
                 let mut count = 0u64;
-                let mut expected = thread_pool.current_num_threads();
 
-                while !reporter.is_done() {
-                    if cancel.test() {
-                        break;
-                    }
-
-                    let res = rx.recv().expect("closed").expect("sporadic none option");
+                while tasks > 0 {
+                    let res = rx.recv().expect("failed to receive on channel");
 
                     if let Some(result) = it.next() {
-                        p_tx.send(Some(result)).expect("closed");
+                        p_tx.send(Some(&mut **result))
+                            .expect("failed to send on channel");
+                    } else {
+                        p_tx.send(None).expect("failed to send on channel");
                     }
 
-                    count += reporter.eval(res).unwrap_or_default();
+                    if !reporter.eval(res).unwrap_or_default() {
+                        tasks -= 1;
+                        cancel.set();
+                        continue;
+                    }
+
+                    count += 1;
                     reporter.tick(count);
-                }
-
-                // send indicator for threads to go.
-                for _ in 0..thread_pool.current_num_threads() {
-                    p_tx.send(None).expect("closed");
-                }
-
-                // reap threads.
-                while expected > 0 {
-                    match rx.recv().expect("closed") {
-                        Some(result) => {
-                            count += reporter.eval(result).unwrap_or_default();
-                            reporter.tick(count);
-                        }
-                        None => {
-                            expected -= 1;
-                        }
-                    }
                 }
             });
         });

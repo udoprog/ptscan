@@ -23,6 +23,9 @@ pub enum ValueExpr {
     /// The last known value.
     #[serde(rename = "value")]
     Last,
+    /// The initial value of the scan result.
+    #[serde(rename = "initial")]
+    Initial,
     /// *<value>
     #[serde(rename = "deref")]
     Deref { value: Box<ValueExpr> },
@@ -135,17 +138,23 @@ impl ValueExpr {
     }
 
     /// Get the type of the expression.
-    pub fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
+    pub fn type_of(
+        &self,
+        initial_type: Option<Type>,
+        last_type: Option<Type>,
+        value_type: Option<Type>,
+    ) -> Option<Type> {
         match self {
             Self::Value => value_type,
             Self::Last => last_type,
+            Self::Initial => initial_type,
             Self::Number { ty, .. } => Some(ty.unwrap_or(Type::U32)),
             Self::Decimal { ty, .. } => Some(ty.unwrap_or(Type::F32)),
             Self::String { value } => Some(Type::String(value.len())),
             Self::Bytes { value } => Some(Type::Bytes(value.len())),
             Self::Deref { .. } => None,
             Self::AddressOf { .. } => Some(Type::Pointer),
-            Self::Offset { value, .. } => value.type_of(last_type, value_type),
+            Self::Offset { value, .. } => value.type_of(initial_type, last_type, value_type),
             Self::As { ty, .. } => Some(*ty),
         }
     }
@@ -153,25 +162,29 @@ impl ValueExpr {
     pub fn eval(
         &self,
         ty: Type,
+        initial: &Value,
         last: &Value,
         proxy: AddressProxy<'_>,
     ) -> anyhow::Result<(Option<Address>, Value)> {
         match self {
             Self::Value => Ok(proxy.eval(ty)?),
+            Self::Initial => Ok((None, initial.clone())),
             Self::Last => Ok((None, last.clone())),
             Self::Number { value, .. } => Ok((None, Value::from_bigint(ty, value)?)),
             Self::Decimal { value, .. } => Ok((None, Value::from_bigdecimal(ty, value)?)),
             Self::String { value } => Ok((None, Value::String(value.to_owned(), value.len()))),
             Self::Bytes { value } => Ok((None, Value::Bytes(value.clone()))),
             Self::Deref { value } => {
-                let new_address = match proxy.eval(Type::Pointer)? {
+                let value = value.eval(Type::Pointer, initial, last, proxy)?;
+
+                let new_address = match value {
                     (_, Value::Pointer(address)) => address,
                     _ => return Ok((None, Value::None(ty))),
                 };
 
                 let pointer = pointer::Pointer::from_address(new_address);
                 let address = proxy.handle.address_proxy(&pointer);
-                Ok(value.eval(ty, last, address)?)
+                Ok(address.eval(ty)?)
             }
             Self::AddressOf { value } => {
                 let new_address = match value.address_of(proxy)? {
@@ -181,7 +194,7 @@ impl ValueExpr {
 
                 Ok((None, Value::Pointer(new_address)))
             }
-            Self::As { expr, .. } => expr.eval(ty, last, proxy),
+            Self::As { expr, .. } => expr.eval(ty, initial, last, proxy),
             _ => bail!("can't evaluate expression yet: {}", self),
         }
     }
@@ -198,6 +211,7 @@ impl fmt::Display for ValueExpr {
         match self {
             Self::Value => "value".fmt(fmt),
             Self::Last => "last".fmt(fmt),
+            Self::Initial => "initial".fmt(fmt),
             Self::Deref { value } => write!(fmt, "*{}", value),
             Self::AddressOf { value } => write!(fmt, "&{}", value),
             Self::Offset { value, offset } => write!(fmt, "{}{}", value, offset),

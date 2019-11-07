@@ -13,6 +13,8 @@ pub enum ValueExpr {
     Value,
     /// The last known value.
     Last,
+    /// The initial value of the scan result.
+    Initial,
     /// addressof `&<value>`.
     AddressOf(Box<ValueExpr>),
     /// deref `*<value>`
@@ -39,6 +41,7 @@ impl ValueExpr {
         Ok(match self {
             Self::Value => Value,
             Self::Last => Last,
+            Self::Initial => Initial,
             Self::Offset(value, offset) => Offset {
                 value: Box::new(value.eval(process)?),
                 offset,
@@ -69,6 +72,7 @@ impl fmt::Display for ValueExpr {
         match self {
             Self::Value => "value".fmt(fmt),
             Self::Last => "last".fmt(fmt),
+            Self::Initial => "initial".fmt(fmt),
             Self::AddressOf(expr) => write!(fmt, "&{}", expr),
             Self::Deref(expr) => write!(fmt, "*{}", expr),
             Self::Offset(expr, offset) => write!(fmt, "{} {}", expr, offset),

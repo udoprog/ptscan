@@ -28,8 +28,9 @@ And: Expression = {
 }
 
 InnerValueExpr: ValueExpr = {
-    "value" => ValueExpr::Value,
-    "last" => ValueExpr::Last,
+    value => ValueExpr::Value,
+    last => ValueExpr::Last,
+    initial => ValueExpr::Initial,
     <number:number> => ValueExpr::Number(number.0, number.1),
     <decimal:decimal> => ValueExpr::Decimal(decimal.0, decimal.1),
     <string:"string"> => ValueExpr::String(string),
@@ -63,8 +64,9 @@ extern {
     type Error = crate::filter::lexer::Error;
 
     enum Token {
-        "value" => Token::Value,
-        "last" => Token::Last,
+        value => Token::Value,
+        last => Token::Last,
+        initial => Token::Initial,
         and => Token::And,
         or => Token::Or,
         is => Token::Is,

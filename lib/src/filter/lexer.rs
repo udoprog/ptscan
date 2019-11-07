@@ -21,8 +21,10 @@ pub enum Token {
     Or,
     /// value, references the value in memory.
     Value,
-    /// last value known.
+    /// `last` keyword.
     Last,
+    /// `initial` keyword.
+    Initial,
     /// `as` casting keyword.
     As,
     /// `not` keyword.
@@ -490,6 +492,7 @@ impl<'a> Iterator for Lexer<'a> {
                     match ident.as_str() {
                         "value" => return Some(Ok((s, Token::Value, e))),
                         "last" => return Some(Ok((s, Token::Last, e))),
+                        "initial" => return Some(Ok((s, Token::Initial, e))),
                         "not" => return Some(Ok((s, Token::Not, e))),
                         "and" => return Some(Ok((s, Token::And, e))),
                         "or" => return Some(Ok((s, Token::Or, e))),

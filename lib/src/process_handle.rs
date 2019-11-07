@@ -340,10 +340,12 @@ impl ProcessHandle {
                                 let proxy = self.address_proxy(&result.pointer);
                                 let ty = new_type.unwrap_or_else(|| result.last().ty());
 
-                                if let Test::True = filter.test(ty, result.last(), proxy)? {
+                                if let Test::True =
+                                    filter.test(ty, result.initial(), result.last(), proxy)?
+                                {
                                     let (last_address, value) = proxy.eval(ty)?;
+                                    result.last = Some(value);
                                     result.pointer.last_address = last_address;
-                                    result.values.push_back(value);
                                     return Ok(Task::Accepted);
                                 }
 
@@ -387,8 +389,6 @@ impl ProcessHandle {
                                 continue;
                             }
                         }
-                    } else {
-                        continue;
                     }
 
                     count += 1;
@@ -475,17 +475,18 @@ impl ProcessHandle {
 
                             let mut work = move || {
                                 let proxy = self.address_proxy(&result.pointer);
-                                let (address, value) = expr.eval(ty, result.last(), proxy)?;
+                                let (address, value) =
+                                    expr.eval(ty, result.initial(), result.last(), proxy)?;
                                 result.initial = value;
-                                result.values.clear();
+                                result.last = None;
                                 result.pointer.last_address = address;
-                                Ok(true)
+                                Ok(false)
                             };
 
                             tx.send(work()).expect("failed to send");
                         }
 
-                        tx.send(Ok(false)).expect("failed to send");
+                        tx.send(Ok(true)).expect("failed to send");
                     });
                 }
 
@@ -507,9 +508,8 @@ impl ProcessHandle {
                         p_tx.send(None).expect("failed to send on channel");
                     }
 
-                    if !reporter.eval(res).unwrap_or_default() {
+                    if reporter.eval(res).unwrap_or_default() {
                         tasks -= 1;
-                        cancel.set();
                         continue;
                     }
 

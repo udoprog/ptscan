@@ -7,7 +7,6 @@ use crate::{
 use crossbeam_queue::SegQueue;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::VecDeque,
     convert::TryFrom as _,
     ops, slice,
     sync::mpsc,
@@ -374,7 +373,7 @@ impl Scan {
 
                 last = Some(address);
 
-                if let Test::True = filter.test(ty, none, proxy)? {
+                if let Test::True = filter.test(ty, none, none, proxy)? {
                     *hits += 1;
                     let (last_address, value) = proxy.eval(ty)?;
                     pointer.base = handle.address_to_pointer_base(address)?;
@@ -536,7 +535,7 @@ pub struct ScanResult {
     /// The initial value in the scan. Is not rotated out.
     pub initial: Value,
     /// Subsequent values. Might be rotated out in length sequence.
-    pub values: VecDeque<Value>,
+    pub last: Option<Value>,
 }
 
 impl ScanResult {
@@ -545,7 +544,7 @@ impl ScanResult {
         Self {
             pointer,
             initial: value,
-            values: VecDeque::new(),
+            last: None,
         }
     }
 
@@ -556,6 +555,6 @@ impl ScanResult {
 
     /// Access the last value of the scan.
     pub fn last(&self) -> &Value {
-        self.values.back().unwrap_or(&self.initial)
+        self.last.as_ref().unwrap_or(&self.initial)
     }
 }

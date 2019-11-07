@@ -69,30 +69,41 @@ impl Filter {
         Ok(Filter::IsPointer(IsPointer::new(expr, process)?))
     }
 
-    pub fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
+    pub fn type_of(
+        &self,
+        initial_type: Option<Type>,
+        last_type: Option<Type>,
+        value_type: Option<Type>,
+    ) -> Option<Type> {
         match self {
-            Self::Binary(m) => m.type_of(last_type, value_type),
-            Self::All(m) => m.type_of(last_type, value_type),
-            Self::Any(m) => m.type_of(last_type, value_type),
-            Self::IsPointer(m) => m.type_of(last_type, value_type),
-            Self::IsType(m) => m.type_of(last_type, value_type),
-            Self::IsNan(m) => m.type_of(last_type, value_type),
-            Self::Not(m) => m.type_of(last_type, value_type),
-            Self::Regex(m) => m.type_of(last_type, value_type),
+            Self::Binary(m) => m.type_of(initial_type, last_type, value_type),
+            Self::All(m) => m.type_of(initial_type, last_type, value_type),
+            Self::Any(m) => m.type_of(initial_type, last_type, value_type),
+            Self::IsPointer(m) => m.type_of(initial_type, last_type, value_type),
+            Self::IsType(m) => m.type_of(initial_type, last_type, value_type),
+            Self::IsNan(m) => m.type_of(initial_type, last_type, value_type),
+            Self::Not(m) => m.type_of(initial_type, last_type, value_type),
+            Self::Regex(m) => m.type_of(initial_type, last_type, value_type),
         }
     }
 
     /// Test the specified memory region.
-    pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
+    pub fn test(
+        &self,
+        ty: Type,
+        initial: &Value,
+        last: &Value,
+        proxy: AddressProxy<'_>,
+    ) -> anyhow::Result<Test> {
         match self {
-            Self::Binary(m) => m.test(ty, last, proxy),
-            Self::All(m) => m.test(ty, last, proxy),
-            Self::Any(m) => m.test(ty, last, proxy),
-            Self::IsPointer(m) => m.test(ty, last, proxy),
-            Self::IsType(m) => m.test(ty, last, proxy),
-            Self::IsNan(m) => m.test(ty, last, proxy),
-            Self::Not(m) => m.test(ty, last, proxy),
-            Self::Regex(m) => m.test(ty, last, proxy),
+            Self::Binary(m) => m.test(ty, initial, last, proxy),
+            Self::All(m) => m.test(ty, initial, last, proxy),
+            Self::Any(m) => m.test(ty, initial, last, proxy),
+            Self::IsPointer(m) => m.test(ty, initial, last, proxy),
+            Self::IsType(m) => m.test(ty, initial, last, proxy),
+            Self::IsNan(m) => m.test(ty, initial, last, proxy),
+            Self::Not(m) => m.test(ty, initial, last, proxy),
+            Self::Regex(m) => m.test(ty, initial, last, proxy),
         }
     }
 
@@ -131,13 +142,24 @@ impl fmt::Display for Filter {
 pub struct Binary(Op, ValueExpr, ValueExpr);
 
 impl Binary {
-    fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
+    fn type_of(
+        &self,
+        initial_type: Option<Type>,
+        last_type: Option<Type>,
+        value_type: Option<Type>,
+    ) -> Option<Type> {
         self.1
-            .type_of(last_type, value_type)
-            .or_else(|| self.2.type_of(last_type, value_type))
+            .type_of(initial_type, last_type, value_type)
+            .or_else(|| self.2.type_of(initial_type, last_type, value_type))
     }
 
-    fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
+    fn test(
+        &self,
+        ty: Type,
+        initial: &Value,
+        last: &Value,
+        proxy: AddressProxy<'_>,
+    ) -> anyhow::Result<Test> {
         macro_rules! binary_numeric {
             ($expr:expr, $ty:ty, $a:ident $op:tt $b:ident) => {
                 match $expr {
@@ -211,11 +233,11 @@ impl Binary {
         let Binary(op, lhs, rhs) = self;
 
         let ty = self
-            .type_of(Some(last.ty()), Some(ty))
+            .type_of(Some(initial.ty()), Some(last.ty()), Some(ty))
             .ok_or_else(|| anyhow!("cannot determine type of binary expression: {}", self))?;
 
-        let (_, lhs) = lhs.eval(ty, last, proxy)?;
-        let (_, rhs) = rhs.eval(ty, last, proxy)?;
+        let (_, lhs) = lhs.eval(ty, initial, last, proxy)?;
+        let (_, rhs) = rhs.eval(ty, initial, last, proxy)?;
 
         // NB: we treat 'none' specially:
         // The only allowed match on none is to compare against something which is strictly not equal to it, like value != none.
@@ -328,10 +350,15 @@ impl fmt::Display for Binary {
 pub struct All(Vec<Filter>);
 
 impl All {
-    fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
+    fn type_of(
+        &self,
+        initial_type: Option<Type>,
+        last_type: Option<Type>,
+        value_type: Option<Type>,
+    ) -> Option<Type> {
         self.0
             .iter()
-            .flat_map(|m| m.type_of(last_type, value_type))
+            .flat_map(|m| m.type_of(initial_type, last_type, value_type))
             .next()
     }
 
@@ -355,9 +382,15 @@ impl All {
         Ok(all.into_iter().next())
     }
 
-    fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
+    fn test(
+        &self,
+        ty: Type,
+        initial: &Value,
+        last: &Value,
+        proxy: AddressProxy<'_>,
+    ) -> anyhow::Result<Test> {
         for m in &self.0 {
-            match m.test(ty, last, proxy)? {
+            match m.test(ty, initial, last, proxy)? {
                 Test::False => return Ok(Test::False),
                 Test::Undefined => return Ok(Test::Undefined),
                 _ => (),
@@ -389,10 +422,15 @@ impl fmt::Display for All {
 pub struct Any(Vec<Filter>);
 
 impl Any {
-    fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
+    fn type_of(
+        &self,
+        initial_type: Option<Type>,
+        last_type: Option<Type>,
+        value_type: Option<Type>,
+    ) -> Option<Type> {
         self.0
             .iter()
-            .flat_map(|m| m.type_of(last_type, value_type))
+            .flat_map(|m| m.type_of(initial_type, last_type, value_type))
             .next()
     }
 
@@ -417,9 +455,15 @@ impl Any {
         Ok(any.into_iter().next())
     }
 
-    fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
+    fn test(
+        &self,
+        ty: Type,
+        initial: &Value,
+        last: &Value,
+        proxy: AddressProxy<'_>,
+    ) -> anyhow::Result<Test> {
         for m in &self.0 {
-            match m.test(ty, last, proxy)? {
+            match m.test(ty, initial, last, proxy)? {
                 Test::True => return Ok(Test::True),
                 Test::Undefined => return Ok(Test::Undefined),
                 _ => (),
@@ -470,12 +514,18 @@ impl IsPointer {
         })
     }
 
-    fn type_of(&self, _: Option<Type>, _: Option<Type>) -> Option<Type> {
+    fn type_of(&self, _: Option<Type>, _: Option<Type>, _: Option<Type>) -> Option<Type> {
         Some(Type::Pointer)
     }
 
-    pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
-        let (_, value) = self.expr.eval(ty, last, proxy)?;
+    pub fn test(
+        &self,
+        ty: Type,
+        initial: &Value,
+        last: &Value,
+        proxy: AddressProxy<'_>,
+    ) -> anyhow::Result<Test> {
+        let (_, value) = self.expr.eval(ty, initial, last, proxy)?;
 
         let address = match value {
             Value::Pointer(address) => address,
@@ -511,12 +561,18 @@ impl IsType {
         Ok(Self { expr, ty })
     }
 
-    fn type_of(&self, _: Option<Type>, _: Option<Type>) -> Option<Type> {
+    fn type_of(&self, _: Option<Type>, _: Option<Type>, _: Option<Type>) -> Option<Type> {
         Some(self.ty)
     }
 
-    pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
-        let (_, value) = self.expr.eval(ty, last, proxy)?;
+    pub fn test(
+        &self,
+        ty: Type,
+        initial: &Value,
+        last: &Value,
+        proxy: AddressProxy<'_>,
+    ) -> anyhow::Result<Test> {
+        let (_, value) = self.expr.eval(ty, initial, last, proxy)?;
         Ok((value.ty() == self.ty).into())
     }
 }
@@ -541,16 +597,27 @@ impl IsNan {
         Ok(Some(Special::NonZero(ty.size(process))))
     }
 
-    fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
+    fn type_of(
+        &self,
+        initial_type: Option<Type>,
+        last_type: Option<Type>,
+        value_type: Option<Type>,
+    ) -> Option<Type> {
         Some(
             self.expr
-                .type_of(last_type, value_type)
+                .type_of(initial_type, last_type, value_type)
                 .unwrap_or(Type::F32),
         )
     }
 
-    pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
-        let (_, value) = self.expr.eval(ty, last, proxy)?;
+    pub fn test(
+        &self,
+        ty: Type,
+        initial: &Value,
+        last: &Value,
+        proxy: AddressProxy<'_>,
+    ) -> anyhow::Result<Test> {
+        let (_, value) = self.expr.eval(ty, initial, last, proxy)?;
 
         let value = match value {
             Value::F32(value) => value.is_nan(),
@@ -579,12 +646,23 @@ impl Regex {
         Self { expr, regex }
     }
 
-    fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
-        self.expr.type_of(last_type, value_type)
+    fn type_of(
+        &self,
+        initial_type: Option<Type>,
+        last_type: Option<Type>,
+        value_type: Option<Type>,
+    ) -> Option<Type> {
+        self.expr.type_of(initial_type, last_type, value_type)
     }
 
-    pub fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
-        let (_, value) = self.expr.eval(ty, last, proxy)?;
+    pub fn test(
+        &self,
+        ty: Type,
+        initial: &Value,
+        last: &Value,
+        proxy: AddressProxy<'_>,
+    ) -> anyhow::Result<Test> {
+        let (_, value) = self.expr.eval(ty, initial, last, proxy)?;
 
         let bytes = match &value {
             Value::Bytes(bytes) => &bytes[..],
@@ -613,12 +691,23 @@ pub struct Not {
 }
 
 impl Not {
-    fn test(&self, ty: Type, last: &Value, proxy: AddressProxy<'_>) -> anyhow::Result<Test> {
-        Ok(self.filter.test(ty, last, proxy)?.invert())
+    fn test(
+        &self,
+        ty: Type,
+        initial: &Value,
+        last: &Value,
+        proxy: AddressProxy<'_>,
+    ) -> anyhow::Result<Test> {
+        Ok(self.filter.test(ty, initial, last, proxy)?.invert())
     }
 
-    fn type_of(&self, last_type: Option<Type>, value_type: Option<Type>) -> Option<Type> {
-        self.filter.type_of(last_type, value_type)
+    fn type_of(
+        &self,
+        initial_type: Option<Type>,
+        last_type: Option<Type>,
+        value_type: Option<Type>,
+    ) -> Option<Type> {
+        self.filter.type_of(initial_type, last_type, value_type)
     }
 
     pub fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {

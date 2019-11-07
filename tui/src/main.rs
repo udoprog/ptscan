@@ -518,8 +518,7 @@ impl Application {
                     &mut self.term,
                     scan.len(),
                     current.iter().map(|r| &**r).enumerate(),
-                    Some(&results[..]),
-                    &scan.value_expr,
+                    &value_expr,
                 )?;
             }
             Action::Watch {
@@ -611,7 +610,7 @@ impl Application {
                     scan.value_expr = ValueExpr::parse(expr, &handle.process)?;
                 };
 
-                let ty = scan.value_expr.type_of(None, ty);
+                let ty = scan.value_expr.type_of(None, None, ty);
 
                 handle.refresh_values(
                     &self.thread_pool,
@@ -631,7 +630,6 @@ impl Application {
                     &mut self.term,
                     scan.len(),
                     scan.results.iter().take(len).map(|r| &**r).enumerate(),
-                    None,
                     &scan.value_expr,
                 )?;
             }
@@ -964,7 +962,7 @@ impl Application {
                         let proxy = handle.address_proxy(&result.pointer);
                         let ty = result.last().ty();
 
-                        if let Test::False = filter.test(ty, last, proxy)? {
+                        if let Test::False = filter.test(ty, result.initial(), last, proxy)? {
                             to_remove.push(index);
                             removed = true;
                         }
@@ -1032,13 +1030,13 @@ impl Application {
             limit: usize,
         ) -> anyhow::Result<usize> {
             let results = &scan[..usize::min(scan.len(), limit)];
-            let mut updates = results.to_vec();
+            let mut results = results.to_vec();
 
             let line_below = results.len() as u16;
             let info_line = line_below;
             let error_line = info_line + 1;
 
-            let mut states = updates
+            let mut states = results
                 .iter()
                 .map(|r| State {
                     initial: r.last().clone(),
@@ -1049,7 +1047,7 @@ impl Application {
                 })
                 .collect::<Vec<_>>();
 
-            let pointers = updates
+            let pointers = results
                 .iter()
                 .map(|r| r.pointer.clone())
                 .collect::<Vec<_>>();
@@ -1068,7 +1066,7 @@ impl Application {
             while !token.test() {
                 if let Err(e) = handle.refresh_values(
                     thread_pool,
-                    &mut updates,
+                    &mut results,
                     None,
                     None,
                     NoopProgress,
@@ -1080,7 +1078,7 @@ impl Application {
 
                 let mut any_changed = false;
 
-                for (result, state) in updates.iter().zip(states.iter_mut()) {
+                for (result, state) in results.iter().zip(states.iter_mut()) {
                     if state.removed {
                         continue;
                     }
@@ -1089,7 +1087,7 @@ impl Application {
                         let proxy = handle.address_proxy(&result.pointer);
                         let ty = result.last().ty();
 
-                        if let Test::False = filter.test(ty, state.last(), proxy)? {
+                        if let Test::False = filter.test(ty, &state.initial, state.last(), proxy)? {
                             any_changed = true;
                             state.removed = true;
                         }
@@ -1587,7 +1585,7 @@ impl Application {
 
         let result = if scan.initial {
             let ty = filter
-                .type_of(None, ty)
+                .type_of(None, None, ty)
                 .ok_or_else(|| anyhow!("must specify type for initial scan"))?;
 
             let mut c = InitialScanConfig::default();
@@ -1634,7 +1632,6 @@ impl Application {
             &mut self.term,
             scan.len(),
             scan[..len].iter().map(|r| &**r).enumerate(),
-            None,
             &scan.value_expr,
         )?;
 
@@ -1719,7 +1716,6 @@ impl Application {
         term: &mut Term,
         len: usize,
         results: impl IntoIterator<Item = (usize, &'a ScanResult)>,
-        recorded: Option<&[Box<ScanResult>]>,
         value_expr: &ValueExpr,
     ) -> anyhow::Result<()> {
         use std::fmt::Write as _;
@@ -1739,13 +1735,6 @@ impl Application {
             }
 
             write!(buf, " = ")?;
-
-            if let Some(recorded) = recorded.and_then(|r| r.get(index)) {
-                if recorded.last() != result.last() {
-                    write!(buf, "{} -> ", recorded.last())?;
-                }
-            }
-
             write!(buf, "{}", result.last())?;
 
             term.clear(ClearType::CurrentLine)?;

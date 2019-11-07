@@ -19,7 +19,7 @@ readme = "README.md"
 [dependencies]
 ptscan = {path = "../lib", version = "0.1.0"}
 rayon = "1.2.0"
-hashbrown = "0.1.8"
+hashbrown = "0.6.3"
 anyhow = "1.0.18"
 smallvec = "0.6.11"
 clap = "2.33.0"

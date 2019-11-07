@@ -1,10 +1,10 @@
 //! Predicates used for matching against memory.
 
 use crate::{
-    error::Error, filter, Address, AddressRange, Pointer, PointerBase, ProcessHandle, Size, Test,
-    Token, Type, Value, ValueExpr,
+    error::Error, filter, Address, Pointer, PointerBase, ProcessHandle, Size, Test, Token, Type,
+    Value, ValueExpr,
 };
-use crossbeam_queue::ArrayQueue;
+use crossbeam_queue::SegQueue;
 use serde::{Deserialize, Serialize};
 use std::{
     convert::TryFrom as _,
@@ -137,7 +137,7 @@ impl Scan {
         progress: (impl ScanProgress + Send),
         config: InitialScanConfig,
     ) -> anyhow::Result<()> {
-        const DEFAULT_BUFFER_SIZE: usize = 0x1_000_000;
+        const DEFAULT_BUFFER_SIZE: usize = 0x100_000;
 
         use crate::utils::IteratorExtension;
 
@@ -189,15 +189,21 @@ impl Scan {
 
         let mut total = 0;
 
+        let queue = SegQueue::new();
+
         for range in &ranges {
             bytes.add_assign(range.size)?;
             total += range.size.as_usize();
-        }
 
-        let queue = ArrayQueue::new(ranges.len());
+            let mut offset = 0usize;
+            let range_size = range.size.as_usize();
 
-        for range in ranges {
-            queue.push(range)?;
+            while offset < range_size && !cancel.test() {
+                let len = usize::min(buffer_size, range_size - offset);
+                let address = range.base.add(Size::try_from(offset)?)?;
+                queue.push((address, len));
+                offset += len;
+            }
         }
 
         let queue = &queue;
@@ -248,7 +254,6 @@ impl Scan {
                             }
 
                             task_count -= 1;
-                            println!("task done: {}", task_count);
 
                             if task_count == 0 {
                                 break;
@@ -280,7 +285,7 @@ impl Scan {
         fn work(
             handle: &ProcessHandle,
             tx: &mpsc::Sender<Task>,
-            queue: &ArrayQueue<AddressRange>,
+            queue: &SegQueue<(Address, usize)>,
             filter: &filter::Filter,
             ty: Type,
             special: Option<&filter::Special>,
@@ -291,51 +296,40 @@ impl Scan {
         ) -> anyhow::Result<Vec<Box<ScanResult>>> {
             let mut results = Vec::new();
 
-            let mut data = vec![0u8; buffer_size];
+            let mut buffer = vec![0u8; buffer_size];
             let none = Value::default();
 
-            while let Ok(range) = queue.pop() {
+            while let Ok((address, len)) = queue.pop() {
                 if cancel.test() {
                     return Ok(results);
                 }
 
-                let mut offset = 0usize;
-                let range_size = range.size.as_usize();
+                let len = usize::min(buffer.len(), len);
+                let data = &mut buffer[..len];
 
-                while offset < range_size && !cancel.test() {
-                    let data = {
-                        let len = usize::min(data.len(), range_size - offset);
-                        &mut data[..len]
-                    };
+                let start = Instant::now();
+                let mut hits = 0;
 
-                    let base = range.base.add(Size::try_from(offset)?)?;
-
-                    let start = Instant::now();
-                    let mut hits = 0;
-
-                    if handle.process.read_process_memory(base, data)? {
-                        process_one(
-                            handle,
-                            filter,
-                            ty,
-                            &mut results,
-                            &mut hits,
-                            base,
-                            &data,
-                            type_size,
-                            &none,
-                            aligned,
-                            special,
-                            cancel,
-                        )?;
-                    }
-
-                    offset += data.len();
-
-                    let duration = Instant::now().duration_since(start);
-                    tx.send(Task::Tick(data.len(), hits, duration, Instant::now()))
-                        .expect("send tick failed");
+                if handle.process.read_process_memory(address, data)? {
+                    process_one(
+                        handle,
+                        filter,
+                        ty,
+                        &mut results,
+                        &mut hits,
+                        address,
+                        &data,
+                        type_size,
+                        &none,
+                        aligned,
+                        special,
+                        cancel,
+                    )?;
                 }
+
+                let duration = Instant::now().duration_since(start);
+                tx.send(Task::Tick(data.len(), hits, duration, Instant::now()))
+                    .expect("send tick failed");
             }
 
             return Ok(results);

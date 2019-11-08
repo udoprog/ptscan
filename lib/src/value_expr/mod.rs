@@ -256,8 +256,10 @@ impl ValueExpr {
     ) -> anyhow::Result<Value> {
         match *self {
             Self::Value => Ok(proxy.eval(ty)?),
-            Self::Initial => Ok(initial.clone()),
-            Self::Last => Ok(last.clone()),
+            Self::Initial => Ok(ty
+                .convert(initial.clone())
+                .unwrap_or_else(|| Value::None(ty))),
+            Self::Last => Ok(ty.convert(last.clone()).unwrap_or_else(|| Value::None(ty))),
             Self::Number { ref value, .. } => Ok(Value::from_bigint(ty, value)?),
             Self::Decimal { ref value, .. } => Ok(Value::from_bigdecimal(ty, value)?),
             Self::String { ref value } => Ok(Value::String(value.to_owned(), value.len())),
@@ -282,10 +284,7 @@ impl ValueExpr {
 
                 Ok(Value::Pointer(new_address))
             }
-            Self::Cast { ref expr, ty } => {
-                let value = expr.eval(ty, initial, last, proxy)?;
-                Ok(ty.convert(value).unwrap_or_else(|| Value::None(ty)))
-            }
+            Self::Cast { ref expr, ty } => Ok(expr.eval(ty, initial, last, proxy)?),
             Self::Add { ref lhs, ref rhs } => {
                 let lhs = lhs.eval(ty, initial, last, proxy)?;
                 let rhs = rhs.eval(ty, initial, last, proxy)?;

@@ -336,7 +336,7 @@ impl Scan {
         fn process_one(
             handle: &ProcessHandle,
             filter: &filter::Filter,
-            ty: Type,
+            value_type: Type,
             results: &mut Vec<Box<ScanResult>>,
             hits: &mut u64,
             base: Address,
@@ -373,9 +373,9 @@ impl Scan {
 
                 last_address = Some(address);
 
-                if let Test::True = filter.test(ty, none, none, &mut proxy)? {
+                if let Test::True = filter.test(value_type, none, none, &mut proxy)? {
                     *hits += 1;
-                    let value = proxy.eval(ty)?;
+                    let value = proxy.eval(value_type)?;
                     pointer.base = handle.address_to_pointer_base(address)?;
                     pointer.last_address = Some(address);
                     results.push(Box::new(ScanResult::new(pointer, value)));

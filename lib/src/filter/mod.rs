@@ -108,33 +108,33 @@ impl Filter {
     /// Test the specified memory region.
     pub fn test(
         &self,
-        ty: Type,
+        value_type: Type,
         initial: &Value,
         last: &Value,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         match self {
-            Self::Binary(m) => m.test(ty, initial, last, proxy),
-            Self::All(m) => m.test(ty, initial, last, proxy),
-            Self::Any(m) => m.test(ty, initial, last, proxy),
-            Self::IsPointer(m) => m.test(ty, initial, last, proxy),
-            Self::IsType(m) => m.test(ty, initial, last, proxy),
-            Self::IsNan(m) => m.test(ty, initial, last, proxy),
-            Self::Not(m) => m.test(ty, initial, last, proxy),
-            Self::Regex(m) => m.test(ty, initial, last, proxy),
+            Self::Binary(m) => m.test(value_type, initial, last, proxy),
+            Self::All(m) => m.test(value_type, initial, last, proxy),
+            Self::Any(m) => m.test(value_type, initial, last, proxy),
+            Self::IsPointer(m) => m.test(value_type, initial, last, proxy),
+            Self::IsType(m) => m.test(value_type, initial, last, proxy),
+            Self::IsNan(m) => m.test(value_type, initial, last, proxy),
+            Self::Not(m) => m.test(value_type, initial, last, proxy),
+            Self::Regex(m) => m.test(value_type, initial, last, proxy),
         }
     }
 
     /// Construct a special filter.
-    pub fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {
+    pub fn special(&self, process: &Process, value_type: Type) -> anyhow::Result<Option<Special>> {
         match self {
-            Self::Binary(m) => m.special(process, ty),
-            Self::All(m) => m.special(process, ty),
-            Self::Any(m) => m.special(process, ty),
-            Self::IsPointer(..) => Ok(Some(Special::NonZero(ty.size(process)))),
+            Self::Binary(m) => m.special(process, value_type),
+            Self::All(m) => m.special(process, value_type),
+            Self::Any(m) => m.special(process, value_type),
+            Self::IsPointer(..) => Ok(Some(Special::NonZero(value_type.size(process)))),
             Self::IsType(..) => Ok(None),
-            Self::IsNan(is_nan) => is_nan.special(process, ty),
-            Self::Not(m) => m.special(process, ty),
+            Self::IsNan(is_nan) => is_nan.special(process, value_type),
+            Self::Not(m) => m.special(process, value_type),
             Self::Regex(m) => m.special(),
         }
     }
@@ -184,7 +184,7 @@ impl Binary {
 
     fn test(
         &self,
-        ty: Type,
+        value_type: Type,
         initial: &Value,
         last: &Value,
         proxy: &mut AddressProxy<'_>,
@@ -261,12 +261,12 @@ impl Binary {
 
         let Binary(op, lhs, rhs) = self;
 
-        let ty = self
-            .type_of(Some(initial.ty()), Some(last.ty()), Some(ty))
+        let expr_type = self
+            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))
             .ok_or_else(|| anyhow!("cannot determine type of binary expression: {}", self))?;
 
-        let lhs = lhs.eval(ty, initial, last, proxy)?;
-        let rhs = rhs.eval(ty, initial, last, proxy)?;
+        let lhs = lhs.eval(expr_type, initial, last, proxy)?;
+        let rhs = rhs.eval(expr_type, initial, last, proxy)?;
 
         // NB: we treat 'none' specially:
         // The only allowed match on none is to compare against something which is strictly not equal to it, like value != none.
@@ -300,7 +300,7 @@ impl Binary {
         Ok(result.into())
     }
 
-    fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {
+    fn special(&self, process: &Process, value_type: Type) -> anyhow::Result<Option<Special>> {
         use self::Sign::*;
         use self::ValueExpr::*;
         use self::ValueTrait::*;
@@ -309,10 +309,10 @@ impl Binary {
 
         let exact = match (op, lhs.reduced(), rhs.reduced()) {
             (Op::Eq, Number { value, .. }, Value) | (Op::Eq, Value, Number { value, .. }) => {
-                Some(value::Value::from_bigint(ty, value)?)
+                Some(value::Value::from_bigint(value_type, value)?)
             }
             (Op::Eq, Decimal { value, .. }, Value) | (Op::Eq, Value, Decimal { value, .. }) => {
-                Some(value::Value::from_bigdecimal(ty, value)?)
+                Some(value::Value::from_bigdecimal(value_type, value)?)
             }
             (Op::Eq, String { value }, Value) | (Op::Eq, Value, String { value }) => {
                 Some(value::Value::String(value.to_owned(), value.len()))
@@ -361,7 +361,7 @@ impl Binary {
         };
 
         if non_zero {
-            return Ok(Some(Special::NonZero(ty.size(process))));
+            return Ok(Some(Special::NonZero(value_type.size(process))));
         }
 
         Ok(None)
@@ -407,11 +407,11 @@ impl All {
         All(filters.into_iter().collect())
     }
 
-    pub fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {
+    pub fn special(&self, process: &Process, value_type: Type) -> anyhow::Result<Option<Special>> {
         let mut all = Vec::new();
 
         for e in &self.0 {
-            if let Some(special) = e.special(process, ty)? {
+            if let Some(special) = e.special(process, value_type)? {
                 all.push(special);
             }
         }
@@ -425,13 +425,13 @@ impl All {
 
     fn test(
         &self,
-        ty: Type,
+        value_type: Type,
         initial: &Value,
         last: &Value,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         for m in &self.0 {
-            match m.test(ty, initial, last, proxy)? {
+            match m.test(value_type, initial, last, proxy)? {
                 Test::False => return Ok(Test::False),
                 Test::Undefined => return Ok(Test::Undefined),
                 _ => (),
@@ -491,11 +491,11 @@ impl Any {
         Any(filters.into_iter().collect())
     }
 
-    pub fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {
+    pub fn special(&self, process: &Process, value_type: Type) -> anyhow::Result<Option<Special>> {
         let mut any = Vec::new();
 
         for e in &self.0 {
-            match e.special(process, ty)? {
+            match e.special(process, value_type)? {
                 Some(special) => any.push(special),
                 None => return Ok(None),
             }
@@ -510,13 +510,13 @@ impl Any {
 
     fn test(
         &self,
-        ty: Type,
+        value_type: Type,
         initial: &Value,
         last: &Value,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         for m in &self.0 {
-            match m.test(ty, initial, last, proxy)? {
+            match m.test(value_type, initial, last, proxy)? {
                 Test::True => return Ok(Test::True),
                 Test::Undefined => return Ok(Test::Undefined),
                 _ => (),
@@ -577,12 +577,12 @@ impl IsPointer {
 
     pub fn test(
         &self,
-        ty: Type,
+        value_type: Type,
         initial: &Value,
         last: &Value,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let value = self.expr.eval(ty, initial, last, proxy)?;
+        let value = self.expr.eval(value_type, initial, last, proxy)?;
 
         let address = match value {
             Value::Pointer(address) => address,
@@ -628,12 +628,12 @@ impl IsType {
 
     pub fn test(
         &self,
-        ty: Type,
+        value_type: Type,
         initial: &Value,
         last: &Value,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let value = self.expr.eval(ty, initial, last, proxy)?;
+        let value = self.expr.eval(value_type, initial, last, proxy)?;
         Ok((value.ty() == self.ty).into())
     }
 }
@@ -654,8 +654,8 @@ impl IsNan {
         Ok(Self { expr })
     }
 
-    pub fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {
-        Ok(Some(Special::NonZero(ty.size(process))))
+    pub fn special(&self, process: &Process, value_type: Type) -> anyhow::Result<Option<Special>> {
+        Ok(Some(Special::NonZero(value_type.size(process))))
     }
 
     fn type_of(
@@ -686,12 +686,12 @@ impl IsNan {
 
     pub fn test(
         &self,
-        ty: Type,
+        value_type: Type,
         initial: &Value,
         last: &Value,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let value = self.expr.eval(ty, initial, last, proxy)?;
+        let value = self.expr.eval(value_type, initial, last, proxy)?;
 
         let value = match value {
             Value::F32(value) => value.is_nan(),
@@ -740,12 +740,12 @@ impl Regex {
 
     pub fn test(
         &self,
-        ty: Type,
+        value_type: Type,
         initial: &Value,
         last: &Value,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let value = self.expr.eval(ty, initial, last, proxy)?;
+        let value = self.expr.eval(value_type, initial, last, proxy)?;
 
         let bytes = match &value {
             Value::Bytes(bytes) => &bytes[..],
@@ -776,12 +776,12 @@ pub struct Not {
 impl Not {
     fn test(
         &self,
-        ty: Type,
+        value_type: Type,
         initial: &Value,
         last: &Value,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        Ok(self.filter.test(ty, initial, last, proxy)?.invert())
+        Ok(self.filter.test(value_type, initial, last, proxy)?.invert())
     }
 
     fn type_of(
@@ -803,9 +803,9 @@ impl Not {
             .value_type_of(initial_type, last_type, value_type)
     }
 
-    pub fn special(&self, process: &Process, ty: Type) -> anyhow::Result<Option<Special>> {
+    pub fn special(&self, process: &Process, value_type: Type) -> anyhow::Result<Option<Special>> {
         // erase or fix specializations produced.
-        let special = match self.filter.special(process, ty)? {
+        let special = match self.filter.special(process, value_type)? {
             Some(special) => special,
             None => return Ok(None),
         };

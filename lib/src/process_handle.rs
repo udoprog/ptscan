@@ -472,12 +472,21 @@ impl ProcessHandle {
                                 }
                             };
 
-                            let ty = new_type.unwrap_or_else(|| result.last().ty());
+                            let value_type = new_type.unwrap_or_else(|| result.last().ty());
 
                             let mut work = move || {
                                 let mut proxy = self.address_proxy(&result.pointer);
+
+                                let initial = result.initial();
+                                let last = result.last();
+
+                                let expr_type = expr
+                                    .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))
+                                    .ok_or_else(|| Error::TypeInference(expr.clone()))?;
+
                                 let value =
-                                    expr.eval(result.initial(), result.last(), ty, &mut proxy)?;
+                                    expr.eval(initial, last, value_type, expr_type, &mut proxy)?;
+
                                 result.initial = value;
                                 result.last = None;
                                 result.pointer.last_address = proxy.follow_default()?;

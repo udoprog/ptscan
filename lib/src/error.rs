@@ -1,6 +1,6 @@
 use crate::{
     address::{Address, Size},
-    ProcessId, ThreadId, Type,
+    ProcessId, ThreadId, Type, ValueExpr,
 };
 use std::io;
 use thiserror::Error;
@@ -71,6 +71,8 @@ pub enum Error {
     UnsupportedPointerWidth(usize),
     #[error("failed to convert address into native pointer")]
     PointerConversionError,
+    #[error("cannot determine type of: {0}")]
+    TypeInference(ValueExpr),
     #[error("this error literally cannot happen")]
     Infallible,
 }

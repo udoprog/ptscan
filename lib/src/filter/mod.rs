@@ -1,5 +1,6 @@
 use self::ast::{Op, ValueTrait};
 use crate::{
+    error::Error,
     process::{MemoryInformation, Process},
     value,
     value::Value,
@@ -261,8 +262,17 @@ impl Binary {
         }
 
         let Binary(op, lhs, rhs) = self;
-        let lhs = lhs.eval(initial, last, value_type, proxy)?;
-        let rhs = rhs.eval(initial, last, value_type, proxy)?;
+
+        let lhs_type = lhs
+            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))
+            .ok_or_else(|| Error::TypeInference(lhs.clone()))?;
+
+        let rhs_type = rhs
+            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))
+            .ok_or_else(|| Error::TypeInference(rhs.clone()))?;
+
+        let lhs = lhs.eval(initial, last, value_type, lhs_type, proxy)?;
+        let rhs = rhs.eval(initial, last, value_type, rhs_type, proxy)?;
 
         // NB: we treat 'none' specially:
         // The only allowed match on none is to compare against something which is strictly not equal to it, like value != none.
@@ -565,7 +575,14 @@ impl IsPointer {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let value = self.expr.eval(initial, last, value_type, proxy)?;
+        let expr_type = self
+            .expr
+            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))
+            .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
+
+        let value = self
+            .expr
+            .eval(initial, last, value_type, expr_type, proxy)?;
 
         let address = match value {
             Value::Pointer(address) => address,
@@ -619,7 +636,14 @@ impl IsType {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let value = self.expr.eval(initial, last, value_type, proxy)?;
+        let expr_type = self
+            .expr
+            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))
+            .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
+
+        let value = self
+            .expr
+            .eval(initial, last, value_type, expr_type, proxy)?;
         Ok((value.ty() == self.ty).into())
     }
 }
@@ -668,7 +692,14 @@ impl IsNan {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let value = self.expr.eval(initial, last, value_type, proxy)?;
+        let expr_type = self
+            .expr
+            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))
+            .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
+
+        let value = self
+            .expr
+            .eval(initial, last, value_type, expr_type, proxy)?;
 
         let value = match value {
             Value::F32(value) => value.is_nan(),
@@ -717,7 +748,14 @@ impl Regex {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let value = self.expr.eval(initial, last, value_type, proxy)?;
+        let expr_type = self
+            .expr
+            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))
+            .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
+
+        let value = self
+            .expr
+            .eval(initial, last, value_type, expr_type, proxy)?;
 
         let bytes = match &value {
             Value::Bytes(bytes) => &bytes[..],

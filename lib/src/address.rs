@@ -23,7 +23,7 @@ impl Address {
     }
 
     /// If the address is null.
-    pub fn is_null(&self) -> bool {
+    pub fn is_null(self) -> bool {
         self.0 == 0
     }
 
@@ -49,7 +49,7 @@ impl Address {
     }
 
     /// Encode the address in a process-dependent manner.
-    pub fn encode(&self, process: &Process, buf: &mut [u8]) -> anyhow::Result<(), Error> {
+    pub fn encode(self, process: &Process, buf: &mut [u8]) -> anyhow::Result<(), Error> {
         Ok(process.encode_pointer(buf, self.0)?)
     }
 
@@ -478,7 +478,7 @@ impl Size {
     }
 
     /// Performed a checked add with two sizes.
-    pub fn add(self, rhs: Size) -> Result<Size, Error> {
+    pub fn checked_add(self, rhs: Size) -> Result<Size, Error> {
         let sum = self
             .0
             .checked_add(rhs.0)
@@ -488,7 +488,7 @@ impl Size {
     }
 
     /// Performed a checked add with two sizes.
-    pub fn sub(self, rhs: Size) -> Result<Size, Error> {
+    pub fn checked_sub(self, rhs: Size) -> Result<Size, Error> {
         let sum = self
             .0
             .checked_sub(rhs.0)
@@ -498,7 +498,7 @@ impl Size {
     }
 
     pub fn add_assign(&mut self, rhs: Size) -> Result<(), Error> {
-        *self = self.add(rhs)?;
+        *self = self.checked_add(rhs)?;
         Ok(())
     }
 
@@ -638,14 +638,14 @@ impl AddressRange {
     ///
     /// This assumes the memory regions are sorted by their `base`.
     pub fn find_in_range<T>(
-        things: &Vec<T>,
+        things: &[T],
         accessor: impl Fn(&T) -> &AddressRange,
         address: Address,
     ) -> Option<&T> {
         let thing = match things.binary_search_by(|m| accessor(m).base.cmp(&address)) {
             Ok(exact) => &things[exact],
             Err(closest) => {
-                if closest <= 0 {
+                if closest == 0 {
                     return None;
                 }
 

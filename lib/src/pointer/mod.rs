@@ -1,5 +1,9 @@
 mod lexer;
-lalrpop_util::lalrpop_mod!(parser, "/pointer/parser.rs");
+lalrpop_util::lalrpop_mod!(
+    #[allow(clippy::all)]
+    parser,
+    "/pointer/parser.rs"
+);
 
 use crate::{address::Sign, process_handle::ProcessHandle, utils::EscapeString, Address, Offset};
 use serde::{Deserialize, Serialize};

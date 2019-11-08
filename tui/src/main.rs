@@ -206,7 +206,7 @@ impl<'a> ScanProgress for SimpleProgress<'a> {
             }
         }
 
-        self.term.print(buf)?;
+        write!(self.term, "{}", buf)?;
         self.term.restore_position()?;
         self.term.flush()?;
         Ok(())
@@ -220,32 +220,9 @@ struct Term {
 }
 
 impl Term {
-    /// Write a single line to the terminal.
-    fn print<D>(&mut self, line: D) -> anyhow::Result<()>
-    where
-        D: std::fmt::Display + Clone,
-    {
-        write!(self.output, "{}", line)?;
-        Ok(())
-    }
-
-    /// Write a single line to the terminal.
-    fn print_line<D>(&mut self, line: D) -> anyhow::Result<()>
-    where
-        D: std::fmt::Display + Clone,
-    {
-        writeln!(self.output, "{}", line)?;
-        self.flush()?;
-        Ok(())
-    }
-
     /// Perform an panicky write to the specified line, indicating that an error happened.
-    fn write_on_line<D>(&mut self, row: u16, line: D) -> anyhow::Result<()>
-    where
-        D: std::fmt::Display + Clone,
-    {
+    fn move_to_line(&mut self, row: u16) -> anyhow::Result<()> {
         self.output.queue(cursor::MoveTo(0, row))?;
-        self.print_line(line)?;
         Ok(())
     }
 
@@ -286,12 +263,6 @@ impl Term {
 
     fn restore_position(&mut self) -> anyhow::Result<()> {
         self.output.queue(cursor::RestorePosition)?;
-        Ok(())
-    }
-
-    /// Flush the output.
-    fn flush(&mut self) -> anyhow::Result<()> {
-        self.output.flush()?;
         Ok(())
     }
 
@@ -344,6 +315,16 @@ impl Term {
         self.show()?;
         self.flush()?;
         out.ok_or_else(|| anyhow!("no output from work"))?
+    }
+}
+
+impl io::Write for Term {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.output.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.output.flush()
     }
 }
 
@@ -412,7 +393,9 @@ impl Application {
         let mut app = Self::app();
 
         loop {
-            self.term.print(
+            write!(
+                self.term,
+                "{}",
                 style::style("ptscan> ")
                     .with(style::Color::Green)
                     .attribute(style::Attribute::Bold),
@@ -425,7 +408,7 @@ impl Application {
             let m = match app.get_matches_from_safe_borrow(it) {
                 Ok(m) => m,
                 Err(e) => {
-                    self.term.print_line(format!("{}", e.message))?;
+                    writeln!(self.term, "{}", e.message)?;
                     continue;
                 }
             };
@@ -433,7 +416,7 @@ impl Application {
             let action = match self.line_into_action(&m) {
                 Ok(action) => action,
                 Err(e) => {
-                    self.term.print_line(format!("{}", e))?;
+                    writeln!(self.term, "{}", e)?;
                     continue;
                 }
             };
@@ -442,10 +425,10 @@ impl Application {
                 Ok(true) => return Ok(()),
                 Ok(false) => {}
                 Err(e) => {
-                    self.term.print_line(format!("{}", e))?;
+                    writeln!(self.term, "{}", e)?;
 
                     for cause in e.chain().skip(1) {
-                        self.term.print_line(format!("caused by: {}", cause))?;
+                        writeln!(self.term, "caused by: {}", cause)?;
 
                         if let Some(bt) = cause.backtrace() {
                             eprintln!("backtrace: {}", bt);
@@ -467,19 +450,18 @@ impl Application {
         match action {
             Action::List => {
                 if self.scans.is_empty() {
-                    self.term.print_line("No scans")?;
+                    writeln!(self.term, "No scans")?;
                     return Ok(false);
                 }
 
-                self.term.print_line(format!("Scans:"))?;
+                writeln!(self.term, "Scans:")?;
 
                 for (key, s) in &self.scans {
-                    self.term
-                        .print_line(format!(" - `{}` with {} result(s)", key, s.len()))?;
+                    writeln!(self.term, " - `{}` with {} result(s)", key, s.results.len())?;
                 }
             }
             Action::Switch { name } => {
-                self.term.print_line(format!("Switch to scan `{}`", name))?;
+                writeln!(self.term, "Switch to scan `{}`", name)?;
                 self.current_scan = name;
             }
             Action::Exit => {
@@ -488,7 +470,7 @@ impl Application {
             Action::Help => {
                 let mut out = Vec::new();
                 app.write_long_help(&mut out)?;
-                self.term.print_line(String::from_utf8(out)?)?;
+                writeln!(self.term, "{}", String::from_utf8(out)?)?;
             }
             Action::Clear => {
                 self.term.clear(ClearType::All)?;
@@ -547,7 +529,7 @@ impl Application {
                 };
 
                 let mut stored;
-                let results = &scan[..usize::min(scan.len(), self.limit)];
+                let results = &scan.results[..usize::min(scan.results.len(), self.limit)];
                 // NB: possibly updated values.
                 let mut current = results;
 
@@ -564,12 +546,11 @@ impl Application {
                     current = &stored;
                 }
 
-                self.term
-                    .print_line(format!("Scan: {}", self.current_scan))?;
+                writeln!(self.term, "Scan: {}", self.current_scan)?;
 
                 Self::print(
                     &mut self.term,
-                    scan.len(),
+                    scan.results.len(),
                     current.iter().map(|r| &**r).enumerate(),
                     &value_expr,
                     verbose,
@@ -595,8 +576,8 @@ impl Application {
 
                 if index < scan.results.len() {
                     let result = scan.results.swap_remove(index);
-                    self.term.print_line("deleted:")?;
-                    writeln!(self.term.output, "{} = {}", result.pointer, result.last())?;
+                    writeln!(self.term, "deleted:")?;
+                    writeln!(self.term, "{} = {}", result.pointer, result.last())?;
                 }
             }
             Action::Add { mut pointer, ty } => {
@@ -633,7 +614,7 @@ impl Application {
                     pointer.base = base;
                 }
 
-                scan.push(Box::new(ScanResult::new(pointer, value)));
+                scan.results.push(Box::new(ScanResult::new(pointer, value)));
                 scan.initial = false;
             }
             Action::Scan { filter, ty, config } => {
@@ -652,9 +633,7 @@ impl Application {
 
                 let mut stored = vec![];
                 let mut replace = vec![];
-                let mut results = &mut scan.results[..];
-
-                if !indexes.is_empty() {
+                let results = if !indexes.is_empty() {
                     for index in indexes {
                         if let Some(result) = scan.results.get_mut(index) {
                             stored.push(result.clone());
@@ -662,8 +641,10 @@ impl Application {
                         }
                     }
 
-                    results = &mut stored[..];
-                }
+                    &mut stored[..]
+                } else {
+                    &mut scan.results[..]
+                };
 
                 if let (Some(expr), Some(handle)) = (&expr, self.handle.as_ref()) {
                     scan.value_expr = ValueExpr::parse(expr, &handle.process)?;
@@ -682,10 +663,10 @@ impl Application {
                     scan.results[index] = result;
                 }
 
-                let len = usize::min(scan.len(), self.limit);
+                let len = usize::min(scan.results.len(), self.limit);
                 Self::print(
                     &mut self.term,
-                    scan.len(),
+                    scan.results.len(),
                     scan.results.iter().take(len).map(|r| &**r).enumerate(),
                     &scan.value_expr,
                     false,
@@ -727,18 +708,20 @@ impl Application {
                 })?;
             }
             Action::Reset { name } => {
+                let current_scan = &self.current_scan;
+
                 let name = name
                     .as_ref()
                     .map(String::as_str)
-                    .unwrap_or(self.current_scan.as_str());
+                    .unwrap_or_else(|| current_scan.as_str());
 
                 match self.scans.get_mut(name) {
                     Some(scan) => {
-                        scan.clear();
+                        scan.results.clear();
                         scan.initial = true;
                     }
                     None => {
-                        self.term.print_line(format!("no scan in use"))?;
+                        writeln!(self.term, "no scan in use")?;
                     }
                 }
             }
@@ -808,10 +791,11 @@ impl Application {
         let Self {
             ref mut scans,
             ref current_file,
+            ref current_scan,
             ..
         } = self;
 
-        let scan = scan.unwrap_or(self.current_scan.as_str());
+        let scan = scan.unwrap_or_else(|| current_scan.as_str());
 
         let count = {
             let scan = scans.entry(scan.to_string()).or_default();
@@ -830,12 +814,13 @@ impl Application {
             scan.results.len()
         };
 
-        self.term.print_line(format!(
+        writeln!(
+            self.term,
             "Saved {} results from scan `{}` to file `{}`",
             count,
             scan,
             current_file.display()
-        ))?;
+        )?;
 
         Ok(())
     }
@@ -846,10 +831,11 @@ impl Application {
         let Self {
             ref mut scans,
             ref current_file,
+            ref current_scan,
             ..
         } = self;
 
-        let scan = scan.unwrap_or(self.current_scan.as_str());
+        let scan = scan.unwrap_or_else(|| current_scan.as_str());
 
         {
             let mut f = File::open(current_file)
@@ -875,11 +861,12 @@ impl Application {
             scan.aligned = deserialized.aligned;
         }
 
-        self.term.print_line(format!(
+        writeln!(
+            self.term,
             "Loaded scan `{}` from file `{}`",
             scan,
             current_file.display()
-        ))?;
+        )?;
 
         Ok(())
     }
@@ -901,10 +888,10 @@ impl Application {
 
         let scan = self.scans.entry(self.current_scan.to_string()).or_default();
 
-        /*if scan.results.is_empty() {
-            self.term.print_line("cannot watch, scan is empty")?;
+        if scan.results.is_empty() {
+            writeln!(self.term, "cannot watch, scan is empty")?;
             return Ok(());
-        }*/
+        }
 
         let refresh_rate = Duration::from_millis(500);
 
@@ -940,10 +927,11 @@ impl Application {
         })?;
 
         if removed > 0 {
-            self.term.print_line(format!(
+            writeln!(
+                self.term,
                 "removed {} filtered items from scan `{}`",
                 removed, self.current_scan
-            ))?;
+            )?;
         }
 
         return Ok(());
@@ -1089,7 +1077,7 @@ impl Application {
             filter: Option<&FilterExpr>,
             limit: usize,
         ) -> anyhow::Result<usize> {
-            let results = &scan[..usize::min(scan.len(), limit)];
+            let results = &scan.results[..usize::min(scan.results.len(), limit)];
             let mut results = results.to_vec();
 
             let line_below = results.len() as u16;
@@ -1120,7 +1108,8 @@ impl Application {
             term.clear(ClearType::All)?;
             term.goto(0, 0)?;
 
-            term.write_on_line(info_line, info)?;
+            term.move_to_line(info_line)?;
+            writeln!(term, "{}", info)?;
             write_results(term, &pointers, &mut states)?;
 
             while !token.test() {
@@ -1132,8 +1121,8 @@ impl Application {
                     NoopProgress,
                     &scan.value_expr,
                 ) {
-                    let m = format!("Error refreshing values: {}", e);
-                    term.write_on_line(error_line, m)?;
+                    term.move_to_line(error_line)?;
+                    writeln!(term, "Error refreshing values: {}", e)?;
                 }
 
                 let mut any_changed = false;
@@ -1263,7 +1252,8 @@ impl Application {
                     )?;
                 }
 
-                term.write_on_line(index as u16, buf)?;
+                term.move_to_line(index as u16)?;
+                writeln!(term, "{}", buf)?;
                 state.changed = false;
             }
 
@@ -1299,18 +1289,20 @@ impl Application {
             handle.refresh_modules()?;
             handle.refresh_threads()?;
 
-            self.term.print_line(format!(
+            writeln!(
+                self.term,
                 "attached to process `{}` ({})",
                 handle.name, handle.process.process_id
-            ))?;
+            )?;
 
             return Ok(());
         }
 
-        self.term.print_line(format!(
+        writeln!(
+            self.term,
             "not attached: could not find any process matching `{}`",
             name
-        ))?;
+        )?;
 
         Ok(())
     }
@@ -1568,7 +1560,7 @@ impl Application {
 
         let scan = scans.entry(name.to_string()).or_default();
 
-        writeln!(term.output, "")?;
+        writeln!(term.output)?;
 
         if append {
             scan.results.append(&mut results);
@@ -1700,11 +1692,11 @@ impl Application {
 
         result?;
 
-        let len = usize::min(scan.len(), self.limit);
+        let len = usize::min(scan.results.len(), self.limit);
         Self::print(
             &mut self.term,
-            scan.len(),
-            scan[..len].iter().map(|r| &**r).enumerate(),
+            scan.results.len(),
+            scan.results[..len].iter().map(|r| &**r).enumerate(),
             &scan.value_expr,
             false,
         )?;
@@ -1724,39 +1716,34 @@ impl Application {
             None => bail!("no process attached"),
         };
 
-        self.term.print_line(format!("Name: {}", handle.name))?;
+        writeln!(self.term, "Name: {}", handle.name)?;
 
-        self.term
-            .print_line(format!("Process id: {}", handle.process.process_id))?;
-        self.term
-            .print_line(format!("Pointer width: {}", handle.process.pointer_width))?;
-        self.term
-            .print_line(format!("64 bit: {}", handle.process.is_64bit))?;
+        writeln!(self.term, "Process id: {}", handle.process.process_id)?;
+        writeln!(self.term, "Pointer width: {}", handle.process.pointer_width)?;
+        writeln!(self.term, "64 bit: {}", handle.process.is_64bit)?;
 
         if include_modules {
-            self.term.print_line(format!("Modules:"))?;
+            writeln!(self.term, "Modules:")?;
 
             for module in &handle.modules {
-                self.term.print_line(format!(" - {:?}", module))?;
+                writeln!(self.term, " - {:?}", module)?;
             }
         } else {
-            self.term
-                .print_line(format!("Modules: *only shown with --modules*"))?;
+            writeln!(self.term, "Modules: *only shown with --modules*")?;
         }
 
         if include_threads {
-            self.term.print_line(format!("Threads:"))?;
+            writeln!(self.term, "Threads:")?;
 
             for thread in &handle.threads {
-                self.term.print_line(format!(" - {:?}", thread))?;
+                writeln!(self.term, " - {:?}", thread)?;
             }
         } else {
-            self.term
-                .print_line(format!("Threads: *only shown with --threads*"))?;
+            writeln!(self.term, "Threads: *only shown with --threads*")?;
         }
 
         if include_memory {
-            self.term.print_line(format!("Memory Regions:"))?;
+            writeln!(self.term, "Memory Regions:")?;
 
             for region in handle.process.virtual_memory_regions() {
                 let region = region?;
@@ -1768,18 +1755,18 @@ impl Application {
                     protect,
                 } = region;
 
-                self.term.print_line(format!(
+                writeln!(
+                    self.term,
                     " - {ty:?} [{}-{}] {protect:?} {state:?}",
                     range.base,
                     range.base.saturating_add(range.size),
                     ty = ty,
                     protect = protect,
                     state = state,
-                ))?;
+                )?;
             }
         } else {
-            self.term
-                .print_line(format!("Memory Regions: *only shown with --memory*"))?;
+            writeln!(self.term, "Memory Regions: *only shown with --memory*")?;
         }
 
         Ok(())
@@ -1817,18 +1804,18 @@ impl Application {
             }
 
             term.clear(ClearType::CurrentLine)?;
-            term.print_line(&buf)?;
+            writeln!(term, "{}", buf)?;
         }
 
         if count == 0 {
             term.clear(ClearType::CurrentLine)?;
-            term.print_line("no matching addresses")?;
+            writeln!(term, "no matching addresses")?;
             return Ok(());
         }
 
         if count < len {
             term.clear(ClearType::CurrentLine)?;
-            term.print_line(format!("... {} more omitted", len - count))?;
+            writeln!(term, "... {} more omitted", len - count)?;
         }
 
         Ok(())
@@ -2199,15 +2186,15 @@ impl Application {
                 let include_threads = m.is_present("threads");
                 let include_memory = m.is_present("memory");
 
-                return Ok(Action::Process {
+                Ok(Action::Process {
                     include_modules,
                     include_threads,
                     include_memory,
-                });
+                })
             }
-            ("exit", _) => return Ok(Action::Exit),
-            ("help", _) => return Ok(Action::Help),
-            ("clear", _) => return Ok(Action::Clear),
+            ("exit", _) => Ok(Action::Exit),
+            ("help", _) => Ok(Action::Help),
+            ("clear", _) => Ok(Action::Clear),
             ("print", Some(m)) => {
                 let limit = m.value_of("limit").map(str::parse).transpose()?;
 
@@ -2218,12 +2205,13 @@ impl Application {
 
                 let ty = m.value_of("type").map(str::parse).transpose()?;
                 let verbose = m.is_present("verbose");
-                return Ok(Action::Print {
+
+                Ok(Action::Print {
                     limit,
                     expr,
                     ty,
                     verbose,
-                });
+                })
             }
             ("watch", Some(m)) => {
                 let limit = m.value_of("limit").map(str::parse).transpose()?;
@@ -2249,12 +2237,12 @@ impl Application {
 
                 let incremental = m.is_present("incremental");
 
-                return Ok(Action::Watch {
+                Ok(Action::Watch {
                     limit,
                     filter,
                     change_length,
                     incremental,
-                });
+                })
             }
             ("switch", Some(m)) => {
                 let name = m
@@ -2262,9 +2250,9 @@ impl Application {
                     .ok_or_else(|| anyhow!("misssing <scan>"))?
                     .to_string();
 
-                return Ok(Action::Switch { name });
+                Ok(Action::Switch { name })
             }
-            ("list", _) => return Ok(Action::List),
+            ("list", _) => Ok(Action::List),
             ("scan", Some(m)) => {
                 let ty = m.value_of("type").map(str::parse).transpose()?;
 
@@ -2286,7 +2274,7 @@ impl Application {
                 config.suspend = m.is_present("suspend");
                 config.tasks = m.value_of("tasks").map(str::parse).transpose()?;
                 config.buffer_size = m.value_of("buffer-size").map(str::parse).transpose()?;
-                return Ok(Action::Scan { filter, ty, config });
+                Ok(Action::Scan { filter, ty, config })
             }
 
             ("refresh", Some(m)) => {
@@ -2302,54 +2290,47 @@ impl Application {
 
                 let indexes = match m.values_of("index") {
                     Some(values) => values
-                        .into_iter()
                         .map(|s| str::parse(s).map_err(Into::into))
                         .collect::<anyhow::Result<Vec<_>>>()?,
                     None => vec![],
                 };
 
-                return Ok(Action::Refresh { ty, expr, indexes });
+                Ok(Action::Refresh { ty, expr, indexes })
             }
             ("attach", Some(m)) => {
                 let name = m.value_of("name").map(|s| s.to_string());
-                return Ok(Action::Attach(name));
+                Ok(Action::Attach(name))
             }
-            ("suspend", _) => {
-                return Ok(Action::Suspend);
-            }
-            ("resume", _) => {
-                return Ok(Action::Resume);
-            }
+            ("suspend", _) => Ok(Action::Suspend),
+            ("resume", _) => Ok(Action::Resume),
             ("reset", _) => {
                 let name = m.value_of("scan").map(|s| s.to_string());
 
-                return Ok(Action::Reset { name });
+                Ok(Action::Reset { name })
             }
             ("save", Some(m)) => {
                 let file = m.value_of("file").map(PathBuf::from);
                 let scan = m.value_of("scan").map(|s| s.to_string());
                 let format = m.value_of("format").map(str::parse).transpose()?;
 
-                let mut compress = None;
+                let compress = if m.is_present("no-compress") {
+                    Some(false)
+                } else if m.is_present("compress") {
+                    Some(true)
+                } else {
+                    None
+                };
 
-                if m.is_present("no-compress") {
-                    compress = Some(false);
-                }
-
-                if m.is_present("compress") {
-                    compress = Some(true);
-                }
-
-                return Ok(Action::Save {
+                Ok(Action::Save {
                     file,
                     scan,
                     format,
                     compress,
-                });
+                })
             }
             ("sort", Some(m)) => {
                 let reverse = m.is_present("reverse");
-                return Ok(Action::Sort { reverse });
+                Ok(Action::Sort { reverse })
             }
             ("load", Some(m)) => {
                 let file = m.value_of("file").map(PathBuf::from);
@@ -2358,23 +2339,21 @@ impl Application {
                 let append = m.is_present("append");
                 let format = m.value_of("format").map(str::parse).transpose()?;
 
-                let mut compress = None;
+                let compress = if m.is_present("no-compress") {
+                    Some(false)
+                } else if m.is_present("compress") {
+                    Some(true)
+                } else {
+                    None
+                };
 
-                if m.is_present("no-compress") {
-                    compress = Some(false);
-                }
-
-                if m.is_present("compress") {
-                    compress = Some(true);
-                }
-
-                return Ok(Action::Load {
+                Ok(Action::Load {
                     file,
                     scan,
                     append,
                     format,
                     compress,
-                });
+                })
             }
             ("del", Some(m)) => {
                 let index = m
@@ -2382,7 +2361,7 @@ impl Application {
                     .map(str::parse)
                     .transpose()?
                     .ok_or_else(|| anyhow!("missing <index>"))?;
-                return Ok(Action::Del { index });
+                Ok(Action::Del { index })
             }
             ("add", Some(m)) => {
                 let ty = m.value_of("type").map(str::parse).transpose()?;
@@ -2393,7 +2372,7 @@ impl Application {
                 };
 
                 let pointer = Pointer::parse(&pointer)?;
-                return Ok(Action::Add { ty, pointer });
+                Ok(Action::Add { ty, pointer })
             }
             ("pointer-scan", Some(m)) => {
                 let name = m
@@ -2413,16 +2392,16 @@ impl Application {
                 let max_depth = m.value_of("max-depth").map(str::parse).transpose()?;
                 let max_offset = m.value_of("max-offset").map(str::parse).transpose()?;
 
-                return Ok(Action::PointerScan {
+                Ok(Action::PointerScan {
                     name,
                     address,
                     append,
                     value_type,
                     max_depth,
                     max_offset,
-                });
+                })
             }
-            _ => return Ok(Action::Help),
+            _ => Ok(Action::Help),
         }
     }
 }
@@ -2460,10 +2439,12 @@ impl FileFormat {
         T: serde::Serialize,
         W: io::Write,
     {
-        Ok(match self {
+        match self {
             Self::Cbor => serde_cbor::to_writer(r, value)?,
             Self::Yaml => serde_yaml::to_writer(r, value)?,
-        })
+        }
+
+        Ok(())
     }
 }
 

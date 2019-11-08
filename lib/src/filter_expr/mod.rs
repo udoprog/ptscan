@@ -16,7 +16,7 @@ pub use self::special::Special;
 pub mod ast;
 pub(crate) mod lexer;
 pub mod special;
-lalrpop_util::lalrpop_mod!(pub parser, "/filter_expr/parser.rs");
+lalrpop_util::lalrpop_mod!(#[allow(clippy::all)] pub parser, "/filter_expr/parser.rs");
 
 /// The result of a filter test.
 #[derive(Debug, Clone, Copy)]

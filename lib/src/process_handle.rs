@@ -122,7 +122,7 @@ impl ProcessHandle {
             };
 
             if module_name.as_os_str() == OsStr::new("KERNEL32.DLL") {
-                self.kernel32 = Some(range.clone());
+                self.kernel32 = Some(range);
             }
 
             let name = module_name.to_string_lossy().to_string();
@@ -180,7 +180,7 @@ impl ProcessHandle {
     }
 
     /// Find the module that the address is contained in.
-    pub fn find_location<'a>(&'a self, address: Address) -> Location<'a> {
+    pub fn find_location(&self, address: Address) -> Location<'_> {
         if let Some(module) = self.find_module(address) {
             return Location::Module(module);
         }
@@ -208,12 +208,12 @@ impl ProcessHandle {
     }
 
     /// Find if address is contained in a module.
-    pub fn find_module<'a>(&'a self, address: Address) -> Option<&'a ModuleInfo> {
+    pub fn find_module(&self, address: Address) -> Option<&ModuleInfo> {
         AddressRange::find_in_range(&self.modules, |m| &m.range, address)
     }
 
     /// Find if address is contained in a module.
-    pub fn find_thread_by_stack<'a>(&'a self, address: Address) -> Option<&'a ProcessThread> {
+    pub fn find_thread_by_stack(&self, address: Address) -> Option<&ProcessThread> {
         AddressRange::find_in_range(&self.threads, |m| &m.stack, address)
     }
 
@@ -269,12 +269,12 @@ impl ProcessHandle {
             pointer,
             handle: self,
             memory_cache: None,
-            followed: None,
+            followed: Cached::None,
         }
     }
 
     /// Create a new cached session.
-    pub fn session<'a>(&'a self) -> Result<Session<'a>, Error> {
+    pub fn session(&self) -> Result<Session<'_>, Error> {
         use crate::utils::IteratorExtension as _;
 
         let regions = self
@@ -537,13 +537,19 @@ impl ProcessHandle {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum Cached<T> {
+    Some(T),
+    None,
+}
+
 #[derive(Debug, Clone)]
 pub struct AddressProxy<'a> {
     pointer: &'a Pointer,
     pub(crate) handle: &'a ProcessHandle,
     memory_cache: Option<&'a MemoryCache>,
     /// cached, followed address.
-    followed: Option<Option<Address>>,
+    followed: Cached<Option<Address>>,
 }
 
 impl AddressProxy<'_> {
@@ -553,13 +559,13 @@ impl AddressProxy<'_> {
 
         if let Some(memory_cache) = self.memory_cache {
             let address = match self.followed {
-                Some(address) => address,
-                None => {
+                Cached::Some(address) => address,
+                Cached::None => {
                     let address = self.pointer.follow(self.handle, |a, buf| {
                         memory_cache.read_process_memory(&self.handle.process, a, buf)
                     })?;
 
-                    self.followed = Some(address);
+                    self.followed = Cached::Some(address);
                     address
                 }
             };
@@ -582,10 +588,10 @@ impl AddressProxy<'_> {
             Ok(value)
         } else {
             let address = match self.followed {
-                Some(address) => address,
-                None => {
+                Cached::Some(address) => address,
+                Cached::None => {
                     let address = self.pointer.follow_default(self.handle)?;
-                    self.followed = Some(address);
+                    self.followed = Cached::Some(address);
                     address
                 }
             };
@@ -610,7 +616,7 @@ impl AddressProxy<'_> {
 
     /// Follow the address this proxy refers to.
     pub fn follow_default(&mut self) -> anyhow::Result<Option<Address>> {
-        if let Some(address) = self.followed {
+        if let Cached::Some(address) = self.followed {
             return Ok(address);
         }
 
@@ -622,7 +628,7 @@ impl AddressProxy<'_> {
             self.pointer.follow_default(self.handle)?
         };
 
-        self.followed = Some(address);
+        self.followed = Cached::Some(address);
         Ok(address)
     }
 }
@@ -813,7 +819,7 @@ impl<'a> Session<'a> {
             pointer,
             handle: self.handle,
             memory_cache: Some(&self.memory_cache),
-            followed: None,
+            followed: Cached::None,
         }
     }
 

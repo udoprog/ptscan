@@ -6,7 +6,7 @@ fn is_all_zeros(mut data: &[u8]) -> bool {
     while !data.is_empty() {
         let len = usize::min(data.len(), ZERO.len());
 
-        if &data[..len] != &ZERO[..len] {
+        if data[..len] != ZERO[..len] {
             return false;
         }
 
@@ -23,7 +23,7 @@ fn find_first_nonzero(mut data: &[u8]) -> Option<usize> {
     while !data.is_empty() {
         let len = usize::min(data.len(), ZERO.len());
 
-        if &data[..len] != &ZERO[..len] {
+        if data[..len] != ZERO[..len] {
             break;
         }
 
@@ -80,7 +80,7 @@ impl Special {
                     data = &data[index..];
                     let len = usize::min(data.len(), bytes.len());
 
-                    if &data[..len] == &bytes[..len] {
+                    if data[..len] == bytes[..len] {
                         return Some(local + index);
                     }
 

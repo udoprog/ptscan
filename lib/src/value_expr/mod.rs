@@ -30,10 +30,10 @@ impl ValueOp {
     /// Apply the operation to the two arguments.
     pub fn apply(self, lhs: Value, rhs: Value) -> anyhow::Result<Option<Value>> {
         match self {
-            Self::Add => lhs.add(rhs),
-            Self::Sub => lhs.sub(rhs),
-            Self::Mul => lhs.mul(rhs),
-            Self::Div => lhs.div(rhs),
+            Self::Add => lhs.checked_add(rhs),
+            Self::Sub => lhs.checked_sub(rhs),
+            Self::Mul => lhs.checked_mul(rhs),
+            Self::Div => lhs.checked_div(rhs),
         }
     }
 }

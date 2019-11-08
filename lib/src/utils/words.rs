@@ -44,12 +44,15 @@ impl<'a> Words<'a> {
 
     /// Look at the next character.
     pub fn peek(&self) -> Option<(usize, char)> {
-        self.b0.clone()
+        self.b0
     }
 
     /// The rest of the input.
     pub fn rest(&self) -> &'a str {
-        let s = self.peek().map(|(i, _)| i).unwrap_or(self.string.len());
+        let s = self
+            .peek()
+            .map(|(i, _)| i)
+            .unwrap_or_else(|| self.string.len());
         &self.string[s..]
     }
 

@@ -8,7 +8,6 @@ use crossbeam_queue::SegQueue;
 use serde::{Deserialize, Serialize};
 use std::{
     convert::TryFrom as _,
-    ops, slice,
     sync::mpsc,
     time::{Duration, Instant},
 };
@@ -64,21 +63,6 @@ impl Scan {
             results,
             value_expr: ValueExpr::Value,
         }
-    }
-
-    /// Clear the scan.
-    pub fn clear(&mut self) {
-        self.results.clear();
-    }
-
-    /// Get the length of the current scan.
-    pub fn len(&self) -> usize {
-        self.results.len()
-    }
-
-    /// Push the given scan result.
-    pub fn push(&mut self, result: Box<ScanResult>) {
-        self.results.push(result);
     }
 
     /// Only scan for values which are aligned.
@@ -156,7 +140,7 @@ impl Scan {
         let mut last_error = None;
 
         let type_size = ty.size(&handle.process);
-        let aligned = aligned.unwrap_or(ty.is_default_aligned());
+        let aligned = aligned.unwrap_or_else(|| ty.is_default_aligned());
 
         let special = filter.special(&handle.process, ty)?;
         let special = special.as_ref();
@@ -182,7 +166,7 @@ impl Scan {
             );
         }
 
-        ranges.extend(handle.modules.iter().map(|m| m.range.clone()));
+        ranges.extend(handle.modules.iter().map(|m| m.range));
 
         let mut total = 0;
 
@@ -214,9 +198,9 @@ impl Scan {
 
                     s.spawn(move |_| {
                         let start = Instant::now();
-                        let result = work(
+                        let result = work(Work {
                             handle,
-                            &tx,
+                            tx: &tx,
                             queue,
                             filter,
                             ty,
@@ -225,7 +209,7 @@ impl Scan {
                             type_size,
                             buffer_size,
                             cancel,
-                        );
+                        });
 
                         let now = Instant::now();
                         let duration = now.duration_since(start);
@@ -278,23 +262,39 @@ impl Scan {
             Tick(usize, u64, Duration, Instant),
         }
 
-        #[inline(always)]
-        fn work(
-            handle: &ProcessHandle,
-            tx: &mpsc::Sender<Task>,
-            queue: &SegQueue<(Address, usize)>,
-            filter: &FilterExpr,
+        struct Work<'a> {
+            handle: &'a ProcessHandle,
+            tx: &'a mpsc::Sender<Task>,
+            queue: &'a SegQueue<(Address, usize)>,
+            filter: &'a FilterExpr,
             ty: Type,
-            special: Option<&Special>,
+            special: Option<&'a Special>,
             aligned: bool,
             type_size: usize,
             buffer_size: usize,
-            cancel: &Token,
-        ) -> anyhow::Result<Vec<Box<ScanResult>>> {
+            cancel: &'a Token,
+        }
+
+        #[inline(always)]
+        fn work(work: Work<'_>) -> anyhow::Result<Vec<Box<ScanResult>>> {
+            let Work {
+                handle,
+                tx,
+                queue,
+                filter,
+                ty,
+                special,
+                aligned,
+                type_size,
+                buffer_size,
+                cancel,
+            } = work;
+
             let mut results = Vec::new();
 
             let mut buffer = vec![0u8; buffer_size];
             let none = Value::default();
+            let none = &none;
 
             while let Ok((address, len)) = queue.pop() {
                 if cancel.test() {
@@ -308,20 +308,20 @@ impl Scan {
                 let mut hits = 0;
 
                 if handle.process.read_process_memory(address, data)? {
-                    process_one(
+                    process_one(ProcessOne {
                         handle,
                         filter,
-                        ty,
-                        &mut results,
-                        &mut hits,
-                        address,
-                        &data,
+                        value_type: ty,
+                        results: &mut results,
+                        hits: &mut hits,
+                        base: address,
+                        data: &data,
                         type_size,
-                        &none,
+                        none,
                         aligned,
                         special,
                         cancel,
-                    )?;
+                    })?;
                 }
 
                 let duration = Instant::now().duration_since(start);
@@ -329,24 +329,42 @@ impl Scan {
                     .expect("send tick failed");
             }
 
-            return Ok(results);
+            Ok(results)
         };
 
-        #[inline(always)]
-        fn process_one(
-            handle: &ProcessHandle,
-            filter: &FilterExpr,
+        struct ProcessOne<'a> {
+            handle: &'a ProcessHandle,
+            filter: &'a FilterExpr,
             value_type: Type,
-            results: &mut Vec<Box<ScanResult>>,
-            hits: &mut u64,
+            results: &'a mut Vec<Box<ScanResult>>,
+            hits: &'a mut u64,
             base: Address,
-            data: &[u8],
+            data: &'a [u8],
             type_size: usize,
-            none: &Value,
+            none: &'a Value,
             aligned: bool,
-            special: Option<&Special>,
-            cancel: &Token,
-        ) -> anyhow::Result<()> {
+            special: Option<&'a Special>,
+            cancel: &'a Token,
+        }
+
+        #[inline(always)]
+        fn process_one(process_one: ProcessOne<'_>) -> anyhow::Result<()> {
+            let ProcessOne {
+                handle,
+                filter,
+                value_type,
+                results,
+                hits,
+                base,
+                data,
+                type_size,
+                none,
+                aligned,
+                special,
+                cancel,
+                ..
+            } = process_one;
+
             let mut inner_offset = match special {
                 Some(special) => match special.test(data) {
                     Some(inner_offset) => inner_offset,
@@ -396,13 +414,11 @@ impl Scan {
                     if aligned {
                         align(&mut inner_offset, type_size);
                     }
+                } else if aligned {
+                    inner_offset += type_size;
                 } else {
-                    if aligned {
-                        inner_offset += type_size;
-                    } else {
-                        inner_offset += 1;
-                    }
-                };
+                    inner_offset += 1;
+                }
             }
 
             Ok(())
@@ -421,22 +437,6 @@ impl Scan {
 impl Default for Scan {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl<I: slice::SliceIndex<[Box<ScanResult>]>> ops::Index<I> for Scan {
-    type Output = I::Output;
-
-    #[inline]
-    fn index(&self, index: I) -> &Self::Output {
-        ops::Index::index(&self.results, index)
-    }
-}
-
-impl<I: slice::SliceIndex<[Box<ScanResult>]>> ops::IndexMut<I> for Scan {
-    #[inline]
-    fn index_mut(&mut self, index: I) -> &mut Self::Output {
-        ops::IndexMut::index_mut(&mut self.results, index)
     }
 }
 

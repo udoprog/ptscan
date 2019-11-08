@@ -141,6 +141,10 @@ impl Process {
     /// Read the given structure from the given address.
     ///
     /// This is unsafe since it reinteprets the given memory region as a type, which might not be correct.
+    ///
+    /// # Safety
+    ///
+    /// The type `T` must be zeroable and support being punted from process memory.
     pub unsafe fn read<T>(&self, address: Address) -> Result<T, Error> {
         use std::mem;
 
@@ -285,7 +289,7 @@ impl Process {
     }
 
     /// Iterate over all virtual memory segments with a given chunk size.
-    pub fn virtual_memory_regions<'a>(&'a self) -> VirtualMemoryRegions<'a> {
+    pub fn virtual_memory_regions(&self) -> VirtualMemoryRegions<'_> {
         VirtualMemoryRegions {
             process: self,
             current: Address::new(0),
@@ -397,8 +401,8 @@ pub enum MemoryState {
 
 impl MemoryState {
     /// Test if the memory state is free (i.e. unused).
-    pub fn is_free(&self) -> bool {
-        match *self {
+    pub fn is_free(self) -> bool {
+        match self {
             MemoryState::Free => true,
             _ => false,
         }
@@ -503,6 +507,6 @@ impl<'a> Iterator for VirtualMemoryRegions<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         let m = try_iter!(self.process.virtual_query(self.current))?;
         self.current = try_iter!(try_iter!(self.current.add(m.range.size)).add(Size::new(1)));
-        return Some(Ok(m));
+        Some(Ok(m))
     }
 }

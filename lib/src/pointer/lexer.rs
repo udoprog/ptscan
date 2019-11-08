@@ -111,7 +111,7 @@ impl<'a> Lexer<'a> {
         self.c1
             .as_ref()
             .map(|(p, _)| *p)
-            .unwrap_or(self.input.len())
+            .unwrap_or_else(|| self.input.len())
     }
 
     /// Peek a single character.
@@ -130,7 +130,7 @@ impl<'a> Lexer<'a> {
         self.c1
             .as_ref()
             .map(|(pos, _)| *pos)
-            .unwrap_or(self.input.len())
+            .unwrap_or_else(|| self.input.len())
     }
 
     /// Format an error with a correct description and position.
@@ -145,12 +145,7 @@ impl<'a> Lexer<'a> {
     pub fn scan_hex(&mut self) -> Result<Hex, Error> {
         self.buf.clear();
 
-        loop {
-            let (_, c) = match self.peek() {
-                Some(c) => c,
-                None => break,
-            };
-
+        while let Some((_, c)) = self.peek() {
             match c {
                 '+' | '-' | '0'..='9' | 'A'..='F' | 'a'..='f' => {
                     self.step();

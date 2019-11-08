@@ -92,7 +92,7 @@ impl Thread {
     }
 
     /// Get the context for a thread.
-    pub fn get_context<'a>(&'a self) -> Result<ThreadContext<'a>, Error> {
+    pub fn get_context(&self) -> Result<ThreadContext<'_>, Error> {
         let mut context: winnt::CONTEXT = unsafe { mem::zeroed() };
         context.ContextFlags = winnt::CONTEXT_SEGMENTS;
 

@@ -254,7 +254,7 @@ where
 
             let s = self.offset;
             let e = Size::min(
-                try_iter!(self.offset.add(self.chunk_size)),
+                try_iter!(self.offset.checked_add(self.chunk_size)),
                 memory_info.range.size,
             );
 
@@ -262,7 +262,7 @@ where
 
             let range = AddressRange {
                 base: try_iter!(memory_info.range.base.add(s)),
-                size: try_iter!(e.sub(s)),
+                size: try_iter!(e.checked_sub(s)),
             };
 
             return Some(Ok((memory_info.clone(), range)));
@@ -278,7 +278,7 @@ impl fmt::Display for Hex<'_> {
 
         let last = it.next_back();
 
-        while let Some(c) = it.next() {
+        for c in it {
             write!(fmt, "{:02X} ", c)?;
         }
 

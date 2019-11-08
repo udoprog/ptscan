@@ -338,22 +338,22 @@ impl Value {
         Ok(out)
     }
 
-    pub fn add(self, rhs: Value) -> anyhow::Result<Option<Value>> {
+    pub fn checked_add(self, rhs: Value) -> anyhow::Result<Option<Value>> {
         let lhs = self;
         Ok(numeric_op!(lhs + rhs, checked_add))
     }
 
-    pub fn sub(self, rhs: Value) -> anyhow::Result<Option<Value>> {
+    pub fn checked_sub(self, rhs: Value) -> anyhow::Result<Option<Value>> {
         let lhs = self;
         Ok(numeric_op!(lhs - rhs, checked_sub))
     }
 
-    pub fn mul(self, rhs: Value) -> anyhow::Result<Option<Value>> {
+    pub fn checked_mul(self, rhs: Value) -> anyhow::Result<Option<Value>> {
         let lhs = self;
         Ok(numeric_op!(lhs - rhs, checked_mul))
     }
 
-    pub fn div(self, rhs: Value) -> anyhow::Result<Option<Value>> {
+    pub fn checked_div(self, rhs: Value) -> anyhow::Result<Option<Value>> {
         let lhs = self;
         Ok(numeric_op!(lhs - rhs, checked_div))
     }

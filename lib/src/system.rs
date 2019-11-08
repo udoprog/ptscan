@@ -131,9 +131,9 @@ impl<'a> Iterator for Threads {
             }
         };
 
-        return Some(Thread {
+        Some(Thread {
             process_id: e.th32OwnerProcessID,
             thread_id: e.th32ThreadID,
-        });
+        })
     }
 }

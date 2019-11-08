@@ -27,7 +27,7 @@ serde_cbor = "0.10.2"
 serde_yaml = "0.8.11"
 serde = {version = "1.0.102", features = ["rc", "derive"]}
 flate2 = "1.0.12"
-crossterm = "0.13.2"
+crossterm = "0.13.3"
 num_cpus = "1.11.0"
 
 [build-dependencies]

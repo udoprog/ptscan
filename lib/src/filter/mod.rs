@@ -6,7 +6,6 @@ use crate::{
     value_expr::ValueExpr,
     Address, AddressProxy, AddressRange, Type,
 };
-use anyhow::anyhow;
 use num_bigint::Sign;
 use std::fmt;
 
@@ -103,20 +102,20 @@ impl Filter {
     /// Test the specified memory region.
     pub fn test(
         &self,
-        value_type: Type,
         initial: &Value,
         last: &Value,
+        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         match self {
-            Self::Binary(m) => m.test(value_type, initial, last, proxy),
-            Self::All(m) => m.test(value_type, initial, last, proxy),
-            Self::Any(m) => m.test(value_type, initial, last, proxy),
-            Self::IsPointer(m) => m.test(value_type, initial, last, proxy),
-            Self::IsType(m) => m.test(value_type, initial, last, proxy),
-            Self::IsNan(m) => m.test(value_type, initial, last, proxy),
-            Self::Not(m) => m.test(value_type, initial, last, proxy),
-            Self::Regex(m) => m.test(value_type, initial, last, proxy),
+            Self::Binary(m) => m.test(initial, last, value_type, proxy),
+            Self::All(m) => m.test(initial, last, value_type, proxy),
+            Self::Any(m) => m.test(initial, last, value_type, proxy),
+            Self::IsPointer(m) => m.test(initial, last, value_type, proxy),
+            Self::IsType(m) => m.test(initial, last, value_type, proxy),
+            Self::IsNan(m) => m.test(initial, last, value_type, proxy),
+            Self::Not(m) => m.test(initial, last, value_type, proxy),
+            Self::Regex(m) => m.test(initial, last, value_type, proxy),
         }
     }
 
@@ -186,9 +185,9 @@ impl Binary {
 
     fn test(
         &self,
-        value_type: Type,
         initial: &Value,
         last: &Value,
+        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         macro_rules! binary_numeric {
@@ -262,13 +261,8 @@ impl Binary {
         }
 
         let Binary(op, lhs, rhs) = self;
-
-        let expr_type = self
-            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))
-            .ok_or_else(|| anyhow!("cannot determine type of binary expression: {}", self))?;
-
-        let lhs = lhs.eval(expr_type, initial, last, proxy)?;
-        let rhs = rhs.eval(expr_type, initial, last, proxy)?;
+        let lhs = lhs.eval(initial, last, value_type, proxy)?;
+        let rhs = rhs.eval(initial, last, value_type, proxy)?;
 
         // NB: we treat 'none' specially:
         // The only allowed match on none is to compare against something which is strictly not equal to it, like value != none.
@@ -419,13 +413,13 @@ impl All {
 
     fn test(
         &self,
-        value_type: Type,
         initial: &Value,
         last: &Value,
+        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         for m in &self.0 {
-            match m.test(value_type, initial, last, proxy)? {
+            match m.test(initial, last, value_type, proxy)? {
                 Test::False => return Ok(Test::False),
                 Test::Undefined => return Ok(Test::Undefined),
                 _ => (),
@@ -496,13 +490,13 @@ impl Any {
 
     fn test(
         &self,
-        value_type: Type,
         initial: &Value,
         last: &Value,
+        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         for m in &self.0 {
-            match m.test(value_type, initial, last, proxy)? {
+            match m.test(initial, last, value_type, proxy)? {
                 Test::True => return Ok(Test::True),
                 Test::Undefined => return Ok(Test::Undefined),
                 _ => (),
@@ -566,12 +560,12 @@ impl IsPointer {
 
     pub fn test(
         &self,
-        value_type: Type,
         initial: &Value,
         last: &Value,
+        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let value = self.expr.eval(value_type, initial, last, proxy)?;
+        let value = self.expr.eval(initial, last, value_type, proxy)?;
 
         let address = match value {
             Value::Pointer(address) => address,
@@ -620,12 +614,12 @@ impl IsType {
 
     pub fn test(
         &self,
-        value_type: Type,
         initial: &Value,
         last: &Value,
+        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let value = self.expr.eval(value_type, initial, last, proxy)?;
+        let value = self.expr.eval(initial, last, value_type, proxy)?;
         Ok((value.ty() == self.ty).into())
     }
 }
@@ -669,12 +663,12 @@ impl IsNan {
 
     pub fn test(
         &self,
-        value_type: Type,
         initial: &Value,
         last: &Value,
+        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let value = self.expr.eval(value_type, initial, last, proxy)?;
+        let value = self.expr.eval(initial, last, value_type, proxy)?;
 
         let value = match value {
             Value::F32(value) => value.is_nan(),
@@ -718,12 +712,12 @@ impl Regex {
 
     pub fn test(
         &self,
-        value_type: Type,
         initial: &Value,
         last: &Value,
+        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let value = self.expr.eval(value_type, initial, last, proxy)?;
+        let value = self.expr.eval(initial, last, value_type, proxy)?;
 
         let bytes = match &value {
             Value::Bytes(bytes) => &bytes[..],
@@ -754,12 +748,12 @@ pub struct Not {
 impl Not {
     fn test(
         &self,
-        value_type: Type,
         initial: &Value,
         last: &Value,
+        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        Ok(self.filter.test(value_type, initial, last, proxy)?.invert())
+        Ok(self.filter.test(initial, last, value_type, proxy)?.invert())
     }
 
     fn type_of(

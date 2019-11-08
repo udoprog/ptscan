@@ -182,28 +182,23 @@ impl Value {
     /// Try to treat the value as an address.
     ///
     /// Returns `None` if this is not possible (e.g. value out of range).
-    pub fn as_address(&self) -> anyhow::Result<Address> {
+    pub fn as_address(&self) -> Option<Address> {
         use std::convert::TryFrom;
 
-        let out = match *self {
-            Self::Pointer(address) => address,
-            Self::U8(value) => Address::try_from(value)?,
-            Self::I8(value) => Address::try_from(value)?,
-            Self::U16(value) => Address::try_from(value)?,
-            Self::I16(value) => Address::try_from(value)?,
-            Self::U32(value) => Address::try_from(value)?,
-            Self::I32(value) => Address::try_from(value)?,
-            Self::U64(value) => Address::try_from(value)?,
-            Self::I64(value) => Address::try_from(value)?,
-            Self::U128(value) => Address::try_from(value)?,
-            Self::I128(value) => Address::try_from(value)?,
-            Self::F32(..) | Self::F64(..) => bail!("float cannot be made into address"),
-            Self::None(..) => bail!("nothing cannot be made into address"),
-            Self::String(..) => bail!("string cannot be made into address"),
-            Self::Bytes(..) => bail!("bytes cannot be made into address"),
-        };
-
-        Ok(out)
+        match *self {
+            Self::Pointer(address) => Some(address),
+            Self::U8(value) => Address::try_from(value).ok(),
+            Self::I8(value) => Address::try_from(value).ok(),
+            Self::U16(value) => Address::try_from(value).ok(),
+            Self::I16(value) => Address::try_from(value).ok(),
+            Self::U32(value) => Address::try_from(value).ok(),
+            Self::I32(value) => Address::try_from(value).ok(),
+            Self::U64(value) => Address::try_from(value).ok(),
+            Self::I64(value) => Address::try_from(value).ok(),
+            Self::U128(value) => Address::try_from(value).ok(),
+            Self::I128(value) => Address::try_from(value).ok(),
+            _ => None,
+        }
     }
 
     /// Encode the given buffer into a value.

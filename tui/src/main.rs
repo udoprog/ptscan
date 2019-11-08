@@ -477,7 +477,12 @@ impl Application {
 
                 handle.process.resume()?;
             }
-            Action::Print { limit, expr, ty } => {
+            Action::Print {
+                limit,
+                expr,
+                ty,
+                verbose,
+            } => {
                 if let Some(limit) = limit {
                     self.limit = limit;
                 }
@@ -519,6 +524,7 @@ impl Application {
                     scan.len(),
                     current.iter().map(|r| &**r).enumerate(),
                     &value_expr,
+                    verbose,
                 )?;
             }
             Action::Watch {
@@ -636,6 +642,7 @@ impl Application {
                     scan.len(),
                     scan.results.iter().take(len).map(|r| &**r).enumerate(),
                     &scan.value_expr,
+                    false,
                 )?;
             }
             Action::PointerScan {
@@ -967,7 +974,7 @@ impl Application {
                         let mut proxy = handle.address_proxy(&result.pointer);
                         let ty = result.last().ty();
 
-                        if let Test::False = filter.test(ty, result.initial(), last, &mut proxy)? {
+                        if let Test::False = filter.test(result.initial(), last, ty, &mut proxy)? {
                             to_remove.push(index);
                             removed = true;
                         } else {
@@ -1095,7 +1102,7 @@ impl Application {
                         let ty = result.last().ty();
 
                         if let Test::False =
-                            filter.test(ty, &state.initial, state.last(), &mut proxy)?
+                            filter.test(&state.initial, state.last(), ty, &mut proxy)?
                         {
                             any_changed = true;
                             state.removed = true;
@@ -1319,12 +1326,18 @@ impl Application {
         let mut reverse = BTreeMap::new();
 
         for result in &scan.results {
-            let value = result.last().as_address()?;
+            let to = match result.last().as_address() {
+                Some(address) => address,
+                None => continue,
+            };
 
-            if let Some(address) = result.pointer.follow_default(handle)? {
-                forward.insert(address, value);
-                reverse.insert(value, address);
-            }
+            let from = match result.pointer.follow_default(handle)? {
+                Some(address) => address,
+                None => continue,
+            };
+
+            forward.insert(from, to);
+            reverse.insert(to, from);
         }
 
         let max_depth = max_depth.unwrap_or(7);
@@ -1644,6 +1657,7 @@ impl Application {
             scan.len(),
             scan[..len].iter().map(|r| &**r).enumerate(),
             &scan.value_expr,
+            false,
         )?;
 
         Ok(())
@@ -1728,6 +1742,7 @@ impl Application {
         len: usize,
         results: impl IntoIterator<Item = (usize, &'a ScanResult)>,
         value_expr: &ValueExpr,
+        verbose: bool,
     ) -> anyhow::Result<()> {
         use std::fmt::Write as _;
 
@@ -1747,6 +1762,10 @@ impl Application {
 
             write!(buf, " = ")?;
             write!(buf, "{}", result.last())?;
+
+            if verbose {
+                write!(buf, " as {}", result.last().ty())?;
+            }
 
             term.clear(ClearType::CurrentLine)?;
             term.print_line(&buf)?;
@@ -1893,6 +1912,12 @@ impl Application {
                         .long("limit")
                         .value_name("number")
                         .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("verbose")
+                        .help("Include detailed information on scan results.")
+                        .long("verbose")
+                        .short("v"),
                 )
                 .arg(
                     Arg::with_name("expr")
@@ -2143,7 +2168,13 @@ impl Application {
                 };
 
                 let ty = m.value_of("type").map(str::parse).transpose()?;
-                return Ok(Action::Print { limit, expr, ty });
+                let verbose = m.is_present("verbose");
+                return Ok(Action::Print {
+                    limit,
+                    expr,
+                    ty,
+                    verbose,
+                });
             }
             ("watch", Some(m)) => {
                 let limit = m.value_of("limit").map(str::parse).transpose()?;
@@ -2435,6 +2466,8 @@ pub enum Action {
         expr: Option<String>,
         /// The type to print the values as.
         ty: Option<Type>,
+        /// Print results verbosely.
+        verbose: bool,
     },
     /// Watch changes to the scan.
     Watch {

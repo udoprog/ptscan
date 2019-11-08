@@ -373,7 +373,7 @@ impl Scan {
 
                 last_address = Some(address);
 
-                if let Test::True = filter.test(value_type, none, none, &mut proxy)? {
+                if let Test::True = filter.test(none, none, value_type, &mut proxy)? {
                     *hits += 1;
                     let value = proxy.eval(value_type)?;
                     pointer.base = handle.address_to_pointer_base(address)?;

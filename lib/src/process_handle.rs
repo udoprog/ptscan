@@ -342,7 +342,7 @@ impl ProcessHandle {
                                 let ty = new_type.unwrap_or_else(|| result.last().ty());
 
                                 if let Test::True =
-                                    filter.test(ty, result.initial(), result.last(), &mut proxy)?
+                                    filter.test(result.initial(), result.last(), ty, &mut proxy)?
                                 {
                                     let value = proxy.eval(ty)?;
                                     result.last = Some(value);
@@ -477,7 +477,7 @@ impl ProcessHandle {
                             let mut work = move || {
                                 let mut proxy = self.address_proxy(&result.pointer);
                                 let value =
-                                    expr.eval(ty, result.initial(), result.last(), &mut proxy)?;
+                                    expr.eval(result.initial(), result.last(), ty, &mut proxy)?;
                                 result.initial = value;
                                 result.last = None;
                                 result.pointer.last_address = proxy.follow_default()?;

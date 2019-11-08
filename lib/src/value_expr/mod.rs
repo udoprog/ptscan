@@ -157,10 +157,11 @@ impl ValueExpr {
         &self,
         initial: &Value,
         last: &Value,
+        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Option<Address>> {
         let mut stack = Vec::new();
-        self.stacked_address_of(&mut stack, initial, last, proxy)?;
+        self.stacked_address_of(&mut stack, initial, last, value_type, proxy)?;
         Ok(stack.last().copied().and_then(|a| a))
     }
 
@@ -170,6 +171,7 @@ impl ValueExpr {
         stack: &mut Vec<Option<Address>>,
         initial: &Value,
         last: &Value,
+        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<()> {
         match self {
@@ -177,11 +179,11 @@ impl ValueExpr {
                 stack.push(proxy.follow_default()?);
             }
             Self::Deref { value } => {
-                let value = value.eval(Type::Pointer, initial, last, proxy)?;
-                stack.push(value.as_address().ok());
+                let value = value.eval(initial, last, value_type, proxy)?;
+                stack.push(value.as_address());
             }
             Self::AddressOf { value } => {
-                value.stacked_address_of(stack, initial, last, proxy)?;
+                value.stacked_address_of(stack, initial, last, value_type, proxy)?;
                 stack.pop();
             }
             other => bail!("cannot get address of: {}", other),
@@ -238,61 +240,63 @@ impl ValueExpr {
 
     pub fn eval(
         &self,
-        ty: Type,
         initial: &Value,
         last: &Value,
+        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Value> {
         match *self {
-            Self::Value => Ok(proxy.eval(ty)?),
-            Self::Initial => Ok(ty
-                .convert(initial.clone())
-                .unwrap_or_else(|| Value::None(ty))),
-            Self::Last => Ok(ty.convert(last.clone()).unwrap_or_else(|| Value::None(ty))),
-            Self::Number { ref value, .. } => Ok(Value::from_bigint(ty, value)?),
-            Self::Decimal { ref value, .. } => Ok(Value::from_bigdecimal(ty, value)?),
+            Self::Value => Ok(proxy.eval(value_type)?),
+            Self::Initial => Ok(initial.clone()),
+            Self::Last => Ok(last.clone()),
+            Self::Number { ref value, .. } => Ok(Value::from_bigint(value_type, value)?),
+            Self::Decimal { ref value, .. } => Ok(Value::from_bigdecimal(value_type, value)?),
             Self::String { ref value } => Ok(Value::String(value.to_owned(), value.len())),
             Self::Bytes { ref value } => Ok(Value::Bytes(value.clone())),
             Self::Deref { ref value } => {
-                let value = value.eval(Type::Pointer, initial, last, proxy)?;
+                let value = value.eval(initial, last, value_type, proxy)?;
 
-                let new_address = match value {
-                    Value::Pointer(address) => address,
-                    _ => return Ok(Value::None(ty)),
+                let address = match value.as_address() {
+                    Some(address) => address,
+                    None => return Ok(Value::None(value_type)),
                 };
 
-                let pointer = pointer::Pointer::from_address(new_address);
+                let pointer = pointer::Pointer::from_address(address);
                 let mut proxy = proxy.handle.address_proxy(&pointer);
-                Ok(proxy.eval(ty)?)
+                Ok(proxy.eval(value_type)?)
             }
             Self::AddressOf { ref value } => {
-                let new_address = match value.address_of(initial, last, proxy)? {
+                let new_address = match value.address_of(initial, last, value_type, proxy)? {
                     Some(address) => address,
-                    None => return Ok(Value::None(ty)),
+                    None => return Ok(Value::None(value_type)),
                 };
 
                 Ok(Value::Pointer(new_address))
             }
-            Self::Cast { ref expr, ty } => Ok(expr.eval(ty, initial, last, proxy)?),
+            Self::Cast { ref expr, ty } => {
+                let value = expr.eval(initial, last, value_type, proxy)?;
+                let value = ty.convert(value).unwrap_or_else(|| Value::None(ty));
+                Ok(value)
+            }
             Self::Add { ref lhs, ref rhs } => {
-                let lhs = lhs.eval(ty, initial, last, proxy)?;
-                let rhs = rhs.eval(ty, initial, last, proxy)?;
-                Ok(lhs.add(rhs)?.unwrap_or_else(|| Value::None(ty)))
+                let lhs = lhs.eval(initial, last, value_type, proxy)?;
+                let rhs = rhs.eval(initial, last, value_type, proxy)?;
+                Ok(lhs.add(rhs)?.unwrap_or_else(|| Value::None(Type::None)))
             }
             Self::Sub { ref lhs, ref rhs } => {
-                let lhs = lhs.eval(ty, initial, last, proxy)?;
-                let rhs = rhs.eval(ty, initial, last, proxy)?;
-                Ok(lhs.sub(rhs)?.unwrap_or_else(|| Value::None(ty)))
+                let lhs = lhs.eval(initial, last, value_type, proxy)?;
+                let rhs = rhs.eval(initial, last, value_type, proxy)?;
+                Ok(lhs.sub(rhs)?.unwrap_or_else(|| Value::None(Type::None)))
             }
             Self::Mul { ref lhs, ref rhs } => {
-                let lhs = lhs.eval(ty, initial, last, proxy)?;
-                let rhs = rhs.eval(ty, initial, last, proxy)?;
-                Ok(lhs.mul(rhs)?.unwrap_or_else(|| Value::None(ty)))
+                let lhs = lhs.eval(initial, last, value_type, proxy)?;
+                let rhs = rhs.eval(initial, last, value_type, proxy)?;
+                Ok(lhs.mul(rhs)?.unwrap_or_else(|| Value::None(Type::None)))
             }
             Self::Div { ref lhs, ref rhs } => {
-                let lhs = lhs.eval(ty, initial, last, proxy)?;
-                let rhs = rhs.eval(ty, initial, last, proxy)?;
-                Ok(lhs.div(rhs)?.unwrap_or_else(|| Value::None(ty)))
+                let lhs = lhs.eval(initial, last, value_type, proxy)?;
+                let rhs = rhs.eval(initial, last, value_type, proxy)?;
+                Ok(lhs.div(rhs)?.unwrap_or_else(|| Value::None(Type::None)))
             }
         }
     }

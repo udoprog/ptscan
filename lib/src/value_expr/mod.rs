@@ -134,21 +134,41 @@ impl ValueExpr {
         (value_trait, sign)
     }
 
-    /// Get the address of a value expression.
     pub fn address_of(
         &self,
         initial: &Value,
         last: &Value,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Option<Address>> {
+        let mut stack = Vec::new();
+        self.stacked_address_of(&mut stack, initial, last, proxy)?;
+        Ok(stack.last().copied().and_then(|a| a))
+    }
+
+    /// Get the address of a value expression.
+    pub fn stacked_address_of(
+        &self,
+        stack: &mut Vec<Option<Address>>,
+        initial: &Value,
+        last: &Value,
+        proxy: &mut AddressProxy<'_>,
+    ) -> anyhow::Result<()> {
         match self {
-            Self::Value => Ok(proxy.follow_default()?),
+            Self::Value => {
+                stack.push(proxy.follow_default()?);
+            }
             Self::Deref { value } => {
                 let value = value.eval(Type::Pointer, initial, last, proxy)?;
-                Ok(Some(value.as_address()?))
+                stack.push(value.as_address().ok());
+            }
+            Self::AddressOf { value } => {
+                value.stacked_address_of(stack, initial, last, proxy)?;
+                stack.pop();
             }
             other => bail!("cannot get address of: {}", other),
         }
+
+        Ok(())
     }
 
     /// Get the type of the expression.

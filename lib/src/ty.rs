@@ -1,6 +1,52 @@
 use crate::{error::Error, Address, Process, Value};
 use serde::{Deserialize, Serialize};
-use std::{fmt, mem, str};
+use std::{convert::TryFrom as _, fmt, mem, str};
+
+macro_rules! convert {
+    ($a:ident, $b:ident) => {
+        convert!(@a $a, $b, {
+            [Pointer, Address],
+            [U8, u8],
+            [I8, i8],
+            [U16, u16],
+            [I16, i16],
+            [U32, u32],
+            [I32, i32],
+            [U64, u64],
+            [I64, i64],
+            [U128, u128],
+            [I128, i128]
+        })
+    };
+
+    (@a $a:ident, $b:ident, {$([$variant:ident, $ty:ty]),*}) => {
+        match $a {
+            $(
+                Self::$variant => convert!(@b $a, $b, $variant, $ty, {
+                    Pointer,
+                    U8,
+                    I8,
+                    U16,
+                    I16,
+                    U32,
+                    I32,
+                    U64,
+                    I64,
+                    U128,
+                    I128
+                }),
+            )*
+            _ => return None,
+        }
+    };
+
+    (@b $a:ident, $b:ident, $into:ident, $ty:ty, {$($variant:ident),*}) => {
+        match $b {
+            $(Value::$variant(value) => Value::$into(<$ty>::try_from(value).ok()?),)*
+            _ => return None,
+        }
+    };
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
@@ -47,6 +93,31 @@ impl Type {
             Self::Bytes(..) => false,
             _ => true,
         }
+    }
+
+    /// Convert one value into the given type.
+    pub fn convert(self, other: Value) -> Option<Value> {
+        let other = match (self, other) {
+            (Self::None, Value::None(..)) => return None,
+            (Self::Pointer, other @ Value::Pointer(..)) => return Some(other),
+            (Self::U8, other @ Value::U8(..)) => return Some(other),
+            (Self::I8, other @ Value::I8(..)) => return Some(other),
+            (Self::U16, other @ Value::U16(..)) => return Some(other),
+            (Self::I16, other @ Value::I16(..)) => return Some(other),
+            (Self::U32, other @ Value::U32(..)) => return Some(other),
+            (Self::I32, other @ Value::I32(..)) => return Some(other),
+            (Self::U64, other @ Value::U64(..)) => return Some(other),
+            (Self::I64, other @ Value::I64(..)) => return Some(other),
+            (Self::U128, other @ Value::U128(..)) => return Some(other),
+            (Self::I128, other @ Value::I128(..)) => return Some(other),
+            (Self::String(len), Value::String(string, ..)) => {
+                return Some(Value::String(string, len));
+            }
+            (Self::Bytes(..), other @ Value::Bytes(..)) => return Some(other),
+            (_, other) => other,
+        };
+
+        Some(convert!(self, other))
     }
 
     /// Initialize a default value of the given type.

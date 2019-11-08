@@ -310,11 +310,11 @@ impl<'a> Lexer<'a> {
             };
 
             match c {
-                ' ' => break,
-                c => {
+                'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' | '/' => {
                     self.step();
                     self.buf.push(c);
                 }
+                _ => break,
             }
         }
 

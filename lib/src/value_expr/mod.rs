@@ -78,7 +78,7 @@ pub enum ValueExpr {
     Bytes { value: Vec<u8> },
     /// Cast expression.
     #[serde(rename = "as")]
-    As {
+    Cast {
         expr: Box<ValueExpr>,
         #[serde(rename = "as_type")]
         ty: Type,
@@ -91,6 +91,13 @@ impl ValueExpr {
         match self {
             ValueExpr::Value => true,
             _ => false,
+        }
+    }
+
+    pub fn reduced(&self) -> &Self {
+        match self {
+            Self::Cast { expr, .. } => expr.reduced(),
+            other => other,
         }
     }
 
@@ -206,7 +213,37 @@ impl ValueExpr {
             | Self::Mul { lhs, rhs } => lhs
                 .type_of(initial_type, last_type, value_type)
                 .or_else(|| rhs.type_of(initial_type, last_type, value_type)),
-            Self::As { ty, .. } => Some(*ty),
+            Self::Cast { ty, .. } => Some(*ty),
+        }
+    }
+
+    /// Get a type hint for the value type.
+    pub fn value_type_of(
+        &self,
+        initial_type: Option<Type>,
+        last_type: Option<Type>,
+        value_type: Option<Type>,
+    ) -> Option<Type> {
+        match self {
+            Self::Value => value_type,
+            Self::Last => last_type,
+            Self::Initial => initial_type,
+            Self::Number { ty, .. } => Some(ty.unwrap_or(Type::U32)),
+            Self::Decimal { ty, .. } => Some(ty.unwrap_or(Type::F32)),
+            Self::String { value } => Some(Type::String(value.len())),
+            Self::Bytes { value } => Some(Type::Bytes(value.len())),
+            Self::Deref { .. } => None,
+            Self::AddressOf { .. } => Some(Type::Pointer),
+            Self::Add { lhs, rhs }
+            | Self::Sub { lhs, rhs }
+            | Self::Div { lhs, rhs }
+            | Self::Mul { lhs, rhs } => lhs
+                .value_type_of(initial_type, last_type, value_type)
+                .or_else(|| rhs.value_type_of(initial_type, last_type, value_type)),
+            Self::Cast { expr, ty } => match &**expr {
+                Self::Value => Some(*ty),
+                other => other.value_type_of(initial_type, last_type, value_type),
+            },
         }
     }
 
@@ -217,15 +254,15 @@ impl ValueExpr {
         last: &Value,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Value> {
-        match self {
+        match *self {
             Self::Value => Ok(proxy.eval(ty)?),
             Self::Initial => Ok(initial.clone()),
             Self::Last => Ok(last.clone()),
-            Self::Number { value, .. } => Ok(Value::from_bigint(ty, value)?),
-            Self::Decimal { value, .. } => Ok(Value::from_bigdecimal(ty, value)?),
-            Self::String { value } => Ok(Value::String(value.to_owned(), value.len())),
-            Self::Bytes { value } => Ok(Value::Bytes(value.clone())),
-            Self::Deref { value } => {
+            Self::Number { ref value, .. } => Ok(Value::from_bigint(ty, value)?),
+            Self::Decimal { ref value, .. } => Ok(Value::from_bigdecimal(ty, value)?),
+            Self::String { ref value } => Ok(Value::String(value.to_owned(), value.len())),
+            Self::Bytes { ref value } => Ok(Value::Bytes(value.clone())),
+            Self::Deref { ref value } => {
                 let value = value.eval(Type::Pointer, initial, last, proxy)?;
 
                 let new_address = match value {
@@ -237,7 +274,7 @@ impl ValueExpr {
                 let mut proxy = proxy.handle.address_proxy(&pointer);
                 Ok(proxy.eval(ty)?)
             }
-            Self::AddressOf { value } => {
+            Self::AddressOf { ref value } => {
                 let new_address = match value.address_of(initial, last, proxy)? {
                     Some(address) => address,
                     None => return Ok(Value::None(ty)),
@@ -245,23 +282,26 @@ impl ValueExpr {
 
                 Ok(Value::Pointer(new_address))
             }
-            Self::As { expr, .. } => expr.eval(ty, initial, last, proxy),
-            Self::Add { lhs, rhs } => {
+            Self::Cast { ref expr, ty } => {
+                let value = expr.eval(ty, initial, last, proxy)?;
+                Ok(ty.convert(value).unwrap_or_else(|| Value::None(ty)))
+            }
+            Self::Add { ref lhs, ref rhs } => {
                 let lhs = lhs.eval(ty, initial, last, proxy)?;
                 let rhs = rhs.eval(ty, initial, last, proxy)?;
                 Ok(lhs.add(rhs)?.unwrap_or_else(|| Value::None(ty)))
             }
-            Self::Sub { lhs, rhs } => {
+            Self::Sub { ref lhs, ref rhs } => {
                 let lhs = lhs.eval(ty, initial, last, proxy)?;
                 let rhs = rhs.eval(ty, initial, last, proxy)?;
                 Ok(lhs.sub(rhs)?.unwrap_or_else(|| Value::None(ty)))
             }
-            Self::Mul { lhs, rhs } => {
+            Self::Mul { ref lhs, ref rhs } => {
                 let lhs = lhs.eval(ty, initial, last, proxy)?;
                 let rhs = rhs.eval(ty, initial, last, proxy)?;
                 Ok(lhs.mul(rhs)?.unwrap_or_else(|| Value::None(ty)))
             }
-            Self::Div { lhs, rhs } => {
+            Self::Div { ref lhs, ref rhs } => {
                 let lhs = lhs.eval(ty, initial, last, proxy)?;
                 let rhs = rhs.eval(ty, initial, last, proxy)?;
                 Ok(lhs.div(rhs)?.unwrap_or_else(|| Value::None(ty)))
@@ -300,7 +340,7 @@ impl fmt::Display for ValueExpr {
             } => write!(fmt, "{}{}", value, ty),
             Self::String { value } => write!(fmt, "{}", EscapeString(value)),
             Self::Bytes { value } => write!(fmt, "{}", Hex(value)),
-            Self::As { expr, ty } => write!(fmt, "{} as {}", expr, ty),
+            Self::Cast { expr, ty } => write!(fmt, "{} as {}", expr, ty),
         }
     }
 }

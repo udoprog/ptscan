@@ -28,8 +28,9 @@ And: Expression = {
 }
 
 pub ValueExpr: ValueExpr = {
-    <expr:ValueTerm> as <ty:ty> => ValueExpr::As(Box::new(expr), ty),
-    ValueArithmetic,
+    <lhs:ValueArithmetic> "+" <rhs:ValueFactor> => ValueExpr::Add(Box::new(lhs), Box::new(rhs)),
+    <lhs:ValueArithmetic> "-" <rhs:ValueFactor> => ValueExpr::Sub(Box::new(lhs), Box::new(rhs)),
+    ValueFactor,
 }
 
 ValueArithmetic: ValueExpr = {
@@ -39,8 +40,13 @@ ValueArithmetic: ValueExpr = {
 }
 
 ValueFactor: ValueExpr = {
-    <lhs:ValueFactor> "*" <rhs:ValueAddress> => ValueExpr::Mul(Box::new(lhs), Box::new(rhs)),
-    <lhs:ValueFactor> "/" <rhs:ValueAddress> => ValueExpr::Div(Box::new(lhs), Box::new(rhs)),
+    <lhs:ValueFactor> "*" <rhs:ValueCast> => ValueExpr::Mul(Box::new(lhs), Box::new(rhs)),
+    <lhs:ValueFactor> "/" <rhs:ValueCast> => ValueExpr::Div(Box::new(lhs), Box::new(rhs)),
+    ValueCast,
+}
+
+ValueCast: ValueExpr = {
+    <expr:ValueCast> as <ty:ty> => ValueExpr::Cast(Box::new(expr), ty),
     ValueAddress,
 }
 

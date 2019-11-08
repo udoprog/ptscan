@@ -36,7 +36,7 @@ pub enum ValueExpr {
     /// A number of raw bytes.
     Bytes(Vec<u8>),
     /// Casting a value.
-    As(Box<ValueExpr>, Type),
+    Cast(Box<ValueExpr>, Type),
 }
 
 impl ValueExpr {
@@ -90,9 +90,9 @@ impl ValueExpr {
             Self::Deref(value) => Deref {
                 value: Box::new(value.eval(process)?),
             },
-            Self::As(expr, ty) => {
+            Self::Cast(expr, ty) => {
                 let expr = expr.eval(process)?;
-                As {
+                Cast {
                     expr: Box::new(expr),
                     ty,
                 }
@@ -119,7 +119,7 @@ impl fmt::Display for ValueExpr {
             Self::Decimal(decimal, Some(ty)) => write!(fmt, "{}{}", decimal, ty),
             Self::String(s) => EscapeString(s).fmt(fmt),
             Self::Bytes(bytes) => Hex(bytes).fmt(fmt),
-            Self::As(expr, ty) => write!(fmt, "{} as {}", expr, ty),
+            Self::Cast(expr, ty) => write!(fmt, "{} as {}", expr, ty),
         }
     }
 }

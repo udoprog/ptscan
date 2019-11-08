@@ -1596,7 +1596,7 @@ impl Application {
 
         let result = if scan.initial {
             let ty = filter
-                .type_of(None, None, ty)
+                .value_type_of(None, None, ty)
                 .ok_or_else(|| anyhow!("must specify type for initial scan"))?;
 
             let mut c = InitialScanConfig::default();

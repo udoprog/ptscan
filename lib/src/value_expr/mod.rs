@@ -44,6 +44,18 @@ pub enum ValueExpr {
         lhs: Box<ValueExpr>,
         rhs: Box<ValueExpr>,
     },
+    /// multiply two values.
+    #[serde(rename = "mul")]
+    Mul {
+        lhs: Box<ValueExpr>,
+        rhs: Box<ValueExpr>,
+    },
+    /// divide two values.
+    #[serde(rename = "div")]
+    Div {
+        lhs: Box<ValueExpr>,
+        rhs: Box<ValueExpr>,
+    },
     /// A whole number literal.
     #[serde(rename = "number")]
     Number {
@@ -188,10 +200,10 @@ impl ValueExpr {
             Self::Bytes { value } => Some(Type::Bytes(value.len())),
             Self::Deref { .. } => None,
             Self::AddressOf { .. } => Some(Type::Pointer),
-            Self::Add { lhs, rhs } => lhs
-                .type_of(initial_type, last_type, value_type)
-                .or_else(|| rhs.type_of(initial_type, last_type, value_type)),
-            Self::Sub { lhs, rhs } => lhs
+            Self::Add { lhs, rhs }
+            | Self::Sub { lhs, rhs }
+            | Self::Div { lhs, rhs }
+            | Self::Mul { lhs, rhs } => lhs
                 .type_of(initial_type, last_type, value_type)
                 .or_else(|| rhs.type_of(initial_type, last_type, value_type)),
             Self::As { ty, .. } => Some(*ty),
@@ -244,6 +256,16 @@ impl ValueExpr {
                 let rhs = rhs.eval(ty, initial, last, proxy)?;
                 Ok(lhs.sub(rhs)?.unwrap_or_else(|| Value::None(ty)))
             }
+            Self::Mul { lhs, rhs } => {
+                let lhs = lhs.eval(ty, initial, last, proxy)?;
+                let rhs = rhs.eval(ty, initial, last, proxy)?;
+                Ok(lhs.mul(rhs)?.unwrap_or_else(|| Value::None(ty)))
+            }
+            Self::Div { lhs, rhs } => {
+                let lhs = lhs.eval(ty, initial, last, proxy)?;
+                let rhs = rhs.eval(ty, initial, last, proxy)?;
+                Ok(lhs.div(rhs)?.unwrap_or_else(|| Value::None(ty)))
+            }
         }
     }
 }
@@ -264,6 +286,8 @@ impl fmt::Display for ValueExpr {
             Self::AddressOf { value } => write!(fmt, "&{}", value),
             Self::Add { lhs, rhs } => write!(fmt, "{} + {}", lhs, rhs),
             Self::Sub { lhs, rhs } => write!(fmt, "{} - {}", lhs, rhs),
+            Self::Mul { lhs, rhs } => write!(fmt, "{} * {}", lhs, rhs),
+            Self::Div { lhs, rhs } => write!(fmt, "{} / {}", lhs, rhs),
             Self::Number { value, ty: None } => write!(fmt, "{}", value),
             Self::Number {
                 value,

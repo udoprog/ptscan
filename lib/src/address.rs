@@ -7,8 +7,8 @@ use crate::{
 };
 
 use std::{
-    convert::{TryFrom, TryInto},
-    fmt, io, str,
+    convert::{self, TryFrom, TryInto},
+    fmt, io, num, str,
 };
 
 use serde::{Deserialize, Serialize};
@@ -51,6 +51,26 @@ impl Address {
     /// Encode the address in a process-dependent manner.
     pub fn encode(&self, process: &Process, buf: &mut [u8]) -> anyhow::Result<(), Error> {
         Ok(process.encode_pointer(buf, self.0)?)
+    }
+
+    /// Try to add one address to another.
+    pub fn checked_add(self, other: Address) -> Option<Self> {
+        Some(Address(self.0.checked_add(other.0)?))
+    }
+
+    /// Try to subtract one address from another.
+    pub fn checked_sub(self, other: Address) -> Option<Self> {
+        Some(Address(self.0.checked_sub(other.0)?))
+    }
+
+    /// Try to multiply two addresses.
+    pub fn checked_mul(self, other: Address) -> Option<Self> {
+        Some(Address(self.0.checked_mul(other.0)?))
+    }
+
+    /// Try to divide two addresses.
+    pub fn checked_div(self, other: Address) -> Option<Self> {
+        Some(Address(self.0.checked_div(other.0)?))
     }
 
     /// Add an offset in a checked manner.
@@ -210,6 +230,45 @@ impl fmt::Debug for Address {
         fmt::Display::fmt(self, fmt)
     }
 }
+
+macro_rules! try_from_int {
+    ($($ty:ty, $error:ty),*) => {
+        $(
+        impl TryFrom<Address> for $ty {
+            type Error = $error;
+
+            fn try_from(value: Address) -> Result<Self, Self::Error> {
+                <$ty>::try_from(value.0)
+            }
+        }
+        )*
+    }
+}
+
+try_from_int!(
+    u8,
+    num::TryFromIntError,
+    i8,
+    num::TryFromIntError,
+    u16,
+    num::TryFromIntError,
+    i16,
+    num::TryFromIntError,
+    u32,
+    num::TryFromIntError,
+    i32,
+    num::TryFromIntError,
+    u64,
+    convert::Infallible,
+    i64,
+    num::TryFromIntError,
+    u128,
+    convert::Infallible,
+    i128,
+    convert::Infallible,
+    usize,
+    num::TryFromIntError
+);
 
 impl TryFrom<usize> for Address {
     type Error = Error;

@@ -39,6 +39,8 @@ pub enum Token {
     Minus,
     /// `*`
     Star,
+    /// `/`
+    Slash,
     /// `==`.
     Eq,
     /// `!=`.
@@ -329,6 +331,11 @@ impl<'a> Lexer<'a> {
         let mut hex = false;
         let mut decimal = false;
 
+        if let Some((_, '-')) = self.peek() {
+            self.buf.push('-');
+            self.step();
+        }
+
         if let Some((_, '0', 'x')) = self.peek2() {
             hex = true;
             self.step_n(2);
@@ -338,7 +345,6 @@ impl<'a> Lexer<'a> {
 
         while let Some((_, c)) = self.peek() {
             match c {
-                ' ' => break,
                 '0'..='9' | 'a'..='f' | 'A'..='F' if hex => {
                     self.step();
                     self.buf.push(c);
@@ -375,7 +381,7 @@ impl<'a> Lexer<'a> {
                     ty = Some(inferred_ty);
                     break;
                 }
-                _ => return Err(self.err("unexpected character in identifier")),
+                _ => break,
             }
         }
 
@@ -485,13 +491,18 @@ impl<'a> Iterator for Lexer<'a> {
                     let e = self.pos();
                     return Some(Ok((s, Token::Star, e)));
                 }
+                '/' => {
+                    self.step();
+                    let e = self.pos();
+                    return Some(Ok((s, Token::Slash, e)));
+                }
                 '+' => {
                     self.step();
                     let e = self.pos();
                     return Some(Ok((s, Token::Plus, e)));
                 }
                 // NB: special test that `-` is not immediately followed by a number which would be a numeric literal.
-                '-' if !self.c2.map(|(_, c)| !is_numeric(c)).unwrap_or_default() => {
+                '-' if !self.c2.map(|(_, c)| is_numeric(c)).unwrap_or_default() => {
                     self.step();
                     let e = self.pos();
                     return Some(Ok((s, Token::Minus, e)));

@@ -27,7 +27,31 @@ And: Expression = {
     Filter,
 }
 
-InnerValueExpr: ValueExpr = {
+pub ValueExpr: ValueExpr = {
+    <expr:ValueTerm> as <ty:ty> => ValueExpr::As(Box::new(expr), ty),
+    ValueArithmetic,
+}
+
+ValueArithmetic: ValueExpr = {
+    <lhs:ValueArithmetic> "+" <rhs:ValueFactor> => ValueExpr::Add(Box::new(lhs), Box::new(rhs)),
+    <lhs:ValueArithmetic> "-" <rhs:ValueFactor> => ValueExpr::Sub(Box::new(lhs), Box::new(rhs)),
+    ValueFactor,
+}
+
+ValueFactor: ValueExpr = {
+    <lhs:ValueFactor> "*" <rhs:ValueAddress> => ValueExpr::Mul(Box::new(lhs), Box::new(rhs)),
+    <lhs:ValueFactor> "/" <rhs:ValueAddress> => ValueExpr::Div(Box::new(lhs), Box::new(rhs)),
+    ValueAddress,
+}
+
+ValueAddress: ValueExpr = {
+    "(" <value:ValueArithmetic> ")" => value,
+    "*" <expr:ValueAddress> => ValueExpr::Deref(Box::new(expr)),
+    "&" <expr:ValueAddress> => ValueExpr::AddressOf(Box::new(expr)),
+    ValueTerm,
+}
+
+ValueTerm: ValueExpr = {
     value => ValueExpr::Value,
     last => ValueExpr::Last,
     initial => ValueExpr::Initial,
@@ -35,21 +59,7 @@ InnerValueExpr: ValueExpr = {
     <decimal:decimal> => ValueExpr::Decimal(decimal.0, decimal.1),
     <string:"string"> => ValueExpr::String(string),
     <bytes:bytes> => ValueExpr::Bytes(bytes),
-    "&" <expr:InnerValueExpr> => ValueExpr::AddressOf(Box::new(expr)),
-    "*" <expr:InnerValueExpr> => ValueExpr::Deref(Box::new(expr)),
 };
-
-SubAddValueExpr: ValueExpr = {
-    <value:InnerValueExpr> => value,
-    "(" <value:SubAddValueExpr> ")" => value,
-    <lhs:InnerValueExpr> "+" <rhs:SubAddValueExpr> => ValueExpr::Add(Box::new(lhs), Box::new(rhs)),
-    <lhs:InnerValueExpr> "-" <rhs:SubAddValueExpr> => ValueExpr::Sub(Box::new(lhs), Box::new(rhs)),
-};
-
-pub ValueExpr: ValueExpr = {
-    <expr:SubAddValueExpr> => expr,
-    <expr:SubAddValueExpr> as <ty:ty> => ValueExpr::As(Box::new(expr), ty),
-}
 
 Filter: Expression = {
     <expr:ValueExpr> is <ty:ty> => Expression::IsType(expr, ty),
@@ -91,6 +101,7 @@ extern {
         "(" => Token::OpenParen,
         ")" => Token::CloseParen,
         "*" => Token::Star,
+        "/" => Token::Slash,
         "&" => Token::AddressOf,
         "+" => Token::Plus,
         "-" => Token::Minus,

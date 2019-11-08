@@ -13,6 +13,7 @@ use std::{fmt, mem, str};
 macro_rules! numeric_op {
     ($a:ident $op:tt $b:ident, $checked_op:ident) => {
         numeric_op!(@a $a $op $b, $checked_op, {
+            [Pointer, Address],
             [U8, u8],
             [I8, i8],
             [U16, u16],
@@ -27,30 +28,25 @@ macro_rules! numeric_op {
     };
 
     (@a $a:ident $op:tt $b:ident, $checked_op:ident, {$([$variant:ident, $ty:ty]),*}) => {
-        numeric_op!(
-            @b $a $op $b,
-            $checked_op,
-            {
-                $(
-                    [$variant, $ty],
-                    [U8, I8, U16, I16, U32, I32, U64, I64, U128, I128]
-                ),*
-            }
-        )
-    };
-
-    (@b $a:ident $op:tt $b:ident, $checked_op:ident, {$([$variant:ident, $ty:ty], [$($variant2:ident),*]),*}) => {
         match $a {
             $(
-                Self::$variant(lhs) => match $b {
-                    $(
-                        Self::$variant2(rhs) => {
-                            lhs.$checked_op(<$ty>::try_from(rhs)?).map(Self::$variant)
-                        },
-                    )+
-                    _ => bail!("bad operation: {} {} {}", $a.ty(), stringify!($op), $b.ty()),
-                }
+                Self::$variant(lhs) => numeric_op!(
+                    @b lhs, $ty, $variant, $a $op $b,
+                    $checked_op,
+                    [Pointer, U8, I8, U16, I16, U32, I32, U64, I64, U128, I128]
+                ),
             )*
+            _ => bail!("bad operation: {} {} {}", $a.ty(), stringify!($op), $b.ty()),
+        }
+    };
+
+    (@b $lhs:ident, $ty:ty, $variant:ident, $a:ident $op:tt $b:ident, $checked_op:ident, [$($variant2:ident),*]) => {
+        match $b {
+            $(
+                Self::$variant2(rhs) => {
+                    $lhs.$checked_op(<$ty>::try_from(rhs)?).map(Self::$variant)
+                },
+            )+
             _ => bail!("bad operation: {} {} {}", $a.ty(), stringify!($op), $b.ty()),
         }
     };
@@ -355,6 +351,16 @@ impl Value {
     pub fn sub(self, rhs: Value) -> anyhow::Result<Option<Value>> {
         let lhs = self;
         Ok(numeric_op!(lhs - rhs, checked_sub))
+    }
+
+    pub fn mul(self, rhs: Value) -> anyhow::Result<Option<Value>> {
+        let lhs = self;
+        Ok(numeric_op!(lhs - rhs, checked_mul))
+    }
+
+    pub fn div(self, rhs: Value) -> anyhow::Result<Option<Value>> {
+        let lhs = self;
+        Ok(numeric_op!(lhs - rhs, checked_div))
     }
 }
 

@@ -23,6 +23,10 @@ pub enum ValueExpr {
     Add(Box<ValueExpr>, Box<ValueExpr>),
     /// subtract two values.
     Sub(Box<ValueExpr>, Box<ValueExpr>),
+    /// multiply two values.
+    Mul(Box<ValueExpr>, Box<ValueExpr>),
+    /// divide two values.
+    Div(Box<ValueExpr>, Box<ValueExpr>),
     /// A whole number literal.
     Number(BigInt, Option<Type>),
     /// A decimal literal.
@@ -60,6 +64,22 @@ impl ValueExpr {
                     rhs: Box::new(rhs),
                 }
             }
+            Self::Mul(lhs, rhs) => {
+                let lhs = lhs.eval(process)?;
+                let rhs = rhs.eval(process)?;
+                Mul {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                }
+            }
+            Self::Div(lhs, rhs) => {
+                let lhs = lhs.eval(process)?;
+                let rhs = rhs.eval(process)?;
+                Div {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                }
+            }
             Self::Number(value, ty) => Number { value, ty },
             Self::Decimal(value, ty) => Decimal { value, ty },
             Self::String(value) => String { value },
@@ -91,6 +111,8 @@ impl fmt::Display for ValueExpr {
             Self::Deref(expr) => write!(fmt, "*{}", expr),
             Self::Add(lhs, rhs) => write!(fmt, "{} + {}", lhs, rhs),
             Self::Sub(lhs, rhs) => write!(fmt, "{} - {}", lhs, rhs),
+            Self::Mul(lhs, rhs) => write!(fmt, "{} * {}", lhs, rhs),
+            Self::Div(lhs, rhs) => write!(fmt, "{} / {}", lhs, rhs),
             Self::Number(number, Some(ty)) => write!(fmt, "{}{}", number, ty),
             Self::Number(number, None) => write!(fmt, "{}", number),
             Self::Decimal(decimal, None) => write!(fmt, "{}", decimal),

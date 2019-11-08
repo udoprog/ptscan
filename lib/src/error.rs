@@ -1,5 +1,6 @@
 use crate::{
     address::{Address, Size},
+    filter::Binary,
     ProcessId, ThreadId, Type, ValueExpr,
 };
 use std::io;
@@ -73,6 +74,8 @@ pub enum Error {
     PointerConversionError,
     #[error("cannot determine type of: {0}")]
     TypeInference(ValueExpr),
+    #[error("cannot determine type of: {0}")]
+    BinaryTypeInference(Binary),
     #[error("this error literally cannot happen")]
     Infallible,
 }

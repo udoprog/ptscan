@@ -1,5 +1,5 @@
 // vim: ft=rust
-use crate::{Type, filter::{lexer::Token, ast::*}, value_expr::ast::*};
+use crate::{Type, filter::{lexer::Token, ast::*}, value_expr::{ValueOp, ast::*}};
 use num_bigint::BigInt;
 use bigdecimal::BigDecimal;
 
@@ -28,20 +28,14 @@ And: Expression = {
 }
 
 pub ValueExpr: ValueExpr = {
-    <lhs:ValueArithmetic> "+" <rhs:ValueFactor> => ValueExpr::Add(Box::new(lhs), Box::new(rhs)),
-    <lhs:ValueArithmetic> "-" <rhs:ValueFactor> => ValueExpr::Sub(Box::new(lhs), Box::new(rhs)),
-    ValueFactor,
-}
-
-ValueArithmetic: ValueExpr = {
-    <lhs:ValueArithmetic> "+" <rhs:ValueFactor> => ValueExpr::Add(Box::new(lhs), Box::new(rhs)),
-    <lhs:ValueArithmetic> "-" <rhs:ValueFactor> => ValueExpr::Sub(Box::new(lhs), Box::new(rhs)),
+    <lhs:ValueExpr> "+" <rhs:ValueFactor> => ValueExpr::Binary(ValueOp::Add, Box::new(lhs), Box::new(rhs)),
+    <lhs:ValueExpr> "-" <rhs:ValueFactor> => ValueExpr::Binary(ValueOp::Sub, Box::new(lhs), Box::new(rhs)),
     ValueFactor,
 }
 
 ValueFactor: ValueExpr = {
-    <lhs:ValueFactor> "*" <rhs:ValueCast> => ValueExpr::Mul(Box::new(lhs), Box::new(rhs)),
-    <lhs:ValueFactor> "/" <rhs:ValueCast> => ValueExpr::Div(Box::new(lhs), Box::new(rhs)),
+    <lhs:ValueFactor> "*" <rhs:ValueCast> => ValueExpr::Binary(ValueOp::Mul, Box::new(lhs), Box::new(rhs)),
+    <lhs:ValueFactor> "/" <rhs:ValueCast> => ValueExpr::Binary(ValueOp::Div, Box::new(lhs), Box::new(rhs)),
     ValueCast,
 }
 
@@ -51,7 +45,7 @@ ValueCast: ValueExpr = {
 }
 
 ValueAddress: ValueExpr = {
-    "(" <value:ValueArithmetic> ")" => value,
+    "(" <value:ValueExpr> ")" => value,
     "*" <expr:ValueAddress> => ValueExpr::Deref(Box::new(expr)),
     "&" <expr:ValueAddress> => ValueExpr::AddressOf(Box::new(expr)),
     ValueTerm,

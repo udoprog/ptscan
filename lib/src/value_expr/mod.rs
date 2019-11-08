@@ -14,6 +14,41 @@ use std::fmt;
 
 pub(crate) mod ast;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ValueOp {
+    #[serde(rename = "add")]
+    Add,
+    #[serde(rename = "sub")]
+    Sub,
+    #[serde(rename = "mul")]
+    Mul,
+    #[serde(rename = "div")]
+    Div,
+}
+
+impl ValueOp {
+    /// Apply the operation to the two arguments.
+    pub fn apply(self, lhs: Value, rhs: Value) -> anyhow::Result<Option<Value>> {
+        match self {
+            Self::Add => lhs.add(rhs),
+            Self::Sub => lhs.sub(rhs),
+            Self::Mul => lhs.mul(rhs),
+            Self::Div => lhs.div(rhs),
+        }
+    }
+}
+
+impl fmt::Display for ValueOp {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Add => "+".fmt(fmt),
+            Self::Sub => "-".fmt(fmt),
+            Self::Mul => "*".fmt(fmt),
+            Self::Div => "/".fmt(fmt),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ValueExpr {
@@ -33,26 +68,9 @@ pub enum ValueExpr {
     #[serde(rename = "address-of")]
     AddressOf { value: Box<ValueExpr> },
     /// add two values together
-    #[serde(rename = "add")]
-    Add {
-        lhs: Box<ValueExpr>,
-        rhs: Box<ValueExpr>,
-    },
-    /// subtract two values.
-    #[serde(rename = "sub")]
-    Sub {
-        lhs: Box<ValueExpr>,
-        rhs: Box<ValueExpr>,
-    },
-    /// multiply two values.
-    #[serde(rename = "mul")]
-    Mul {
-        lhs: Box<ValueExpr>,
-        rhs: Box<ValueExpr>,
-    },
-    /// divide two values.
-    #[serde(rename = "div")]
-    Div {
+    #[serde(rename = "binary")]
+    Binary {
+        op: ValueOp,
         lhs: Box<ValueExpr>,
         rhs: Box<ValueExpr>,
     },
@@ -200,8 +218,8 @@ impl ValueExpr {
         initial_type: Option<Type>,
         last_type: Option<Type>,
         value_type: Option<Type>,
-    ) -> Option<Type> {
-        match self {
+    ) -> anyhow::Result<Option<Type>> {
+        Ok(match self {
             Self::Value => value_type,
             Self::Last => last_type,
             Self::Initial => initial_type,
@@ -211,33 +229,47 @@ impl ValueExpr {
             Self::Bytes { value } => Some(Type::Bytes(value.len())),
             Self::Deref { .. } => None,
             Self::AddressOf { .. } => Some(Type::Pointer),
-            Self::Add { lhs, rhs }
-            | Self::Sub { lhs, rhs }
-            | Self::Div { lhs, rhs }
-            | Self::Mul { lhs, rhs } => lhs
-                .type_of(initial_type, last_type, value_type)
-                .or_else(|| rhs.type_of(initial_type, last_type, value_type)),
+            Self::Binary { op, lhs, rhs } => {
+                let lhs_type = lhs.type_of(initial_type, last_type, value_type)?;
+                let rhs_type = rhs.type_of(initial_type, last_type, value_type)?;
+
+                match (lhs_type, rhs_type) {
+                    (Some(lhs_type), Some(rhs_type)) if lhs_type == rhs_type => Some(lhs_type),
+                    (Some(lhs_type), Some(rhs_type)) => bail!(
+                        "incompatible types in expression: {} {} {}",
+                        lhs_type,
+                        op,
+                        rhs_type
+                    ),
+                    (Some(expr_type), None) => Some(expr_type),
+                    (None, Some(expr_type)) => Some(expr_type),
+                    _ => None,
+                }
+            }
             Self::Cast { ty, .. } => Some(*ty),
-        }
+        })
     }
 
     /// Get a type hint for the value type.
-    pub fn value_type_of(&self) -> Option<Type> {
-        match self {
+    pub fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
+        Ok(match self {
             Self::Deref { value, .. } => match &**value {
                 Self::Value => Some(Type::Pointer),
-                other => other.value_type_of(),
+                other => other.value_type_of()?,
             },
-            Self::Add { lhs, rhs }
-            | Self::Sub { lhs, rhs }
-            | Self::Div { lhs, rhs }
-            | Self::Mul { lhs, rhs } => lhs.value_type_of().or_else(|| rhs.value_type_of()),
+            Self::Binary { lhs, rhs, .. } => {
+                if let Some(lhs) = lhs.value_type_of()? {
+                    return Ok(Some(lhs));
+                }
+
+                rhs.value_type_of()?
+            }
             Self::Cast { expr, ty } => match &**expr {
                 Self::Value => Some(*ty),
-                other => other.value_type_of(),
+                other => other.value_type_of()?,
             },
             _ => None,
-        }
+        })
     }
 
     pub fn eval(
@@ -282,25 +314,16 @@ impl ValueExpr {
                 let value = ty.convert(value).unwrap_or_else(|| Value::None(ty));
                 Ok(value)
             }
-            Self::Add { ref lhs, ref rhs } => {
+            Self::Binary {
+                ref lhs,
+                ref rhs,
+                op,
+            } => {
                 let lhs = lhs.eval(initial, last, value_type, expr_type, proxy)?;
                 let rhs = rhs.eval(initial, last, value_type, expr_type, proxy)?;
-                Ok(lhs.add(rhs)?.unwrap_or_else(|| Value::None(Type::None)))
-            }
-            Self::Sub { ref lhs, ref rhs } => {
-                let lhs = lhs.eval(initial, last, value_type, expr_type, proxy)?;
-                let rhs = rhs.eval(initial, last, value_type, expr_type, proxy)?;
-                Ok(lhs.sub(rhs)?.unwrap_or_else(|| Value::None(Type::None)))
-            }
-            Self::Mul { ref lhs, ref rhs } => {
-                let lhs = lhs.eval(initial, last, value_type, expr_type, proxy)?;
-                let rhs = rhs.eval(initial, last, value_type, expr_type, proxy)?;
-                Ok(lhs.mul(rhs)?.unwrap_or_else(|| Value::None(Type::None)))
-            }
-            Self::Div { ref lhs, ref rhs } => {
-                let lhs = lhs.eval(initial, last, value_type, expr_type, proxy)?;
-                let rhs = rhs.eval(initial, last, value_type, expr_type, proxy)?;
-                Ok(lhs.div(rhs)?.unwrap_or_else(|| Value::None(Type::None)))
+                Ok(op
+                    .apply(lhs, rhs)?
+                    .unwrap_or_else(|| Value::None(Type::None)))
             }
         }
     }
@@ -320,10 +343,7 @@ impl fmt::Display for ValueExpr {
             Self::Initial => "initial".fmt(fmt),
             Self::Deref { value } => write!(fmt, "*{}", value),
             Self::AddressOf { value } => write!(fmt, "&{}", value),
-            Self::Add { lhs, rhs } => write!(fmt, "{} + {}", lhs, rhs),
-            Self::Sub { lhs, rhs } => write!(fmt, "{} - {}", lhs, rhs),
-            Self::Mul { lhs, rhs } => write!(fmt, "{} * {}", lhs, rhs),
-            Self::Div { lhs, rhs } => write!(fmt, "{} / {}", lhs, rhs),
+            Self::Binary { op, lhs, rhs } => write!(fmt, "{} {} {}", lhs, op, rhs),
             Self::Number { value, ty: None } => write!(fmt, "{}", value),
             Self::Number {
                 value,

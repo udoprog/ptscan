@@ -5,8 +5,9 @@ use crate::{
     value,
     value::Value,
     value_expr::ValueExpr,
-    Address, AddressProxy, AddressRange, Type,
+    AddressProxy, AddressRange, Type,
 };
+use anyhow::bail;
 use num_bigint::Sign;
 use std::fmt;
 
@@ -69,25 +70,7 @@ impl Filter {
         Ok(Filter::IsPointer(IsPointer::new(expr, process)?))
     }
 
-    pub fn type_of(
-        &self,
-        initial_type: Option<Type>,
-        last_type: Option<Type>,
-        value_type: Option<Type>,
-    ) -> Option<Type> {
-        match self {
-            Self::Binary(m) => m.type_of(initial_type, last_type, value_type),
-            Self::All(m) => m.type_of(initial_type, last_type, value_type),
-            Self::Any(m) => m.type_of(initial_type, last_type, value_type),
-            Self::IsPointer(m) => m.type_of(initial_type, last_type, value_type),
-            Self::IsType(m) => m.type_of(initial_type, last_type, value_type),
-            Self::IsNan(m) => m.type_of(initial_type, last_type, value_type),
-            Self::Not(m) => m.type_of(initial_type, last_type, value_type),
-            Self::Regex(m) => m.type_of(initial_type, last_type, value_type),
-        }
-    }
-
-    pub fn value_type_of(&self) -> Option<Type> {
+    pub fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
         match self {
             Self::Binary(m) => m.value_type_of(),
             Self::All(m) => m.value_type_of(),
@@ -155,33 +138,26 @@ impl fmt::Display for Filter {
 pub struct Binary(Op, ValueExpr, ValueExpr);
 
 impl Binary {
-    fn type_of(
-        &self,
-        initial_type: Option<Type>,
-        last_type: Option<Type>,
-        value_type: Option<Type>,
-    ) -> Option<Type> {
-        self.1
-            .type_of(initial_type, last_type, value_type)
-            .or_else(|| self.2.type_of(initial_type, last_type, value_type))
-    }
-
-    fn value_type_of(&self) -> Option<Type> {
+    fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
         // comparison including value.
         let Binary(_, lhs, rhs) = self;
 
         // explicit value type
-        if let Some(value_type) = lhs.value_type_of().or_else(|| rhs.value_type_of()) {
-            return Some(value_type);
+        if let Some(value_type) = lhs.value_type_of()? {
+            return Ok(Some(value_type));
         }
 
-        match (lhs, rhs) {
+        if let Some(value_type) = rhs.value_type_of()? {
+            return Ok(Some(value_type));
+        }
+
+        Ok(match (lhs, rhs) {
             (ValueExpr::Value, ValueExpr::Value) => None,
             (ValueExpr::Value, other) | (other, ValueExpr::Value) => {
-                other.type_of(None, None, None)
+                other.type_of(None, None, None)?
             }
             _ => None,
-        }
+        })
     }
 
     fn test(
@@ -191,88 +167,54 @@ impl Binary {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        macro_rules! binary_numeric {
-            ($expr:expr, $ty:ty, $a:ident $op:tt $b:ident) => {
-                match $expr {
-                    Value::None(..) => return Ok(Test::Undefined),
-                    Value::Pointer(Address($b)) => $a $op ($b as $ty),
-                    Value::U128($b) => $a $op ($b as $ty),
-                    Value::U64($b) => $a $op ($b as $ty),
-                    Value::U32($b) => $a $op ($b as $ty),
-                    Value::U16($b) => $a $op ($b as $ty),
-                    Value::U8($b) => $a $op ($b as $ty),
-                    Value::I128($b) => $a $op ($b as $ty),
-                    Value::I64($b) => $a $op ($b as $ty),
-                    Value::I32($b) => $a $op ($b as $ty),
-                    Value::I16($b) => $a $op ($b as $ty),
-                    Value::I8($b) => $a $op ($b as $ty),
-                    Value::F32($b) => $a $op ($b as $ty),
-                    Value::F64($b) => $a $op ($b as $ty),
-                    Value::String(..) => false,
-                    Value::Bytes(..) => false,
-                }
-            }
-        }
-
         macro_rules! binary {
             ($expr_a:expr, $expr_b:expr, $a:ident $op:tt $b:ident) => {
-                match $expr_a {
-                    Value::Pointer(Address($a)) => binary_numeric!($expr_b, u64, $a $op $b),
-                    Value::U128($a) => binary_numeric!($expr_b, u128, $a $op $b),
-                    Value::U64($a) => binary_numeric!($expr_b, u64, $a $op $b),
-                    Value::U32($a) => binary_numeric!($expr_b, u32, $a $op $b),
-                    Value::U16($a) => binary_numeric!($expr_b, u16, $a $op $b),
-                    Value::U8($a) => binary_numeric!($expr_b, u8, $a $op $b),
-                    Value::I128($a) => binary_numeric!($expr_b, i128, $a $op $b),
-                    Value::I64($a) => binary_numeric!($expr_b, i64, $a $op $b),
-                    Value::I32($a) => binary_numeric!($expr_b, i32, $a $op $b),
-                    Value::I16($a) => binary_numeric!($expr_b, i16, $a $op $b),
-                    Value::I8($a) => binary_numeric!($expr_b, i8, $a $op $b),
-                    Value::F32($a) => binary_numeric!($expr_b, f32, $a $op $b),
-                    Value::F64($a) => binary_numeric!($expr_b, f64, $a $op $b),
-                    Value::String($a, ..) => match $expr_b {
-                        Value::Bytes($b) => {
-                            let len = usize::min($a.len(), $b.len());
-                            let $a = &$a.as_bytes()[..len];
-                            let $b = &$b[..len];
-                            $a $op $b
-                        },
-                        Value::String($b, ..) => $a $op $b,
-                        _ => false,
-                    },
-                    Value::Bytes($a) => match $expr_b {
-                        Value::Bytes($b) => {
-                            let len = usize::min($a.len(), $b.len());
-                            let $a = &$a[..len];
-                            let $b = &$b[..len];
-                            $a $op $b
-                        },
-                        Value::String($b, ..) => {
-                            let len = usize::min($a.len(), $b.len());
-                            let $a = &$a[..len];
-                            let $b = &$b.as_bytes()[..len];
-                            $a $op $b
-                        },
-                        Value::None(..) => return Ok(Test::Undefined),
-                        _ => false,
-                    },
-                    Value::None(..) => return Ok(Test::Undefined),
+                match ($expr_a, $expr_b) {
+                    (Value::None(..), _) => return Ok(Test::Undefined),
+                    (_, Value::None(..)) => return Ok(Test::Undefined),
+                    (Value::Pointer($a), Value::Pointer($b)) => $a $op $b,
+                    (Value::U8($a), Value::U8($b)) => $a $op $b,
+                    (Value::I8($a), Value::I8($b)) => $a $op $b,
+                    (Value::U16($a), Value::U16($b)) => $a $op $b,
+                    (Value::I16($a), Value::I16($b)) => $a $op $b,
+                    (Value::U32($a), Value::U32($b)) => $a $op $b,
+                    (Value::I32($a), Value::I32($b)) => $a $op $b,
+                    (Value::U64($a), Value::U64($b)) => $a $op $b,
+                    (Value::I64($a), Value::I64($b)) => $a $op $b,
+                    (Value::U128($a), Value::U128($b)) => $a $op $b,
+                    (Value::I128($a), Value::I128($b)) => $a $op $b,
+                    (Value::String($a, ..), Value::String($b, ..)) => $a $op $b,
+                    (Value::Bytes($a), Value::Bytes($b)) => $a $op $b,
+                    _ => false,
                 }
             };
         }
 
         let Binary(op, lhs, rhs) = self;
 
-        let lhs_type = lhs
-            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))
-            .ok_or_else(|| Error::TypeInference(lhs.clone()))?;
+        let lhs_type = lhs.type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?;
+        let rhs_type = rhs.type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?;
 
-        let rhs_type = rhs
-            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))
-            .ok_or_else(|| Error::TypeInference(rhs.clone()))?;
+        let expr_type = match (lhs_type, rhs_type) {
+            (Some(lhs_type), Some(rhs_type)) => {
+                if lhs_type != rhs_type {
+                    bail!(
+                        "incompatible types in expression: {} {} {}",
+                        lhs_type,
+                        op,
+                        rhs_type
+                    )
+                }
 
-        let lhs = lhs.eval(initial, last, value_type, lhs_type, proxy)?;
-        let rhs = rhs.eval(initial, last, value_type, rhs_type, proxy)?;
+                lhs_type
+            }
+            (Some(expr_type), None) => expr_type,
+            (None, Some(expr_type)) => expr_type,
+            _ => return Err(Error::BinaryTypeInference(self.clone()).into()),
+        };
+
+        let lhs = lhs.eval(initial, last, value_type, expr_type, proxy)?;
+        let rhs = rhs.eval(initial, last, value_type, expr_type, proxy)?;
 
         // NB: we treat 'none' specially:
         // The only allowed match on none is to compare against something which is strictly not equal to it, like value != none.
@@ -311,7 +253,7 @@ impl Binary {
         use self::ValueExpr::*;
         use self::ValueTrait::*;
 
-        let Binary(op, lhs, rhs) = self;
+        let self::Binary(op, lhs, rhs) = self;
 
         let exact = match (op, lhs.reduced(), rhs.reduced()) {
             (Op::Eq, Number { value, .. }, Value) | (Op::Eq, Value, Number { value, .. }) => {
@@ -385,20 +327,14 @@ impl fmt::Display for Binary {
 pub struct All(Vec<Filter>);
 
 impl All {
-    fn type_of(
-        &self,
-        initial_type: Option<Type>,
-        last_type: Option<Type>,
-        value_type: Option<Type>,
-    ) -> Option<Type> {
-        self.0
-            .iter()
-            .flat_map(|m| m.type_of(initial_type, last_type, value_type))
-            .next()
-    }
+    fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
+        for v in &self.0 {
+            if let Some(ty) = v.value_type_of()? {
+                return Ok(Some(ty));
+            }
+        }
 
-    fn value_type_of(&self) -> Option<Type> {
-        self.0.iter().flat_map(|m| m.value_type_of()).next()
+        Ok(None)
     }
 
     pub fn new(filters: impl IntoIterator<Item = Filter>) -> Self {
@@ -461,20 +397,14 @@ impl fmt::Display for All {
 pub struct Any(Vec<Filter>);
 
 impl Any {
-    fn type_of(
-        &self,
-        initial_type: Option<Type>,
-        last_type: Option<Type>,
-        value_type: Option<Type>,
-    ) -> Option<Type> {
-        self.0
-            .iter()
-            .flat_map(|m| m.type_of(initial_type, last_type, value_type))
-            .next()
-    }
+    fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
+        for v in &self.0 {
+            if let Some(ty) = v.value_type_of()? {
+                return Ok(Some(ty));
+            }
+        }
 
-    fn value_type_of(&self) -> Option<Type> {
-        self.0.iter().flat_map(|m| m.value_type_of()).next()
+        Ok(None)
     }
 
     pub fn new(filters: impl IntoIterator<Item = Filter>) -> Self {
@@ -557,15 +487,11 @@ impl IsPointer {
         })
     }
 
-    fn type_of(&self, _: Option<Type>, _: Option<Type>, _: Option<Type>) -> Option<Type> {
-        Some(Type::Pointer)
-    }
-
-    fn value_type_of(&self) -> Option<Type> {
-        match self.expr {
+    fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
+        Ok(match self.expr {
             ValueExpr::Value => Some(Type::Pointer),
             _ => None,
-        }
+        })
     }
 
     pub fn test(
@@ -577,7 +503,7 @@ impl IsPointer {
     ) -> anyhow::Result<Test> {
         let expr_type = self
             .expr
-            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))
+            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
 
         let value = self
@@ -618,15 +544,11 @@ impl IsType {
         Ok(Self { expr, ty })
     }
 
-    fn type_of(&self, _: Option<Type>, _: Option<Type>, _: Option<Type>) -> Option<Type> {
-        Some(self.ty)
-    }
-
-    fn value_type_of(&self) -> Option<Type> {
-        match self.expr {
+    fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
+        Ok(match self.expr {
             ValueExpr::Value => Some(self.ty),
             _ => None,
-        }
+        })
     }
 
     pub fn test(
@@ -638,7 +560,7 @@ impl IsType {
     ) -> anyhow::Result<Test> {
         let expr_type = self
             .expr
-            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))
+            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
 
         let value = self
@@ -668,21 +590,8 @@ impl IsNan {
         Ok(Some(Special::NonZero(value_type.size(process))))
     }
 
-    fn type_of(
-        &self,
-        initial_type: Option<Type>,
-        last_type: Option<Type>,
-        value_type: Option<Type>,
-    ) -> Option<Type> {
-        Some(
-            self.expr
-                .type_of(initial_type, last_type, value_type)
-                .unwrap_or(Type::F32),
-        )
-    }
-
-    fn value_type_of(&self) -> Option<Type> {
-        Some(self.expr.value_type_of().unwrap_or(Type::F32))
+    fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
+        Ok(Some(self.expr.value_type_of()?.unwrap_or(Type::F32)))
     }
 
     pub fn test(
@@ -694,7 +603,7 @@ impl IsNan {
     ) -> anyhow::Result<Test> {
         let expr_type = self
             .expr
-            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))
+            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
 
         let value = self
@@ -728,16 +637,7 @@ impl Regex {
         Self { expr, regex }
     }
 
-    fn type_of(
-        &self,
-        initial_type: Option<Type>,
-        last_type: Option<Type>,
-        value_type: Option<Type>,
-    ) -> Option<Type> {
-        self.expr.type_of(initial_type, last_type, value_type)
-    }
-
-    fn value_type_of(&self) -> Option<Type> {
+    fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
         self.expr.value_type_of()
     }
 
@@ -750,7 +650,7 @@ impl Regex {
     ) -> anyhow::Result<Test> {
         let expr_type = self
             .expr
-            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))
+            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
 
         let value = self
@@ -794,16 +694,7 @@ impl Not {
         Ok(self.filter.test(initial, last, value_type, proxy)?.invert())
     }
 
-    fn type_of(
-        &self,
-        initial_type: Option<Type>,
-        last_type: Option<Type>,
-        value_type: Option<Type>,
-    ) -> Option<Type> {
-        self.filter.type_of(initial_type, last_type, value_type)
-    }
-
-    fn value_type_of(&self) -> Option<Type> {
+    fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
         self.filter.value_type_of()
     }
 

@@ -481,7 +481,7 @@ impl ProcessHandle {
                                 let last = result.last();
 
                                 let expr_type = expr
-                                    .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))
+                                    .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?
                                     .ok_or_else(|| Error::TypeInference(expr.clone()))?;
 
                                 let value =

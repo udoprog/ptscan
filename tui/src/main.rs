@@ -621,8 +621,6 @@ impl Application {
                     scan.value_expr = ValueExpr::parse(expr, &handle.process)?;
                 };
 
-                let ty = scan.value_expr.type_of(None, None, ty);
-
                 handle.refresh_values(
                     &self.thread_pool,
                     results,
@@ -1608,9 +1606,12 @@ impl Application {
         } = *self;
 
         let result = if scan.initial {
-            let ty = ty
-                .or_else(|| filter.value_type_of())
-                .ok_or_else(|| anyhow!("cannot determine type of value"))?;
+            let ty = match ty {
+                Some(ty) => ty,
+                None => filter
+                    .value_type_of()?
+                    .ok_or_else(|| anyhow!("cannot determine type of value"))?,
+            };
 
             let mut c = InitialScanConfig::default();
             c.modules_only = config.modules_only;

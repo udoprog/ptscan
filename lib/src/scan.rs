@@ -359,7 +359,7 @@ impl Scan {
                 align(&mut inner_offset, type_size);
             }
 
-            let mut last = None;
+            let mut last_address = None;
 
             while inner_offset < data.len() && !cancel.test() {
                 let address = base.add(Size::try_from(inner_offset)?)?;
@@ -367,17 +367,17 @@ impl Scan {
                     Pointer::new(PointerBase::Address { address }, vec![], Some(address));
                 let proxy = handle.address_proxy(&pointer);
 
-                if let Some(last) = last {
-                    assert!(address > last, "address must always increase");
+                if let Some(last_address) = last_address {
+                    assert!(address > last_address, "address must always increase");
                 }
 
-                last = Some(address);
+                last_address = Some(address);
 
                 if let Test::True = filter.test(ty, none, none, proxy)? {
                     *hits += 1;
-                    let (last_address, value) = proxy.eval(ty)?;
+                    let value = proxy.eval(ty)?;
                     pointer.base = handle.address_to_pointer_base(address)?;
-                    pointer.last_address = last_address;
+                    pointer.last_address = Some(address);
                     results.push(Box::new(ScanResult::new(pointer, value)));
                 }
 

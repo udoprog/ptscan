@@ -557,7 +557,10 @@ impl Application {
                 let ty = ty.unwrap_or(Type::U32);
 
                 let (last_address, value) = match self.handle.as_ref() {
-                    Some(handle) => handle.address_proxy(&pointer).eval(ty)?,
+                    Some(handle) => {
+                        let proxy = handle.address_proxy(&pointer);
+                        (proxy.follow_default()?, proxy.eval(ty)?)
+                    }
                     None => (None, Value::None(ty)),
                 };
 

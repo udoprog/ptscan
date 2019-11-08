@@ -343,9 +343,9 @@ impl ProcessHandle {
                                 if let Test::True =
                                     filter.test(ty, result.initial(), result.last(), proxy)?
                                 {
-                                    let (last_address, value) = proxy.eval(ty)?;
+                                    let value = proxy.eval(ty)?;
                                     result.last = Some(value);
-                                    result.pointer.last_address = last_address;
+                                    result.pointer.last_address = proxy.follow_default()?;
                                     return Ok(Task::Accepted);
                                 }
 
@@ -475,11 +475,11 @@ impl ProcessHandle {
 
                             let mut work = move || {
                                 let proxy = self.address_proxy(&result.pointer);
-                                let (address, value) =
+                                let value =
                                     expr.eval(ty, result.initial(), result.last(), proxy)?;
                                 result.initial = value;
                                 result.last = None;
-                                result.pointer.last_address = address;
+                                result.pointer.last_address = proxy.follow_default()?;
                                 Ok(false)
                             };
 
@@ -536,7 +536,7 @@ pub struct AddressProxy<'a> {
 
 impl AddressProxy<'_> {
     /// Evaluate the pointer of the proxy.
-    pub fn eval(&self, ty: Type) -> anyhow::Result<(Option<Address>, Value)> {
+    pub fn eval(&self, ty: Type) -> anyhow::Result<Value> {
         let mut buf = vec![0u8; ty.size(&self.handle.process)];
 
         if let Some(memory_cache) = self.memory_cache {
@@ -546,7 +546,7 @@ impl AddressProxy<'_> {
 
             let address = match address {
                 Some(address) => address,
-                None => return Ok((None, Value::None(ty))),
+                None => return Ok(Value::None(ty)),
             };
 
             let value =
@@ -559,13 +559,13 @@ impl AddressProxy<'_> {
                     Value::None(ty)
                 };
 
-            Ok((Some(address), value))
+            Ok(value)
         } else {
             let address = self.pointer.follow_default(self.handle)?;
 
             let address = match address {
                 Some(address) => address,
-                None => return Ok((None, Value::None(ty))),
+                None => return Ok(Value::None(ty)),
             };
 
             let value = if self.handle.process.read_process_memory(address, &mut buf)? {
@@ -577,7 +577,7 @@ impl AddressProxy<'_> {
                 Value::None(ty)
             };
 
-            Ok((Some(address), value))
+            Ok(value)
         }
     }
 

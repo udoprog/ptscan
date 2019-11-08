@@ -144,8 +144,7 @@ impl ValueExpr {
         match self {
             Self::Value => Ok(proxy.follow_default()?),
             Self::Deref { value } => {
-                let (_, value) = value.eval(Type::Pointer, initial, last, proxy)?;
-
+                let value = value.eval(Type::Pointer, initial, last, proxy)?;
                 Ok(Some(value.as_address()?))
             }
             other => bail!("cannot get address of: {}", other),
@@ -185,21 +184,21 @@ impl ValueExpr {
         initial: &Value,
         last: &Value,
         proxy: AddressProxy<'_>,
-    ) -> anyhow::Result<(Option<Address>, Value)> {
+    ) -> anyhow::Result<Value> {
         match self {
             Self::Value => Ok(proxy.eval(ty)?),
-            Self::Initial => Ok((None, initial.clone())),
-            Self::Last => Ok((None, last.clone())),
-            Self::Number { value, .. } => Ok((None, Value::from_bigint(ty, value)?)),
-            Self::Decimal { value, .. } => Ok((None, Value::from_bigdecimal(ty, value)?)),
-            Self::String { value } => Ok((None, Value::String(value.to_owned(), value.len()))),
-            Self::Bytes { value } => Ok((None, Value::Bytes(value.clone()))),
+            Self::Initial => Ok(initial.clone()),
+            Self::Last => Ok(last.clone()),
+            Self::Number { value, .. } => Ok(Value::from_bigint(ty, value)?),
+            Self::Decimal { value, .. } => Ok(Value::from_bigdecimal(ty, value)?),
+            Self::String { value } => Ok(Value::String(value.to_owned(), value.len())),
+            Self::Bytes { value } => Ok(Value::Bytes(value.clone())),
             Self::Deref { value } => {
                 let value = value.eval(Type::Pointer, initial, last, proxy)?;
 
                 let new_address = match value {
-                    (_, Value::Pointer(address)) => address,
-                    _ => return Ok((None, Value::None(ty))),
+                    Value::Pointer(address) => address,
+                    _ => return Ok(Value::None(ty)),
                 };
 
                 let pointer = pointer::Pointer::from_address(new_address);
@@ -209,21 +208,21 @@ impl ValueExpr {
             Self::AddressOf { value } => {
                 let new_address = match value.address_of(initial, last, proxy)? {
                     Some(address) => address,
-                    None => return Ok((None, Value::None(ty))),
+                    None => return Ok(Value::None(ty)),
                 };
 
-                Ok((None, Value::Pointer(new_address)))
+                Ok(Value::Pointer(new_address))
             }
             Self::As { expr, .. } => expr.eval(ty, initial, last, proxy),
             Self::Add { lhs, rhs } => {
-                let (_, lhs) = lhs.eval(ty, initial, last, proxy)?;
-                let (_, rhs) = rhs.eval(ty, initial, last, proxy)?;
-                Ok((None, lhs.add(rhs)?.unwrap_or_else(|| Value::None(ty))))
+                let lhs = lhs.eval(ty, initial, last, proxy)?;
+                let rhs = rhs.eval(ty, initial, last, proxy)?;
+                Ok(lhs.add(rhs)?.unwrap_or_else(|| Value::None(ty)))
             }
             Self::Sub { lhs, rhs } => {
-                let (_, lhs) = lhs.eval(ty, initial, last, proxy)?;
-                let (_, rhs) = rhs.eval(ty, initial, last, proxy)?;
-                Ok((None, lhs.sub(rhs)?.unwrap_or_else(|| Value::None(ty))))
+                let lhs = lhs.eval(ty, initial, last, proxy)?;
+                let rhs = rhs.eval(ty, initial, last, proxy)?;
+                Ok(lhs.sub(rhs)?.unwrap_or_else(|| Value::None(ty)))
             }
         }
     }

@@ -236,8 +236,8 @@ impl Binary {
             .type_of(Some(initial.ty()), Some(last.ty()), Some(ty))
             .ok_or_else(|| anyhow!("cannot determine type of binary expression: {}", self))?;
 
-        let (_, lhs) = lhs.eval(ty, initial, last, proxy)?;
-        let (_, rhs) = rhs.eval(ty, initial, last, proxy)?;
+        let lhs = lhs.eval(ty, initial, last, proxy)?;
+        let rhs = rhs.eval(ty, initial, last, proxy)?;
 
         // NB: we treat 'none' specially:
         // The only allowed match on none is to compare against something which is strictly not equal to it, like value != none.
@@ -525,7 +525,7 @@ impl IsPointer {
         last: &Value,
         proxy: AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let (_, value) = self.expr.eval(ty, initial, last, proxy)?;
+        let value = self.expr.eval(ty, initial, last, proxy)?;
 
         let address = match value {
             Value::Pointer(address) => address,
@@ -572,7 +572,7 @@ impl IsType {
         last: &Value,
         proxy: AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let (_, value) = self.expr.eval(ty, initial, last, proxy)?;
+        let value = self.expr.eval(ty, initial, last, proxy)?;
         Ok((value.ty() == self.ty).into())
     }
 }
@@ -617,7 +617,7 @@ impl IsNan {
         last: &Value,
         proxy: AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let (_, value) = self.expr.eval(ty, initial, last, proxy)?;
+        let value = self.expr.eval(ty, initial, last, proxy)?;
 
         let value = match value {
             Value::F32(value) => value.is_nan(),
@@ -662,7 +662,7 @@ impl Regex {
         last: &Value,
         proxy: AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let (_, value) = self.expr.eval(ty, initial, last, proxy)?;
+        let value = self.expr.eval(ty, initial, last, proxy)?;
 
         let bytes = match &value {
             Value::Bytes(bytes) => &bytes[..],

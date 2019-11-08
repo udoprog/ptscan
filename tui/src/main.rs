@@ -4,8 +4,8 @@ use anyhow::{anyhow, bail, Context as _};
 use hashbrown::{hash_map, HashMap};
 use ptscan::{
     Address, FilterExpr, InitialScanConfig, Location, MemoryInformation, Offset, Pointer,
-    PointerBase, ProcessHandle, ProcessId, Scan, ScanProgress, ScanResult, Size, Test, Token, Type,
-    Value, ValueExpr,
+    PointerBase, ProcessHandle, ProcessId, RawPointer, Scan, ScanProgress, ScanResult, Size, Test,
+    Token, Type, Value, ValueExpr,
 };
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -457,7 +457,7 @@ impl Application {
                 writeln!(self.term, "Scans:")?;
 
                 for (key, s) in &self.scans {
-                    writeln!(self.term, " - `{}` with {} result(s)", key, s.results.len())?;
+                    writeln!(self.term, " - `{}` with {} result(s)", key, s.len())?;
                 }
             }
             Action::Switch { name } => {
@@ -529,7 +529,7 @@ impl Application {
                 };
 
                 let mut stored;
-                let results = &scan.results[..usize::min(scan.results.len(), self.limit)];
+                let results = &scan[..usize::min(scan.len(), self.limit)];
                 // NB: possibly updated values.
                 let mut current = results;
 
@@ -550,8 +550,9 @@ impl Application {
 
                 Self::print(
                     &mut self.term,
-                    scan.results.len(),
+                    scan.len(),
                     current.iter().map(|r| &**r).enumerate(),
+                    &scan.comments,
                     &value_expr,
                     verbose,
                 )?;
@@ -574,20 +575,26 @@ impl Application {
                     None => bail!("No active scan"),
                 };
 
-                if index < scan.results.len() {
+                if index < scan.len() {
                     let result = scan.results.swap_remove(index);
                     writeln!(self.term, "deleted:")?;
                     writeln!(self.term, "{} = {}", result.pointer, result.last())?;
                 }
             }
-            Action::Add { mut pointer, ty } => {
+            Action::Add {
+                mut pointer,
+                ty,
+                comment,
+                scan,
+            } => {
                 let Application {
                     ref mut scans,
                     ref current_scan,
                     ..
                 } = self;
 
-                let scan = scans.entry(current_scan.clone()).or_default();
+                let scan = scan.unwrap_or_else(|| current_scan.clone());
+                let scan = scans.entry(scan).or_default();
 
                 let ty = ty.unwrap_or(Type::U32);
 
@@ -601,20 +608,24 @@ impl Application {
                     None => (None, Value::None(ty)),
                 };
 
-                pointer.last_address = last_address;
+                *pointer.last_address_mut() = last_address;
 
                 if let Some(handle) = &self.handle {
-                    let base = match pointer.base {
+                    let base = match pointer.base() {
                         PointerBase::Address { address } => {
-                            handle.address_to_pointer_base(address)?
+                            handle.address_to_pointer_base(*address)?
                         }
-                        other => other,
+                        other => other.clone(),
                     };
 
-                    pointer.base = base;
+                    *pointer.base_mut() = base;
                 }
 
-                scan.results.push(Box::new(ScanResult::new(pointer, value)));
+                if let Some(comment) = comment {
+                    scan.comments.insert(pointer.raw().clone(), comment);
+                }
+
+                scan.push(Box::new(ScanResult::new(pointer, value)));
                 scan.initial = false;
             }
             Action::Scan { filter, ty, config } => {
@@ -635,7 +646,7 @@ impl Application {
                 let mut replace = vec![];
                 let results = if !indexes.is_empty() {
                     for index in indexes {
-                        if let Some(result) = scan.results.get_mut(index) {
+                        if let Some(result) = scan.get_mut(index) {
                             stored.push(result.clone());
                             replace.push(index);
                         }
@@ -660,14 +671,15 @@ impl Application {
                 )?;
 
                 for (index, result) in replace.into_iter().zip(stored.into_iter()) {
-                    scan.results[index] = result;
+                    scan[index] = result;
                 }
 
-                let len = usize::min(scan.results.len(), self.limit);
+                let len = usize::min(scan.len(), self.limit);
                 Self::print(
                     &mut self.term,
-                    scan.results.len(),
-                    scan.results.iter().take(len).map(|r| &**r).enumerate(),
+                    scan.len(),
+                    scan.iter().take(len).map(|r| &**r).enumerate(),
+                    &scan.comments,
                     &scan.value_expr,
                     false,
                 )?;
@@ -717,8 +729,7 @@ impl Application {
 
                 match self.scans.get_mut(name) {
                     Some(scan) => {
-                        scan.results.clear();
-                        scan.initial = true;
+                        scan.clear();
                     }
                     None => {
                         writeln!(self.term, "no scan in use")?;
@@ -775,9 +786,29 @@ impl Application {
                 };
 
                 if reverse {
-                    scan.results.sort_by(|a, b| a.pointer.cmp(&b.pointer));
+                    scan.sort_by(|a, b| a.pointer.cmp(&b.pointer));
                 } else {
-                    scan.results.sort_by(|a, b| b.pointer.cmp(&a.pointer));
+                    scan.sort_by(|a, b| b.pointer.cmp(&a.pointer));
+                }
+            }
+            Action::Comment { index, text } => {
+                let Self {
+                    ref current_scan,
+                    ref mut scans,
+                    ..
+                } = *self;
+
+                let scan = scans.entry(current_scan.clone()).or_insert_with(Scan::new);
+
+                let result = match scan.results.get(index) {
+                    Some(result) => result,
+                    None => bail!("no result for index `{}`", index),
+                };
+
+                if text.is_empty() {
+                    scan.comments.remove(result.pointer.raw());
+                } else {
+                    scan.comments.insert(result.pointer.raw().clone(), text);
                 }
             }
         }
@@ -811,7 +842,7 @@ impl Application {
                 self.current_format.serialize(&mut f, scan)?
             };
 
-            scan.results.len()
+            scan.len()
         };
 
         writeln!(
@@ -841,7 +872,7 @@ impl Application {
             let mut f = File::open(current_file)
                 .with_context(|| anyhow!("Failed to open file `{}`", current_file.display()))?;
 
-            let mut deserialized: Scan = if self.current_compress {
+            let deserialized: Scan = if self.current_compress {
                 self.current_format
                     .deserialize(&mut GzDecoder::new(&mut f))?
             } else {
@@ -851,14 +882,10 @@ impl Application {
             let scan = scans.entry(scan.to_string()).or_default();
 
             if append {
-                scan.results.append(&mut deserialized.results);
+                scan.append_scan(deserialized);
             } else {
-                scan.results = deserialized.results;
+                scan.load_scan(deserialized);
             }
-
-            scan.value_expr = deserialized.value_expr;
-            scan.initial = deserialized.initial;
-            scan.aligned = deserialized.aligned;
         }
 
         writeln!(
@@ -888,7 +915,7 @@ impl Application {
 
         let scan = self.scans.entry(self.current_scan.to_string()).or_default();
 
-        if scan.results.is_empty() {
+        if scan.is_empty() {
             writeln!(self.term, "cannot watch, scan is empty")?;
             return Ok(());
         }
@@ -978,13 +1005,13 @@ impl Application {
                 refresh_rate,
             )?;
 
-            while !token.test() && !scan.results.is_empty() {
+            while !token.test() && !scan.is_empty() {
                 // wrap around.
                 if offset >= limit {
                     offset = 0;
                 }
 
-                let len = usize::min(scan.results.len().saturating_sub(offset), limit);
+                let len = usize::min(scan.len().saturating_sub(offset), limit);
 
                 let mut results = &mut scan.results[..len];
                 last.extend(results.iter().map(|v| v.last().clone()));
@@ -1012,7 +1039,7 @@ impl Application {
                             to_remove.push(index);
                             removed = true;
                         } else {
-                            result.pointer.last_address = proxy.follow_default()?;
+                            *result.pointer.last_address_mut() = proxy.follow_default()?;
                         }
                     }
 
@@ -1058,7 +1085,7 @@ impl Application {
                 to_remove.clear();
                 offset += limit;
 
-                if !token.test() && !scan.results.is_empty() {
+                if !token.test() && !scan.is_empty() {
                     thread::sleep(refresh_rate);
                 }
             }
@@ -1077,7 +1104,7 @@ impl Application {
             filter: Option<&FilterExpr>,
             limit: usize,
         ) -> anyhow::Result<usize> {
-            let results = &scan.results[..usize::min(scan.results.len(), limit)];
+            let results = &scan[..usize::min(scan.len(), limit)];
             let mut results = results.to_vec();
 
             let line_below = results.len() as u16;
@@ -1110,7 +1137,7 @@ impl Application {
 
             term.move_to_line(info_line)?;
             writeln!(term, "{}", info)?;
-            write_results(term, &pointers, &mut states)?;
+            write_results(term, &pointers, &mut states, &scan.comments)?;
 
             while !token.test() {
                 if let Err(e) = handle.refresh_values(
@@ -1142,7 +1169,7 @@ impl Application {
                             any_changed = true;
                             state.removed = true;
                         } else {
-                            result.pointer.last_address = proxy.follow_default()?;
+                            *result.pointer.last_address_mut() = proxy.follow_default()?;
                         }
                     }
 
@@ -1162,7 +1189,7 @@ impl Application {
                 }
 
                 if any_changed {
-                    write_results(term, &pointers, &mut states)?;
+                    write_results(term, &pointers, &mut states, &scan.comments)?;
                     term.goto(0, info_line)?;
                 }
 
@@ -1187,6 +1214,7 @@ impl Application {
             term: &mut Term,
             pointers: &[Pointer],
             states: &mut [State],
+            comments: &HashMap<RawPointer, String>,
         ) -> anyhow::Result<()> {
             use std::fmt::Write as _;
 
@@ -1198,16 +1226,20 @@ impl Application {
                 let mut buf = String::new();
 
                 if let Some(address) = pointer.address() {
-                    write!(buf, "{:03} : {} = ", index, address)?;
+                    write!(buf, "{:03} : {}", index, address)?;
                 } else {
-                    write!(buf, "{:03} : ? = ", index)?;
+                    write!(buf, "{:03} : ?", index)?;
+                }
+
+                if let Some(comment) = comments.get(pointer.raw()) {
+                    write!(buf, " /* {} */", comment)?;
                 }
 
                 let mut it = state.values.iter();
                 let last = it.next_back();
                 let mut last_change = None;
 
-                write!(buf, "{}", state.initial)?;
+                write!(buf, " = {}", state.initial)?;
 
                 if state.capped > 0 {
                     write!(buf, " ... {}", state.capped)?;
@@ -1363,7 +1395,7 @@ impl Application {
         let mut forward = BTreeMap::new();
         let mut reverse = BTreeMap::new();
 
-        for result in &scan.results {
+        for result in scan.iter() {
             let to = match result.last().as_address() {
                 Some(address) => address,
                 None => continue,
@@ -1495,12 +1527,12 @@ impl Application {
 
                 let mut address = result
                     .pointer
-                    .base
+                    .base()
                     .eval(handle)?
                     .ok_or_else(|| anyhow!("should resolve to address"))?;
 
                 let mut path = SVec::new();
-                let mut it = result.pointer.offsets.iter().copied();
+                let mut it = result.pointer.offsets().iter().copied();
 
                 while !token.test() {
                     if let Some(extra) = visited.get(&address) {
@@ -1511,7 +1543,7 @@ impl Application {
                             path.extend(p.iter().rev().cloned());
 
                             let pointer =
-                                Pointer::new(result.pointer.base.clone(), path, Some(needle));
+                                Pointer::new(result.pointer.base().clone(), path, Some(needle));
 
                             additions.push(Box::new(ScanResult::new(pointer, Value::None(ty))));
                         }
@@ -1563,11 +1595,11 @@ impl Application {
         writeln!(term.output)?;
 
         if append {
-            scan.results.append(&mut results);
+            scan.append(&mut results);
             scan.initial = false;
             writeln!(term.output, "Appended {} paths to scan `{}`", len, name)?;
         } else {
-            scan.results = results;
+            scan.set(results);
             scan.initial = false;
             writeln!(term.output, "Saved {} paths to scan `{}`", len, name)?;
         }
@@ -1692,11 +1724,12 @@ impl Application {
 
         result?;
 
-        let len = usize::min(scan.results.len(), self.limit);
+        let len = usize::min(scan.len(), self.limit);
         Self::print(
             &mut self.term,
-            scan.results.len(),
-            scan.results[..len].iter().map(|r| &**r).enumerate(),
+            scan.len(),
+            scan[..len].iter().map(|r| &**r).enumerate(),
+            &scan.comments,
             &scan.value_expr,
             false,
         )?;
@@ -1777,6 +1810,7 @@ impl Application {
         term: &mut Term,
         len: usize,
         results: impl IntoIterator<Item = (usize, &'a ScanResult)>,
+        comments: &HashMap<RawPointer, String>,
         value_expr: &ValueExpr,
         verbose: bool,
     ) -> anyhow::Result<()> {
@@ -1791,6 +1825,10 @@ impl Application {
             buf.clear();
 
             write!(buf, "{:>03} : {}", index, result.pointer)?;
+
+            if let Some(comment) = comments.get(result.pointer.raw()) {
+                write!(buf, " /* {} */", comment)?;
+            }
 
             if ValueExpr::Value != *value_expr {
                 write!(buf, " : {}", value_expr)?;
@@ -2124,6 +2162,20 @@ impl Application {
         let app = app.subcommand(
             App::new("add")
                 .about("Add an address to the current scan")
+                .arg(
+                    Arg::with_name("scan")
+                        .help("The scan to add the result to.")
+                        .long("scan")
+                        .takes_value(true)
+                        .value_name("scan"),
+                )
+                .arg(
+                    Arg::with_name("comment")
+                        .help("Comment to add to the result.")
+                        .long("comment")
+                        .takes_value(true)
+                        .value_name("text"),
+                )
                 .arg(type_argument("The type of the pointer added to the scan."))
                 .arg(
                     Arg::with_name("pointer")
@@ -2163,6 +2215,22 @@ impl Application {
                         .long("max-offset")
                         .value_name("number")
                         .takes_value(true),
+                ),
+        );
+
+        let app = app.subcommand(
+            App::new("comment")
+                .alias("c")
+                .about("Set a comment for a result.")
+                .arg(
+                    Arg::with_name("index")
+                        .help("The index to set the comment for.")
+                        .value_name("index"),
+                )
+                .arg(
+                    Arg::with_name("comment")
+                        .help("The comment to set.")
+                        .value_name("comment"),
                 ),
         );
 
@@ -2365,6 +2433,8 @@ impl Application {
             }
             ("add", Some(m)) => {
                 let ty = m.value_of("type").map(str::parse).transpose()?;
+                let comment = m.value_of("comment").map(String::from);
+                let scan = m.value_of("scan").map(String::from);
 
                 let pointer = match m.values_of("pointer") {
                     Some(values) => values.collect::<Vec<_>>().join(" "),
@@ -2372,7 +2442,12 @@ impl Application {
                 };
 
                 let pointer = Pointer::parse(&pointer)?;
-                Ok(Action::Add { ty, pointer })
+                Ok(Action::Add {
+                    ty,
+                    pointer,
+                    comment,
+                    scan,
+                })
             }
             ("pointer-scan", Some(m)) => {
                 let name = m
@@ -2400,6 +2475,20 @@ impl Application {
                     max_depth,
                     max_offset,
                 })
+            }
+            ("comment", Some(m)) => {
+                let index = m
+                    .value_of("index")
+                    .map(str::parse)
+                    .transpose()?
+                    .ok_or_else(|| anyhow!("missing <index>"))?;
+
+                let text = m
+                    .value_of("comment")
+                    .map(String::from)
+                    .ok_or_else(|| anyhow!("missing <comment>"))?;
+
+                Ok(Action::Comment { index, text })
             }
             _ => Ok(Action::Help),
         }
@@ -2514,6 +2603,8 @@ pub enum Action {
     Add {
         pointer: Pointer,
         ty: Option<Type>,
+        comment: Option<String>,
+        scan: Option<String>,
     },
     /// List all scans.
     List,
@@ -2551,5 +2642,9 @@ pub enum Action {
         ty: Option<Type>,
         expr: Option<String>,
         indexes: Vec<usize>,
+    },
+    Comment {
+        index: usize,
+        text: String,
     },
 }

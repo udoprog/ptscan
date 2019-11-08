@@ -1,13 +1,16 @@
 //! Predicates used for matching against memory.
 
 use crate::{
-    error::Error, Address, FilterExpr, Pointer, PointerBase, ProcessHandle, Size, Special, Test,
-    Token, Type, Value, ValueExpr,
+    error::Error, Address, FilterExpr, Pointer, PointerBase, ProcessHandle, RawPointer, Size,
+    Special, Test, Token, Type, Value, ValueExpr,
 };
 use crossbeam_queue::SegQueue;
+use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
 use std::{
+    cmp,
     convert::TryFrom as _,
+    ops, slice,
     sync::mpsc,
     time::{Duration, Instant},
 };
@@ -42,6 +45,9 @@ pub struct Scan {
     /// Value expression being used for resolving the current value.
     #[serde(default, skip_serializing_if = "ValueExpr::is_default")]
     pub value_expr: ValueExpr,
+    /// Comments associated with each scan result.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub comments: HashMap<RawPointer, String>,
 }
 
 impl Scan {
@@ -52,6 +58,7 @@ impl Scan {
             initial: true,
             results: Vec::new(),
             value_expr: ValueExpr::Value,
+            comments: HashMap::new(),
         }
     }
 
@@ -62,7 +69,80 @@ impl Scan {
             initial: false,
             results,
             value_expr: ValueExpr::Value,
+            comments: HashMap::new(),
         }
+    }
+
+    /// Append from a different scan.
+    pub fn append_scan(&mut self, mut other: Self) {
+        self.results.append(&mut other.results);
+        self.comments.extend(other.comments);
+    }
+
+    /// Load from a different scan.
+    pub fn load_scan(&mut self, other: Self) {
+        self.results = other.results;
+        self.comments = other.comments;
+        self.value_expr = other.value_expr;
+        self.initial = other.initial;
+        self.aligned = other.aligned;
+    }
+
+    /// Get a mutable reference to a single result.
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut Box<ScanResult>> {
+        self.results.get_mut(index)
+    }
+
+    /// Set the results associated with the scan.
+    pub fn set(&mut self, results: Vec<Box<ScanResult>>) {
+        self.results = results;
+        self.comments.clear();
+    }
+
+    /// Append to results associated with the scan.
+    pub fn append(&mut self, results: &mut Vec<Box<ScanResult>>) {
+        self.results.append(results);
+    }
+
+    /// Push a scan result.
+    pub fn push(&mut self, result: Box<ScanResult>) {
+        self.results.push(result);
+    }
+
+    /// Clear the current scan.
+    pub fn clear(&mut self) {
+        self.results.clear();
+        self.comments.clear();
+        self.initial = true;
+        self.value_expr = Default::default();
+    }
+
+    /// Get the length of the scan.
+    pub fn len(&self) -> usize {
+        self.results.len()
+    }
+
+    /// Check if the scan is empty.
+    pub fn is_empty(&self) -> bool {
+        self.results.is_empty()
+    }
+
+    /// Iterate over the scan.
+    pub fn iter(&self) -> slice::Iter<'_, Box<ScanResult>> {
+        self.results.iter()
+    }
+
+    /// Mutably iterate over the scan.
+    pub fn iter_mut(&mut self) -> slice::IterMut<'_, Box<ScanResult>> {
+        self.results.iter_mut()
+    }
+
+    /// Sort by the given predicate.
+    pub fn sort_by(
+        &mut self,
+        compare: impl FnMut(&Box<ScanResult>, &Box<ScanResult>) -> cmp::Ordering,
+    ) {
+        self.results.sort_by(compare)
     }
 
     /// Only scan for values which are aligned.
@@ -394,8 +474,8 @@ impl Scan {
                 if let Test::True = filter.test(none, none, value_type, &mut proxy)? {
                     *hits += 1;
                     let value = proxy.eval(value_type)?;
-                    pointer.base = handle.address_to_pointer_base(address)?;
-                    pointer.last_address = Some(address);
+                    *pointer.base_mut() = handle.address_to_pointer_base(address)?;
+                    *pointer.last_address_mut() = Some(address);
                     results.push(Box::new(ScanResult::new(pointer, value)));
                 }
 
@@ -431,6 +511,40 @@ impl Scan {
                 *to_align -= rem;
             }
         }
+    }
+}
+
+impl<'a> IntoIterator for &'a Scan {
+    type Item = &'a Box<ScanResult>;
+    type IntoIter = slice::Iter<'a, Box<ScanResult>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut Scan {
+    type Item = &'a mut Box<ScanResult>;
+    type IntoIter = slice::IterMut<'a, Box<ScanResult>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter_mut()
+    }
+}
+
+impl<I: slice::SliceIndex<[Box<ScanResult>]>> ops::Index<I> for Scan {
+    type Output = I::Output;
+
+    #[inline]
+    fn index(&self, index: I) -> &Self::Output {
+        ops::Index::index(&self.results, index)
+    }
+}
+
+impl<I: slice::SliceIndex<[Box<ScanResult>]>> ops::IndexMut<I> for Scan {
+    #[inline]
+    fn index_mut(&mut self, index: I) -> &mut Self::Output {
+        ops::IndexMut::index_mut(&mut self.results, index)
     }
 }
 

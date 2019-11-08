@@ -8,11 +8,7 @@ grammar<'input>;
 
 pub Pointer: Pointer = {
     <base:PointerBase> <offsets:("->" <Deref>)*> => {
-        Pointer {
-            base,
-            offsets: offsets.into_iter().map(Hex::into_offset).collect(),
-            last_address: None,
-        }
+        Pointer::new(base, offsets.into_iter().map(Hex::into_offset), None)
     },
 }
 

@@ -346,7 +346,7 @@ impl ProcessHandle {
                                 {
                                     let value = proxy.eval(ty)?;
                                     result.last = Some(value);
-                                    result.pointer.last_address = proxy.follow_default()?;
+                                    *result.pointer.last_address_mut() = proxy.follow_default()?;
                                     return Ok(Task::Accepted);
                                 }
 
@@ -489,7 +489,7 @@ impl ProcessHandle {
 
                                 result.initial = value;
                                 result.last = None;
-                                result.pointer.last_address = proxy.follow_default()?;
+                                *result.pointer.last_address_mut() = proxy.follow_default()?;
                                 Ok(false)
                             };
 

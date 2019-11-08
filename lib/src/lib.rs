@@ -25,7 +25,7 @@ pub use self::address::{Address, AddressRange, Offset, Size};
 pub use self::error::Error;
 pub use self::filter_expr::{FilterExpr, Special, Test};
 pub use self::module::Module;
-pub use self::pointer::{Pointer, PointerBase};
+pub use self::pointer::{Pointer, PointerBase, RawPointer};
 pub use self::process::{MemoryInformation, MemoryState, MemoryType, Process};
 pub use self::process_handle::{AddressProxy, Location, ProcessHandle, ProcessName};
 pub use self::scan::{InitialScanConfig, Scan, ScanProgress, ScanResult};

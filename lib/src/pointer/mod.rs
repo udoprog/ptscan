@@ -57,12 +57,19 @@ impl fmt::Display for PointerBase {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct Pointer {
+pub struct RawPointer {
     /// Base address.
-    pub base: PointerBase,
+    base: PointerBase,
     /// Offsets and derefs to apply to find the given memory location.
-    pub offsets: Vec<Offset>,
-    pub last_address: Option<Address>,
+    offsets: Vec<Offset>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Pointer {
+    /// The underlying raw pointer.
+    raw: RawPointer,
+    /// The cached last address of the pointer.
+    last_address: Option<Address>,
 }
 
 impl Pointer {
@@ -73,15 +80,42 @@ impl Pointer {
         last_address: Option<Address>,
     ) -> Self {
         Self {
-            base,
-            offsets: offsets.into_iter().collect(),
+            raw: RawPointer {
+                base,
+                offsets: offsets.into_iter().collect(),
+            },
             last_address,
         }
     }
 
+    /// Access the underlying raw pointer.
+    pub fn raw(&self) -> &RawPointer {
+        &self.raw
+    }
+
+    /// Get the base of the pointer.
+    pub fn base(&self) -> &PointerBase {
+        &self.raw.base
+    }
+
+    /// Get the mutable base of the pointer.
+    pub fn base_mut(&mut self) -> &mut PointerBase {
+        &mut self.raw.base
+    }
+
+    /// Get the offsets of the pointer.
+    pub fn offsets(&self) -> &[Offset] {
+        &self.raw.offsets
+    }
+
+    /// Get the mutable alst address.
+    pub fn last_address_mut(&mut self) -> &mut Option<Address> {
+        &mut self.last_address
+    }
+
     /// Get the best known address for the current pointer.
     pub fn address(&self) -> Option<Address> {
-        match self.base {
+        match self.raw.base {
             PointerBase::Address { address } => Some(address),
             PointerBase::Module { .. } => self.last_address,
         }
@@ -94,7 +128,7 @@ impl Pointer {
 
     /// Follow, using default memory resolution.
     pub fn follow_default(&self, handle: &ProcessHandle) -> anyhow::Result<Option<Address>> {
-        Self::do_follow_default(&self.base, &self.offsets, handle)
+        Self::do_follow_default(&self.raw, handle)
     }
 
     /// Try to evaluate the current location into an address.
@@ -102,16 +136,15 @@ impl Pointer {
     where
         F: Fn(Address, &mut [u8]) -> anyhow::Result<bool>,
     {
-        Self::do_follow(&self.base, &self.offsets, handle, eval)
+        Self::do_follow(&self.raw, handle, eval)
     }
 
     /// Follow, using default memory resolution.
     pub fn do_follow_default(
-        base: &PointerBase,
-        offsets: &[Offset],
+        raw: &RawPointer,
         handle: &ProcessHandle,
     ) -> anyhow::Result<Option<Address>> {
-        Self::do_follow(base, offsets, handle, |a, buf| {
+        Self::do_follow(raw, handle, |a, buf| {
             handle
                 .process
                 .read_process_memory(a, buf)
@@ -121,27 +154,26 @@ impl Pointer {
 
     /// Try to evaluate the current location into an address.
     pub fn do_follow<F>(
-        base: &PointerBase,
-        offsets: &[Offset],
+        raw: &RawPointer,
         handle: &ProcessHandle,
         eval: F,
     ) -> anyhow::Result<Option<Address>>
     where
         F: Fn(Address, &mut [u8]) -> anyhow::Result<bool>,
     {
-        let address = match base.eval(handle)? {
+        let address = match raw.base.eval(handle)? {
             Some(address) => address,
             None => return Ok(None),
         };
 
-        if offsets.is_empty() {
+        if raw.offsets.is_empty() {
             return Ok(Some(address));
         }
 
         let mut current = address;
         let mut buf = vec![0u8; handle.process.pointer_width];
 
-        for o in offsets {
+        for o in &raw.offsets {
             eval(current, &mut buf)?;
             current = Address::decode(&handle.process, &buf)?;
 
@@ -157,13 +189,13 @@ impl Pointer {
 
 impl fmt::Display for Pointer {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "{}", self.base)?;
+        write!(fmt, "{}", self.raw.base)?;
 
-        for o in &self.offsets {
+        for o in &self.raw.offsets {
             write!(fmt, " -> {}", o)?;
         }
 
-        let last_address = match (&self.base, self.last_address) {
+        let last_address = match (&self.raw.base, self.last_address) {
             (PointerBase::Address { address }, Some(last_address)) if *address != last_address => {
                 Some(last_address)
             }

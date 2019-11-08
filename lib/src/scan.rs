@@ -365,7 +365,7 @@ impl Scan {
                 let address = base.add(Size::try_from(inner_offset)?)?;
                 let mut pointer =
                     Pointer::new(PointerBase::Address { address }, vec![], Some(address));
-                let proxy = handle.address_proxy(&pointer);
+                let mut proxy = handle.address_proxy(&pointer);
 
                 if let Some(last_address) = last_address {
                     assert!(address > last_address, "address must always increase");
@@ -373,7 +373,7 @@ impl Scan {
 
                 last_address = Some(address);
 
-                if let Test::True = filter.test(ty, none, none, proxy)? {
+                if let Test::True = filter.test(ty, none, none, &mut proxy)? {
                     *hits += 1;
                     let value = proxy.eval(ty)?;
                     pointer.base = handle.address_to_pointer_base(address)?;

@@ -139,7 +139,7 @@ impl ValueExpr {
         &self,
         initial: &Value,
         last: &Value,
-        proxy: AddressProxy<'_>,
+        proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Option<Address>> {
         match self {
             Self::Value => Ok(proxy.follow_default()?),
@@ -183,7 +183,7 @@ impl ValueExpr {
         ty: Type,
         initial: &Value,
         last: &Value,
-        proxy: AddressProxy<'_>,
+        proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Value> {
         match self {
             Self::Value => Ok(proxy.eval(ty)?),
@@ -202,8 +202,8 @@ impl ValueExpr {
                 };
 
                 let pointer = pointer::Pointer::from_address(new_address);
-                let address = proxy.handle.address_proxy(&pointer);
-                Ok(address.eval(ty)?)
+                let mut proxy = proxy.handle.address_proxy(&pointer);
+                Ok(proxy.eval(ty)?)
             }
             Self::AddressOf { value } => {
                 let new_address = match value.address_of(initial, last, proxy)? {

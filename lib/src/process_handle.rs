@@ -269,6 +269,7 @@ impl ProcessHandle {
             pointer,
             handle: self,
             memory_cache: None,
+            followed: None,
         }
     }
 
@@ -337,11 +338,11 @@ impl ProcessHandle {
                             };
 
                             let mut work = || {
-                                let proxy = self.address_proxy(&result.pointer);
+                                let mut proxy = self.address_proxy(&result.pointer);
                                 let ty = new_type.unwrap_or_else(|| result.last().ty());
 
                                 if let Test::True =
-                                    filter.test(ty, result.initial(), result.last(), proxy)?
+                                    filter.test(ty, result.initial(), result.last(), &mut proxy)?
                                 {
                                     let value = proxy.eval(ty)?;
                                     result.last = Some(value);
@@ -474,9 +475,9 @@ impl ProcessHandle {
                             let ty = new_type.unwrap_or_else(|| result.last().ty());
 
                             let mut work = move || {
-                                let proxy = self.address_proxy(&result.pointer);
+                                let mut proxy = self.address_proxy(&result.pointer);
                                 let value =
-                                    expr.eval(ty, result.initial(), result.last(), proxy)?;
+                                    expr.eval(ty, result.initial(), result.last(), &mut proxy)?;
                                 result.initial = value;
                                 result.last = None;
                                 result.pointer.last_address = proxy.follow_default()?;
@@ -527,22 +528,32 @@ impl ProcessHandle {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct AddressProxy<'a> {
     pointer: &'a Pointer,
     pub(crate) handle: &'a ProcessHandle,
     memory_cache: Option<&'a MemoryCache>,
+    /// cached, followed address.
+    followed: Option<Option<Address>>,
 }
 
 impl AddressProxy<'_> {
     /// Evaluate the pointer of the proxy.
-    pub fn eval(&self, ty: Type) -> anyhow::Result<Value> {
+    pub fn eval(&mut self, ty: Type) -> anyhow::Result<Value> {
         let mut buf = vec![0u8; ty.size(&self.handle.process)];
 
         if let Some(memory_cache) = self.memory_cache {
-            let address = self.pointer.follow(self.handle, |a, buf| {
-                memory_cache.read_process_memory(&self.handle.process, a, buf)
-            })?;
+            let address = match self.followed {
+                Some(address) => address,
+                None => {
+                    let address = self.pointer.follow(self.handle, |a, buf| {
+                        memory_cache.read_process_memory(&self.handle.process, a, buf)
+                    })?;
+
+                    self.followed = Some(address);
+                    address
+                }
+            };
 
             let address = match address {
                 Some(address) => address,
@@ -561,7 +572,14 @@ impl AddressProxy<'_> {
 
             Ok(value)
         } else {
-            let address = self.pointer.follow_default(self.handle)?;
+            let address = match self.followed {
+                Some(address) => address,
+                None => {
+                    let address = self.pointer.follow_default(self.handle)?;
+                    self.followed = Some(address);
+                    address
+                }
+            };
 
             let address = match address {
                 Some(address) => address,
@@ -582,14 +600,21 @@ impl AddressProxy<'_> {
     }
 
     /// Follow the address this proxy refers to.
-    pub fn follow_default(&self) -> anyhow::Result<Option<Address>> {
-        Ok(if let Some(memory_cache) = self.memory_cache {
+    pub fn follow_default(&mut self) -> anyhow::Result<Option<Address>> {
+        if let Some(address) = self.followed {
+            return Ok(address);
+        }
+
+        let address = if let Some(memory_cache) = self.memory_cache {
             self.pointer.follow(self.handle, |a, buf| {
                 memory_cache.read_process_memory(&self.handle.process, a, buf)
             })?
         } else {
             self.pointer.follow_default(self.handle)?
-        })
+        };
+
+        self.followed = Some(address);
+        Ok(address)
     }
 }
 
@@ -779,6 +804,7 @@ impl<'a> Session<'a> {
             pointer,
             handle: self.handle,
             memory_cache: Some(&self.memory_cache),
+            followed: None,
         }
     }
 

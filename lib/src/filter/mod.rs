@@ -93,7 +93,7 @@ impl Filter {
         ty: Type,
         initial: &Value,
         last: &Value,
-        proxy: AddressProxy<'_>,
+        proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         match self {
             Self::Binary(m) => m.test(ty, initial, last, proxy),
@@ -158,7 +158,7 @@ impl Binary {
         ty: Type,
         initial: &Value,
         last: &Value,
-        proxy: AddressProxy<'_>,
+        proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         macro_rules! binary_numeric {
             ($expr:expr, $ty:ty, $a:ident $op:tt $b:ident) => {
@@ -387,7 +387,7 @@ impl All {
         ty: Type,
         initial: &Value,
         last: &Value,
-        proxy: AddressProxy<'_>,
+        proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         for m in &self.0 {
             match m.test(ty, initial, last, proxy)? {
@@ -460,7 +460,7 @@ impl Any {
         ty: Type,
         initial: &Value,
         last: &Value,
-        proxy: AddressProxy<'_>,
+        proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         for m in &self.0 {
             match m.test(ty, initial, last, proxy)? {
@@ -523,7 +523,7 @@ impl IsPointer {
         ty: Type,
         initial: &Value,
         last: &Value,
-        proxy: AddressProxy<'_>,
+        proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         let value = self.expr.eval(ty, initial, last, proxy)?;
 
@@ -570,7 +570,7 @@ impl IsType {
         ty: Type,
         initial: &Value,
         last: &Value,
-        proxy: AddressProxy<'_>,
+        proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         let value = self.expr.eval(ty, initial, last, proxy)?;
         Ok((value.ty() == self.ty).into())
@@ -615,7 +615,7 @@ impl IsNan {
         ty: Type,
         initial: &Value,
         last: &Value,
-        proxy: AddressProxy<'_>,
+        proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         let value = self.expr.eval(ty, initial, last, proxy)?;
 
@@ -660,7 +660,7 @@ impl Regex {
         ty: Type,
         initial: &Value,
         last: &Value,
-        proxy: AddressProxy<'_>,
+        proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         let value = self.expr.eval(ty, initial, last, proxy)?;
 
@@ -696,7 +696,7 @@ impl Not {
         ty: Type,
         initial: &Value,
         last: &Value,
-        proxy: AddressProxy<'_>,
+        proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         Ok(self.filter.test(ty, initial, last, proxy)?.invert())
     }

@@ -558,8 +558,10 @@ impl Application {
 
                 let (last_address, value) = match self.handle.as_ref() {
                     Some(handle) => {
-                        let proxy = handle.address_proxy(&pointer);
-                        (proxy.follow_default()?, proxy.eval(ty)?)
+                        let mut proxy = handle.address_proxy(&pointer);
+                        let address = proxy.follow_default()?;
+                        let value = proxy.eval(ty)?;
+                        (address, value)
                     }
                     None => (None, Value::None(ty)),
                 };
@@ -962,12 +964,14 @@ impl Application {
                     let mut changed = false;
 
                     if let Some(filter) = filter {
-                        let proxy = handle.address_proxy(&result.pointer);
+                        let mut proxy = handle.address_proxy(&result.pointer);
                         let ty = result.last().ty();
 
-                        if let Test::False = filter.test(ty, result.initial(), last, proxy)? {
+                        if let Test::False = filter.test(ty, result.initial(), last, &mut proxy)? {
                             to_remove.push(index);
                             removed = true;
+                        } else {
+                            result.pointer.last_address = proxy.follow_default()?;
                         }
                     }
 
@@ -1081,18 +1085,22 @@ impl Application {
 
                 let mut any_changed = false;
 
-                for (result, state) in results.iter().zip(states.iter_mut()) {
+                for (result, state) in results.iter_mut().zip(states.iter_mut()) {
                     if state.removed {
                         continue;
                     }
 
                     if let Some(filter) = filter {
-                        let proxy = handle.address_proxy(&result.pointer);
+                        let mut proxy = handle.address_proxy(&result.pointer);
                         let ty = result.last().ty();
 
-                        if let Test::False = filter.test(ty, &state.initial, state.last(), proxy)? {
+                        if let Test::False =
+                            filter.test(ty, &state.initial, state.last(), &mut proxy)?
+                        {
                             any_changed = true;
                             state.removed = true;
+                        } else {
+                            result.pointer.last_address = proxy.follow_default()?;
                         }
                     }
 

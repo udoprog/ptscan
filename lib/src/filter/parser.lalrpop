@@ -35,8 +35,8 @@ InnerValueExpr: ValueExpr = {
     <decimal:decimal> => ValueExpr::Decimal(decimal.0, decimal.1),
     <string:"string"> => ValueExpr::String(string),
     <bytes:bytes> => ValueExpr::Bytes(bytes),
-    "*" <expr:InnerValueExpr> => ValueExpr::Deref(Box::new(expr)),
     "&" <expr:InnerValueExpr> => ValueExpr::AddressOf(Box::new(expr)),
+    "*" <expr:InnerValueExpr> => ValueExpr::Deref(Box::new(expr)),
 };
 
 SubAddValueExpr: ValueExpr = {

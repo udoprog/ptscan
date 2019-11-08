@@ -135,10 +135,19 @@ impl ValueExpr {
     }
 
     /// Get the address of a value expression.
-    pub fn address_of(&self, address: AddressProxy<'_>) -> anyhow::Result<Option<Address>> {
+    pub fn address_of(
+        &self,
+        initial: &Value,
+        last: &Value,
+        proxy: AddressProxy<'_>,
+    ) -> anyhow::Result<Option<Address>> {
         match self {
-            Self::Value => Ok(address.follow_default()?),
-            Self::Last => Ok(address.follow_default()?),
+            Self::Value => Ok(proxy.follow_default()?),
+            Self::Deref { value } => {
+                let (_, value) = value.eval(Type::Pointer, initial, last, proxy)?;
+
+                Ok(Some(value.as_address()?))
+            }
             other => bail!("cannot get address of: {}", other),
         }
     }
@@ -198,7 +207,7 @@ impl ValueExpr {
                 Ok(address.eval(ty)?)
             }
             Self::AddressOf { value } => {
-                let new_address = match value.address_of(proxy)? {
+                let new_address = match value.address_of(initial, last, proxy)? {
                     Some(address) => address,
                     None => return Ok((None, Value::None(ty))),
                 };

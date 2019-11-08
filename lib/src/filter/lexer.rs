@@ -277,19 +277,21 @@ impl<'a> Lexer<'a> {
         self.step();
 
         while let Some((_, c)) = self.peek() {
-            if c == '\\' {
-                let c = self.scan_escape()?;
-                self.buf.push(c);
-                continue;
+            match c {
+                '\\' => {
+                    let c = self.scan_escape()?;
+                    self.buf.push(c);
+                    continue;
+                }
+                '"' => {
+                    self.step();
+                    return Ok(self.buf.clone());
+                }
+                c => {
+                    self.buf.push(c);
+                    self.step();
+                }
             }
-
-            if c == '"' {
-                self.step();
-                return Ok(self.buf.clone());
-            }
-
-            self.buf.push(c);
-            self.step();
         }
 
         Err(self.err("unterminated string"))
@@ -488,11 +490,8 @@ impl<'a> Iterator for Lexer<'a> {
                     let e = self.pos();
                     return Some(Ok((s, Token::Plus, e)));
                 }
-                '-' if !self
-                    .peek2()
-                    .map(|(_, _, c)| !is_numeric(c))
-                    .unwrap_or_default() =>
-                {
+                // NB: special test that `-` is not immediately followed by a number which would be a numeric literal.
+                '-' if !self.c2.map(|(_, c)| !is_numeric(c)).unwrap_or_default() => {
                     self.step();
                     let e = self.pos();
                     return Some(Ok((s, Token::Minus, e)));

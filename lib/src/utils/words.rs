@@ -112,7 +112,20 @@ impl<'a> Iterator for Words<'a> {
                 '\'' => {
                     while let Some((_, c)) = self.take() {
                         match c {
-                            '\\' => self.escape(),
+                            '\\' => {
+                                let c = match self.take() {
+                                    Some((_, c)) => c,
+                                    None => break,
+                                };
+
+                                match c {
+                                    '\'' => self.buffer.push('\''),
+                                    c => {
+                                        self.buffer.push('\\');
+                                        self.buffer.push(c)
+                                    }
+                                }
+                            }
                             '\'' => break,
                             o => self.buffer.push(o),
                         }

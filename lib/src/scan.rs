@@ -1,8 +1,8 @@
 //! Predicates used for matching against memory.
 
 use crate::{
-    error::Error, filter, Address, Pointer, PointerBase, ProcessHandle, Size, Test, Token, Type,
-    Value, ValueExpr,
+    error::Error, Address, FilterExpr, Pointer, PointerBase, ProcessHandle, Size, Special, Test,
+    Token, Type, Value, ValueExpr,
 };
 use crossbeam_queue::SegQueue;
 use serde::{Deserialize, Serialize};
@@ -97,7 +97,7 @@ impl Scan {
         new_type: Option<Type>,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
-        filter: &filter::Filter,
+        filter: &FilterExpr,
     ) -> anyhow::Result<()> {
         handle.rescan_values(
             thread_pool,
@@ -128,7 +128,7 @@ impl Scan {
         &mut self,
         thread_pool: &rayon::ThreadPool,
         handle: &ProcessHandle,
-        filter: &filter::Filter,
+        filter: &FilterExpr,
         ty: Type,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
@@ -283,9 +283,9 @@ impl Scan {
             handle: &ProcessHandle,
             tx: &mpsc::Sender<Task>,
             queue: &SegQueue<(Address, usize)>,
-            filter: &filter::Filter,
+            filter: &FilterExpr,
             ty: Type,
-            special: Option<&filter::Special>,
+            special: Option<&Special>,
             aligned: bool,
             type_size: usize,
             buffer_size: usize,
@@ -335,7 +335,7 @@ impl Scan {
         #[inline(always)]
         fn process_one(
             handle: &ProcessHandle,
-            filter: &filter::Filter,
+            filter: &FilterExpr,
             value_type: Type,
             results: &mut Vec<Box<ScanResult>>,
             hits: &mut u64,
@@ -344,7 +344,7 @@ impl Scan {
             type_size: usize,
             none: &Value,
             aligned: bool,
-            special: Option<&filter::Special>,
+            special: Option<&Special>,
             cancel: &Token,
         ) -> anyhow::Result<()> {
             let mut inner_offset = match special {
@@ -519,11 +519,6 @@ impl<'token, 'err, P> Reporter<'token, 'err, P> {
 
             self.last_percentage = p;
         }
-    }
-
-    /// Are we done?
-    pub fn is_done(&self) -> bool {
-        self.current >= self.total
     }
 }
 

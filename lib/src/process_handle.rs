@@ -2,7 +2,7 @@
 
 use crate::{
     error::Error,
-    filter,
+    filter_expr::{FilterExpr, Special},
     process::MemoryInformation,
     scan::{self, ScanProgress, ScanResult},
     system,
@@ -297,7 +297,7 @@ impl ProcessHandle {
         new_type: Option<Type>,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
-        filter: &filter::Filter,
+        filter: &FilterExpr,
     ) -> anyhow::Result<()> {
         use std::sync::mpsc;
 
@@ -822,7 +822,7 @@ impl<'a> Session<'a> {
         &self,
         region: &AddressRange,
         address: Address,
-        special: &filter::Special,
+        special: &Special,
     ) -> anyhow::Result<Option<Address>> {
         self.memory_cache
             .with_region(&self.handle.process, region, |data| {

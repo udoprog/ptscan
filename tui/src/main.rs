@@ -3,7 +3,7 @@
 use anyhow::{anyhow, bail, Context as _};
 use hashbrown::{hash_map, HashMap};
 use ptscan::{
-    filter, Address, Filter, InitialScanConfig, Location, MemoryInformation, Offset, Pointer,
+    Address, FilterExpr, InitialScanConfig, Location, MemoryInformation, Offset, Pointer,
     PointerBase, ProcessHandle, ProcessId, Scan, ScanProgress, ScanResult, Size, Test, Token, Type,
     Value, ValueExpr,
 };
@@ -27,8 +27,56 @@ use crossterm::{
 
 static DEFAULT_LIMIT: usize = 10;
 
+#[derive(Debug, Default)]
+pub struct Opts {
+    pub process: Option<String>,
+    pub suspend: bool,
+    pub load_file: Option<PathBuf>,
+}
+
+/// Parse commandline options.
+pub fn opts() -> Opts {
+    let mut opts = Opts::default();
+
+    let m = app().get_matches();
+
+    opts.process = m.value_of("process").map(String::from);
+    opts.suspend = m.is_present("suspend");
+    opts.load_file = m.value_of("load").map(PathBuf::from);
+
+    opts
+}
+
+fn app() -> clap::App<'static, 'static> {
+    use clap::{App, Arg};
+
+    App::new("ptscan")
+        .version(ptscan::VERSION)
+        .author("John-John Tedro <udoprog@tedro.se>")
+        .about("Scans memory of processes")
+        .arg(
+            Arg::with_name("process")
+                .help("Only analyze processes matching the given name.")
+                .takes_value(true)
+                .long("process")
+                .short("p"),
+        )
+        .arg(
+            Arg::with_name("load")
+                .help("Load state from the specified file.")
+                .takes_value(true)
+                .long("load")
+                .short("l"),
+        )
+        .arg(
+            Arg::with_name("suspend")
+                .help("Suspend the process while scanning it.")
+                .long("suspend"),
+        )
+}
+
 fn try_main() -> anyhow::Result<()> {
-    let opts = ptscan::opts::opts();
+    let opts = opts();
     let thread_pool = Arc::new(
         rayon::ThreadPoolBuilder::new()
             .num_threads(num_cpus::get())
@@ -838,7 +886,7 @@ impl Application {
 
     fn watch(
         &mut self,
-        filter: Option<&Filter>,
+        filter: Option<&FilterExpr>,
         change_length: usize,
         incremental: bool,
     ) -> anyhow::Result<()> {
@@ -922,7 +970,7 @@ impl Application {
             token: &Token,
             scan: &mut Scan,
             refresh_rate: Duration,
-            filter: Option<&Filter>,
+            filter: Option<&FilterExpr>,
             limit: usize,
         ) -> anyhow::Result<usize> {
             use std::fmt::Write as _;
@@ -1038,7 +1086,7 @@ impl Application {
             scan: &mut Scan,
             refresh_rate: Duration,
             change_length: usize,
-            filter: Option<&Filter>,
+            filter: Option<&FilterExpr>,
             limit: usize,
         ) -> anyhow::Result<usize> {
             let results = &scan[..usize::min(scan.len(), limit)];
@@ -1289,8 +1337,8 @@ impl Application {
             None => bail!("not attached to a process"),
         };
 
-        // Filter to find all pointers.
-        let pointers = Filter::pointer(ValueExpr::Value, &handle.process)?;
+        // FilterExpr to find all pointers.
+        let pointers = FilterExpr::pointer(ValueExpr::Value, &handle.process)?;
 
         let mut scan = scans
             .entry(String::from("pointer-scan"))
@@ -1578,7 +1626,7 @@ impl Application {
     /// Scan memory using the given filter and the currently selected scan.
     fn scan(
         &mut self,
-        filter: &filter::Filter,
+        filter: &FilterExpr,
         ty: Option<Type>,
         config: ScanConfig,
     ) -> anyhow::Result<()> {
@@ -2188,7 +2236,7 @@ impl Application {
                             .map(|h| &h.process)
                             .ok_or_else(|| anyhow!("must be attached to process"))?;
 
-                        Some(Filter::parse(&filter, process)?)
+                        Some(FilterExpr::parse(&filter, process)?)
                     }
                     None => None,
                 };
@@ -2231,7 +2279,7 @@ impl Application {
                     .map(|h| &h.process)
                     .ok_or_else(|| anyhow!("must be attached to process"))?;
 
-                let filter = Filter::parse(&filter, process)?;
+                let filter = FilterExpr::parse(&filter, process)?;
 
                 let mut config = ScanConfig::default();
                 config.modules_only = m.is_present("modules-only");
@@ -2451,7 +2499,7 @@ pub enum Action {
     Resume,
     /// Initialize or refine the existing scan.
     Scan {
-        filter: filter::Filter,
+        filter: FilterExpr,
         ty: Option<Type>,
         config: ScanConfig,
     },
@@ -2473,7 +2521,7 @@ pub enum Action {
     /// Watch changes to the scan.
     Watch {
         limit: Option<usize>,
-        filter: Option<Filter>,
+        filter: Option<FilterExpr>,
         change_length: usize,
         incremental: bool,
     },

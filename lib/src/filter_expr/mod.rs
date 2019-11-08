@@ -16,7 +16,7 @@ pub use self::special::Special;
 pub mod ast;
 pub(crate) mod lexer;
 pub mod special;
-lalrpop_util::lalrpop_mod!(pub parser, "/filter/parser.rs");
+lalrpop_util::lalrpop_mod!(pub parser, "/filter_expr/parser.rs");
 
 /// The result of a filter test.
 #[derive(Debug, Clone, Copy)]
@@ -48,7 +48,7 @@ impl From<bool> for Test {
 }
 
 #[derive(Debug, Clone)]
-pub enum Filter {
+pub enum FilterExpr {
     Binary(Binary),
     All(All),
     Any(Any),
@@ -59,15 +59,15 @@ pub enum Filter {
     Regex(Regex),
 }
 
-impl Filter {
+impl FilterExpr {
     /// Parse a a string into a filter.
     pub fn parse(input: &str, process: &Process) -> anyhow::Result<Self> {
         let expr = parser::OrParser::new().parse(lexer::Lexer::new(input))?;
         Ok(expr.into_filter(process)?)
     }
 
-    pub fn pointer(expr: ValueExpr, process: &Process) -> anyhow::Result<Filter> {
-        Ok(Filter::IsPointer(IsPointer::new(expr, process)?))
+    pub fn pointer(expr: ValueExpr, process: &Process) -> anyhow::Result<Self> {
+        Ok(Self::IsPointer(IsPointer::new(expr, process)?))
     }
 
     pub fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
@@ -118,7 +118,7 @@ impl Filter {
     }
 }
 
-impl fmt::Display for Filter {
+impl fmt::Display for FilterExpr {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Binary(m) => m.fmt(fmt),
@@ -324,7 +324,7 @@ impl fmt::Display for Binary {
 
 /// Only matches when all nested filters match.
 #[derive(Debug, Clone)]
-pub struct All(Vec<Filter>);
+pub struct All(Vec<FilterExpr>);
 
 impl All {
     fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
@@ -337,7 +337,7 @@ impl All {
         Ok(None)
     }
 
-    pub fn new(filters: impl IntoIterator<Item = Filter>) -> Self {
+    pub fn new(filters: impl IntoIterator<Item = FilterExpr>) -> Self {
         All(filters.into_iter().collect())
     }
 
@@ -394,7 +394,7 @@ impl fmt::Display for All {
 
 /// Only matches when any nested filter match.
 #[derive(Debug, Clone)]
-pub struct Any(Vec<Filter>);
+pub struct Any(Vec<FilterExpr>);
 
 impl Any {
     fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
@@ -407,7 +407,7 @@ impl Any {
         Ok(None)
     }
 
-    pub fn new(filters: impl IntoIterator<Item = Filter>) -> Self {
+    pub fn new(filters: impl IntoIterator<Item = FilterExpr>) -> Self {
         Any(filters.into_iter().collect())
     }
 
@@ -680,7 +680,7 @@ impl fmt::Display for Regex {
 
 #[derive(Debug, Clone)]
 pub struct Not {
-    filter: Box<Filter>,
+    filter: Box<FilterExpr>,
 }
 
 impl Not {
@@ -721,9 +721,9 @@ impl Not {
 impl fmt::Display for Not {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &*self.filter {
-            Filter::IsPointer(..) => write!(fmt, "is not pointer"),
-            Filter::IsType(is_type) => write!(fmt, "is not {}", is_type.ty),
-            Filter::IsNan(..) => write!(fmt, "is not nan"),
+            FilterExpr::IsPointer(..) => write!(fmt, "is not pointer"),
+            FilterExpr::IsType(is_type) => write!(fmt, "is not {}", is_type.ty),
+            FilterExpr::IsNan(..) => write!(fmt, "is not nan"),
             other => write!(fmt, "not {}", other),
         }
     }

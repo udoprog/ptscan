@@ -1,27 +1,27 @@
 // vim: ft=rust
-use crate::{Type, filter::{lexer::Token, ast::*}, value_expr::{ValueOp, ast::*}};
+use crate::{Type, filter_expr::{lexer::Token, ast::*}, value_expr::{ValueOp, ast::*}};
 use num_bigint::BigInt;
 use bigdecimal::BigDecimal;
 
 grammar<'input>;
 
-pub Or: Expression = {
+pub Or: FilterExpr = {
     <left:And> <rest:(or And)+> => {
         let mut or = Vec::new();
         or.push(left);
         or.extend(rest.into_iter().map(|(_, r)| r));
-        Expression::Or(or)
+        FilterExpr::Or(or)
     },
 
     And,
 }
 
-And: Expression = {
+And: FilterExpr = {
     <left:Filter> <rest:(and Filter)+> => {
         let mut and = Vec::new();
         and.push(left);
         and.extend(rest.into_iter().map(|(_, r)| r));
-        Expression::And(and)
+        FilterExpr::And(and)
     },
 
     Filter,
@@ -61,24 +61,24 @@ ValueTerm: ValueExpr = {
     <bytes:bytes> => ValueExpr::Bytes(bytes),
 };
 
-Filter: Expression = {
-    <expr:ValueExpr> is <ty:ty> => Expression::IsType(expr, ty),
-    <expr:ValueExpr> is not <ty:ty> => Expression::Not(Box::new(Expression::IsType(expr, ty))),
-    <expr:ValueExpr> is nan => Expression::IsNan(expr),
-    <expr:ValueExpr> is not nan => Expression::Not(Box::new(Expression::IsNan(expr))),
-    <lhs:ValueExpr> "==" <rhs:ValueExpr> => Expression::Binary(Op::Eq, lhs, rhs),
-    <lhs:ValueExpr> "!=" <rhs:ValueExpr> => Expression::Binary(Op::Neq, lhs, rhs),
-    <lhs:ValueExpr> "<=" <rhs:ValueExpr> => Expression::Binary(Op::Lte, lhs, rhs),
-    <lhs:ValueExpr> ">=" <rhs:ValueExpr> => Expression::Binary(Op::Gte, lhs, rhs),
-    <lhs:ValueExpr> "<" <rhs:ValueExpr> => Expression::Binary(Op::Lt, lhs, rhs),
-    <lhs:ValueExpr> ">" <rhs:ValueExpr> => Expression::Binary(Op::Gt, lhs, rhs),
-    <lhs:ValueExpr> "^" <rhs:ValueExpr> => Expression::Binary(Op::StartsWith, lhs, rhs),
-    <expr:ValueExpr> "~" <pattern:ValueExpr> => Expression::Regex(expr, pattern),
+Filter: FilterExpr = {
+    <expr:ValueExpr> is <ty:ty> => FilterExpr::IsType(expr, ty),
+    <expr:ValueExpr> is not <ty:ty> => FilterExpr::Not(Box::new(FilterExpr::IsType(expr, ty))),
+    <expr:ValueExpr> is nan => FilterExpr::IsNan(expr),
+    <expr:ValueExpr> is not nan => FilterExpr::Not(Box::new(FilterExpr::IsNan(expr))),
+    <lhs:ValueExpr> "==" <rhs:ValueExpr> => FilterExpr::Binary(Op::Eq, lhs, rhs),
+    <lhs:ValueExpr> "!=" <rhs:ValueExpr> => FilterExpr::Binary(Op::Neq, lhs, rhs),
+    <lhs:ValueExpr> "<=" <rhs:ValueExpr> => FilterExpr::Binary(Op::Lte, lhs, rhs),
+    <lhs:ValueExpr> ">=" <rhs:ValueExpr> => FilterExpr::Binary(Op::Gte, lhs, rhs),
+    <lhs:ValueExpr> "<" <rhs:ValueExpr> => FilterExpr::Binary(Op::Lt, lhs, rhs),
+    <lhs:ValueExpr> ">" <rhs:ValueExpr> => FilterExpr::Binary(Op::Gt, lhs, rhs),
+    <lhs:ValueExpr> "^" <rhs:ValueExpr> => FilterExpr::Binary(Op::StartsWith, lhs, rhs),
+    <expr:ValueExpr> "~" <pattern:ValueExpr> => FilterExpr::Regex(expr, pattern),
 };
 
 extern {
     type Location = usize;
-    type Error = crate::filter::lexer::Error;
+    type Error = crate::filter_expr::lexer::Error;
 
     enum Token {
         value => Token::Value,

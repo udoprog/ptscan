@@ -1,6 +1,6 @@
 use crate::{
     address::{Address, Size},
-    filter::Binary,
+    filter_expr::Binary,
     ProcessId, ThreadId, Type, ValueExpr,
 };
 use std::io;

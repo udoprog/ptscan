@@ -11,6 +11,10 @@ use bigdecimal::BigDecimal;
 use num_bigint::{BigInt, Sign};
 use serde::{Deserialize, Serialize};
 use std::fmt;
+pub enum TypeMatch {
+    Implicit,
+    Explicit,
+}
 
 pub(crate) mod ast;
 
@@ -218,35 +222,70 @@ impl ValueExpr {
         initial_type: Option<Type>,
         last_type: Option<Type>,
         value_type: Option<Type>,
-    ) -> anyhow::Result<Option<Type>> {
-        Ok(match self {
-            Self::Value => value_type,
-            Self::Last => last_type,
-            Self::Initial => initial_type,
-            Self::Number { ty, .. } => Some(ty.unwrap_or(Type::U32)),
-            Self::Decimal { ty, .. } => Some(ty.unwrap_or(Type::F32)),
-            Self::String { value } => Some(Type::String(value.len())),
-            Self::Bytes { value } => Some(Type::Bytes(value.len())),
+    ) -> anyhow::Result<Option<(TypeMatch, Type)>> {
+        use self::TypeMatch::*;
+
+        Ok(match *self {
+            Self::Value => value_type.map(|ty| (Explicit, ty)),
+            Self::Last => last_type.map(|ty| (Explicit, ty)),
+            Self::Initial => initial_type.map(|ty| (Explicit, ty)),
             Self::Deref { .. } => None,
-            Self::AddressOf { .. } => Some(Type::Pointer),
-            Self::Binary { op, lhs, rhs } => {
+            Self::AddressOf { .. } => Some((Explicit, Type::Pointer)),
+            Self::Binary {
+                op,
+                ref lhs,
+                ref rhs,
+            } => {
                 let lhs_type = lhs.type_of(initial_type, last_type, value_type)?;
                 let rhs_type = rhs.type_of(initial_type, last_type, value_type)?;
 
                 match (lhs_type, rhs_type) {
-                    (Some(lhs_type), Some(rhs_type)) if lhs_type == rhs_type => Some(lhs_type),
-                    (Some(lhs_type), Some(rhs_type)) => bail!(
-                        "incompatible types in expression: {} {} {}",
-                        lhs_type,
-                        op,
-                        rhs_type
-                    ),
-                    (Some(expr_type), None) => Some(expr_type),
-                    (None, Some(expr_type)) => Some(expr_type),
+                    (Some((Explicit, lhs_type)), Some((Explicit, rhs_type))) => {
+                        if lhs_type == rhs_type {
+                            Some((Explicit, lhs_type))
+                        } else {
+                            bail!(
+                                "incompatible types in expression: {} {} {}",
+                                lhs_type,
+                                op,
+                                rhs_type
+                            )
+                        }
+                    }
+                    (Some((Explicit, ty)), _) | (_, Some((Explicit, ty))) => Some((Explicit, ty)),
+                    (Some((Implicit, ty)), _) | (_, Some((Implicit, ty))) => Some((Implicit, ty)),
                     _ => None,
                 }
             }
-            Self::Cast { ty, .. } => Some(*ty),
+            Self::Cast { ty, .. } => Some((Explicit, ty)),
+            Self::Number { ty: Some(ty), .. } => Some((Explicit, ty)),
+            Self::Number { ty: None, .. } => Some((Implicit, Type::U32)),
+            Self::Decimal { ty: Some(ty), .. } => Some((Explicit, ty)),
+            Self::Decimal { ty: None, .. } => Some((Implicit, Type::F32)),
+            Self::String { .. } => Some((Implicit, Type::String)),
+            Self::Bytes { ref value } => Some((Implicit, Type::Bytes(value.len()))),
+        })
+    }
+
+    /// Get the implicit type of the expression.
+    pub fn implicit_type_of(&self) -> anyhow::Result<Option<Type>> {
+        Ok(match self {
+            Self::Number { .. } => Some(Type::U32),
+            Self::Decimal { .. } => Some(Type::F32),
+            Self::String { .. } => Some(Type::String),
+            Self::Bytes { value } => Some(Type::Bytes(value.len())),
+            Self::Binary { lhs, rhs, .. } => {
+                if let Some(ty) = lhs.implicit_type_of()? {
+                    return Ok(Some(ty));
+                }
+
+                if let Some(ty) = rhs.implicit_type_of()? {
+                    return Ok(Some(ty));
+                }
+
+                None
+            }
+            _ => None,
         })
     }
 
@@ -281,12 +320,15 @@ impl ValueExpr {
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Value> {
         match *self {
-            Self::Value => Ok(proxy.eval(value_type)?),
+            Self::Value => {
+                let (value, _) = proxy.eval(value_type)?;
+                Ok(value)
+            }
             Self::Initial => Ok(initial.clone()),
             Self::Last => Ok(last.clone()),
             Self::Number { ref value, .. } => Ok(Value::from_bigint(expr_type, value)?),
             Self::Decimal { ref value, .. } => Ok(Value::from_bigdecimal(expr_type, value)?),
-            Self::String { ref value } => Ok(Value::String(value.to_owned(), value.len())),
+            Self::String { ref value } => Ok(Value::String(value.to_owned())),
             Self::Bytes { ref value } => Ok(Value::Bytes(value.clone())),
             Self::Deref { ref value } => {
                 let value = value.eval(initial, last, value_type, Type::Pointer, proxy)?;
@@ -298,7 +340,8 @@ impl ValueExpr {
 
                 let pointer = pointer::Pointer::from_address(address);
                 let mut proxy = proxy.handle.address_proxy(&pointer);
-                Ok(proxy.eval(expr_type)?)
+                let (value, _) = proxy.eval(expr_type)?;
+                Ok(value)
             }
             Self::AddressOf { ref value } => {
                 let new_address =

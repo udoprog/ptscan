@@ -134,7 +134,7 @@ impl Pointer {
     /// Try to evaluate the current location into an address.
     pub fn follow<F>(&self, handle: &ProcessHandle, eval: F) -> anyhow::Result<Option<Address>>
     where
-        F: Fn(Address, &mut [u8]) -> anyhow::Result<bool>,
+        F: for<'a> Fn(Address, &'a mut [u8]) -> anyhow::Result<Option<&'a [u8]>>,
     {
         Self::do_follow(&self.raw, handle, eval)
     }
@@ -159,7 +159,7 @@ impl Pointer {
         eval: F,
     ) -> anyhow::Result<Option<Address>>
     where
-        F: Fn(Address, &mut [u8]) -> anyhow::Result<bool>,
+        F: for<'a> Fn(Address, &'a mut [u8]) -> anyhow::Result<Option<&'a [u8]>>,
     {
         let address = match raw.base.eval(handle)? {
             Some(address) => address,
@@ -174,8 +174,12 @@ impl Pointer {
         let mut buf = vec![0u8; handle.process.pointer_width];
 
         for o in &raw.offsets {
-            eval(current, &mut buf)?;
-            current = Address::decode(&handle.process, &buf)?;
+            let buf = match eval(current, &mut buf)? {
+                Some(buf) if buf.len() == handle.process.pointer_width => buf,
+                _ => return Ok(None),
+            };
+
+            current = Address::decode(&handle.process, buf)?;
 
             current = match current.checked_offset(*o) {
                 Some(current) => current,

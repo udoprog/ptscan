@@ -602,7 +602,7 @@ impl Application {
                     Some(handle) => {
                         let mut proxy = handle.address_proxy(&pointer);
                         let address = proxy.follow_default()?;
-                        let value = proxy.eval(ty)?;
+                        let (value, _) = proxy.eval(ty)?;
                         (address, value)
                     }
                     None => (None, Value::None(ty)),

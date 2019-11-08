@@ -47,7 +47,7 @@ pub enum Special {
     Bytes(Vec<u8>),
     NotBytes(Vec<u8>),
     Zero(usize),
-    NonZero(usize),
+    NonZero(Option<usize>),
     /// All the inner specials must match.
     All(Vec<Special>),
     /// Any of the inner specials match.

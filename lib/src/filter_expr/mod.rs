@@ -3,9 +3,8 @@ use crate::{
     error::Error,
     process::{MemoryInformation, Process},
     value,
-    value::Value,
-    value_expr::ValueExpr,
-    AddressProxy, AddressRange, Type,
+    value_expr::TypeMatch,
+    AddressProxy, AddressRange, Type, Value, ValueExpr,
 };
 use anyhow::bail;
 use num_bigint::Sign;
@@ -154,7 +153,7 @@ impl Binary {
         Ok(match (lhs, rhs) {
             (ValueExpr::Value, ValueExpr::Value) => None,
             (ValueExpr::Value, other) | (other, ValueExpr::Value) => {
-                other.type_of(None, None, None)?
+                other.type_of(None, None, None)?.map(|(_, ty)| ty)
             }
             _ => None,
         })
@@ -167,6 +166,8 @@ impl Binary {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
+        use self::TypeMatch::*;
+
         macro_rules! binary {
             ($expr_a:expr, $expr_b:expr, $a:ident $op:tt $b:ident) => {
                 match ($expr_a, $expr_b) {
@@ -196,20 +197,15 @@ impl Binary {
         let rhs_type = rhs.type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?;
 
         let expr_type = match (lhs_type, rhs_type) {
-            (Some(lhs_type), Some(rhs_type)) => {
-                if lhs_type != rhs_type {
-                    bail!(
-                        "incompatible types in expression: {} {} {}",
-                        lhs_type,
-                        op,
-                        rhs_type
-                    )
+            (Some((Explicit, lhs)), Some((Explicit, rhs))) => {
+                if lhs == rhs {
+                    lhs
+                } else {
+                    bail!("incompatible types in expression: {} {} {}", lhs, op, rhs)
                 }
-
-                lhs_type
             }
-            (Some(expr_type), None) => expr_type,
-            (None, Some(expr_type)) => expr_type,
+            (Some((Explicit, ty)), _) | (_, Some((Explicit, ty))) => ty,
+            (Some((Implicit, ty)), _) | (_, Some((Implicit, ty))) => ty,
             _ => return Err(Error::BinaryTypeInference(self.clone()).into()),
         };
 
@@ -263,27 +259,28 @@ impl Binary {
                 Some(value::Value::from_bigdecimal(value_type, value)?)
             }
             (Op::Eq, String { value }, Value) | (Op::Eq, Value, String { value }) => {
-                Some(value::Value::String(value.to_owned(), value.len()))
+                Some(value::Value::String(value.to_owned()))
             }
             (Op::Eq, Bytes { value }, Value) | (Op::Eq, Value, Bytes { value }) => {
                 Some(value::Value::Bytes(value.clone()))
             }
             (Op::StartsWith, Value, String { value }) => {
-                Some(value::Value::String(value.to_owned(), value.len()))
+                Some(value::Value::String(value.to_owned()))
             }
             (Op::StartsWith, Value, Bytes { value }) => Some(value::Value::Bytes(value.clone())),
             _ => None,
         };
 
         if let Some(value) = exact {
-            let width = value.size(process);
-            let mut buf = vec![0u8; width];
-            value.encode(process, &mut buf)?;
+            if let Some(width) = value.size(process) {
+                let mut buf = vec![0u8; width];
+                value.encode(process, &mut buf)?;
 
-            if buf.iter().all(|c| *c == 0) {
-                return Ok(Some(Special::Zero(width)));
-            } else {
-                return Ok(Some(Special::Bytes(buf)));
+                if buf.iter().all(|c| *c == 0) {
+                    return Ok(Some(Special::Zero(width)));
+                } else {
+                    return Ok(Some(Special::Bytes(buf)));
+                }
             }
         }
 
@@ -501,7 +498,7 @@ impl IsPointer {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let expr_type = self
+        let (_, expr_type) = self
             .expr
             .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
@@ -558,7 +555,7 @@ impl IsType {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let expr_type = self
+        let (_, expr_type) = self
             .expr
             .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
@@ -601,7 +598,7 @@ impl IsNan {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let expr_type = self
+        let (_, expr_type) = self
             .expr
             .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
@@ -638,7 +635,7 @@ impl Regex {
     }
 
     fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
-        self.expr.value_type_of()
+        Ok(Some(self.expr.value_type_of()?.unwrap_or(Type::String)))
     }
 
     pub fn test(
@@ -648,7 +645,7 @@ impl Regex {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let expr_type = self
+        let (_, expr_type) = self
             .expr
             .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;

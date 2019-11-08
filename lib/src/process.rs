@@ -1,6 +1,6 @@
 use std::{convert::TryFrom, ffi, fmt, ptr, slice, sync::Arc};
 
-use crate::{error::Error, module, utils, Address, AddressRange, ProcessId, Size, Type, Value};
+use crate::{error::Error, module, utils, Address, AddressRange, ProcessId, Size};
 
 use ntapi::ntpsapi;
 use winapi::{
@@ -11,6 +11,30 @@ use winapi::{
     },
     um::{memoryapi, processthreadsapi, psapi, winnt},
 };
+
+pub trait MemoryReader<'a>: Copy {
+    fn read_memory<'m>(
+        self,
+        address: Address,
+        buf: &'m mut [u8],
+    ) -> anyhow::Result<Option<&'m [u8]>>;
+
+    fn process(self) -> &'a Process;
+}
+
+impl<'a> MemoryReader<'a> for &'a Process {
+    fn read_memory<'m>(
+        self,
+        address: Address,
+        buf: &'m mut [u8],
+    ) -> anyhow::Result<Option<&'m [u8]>> {
+        Ok(self.read_process_memory(address, buf)?)
+    }
+
+    fn process(self) -> &'a Process {
+        self
+    }
+}
 
 /// A process handle.
 #[derive(Clone)]
@@ -151,8 +175,9 @@ impl Process {
         let mut out: T = mem::zeroed();
         let buf = slice::from_raw_parts_mut(&mut out as *mut T as *mut u8, mem::size_of::<T>());
 
-        if !self.read_process_memory(address, buf)? {
-            return Err(Error::ReadUnderflow);
+        match self.read_process_memory(address, buf)? {
+            Some(buf) if buf.len() == mem::size_of::<T>() => (),
+            _ => return Err(Error::ReadUnderflow),
         }
 
         Ok(out)
@@ -191,7 +216,7 @@ impl Process {
         &self,
         address: Address,
         buffer: &'a mut [u8],
-    ) -> Result<bool, Error> {
+    ) -> Result<Option<&'a [u8]>, Error> {
         let mut bytes_read: SIZE_T = 0;
 
         let result = checked!(memoryapi::ReadProcessMemory(
@@ -203,27 +228,11 @@ impl Process {
         ));
 
         match result {
-            Ok(()) => Ok(bytes_read == buffer.len()),
-            Err(ref e) if e.raw_os_error() == Some(winerror::ERROR_PARTIAL_COPY as i32) => {
-                Ok(false)
-            }
-            Err(ref e) if e.raw_os_error() == Some(winerror::ERROR_NOACCESS as i32) => Ok(false),
+            Ok(()) => Ok(Some(&buffer[..bytes_read])),
+            Err(ref e) if e.raw_os_error() == Some(winerror::ERROR_PARTIAL_COPY as i32) => Ok(None),
+            Err(ref e) if e.raw_os_error() == Some(winerror::ERROR_NOACCESS as i32) => Ok(None),
             Err(e) => Err(e),
         }
-    }
-
-    /// Read process memory with the given type.
-    pub fn read_memory_of_type(
-        &self,
-        address: Address,
-        ty: Type,
-        buf: &mut [u8],
-    ) -> Result<Value, Error> {
-        if !self.read_process_memory(address, buf)? {
-            return Err(Error::ReadUnderflow);
-        }
-
-        Ok(ty.decode(self, buf)?)
     }
 
     /// Retrieve information about the memory page that corresponds to the given virtual `address`.

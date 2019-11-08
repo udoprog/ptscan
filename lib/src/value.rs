@@ -85,7 +85,7 @@ pub enum Value {
     #[serde(rename = "f64")]
     F64(f64),
     #[serde(rename = "string")]
-    String(String, usize),
+    String(String),
     #[serde(rename = "bytes")]
     Bytes(Vec<u8>),
 }
@@ -173,7 +173,7 @@ impl Value {
     /// Test if value is aligned by default or not.
     pub fn is_default_aligned(&self) -> bool {
         match self {
-            Self::None(Type::String(..)) | Self::String(..) => false,
+            Self::None(Type::String) | Self::String(..) => false,
             Self::None(Type::Bytes(..)) | Self::Bytes(..) => false,
             _ => true,
         }
@@ -272,15 +272,15 @@ impl Value {
             Self::I128(..) => Type::I128,
             Self::F32(..) => Type::F32,
             Self::F64(..) => Type::F64,
-            Self::String(_, len) => Type::String(len),
+            Self::String(..) => Type::String,
             Self::Bytes(ref bytes) => Type::Bytes(bytes.len()),
         }
     }
 
     /// Get the size in bytes of this value.
-    pub fn size(&self, process: &Process) -> usize {
-        match self {
-            Self::None(ty) => ty.size(process),
+    pub fn size(&self, process: &Process) -> Option<usize> {
+        Some(match self {
+            Self::None(ty) => return ty.size(process),
             Self::Pointer(..) => process.pointer_width,
             Self::U8(..) => mem::size_of::<u8>(),
             Self::I8(..) => mem::size_of::<i8>(),
@@ -296,7 +296,7 @@ impl Value {
             Self::F64(..) => mem::size_of::<f64>(),
             Self::String(string, ..) => string.len(),
             Self::Bytes(bytes) => bytes.len(),
-        }
+        })
     }
 
     /// Convert from a big integer.

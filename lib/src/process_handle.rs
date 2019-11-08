@@ -2,8 +2,8 @@
 
 use crate::{
     error::Error,
-    filter_expr::{FilterExpr, Special},
-    process::MemoryInformation,
+    filter_expr::FilterExpr,
+    process::{MemoryInformation, MemoryReader},
     scan::{self, ScanProgress, ScanResult},
     system,
     thread::Thread,
@@ -339,12 +339,15 @@ impl ProcessHandle {
 
                             let mut work = || {
                                 let mut proxy = self.address_proxy(&result.pointer);
-                                let ty = new_type.unwrap_or_else(|| result.last().ty());
+                                let value_type = new_type.unwrap_or_else(|| result.last().ty());
 
-                                if let Test::True =
-                                    filter.test(result.initial(), result.last(), ty, &mut proxy)?
-                                {
-                                    let value = proxy.eval(ty)?;
+                                if let Test::True = filter.test(
+                                    result.initial(),
+                                    result.last(),
+                                    value_type,
+                                    &mut proxy,
+                                )? {
+                                    let (value, _) = proxy.eval(value_type)?;
                                     result.last = Some(value);
                                     *result.pointer.last_address_mut() = proxy.follow_default()?;
                                     return Ok(Task::Accepted);
@@ -454,6 +457,11 @@ impl ProcessHandle {
         let mut tasks = thread_pool.current_num_threads();
         let cancel = &cancel;
 
+        let new_type = match new_type {
+            Some(new_type) => Some(new_type),
+            None => expr.value_type_of()?,
+        };
+
         thread_pool.install(|| {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<bool>>();
@@ -480,7 +488,7 @@ impl ProcessHandle {
                                 let initial = result.initial();
                                 let last = result.last();
 
-                                let expr_type = expr
+                                let (_, expr_type) = expr
                                     .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?
                                     .ok_or_else(|| Error::TypeInference(expr.clone()))?;
 
@@ -554,9 +562,7 @@ pub struct AddressProxy<'a> {
 
 impl AddressProxy<'_> {
     /// Evaluate the pointer of the proxy.
-    pub fn eval(&mut self, ty: Type) -> anyhow::Result<Value> {
-        let mut buf = vec![0u8; ty.size(&self.handle.process)];
-
+    pub fn eval(&mut self, ty: Type) -> anyhow::Result<(Value, Option<usize>)> {
         if let Some(memory_cache) = self.memory_cache {
             let address = match self.followed {
                 Cached::Some(address) => address,
@@ -572,20 +578,15 @@ impl AddressProxy<'_> {
 
             let address = match address {
                 Some(address) => address,
-                None => return Ok(Value::None(ty)),
+                None => return Ok((Value::None(ty), None)),
             };
 
-            let value =
-                if memory_cache.read_process_memory(&self.handle.process, address, &mut buf)? {
-                    match ty.decode(&self.handle.process, &buf) {
-                        Ok(value) => value,
-                        Err(..) => Value::None(ty),
-                    }
-                } else {
-                    Value::None(ty)
-                };
-
-            Ok(value)
+            Ok(
+                match ty.decode((memory_cache, &self.handle.process), address) {
+                    Ok(value) => value,
+                    Err(..) => (Value::None(ty), None),
+                },
+            )
         } else {
             let address = match self.followed {
                 Cached::Some(address) => address,
@@ -598,19 +599,13 @@ impl AddressProxy<'_> {
 
             let address = match address {
                 Some(address) => address,
-                None => return Ok(Value::None(ty)),
+                None => return Ok((Value::None(ty), None)),
             };
 
-            let value = if self.handle.process.read_process_memory(address, &mut buf)? {
-                match ty.decode(&self.handle.process, &buf) {
-                    Ok(value) => value,
-                    Err(..) => Value::None(ty),
-                }
-            } else {
-                Value::None(ty)
-            };
-
-            Ok(value)
+            Ok(match ty.decode(&self.handle.process, address) {
+                Ok(value) => value,
+                Err(..) => (Value::None(ty), None),
+            })
         }
     }
 
@@ -651,15 +646,15 @@ impl MemoryCache {
     }
 
     /// Read process memory.
-    pub fn read_process_memory(
+    pub fn read_process_memory<'a>(
         &self,
         process: &Process,
         address: Address,
-        buf: &mut [u8],
-    ) -> anyhow::Result<bool> {
+        buf: &'a mut [u8],
+    ) -> anyhow::Result<Option<&'a [u8]>> {
         let region = match self.regions.find_region_for(address) {
             Some(region) => region,
-            None => return Ok(false),
+            None => return Ok(None),
         };
 
         let s = address.as_usize() - region.base.as_usize();
@@ -670,66 +665,46 @@ impl MemoryCache {
 
             if let Some(data) = cache.peek(region) {
                 if e >= data.len() {
-                    return Ok(false);
+                    return Ok(None);
                 }
 
                 buf.clone_from_slice(&data[s..e]);
-                return Ok(true);
+                return Ok(Some(&buf[..]));
             }
         }
 
         let mut cache = self.cache.write();
-        let mut data = vec![0u8; region.size.as_usize()];
+        let len = region.size.as_usize();
+        let mut data = vec![0u8; len];
 
-        let start = std::time::Instant::now();
+        match process.read_process_memory(region.base, &mut data)? {
+            Some(data) if data.len() == len => (),
+            _ => return Ok(None),
+        };
 
-        println!("reading under lock...");
-        if !process.read_process_memory(region.base, &mut data)? {
-            return Ok(false);
-        }
-        println!(
-            "done reading under lock: {:?}",
-            std::time::Instant::now().duration_since(start)
-        );
-
-        let result = if e < data.len() {
+        let ret = if e < data.len() {
             buf.clone_from_slice(&data[s..e]);
-            true
+            Some(&buf[..])
         } else {
-            false
+            None
         };
 
         cache.put(region.clone(), data);
-        Ok(result)
+        Ok(ret)
+    }
+}
+
+impl<'a> MemoryReader<'a> for (&'a MemoryCache, &'a Process) {
+    fn read_memory<'m>(
+        self,
+        address: Address,
+        buf: &'m mut [u8],
+    ) -> anyhow::Result<Option<&'m [u8]>> {
+        Ok(self.0.read_process_memory(self.1, address, buf)?)
     }
 
-    pub fn with_region<T, U>(
-        &self,
-        process: &Process,
-        region: &AddressRange,
-        handle: T,
-    ) -> anyhow::Result<Option<U>>
-    where
-        T: FnOnce(&[u8]) -> anyhow::Result<Option<U>>,
-    {
-        {
-            let cache = self.cache.read();
-
-            if let Some(data) = cache.peek(region) {
-                return handle(data);
-            }
-        }
-
-        let mut cache = self.cache.write();
-        let mut data = vec![0u8; region.size.as_usize()];
-
-        if !process.read_process_memory(region.base, &mut data)? {
-            return Ok(None);
-        }
-
-        let result = handle(&data);
-        cache.put(region.clone(), data);
-        Ok(result?)
+    fn process(self) -> &'a Process {
+        self.1
     }
 }
 
@@ -821,24 +796,5 @@ impl<'a> Session<'a> {
             memory_cache: Some(&self.memory_cache),
             followed: Cached::None,
         }
-    }
-
-    /// Get the next address matching.
-    pub fn next_address(
-        &self,
-        region: &AddressRange,
-        address: Address,
-        special: &Special,
-    ) -> anyhow::Result<Option<Address>> {
-        self.memory_cache
-            .with_region(&self.handle.process, region, |data| {
-                let offset = address.sub_address(region.base)?.as_usize();
-                let data = &data[offset..];
-
-                Ok(match special.test(data) {
-                    Some(offset) => Some(address.saturating_add(Size::try_from(offset)?)),
-                    None => None,
-                })
-            })
     }
 }

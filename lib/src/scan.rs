@@ -193,7 +193,7 @@ impl Scan {
         thread_pool: &rayon::ThreadPool,
         handle: &ProcessHandle,
         filter: &FilterExpr,
-        ty: Type,
+        value_type: Type,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
         config: InitialScanConfig,
@@ -219,10 +219,16 @@ impl Scan {
 
         let mut last_error = None;
 
-        let type_size = ty.size(&handle.process);
-        let aligned = aligned.unwrap_or_else(|| ty.is_default_aligned());
+        let type_size = value_type.size(&handle.process);
+        let aligned = aligned.unwrap_or_else(|| value_type.is_default_aligned());
+        let type_size = if aligned { type_size.unwrap_or(1) } else { 1 };
+        let alignment = if aligned && type_size > 1 {
+            Some(type_size)
+        } else {
+            None
+        };
 
-        let special = filter.special(&handle.process, ty)?;
+        let special = filter.special(&handle.process, value_type)?;
         let special = special.as_ref();
 
         let tasks = config
@@ -283,9 +289,9 @@ impl Scan {
                             tx: &tx,
                             queue,
                             filter,
-                            ty,
+                            value_type,
                             special,
-                            aligned,
+                            alignment,
                             type_size,
                             buffer_size,
                             cancel,
@@ -347,9 +353,9 @@ impl Scan {
             tx: &'a mpsc::Sender<Task>,
             queue: &'a SegQueue<(Address, usize)>,
             filter: &'a FilterExpr,
-            ty: Type,
+            value_type: Type,
             special: Option<&'a Special>,
-            aligned: bool,
+            alignment: Option<usize>,
             type_size: usize,
             buffer_size: usize,
             cancel: &'a Token,
@@ -362,9 +368,9 @@ impl Scan {
                 tx,
                 queue,
                 filter,
-                ty,
+                value_type,
                 special,
-                aligned,
+                alignment,
                 type_size,
                 buffer_size,
                 cancel,
@@ -387,18 +393,18 @@ impl Scan {
                 let start = Instant::now();
                 let mut hits = 0;
 
-                if handle.process.read_process_memory(address, data)? {
+                if let Some(data) = handle.process.read_process_memory(address, data)? {
                     process_one(ProcessOne {
                         handle,
                         filter,
-                        value_type: ty,
+                        value_type,
                         results: &mut results,
                         hits: &mut hits,
                         base: address,
-                        data: &data,
+                        data,
                         type_size,
                         none,
-                        aligned,
+                        alignment,
                         special,
                         cancel,
                     })?;
@@ -422,7 +428,7 @@ impl Scan {
             data: &'a [u8],
             type_size: usize,
             none: &'a Value,
-            aligned: bool,
+            alignment: Option<usize>,
             special: Option<&'a Special>,
             cancel: &'a Token,
         }
@@ -439,28 +445,28 @@ impl Scan {
                 data,
                 type_size,
                 none,
-                aligned,
+                alignment,
                 special,
                 cancel,
                 ..
             } = process_one;
 
-            let mut inner_offset = match special {
+            let mut offset = match special {
                 Some(special) => match special.test(data) {
-                    Some(inner_offset) => inner_offset,
+                    Some(offset) => offset,
                     None => return Ok(()),
                 },
                 None => 0usize,
             };
 
-            if aligned {
-                align(&mut inner_offset, type_size);
+            if let Some(size) = alignment {
+                align(&mut offset, size);
             }
 
             let mut last_address = None;
 
-            while inner_offset < data.len() && !cancel.test() {
-                let address = base.add(Size::try_from(inner_offset)?)?;
+            while offset < data.len() && !cancel.test() {
+                let address = base.add(Size::try_from(offset)?)?;
                 let mut pointer =
                     Pointer::new(PointerBase::Address { address }, vec![], Some(address));
                 let mut proxy = handle.address_proxy(&pointer);
@@ -473,31 +479,33 @@ impl Scan {
 
                 if let Test::True = filter.test(none, none, value_type, &mut proxy)? {
                     *hits += 1;
-                    let value = proxy.eval(value_type)?;
+                    let (value, advance) = proxy.eval(value_type)?;
                     *pointer.base_mut() = handle.address_to_pointer_base(address)?;
                     *pointer.last_address_mut() = Some(address);
                     results.push(Box::new(ScanResult::new(pointer, value)));
+
+                    if let Some(advance) = advance {
+                        offset += advance;
+                    } else {
+                        offset += type_size;
+                    }
+                } else {
+                    offset += type_size;
+                }
+
+                if offset >= data.len() {
+                    break;
                 }
 
                 if let Some(special) = special {
-                    if aligned {
-                        inner_offset += type_size;
-                    } else {
-                        inner_offset += 1;
-                    }
-
-                    inner_offset += match special.test(&data[inner_offset..]) {
+                    offset += match special.test(&data[offset..]) {
                         Some(o) => o,
                         None => return Ok(()),
                     };
 
-                    if aligned {
-                        align(&mut inner_offset, type_size);
+                    if let Some(size) = alignment {
+                        align(&mut offset, size);
                     }
-                } else if aligned {
-                    inner_offset += type_size;
-                } else {
-                    inner_offset += 1;
                 }
             }
 

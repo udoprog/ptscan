@@ -1,4 +1,5 @@
-use crate::{error::Error, Address, Process, Value};
+use crate::{error::Error, process::MemoryReader, Address, Process, Size, Value};
+use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use std::{convert::TryFrom as _, fmt, mem, str};
 
@@ -80,7 +81,7 @@ pub enum Type {
     #[serde(rename = "f64")]
     F64,
     #[serde(rename = "string")]
-    String(usize),
+    String,
     #[serde(rename = "bytes")]
     Bytes(usize),
 }
@@ -89,7 +90,7 @@ impl Type {
     /// Indicates if this type is aligned by default or not.
     pub fn is_default_aligned(&self) -> bool {
         match self {
-            Self::String(..) => false,
+            Self::String => false,
             Self::Bytes(..) => false,
             _ => true,
         }
@@ -110,8 +111,8 @@ impl Type {
             (Self::I64, other @ Value::I64(..)) => return Some(other),
             (Self::U128, other @ Value::U128(..)) => return Some(other),
             (Self::I128, other @ Value::I128(..)) => return Some(other),
-            (Self::String(len), Value::String(string, ..)) => {
-                return Some(Value::String(string, len));
+            (Self::String, Value::String(string)) => {
+                return Some(Value::String(string));
             }
             (Self::Bytes(..), other @ Value::Bytes(..)) => return Some(other),
             (_, other) => other,
@@ -137,7 +138,7 @@ impl Type {
             Self::I128 => Value::I128(Default::default()),
             Self::F32 => Value::F32(Default::default()),
             Self::F64 => Value::F64(Default::default()),
-            Self::String(len) => Value::String(Default::default(), len),
+            Self::String => Value::String(Default::default()),
             Self::Bytes(..) => Value::Bytes(Default::default()),
         }
     }
@@ -171,7 +172,7 @@ impl Type {
                     str::parse::<f64>(input).map_err(|_| Error::TypeParseError)?,
                 ))
             }
-            Self::String(..) => return Err(Error::TypeParseString),
+            Self::String => return Err(Error::TypeParseString),
             Self::Bytes(..) => return Err(Error::TypeParseBytes),
         };
 
@@ -197,7 +198,7 @@ impl Type {
             Self::I128 => i128::from_str_radix(input, 16).map(Value::I128),
             Self::F32 => return Err(Error::TypeParseFloat),
             Self::F64 => return Err(Error::TypeParseFloat),
-            Self::String(..) => return Err(Error::TypeParseString),
+            Self::String => return Err(Error::TypeParseString),
             Self::Bytes(..) => return Err(Error::TypeParseBytes),
         };
 
@@ -206,8 +207,8 @@ impl Type {
 
     /// The known in-memory size that a type has.
     #[inline]
-    pub fn size(&self, process: &Process) -> usize {
-        match *self {
+    pub fn size(&self, process: &Process) -> Option<usize> {
+        Some(match *self {
             Self::None => 0,
             Self::Pointer => process.pointer_width,
             Self::U8 => mem::size_of::<u8>(),
@@ -222,64 +223,111 @@ impl Type {
             Self::I128 => mem::size_of::<i128>(),
             Self::F32 => mem::size_of::<f32>(),
             Self::F64 => mem::size_of::<f64>(),
-            Self::String(len) => len,
             Self::Bytes(len) => len,
-        }
+            Self::String => return None,
+        })
     }
 
     /// Decode the given buffer into a value.
-    pub fn decode(&self, process: &Process, buf: &[u8]) -> Result<Value, Error> {
+    pub fn decode<'a>(
+        self,
+        reader: impl MemoryReader<'a>,
+        address: Address,
+    ) -> anyhow::Result<(Value, Option<usize>)> {
         // Decode a buffer, and depending on its width decode it differently.
         macro_rules! decode_buf {
             ($buf:expr, $ty:ty, $reader:ident) => {{
-                if buf.len() != std::mem::size_of::<$ty>() {
-                    return Err(Error::BufferOverflow(std::mem::size_of::<$ty>(), buf.len()));
+                if $buf.len() != std::mem::size_of::<$ty>() {
+                    return Err(
+                        Error::BufferOverflow(std::mem::size_of::<$ty>(), $buf.len()).into(),
+                    );
                 }
 
-                process.$reader($buf) as $ty
+                reader.process().$reader($buf) as $ty
             }};
         }
 
         macro_rules! decode_byte {
             ($buf:expr, $ty:ty) => {{
-                if buf.is_empty() {
-                    return Err(Error::BufferOverflow(1, buf.len()));
+                if $buf.is_empty() {
+                    return Err(Error::BufferOverflow(1, $buf.len()).into());
                 }
 
-                buf[0] as $ty
+                $buf[0] as $ty
             }};
         }
 
-        Ok(match *self {
-            Self::None => Value::None(Type::None),
-            Type::Pointer => Value::Pointer(Address::decode(process, buf)?),
-            Self::U8 => Value::U8(decode_byte!(buf, u8)),
-            Self::I8 => Value::I8(decode_byte!(buf, i8)),
-            Self::U16 => Value::U16(decode_buf!(buf, u16, read_u16)),
-            Self::I16 => Value::I16(decode_buf!(buf, i16, read_u16)),
-            Self::U32 => Value::U32(decode_buf!(buf, u32, read_u32)),
-            Self::I32 => Value::I32(decode_buf!(buf, i32, read_u32)),
-            Self::U64 => Value::U64(decode_buf!(buf, u64, read_u64)),
-            Self::I64 => Value::I64(decode_buf!(buf, i64, read_u64)),
-            Self::U128 => Value::U128(decode_buf!(buf, u128, read_u128)),
-            Self::I128 => Value::I128(decode_buf!(buf, i128, read_u128)),
-            Self::F32 => Value::F32(decode_buf!(buf, f32, read_f32)),
-            Self::F64 => Value::F64(decode_buf!(buf, f64, read_f64)),
-            Self::String(len) => {
-                let buf = match memchr::memchr(0, buf) {
-                    Some(len) => &buf[..len],
-                    None => buf,
+        if let Some(size) = self.size(reader.process()) {
+            let mut buf = vec![0u8; size];
+
+            let buf = match reader.read_memory(address, &mut buf)? {
+                Some(buf) if buf.len() == size => buf,
+                _ => return Ok((Value::None(self), None)),
+            };
+
+            let value = match self {
+                Self::None => Value::None(Type::None),
+                Type::Pointer => Value::Pointer(Address::decode(reader.process(), buf)?),
+                Self::U8 => Value::U8(decode_byte!(buf, u8)),
+                Self::I8 => Value::I8(decode_byte!(buf, i8)),
+                Self::U16 => Value::U16(decode_buf!(buf, u16, read_u16)),
+                Self::I16 => Value::I16(decode_buf!(buf, i16, read_u16)),
+                Self::U32 => Value::U32(decode_buf!(buf, u32, read_u32)),
+                Self::I32 => Value::I32(decode_buf!(buf, i32, read_u32)),
+                Self::U64 => Value::U64(decode_buf!(buf, u64, read_u64)),
+                Self::I64 => Value::I64(decode_buf!(buf, i64, read_u64)),
+                Self::U128 => Value::U128(decode_buf!(buf, u128, read_u128)),
+                Self::I128 => Value::I128(decode_buf!(buf, i128, read_u128)),
+                Self::F32 => Value::F32(decode_buf!(buf, f32, read_f32)),
+                Self::F64 => Value::F64(decode_buf!(buf, f64, read_f64)),
+                Self::Bytes(..) => Value::Bytes(buf.to_vec()),
+                other => bail!("tried to decode unsized {} as sized", other),
+            };
+
+            return Ok((value, Some(size)));
+        }
+
+        return match self {
+            Self::String => decode_string(reader, address),
+            other => bail!("tried to decode sized {} as unsized", other),
+        };
+
+        fn decode_string<'a>(
+            reader: impl MemoryReader<'a>,
+            mut address: Address,
+        ) -> anyhow::Result<(Value, Option<usize>)> {
+            let mut buf = vec![0u8; 0x100];
+            let mut string = Vec::new();
+
+            loop {
+                let buf = match reader.read_memory(address, &mut buf)? {
+                    Some(buf) => buf,
+                    None => return Ok((Value::None(Type::String), None)),
                 };
 
-                let s = match std::str::from_utf8(buf) {
-                    Err(e) => std::str::from_utf8(&buf[..e.valid_up_to()]).expect("valid utf-8"),
-                    Ok(s) => s,
-                };
+                if let Some(index) = memchr::memchr(0x0, &buf) {
+                    string.extend(&buf[..index]);
+                    break;
+                }
 
-                Value::String(s.to_string(), len)
+                string.extend(buf);
+                address.add_assign(Size::new(0x100))?;
             }
-            Self::Bytes(..) => Value::Bytes(buf.to_vec()),
-        })
+
+            let len = string.len() + 1;
+
+            let string = match String::from_utf8(string) {
+                Err(e) => {
+                    let len = e.utf8_error().valid_up_to();
+                    let mut string = e.into_bytes();
+                    string.resize_with(len, u8::default);
+                    String::from_utf8(string)?
+                }
+                Ok(string) => string,
+            };
+
+            Ok((Value::String(string), Some(len)))
+        }
     }
 
     /// Convert into a type which implements `fmt::Display` for a human-readable string.
@@ -311,7 +359,7 @@ impl fmt::Display for Type {
             Type::I128 => "i128",
             Type::F32 => "f32",
             Type::F64 => "f64",
-            Type::String(len) => return write!(fmt, "string/{}", len),
+            Type::String => "string",
             Type::Bytes(len) => return write!(fmt, "bytes/{}", len),
         };
 
@@ -344,14 +392,7 @@ impl str::FromStr for Type {
             "i128" => Type::I128,
             "f32" => Type::F32,
             "f64" => Type::F64,
-            "string" => {
-                let size = match it.next() {
-                    Some(size) => str::parse::<usize>(size).map_err(|_| Error::TypeBadSize)?,
-                    None => 0x100,
-                };
-
-                Type::String(size)
-            }
+            "string" => Type::String,
             "bytes" => {
                 let size = match it.next() {
                     Some(size) => str::parse::<usize>(size).map_err(|_| Error::TypeBadSize)?,
@@ -390,7 +431,7 @@ impl fmt::Display for HumanDisplay {
             Type::I128 => write!(fmt, "signed 128-bit number"),
             Type::F32 => write!(fmt, "32-bit floating point number"),
             Type::F64 => write!(fmt, "64-bit floating point number"),
-            Type::String(len) => write!(fmt, "utf-8-encoded string of length {}", len),
+            Type::String => write!(fmt, "utf-8-encoded null-terminated string"),
             Type::Bytes(len) => write!(fmt, "a byte array of length {}", len),
         }
     }

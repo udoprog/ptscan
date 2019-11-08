@@ -151,9 +151,9 @@ impl Value {
         match *self {
             Self::Pointer(address) => {
                 if address.is_null() {
-                    Sign::Plus
-                } else {
                     Sign::NoSign
+                } else {
+                    Sign::Plus
                 }
             }
             Self::U8(value) => unsigned!(value),

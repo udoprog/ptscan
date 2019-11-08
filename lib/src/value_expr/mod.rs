@@ -218,32 +218,21 @@ impl ValueExpr {
     }
 
     /// Get a type hint for the value type.
-    pub fn value_type_of(
-        &self,
-        initial_type: Option<Type>,
-        last_type: Option<Type>,
-        value_type: Option<Type>,
-    ) -> Option<Type> {
+    pub fn value_type_of(&self) -> Option<Type> {
         match self {
-            Self::Value => value_type,
-            Self::Last => last_type,
-            Self::Initial => initial_type,
-            Self::Number { ty, .. } => Some(ty.unwrap_or(Type::U32)),
-            Self::Decimal { ty, .. } => Some(ty.unwrap_or(Type::F32)),
-            Self::String { value } => Some(Type::String(value.len())),
-            Self::Bytes { value } => Some(Type::Bytes(value.len())),
-            Self::Deref { .. } => None,
-            Self::AddressOf { .. } => Some(Type::Pointer),
+            Self::Deref { value, .. } => match &**value {
+                Self::Value => Some(Type::Pointer),
+                other => other.value_type_of(),
+            },
             Self::Add { lhs, rhs }
             | Self::Sub { lhs, rhs }
             | Self::Div { lhs, rhs }
-            | Self::Mul { lhs, rhs } => lhs
-                .value_type_of(initial_type, last_type, value_type)
-                .or_else(|| rhs.value_type_of(initial_type, last_type, value_type)),
+            | Self::Mul { lhs, rhs } => lhs.value_type_of().or_else(|| rhs.value_type_of()),
             Self::Cast { expr, ty } => match &**expr {
                 Self::Value => Some(*ty),
-                other => other.value_type_of(initial_type, last_type, value_type),
+                other => other.value_type_of(),
             },
+            _ => None,
         }
     }
 

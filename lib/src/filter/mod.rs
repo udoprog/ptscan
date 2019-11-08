@@ -87,21 +87,16 @@ impl Filter {
         }
     }
 
-    pub fn value_type_of(
-        &self,
-        initial_type: Option<Type>,
-        last_type: Option<Type>,
-        value_type: Option<Type>,
-    ) -> Option<Type> {
+    pub fn value_type_of(&self) -> Option<Type> {
         match self {
-            Self::Binary(m) => m.value_type_of(initial_type, last_type, value_type),
-            Self::All(m) => m.value_type_of(initial_type, last_type, value_type),
-            Self::Any(m) => m.value_type_of(initial_type, last_type, value_type),
-            Self::IsPointer(m) => m.value_type_of(initial_type, last_type, value_type),
-            Self::IsType(m) => m.value_type_of(initial_type, last_type, value_type),
-            Self::IsNan(m) => m.value_type_of(initial_type, last_type, value_type),
-            Self::Not(m) => m.value_type_of(initial_type, last_type, value_type),
-            Self::Regex(m) => m.value_type_of(initial_type, last_type, value_type),
+            Self::Binary(m) => m.value_type_of(),
+            Self::All(m) => m.value_type_of(),
+            Self::Any(m) => m.value_type_of(),
+            Self::IsPointer(m) => m.value_type_of(),
+            Self::IsType(m) => m.value_type_of(),
+            Self::IsNan(m) => m.value_type_of(),
+            Self::Not(m) => m.value_type_of(),
+            Self::Regex(m) => m.value_type_of(),
         }
     }
 
@@ -171,15 +166,22 @@ impl Binary {
             .or_else(|| self.2.type_of(initial_type, last_type, value_type))
     }
 
-    fn value_type_of(
-        &self,
-        initial_type: Option<Type>,
-        last_type: Option<Type>,
-        value_type: Option<Type>,
-    ) -> Option<Type> {
-        self.1
-            .value_type_of(initial_type, last_type, value_type)
-            .or_else(|| self.2.value_type_of(initial_type, last_type, value_type))
+    fn value_type_of(&self) -> Option<Type> {
+        // comparison including value.
+        let Binary(_, lhs, rhs) = self;
+
+        // explicit value type
+        if let Some(value_type) = lhs.value_type_of().or_else(|| rhs.value_type_of()) {
+            return Some(value_type);
+        }
+
+        match (lhs, rhs) {
+            (ValueExpr::Value, ValueExpr::Value) => None,
+            (ValueExpr::Value, other) | (other, ValueExpr::Value) => {
+                other.type_of(None, None, None)
+            }
+            _ => None,
+        }
     }
 
     fn test(
@@ -391,16 +393,8 @@ impl All {
             .next()
     }
 
-    fn value_type_of(
-        &self,
-        initial_type: Option<Type>,
-        last_type: Option<Type>,
-        value_type: Option<Type>,
-    ) -> Option<Type> {
-        self.0
-            .iter()
-            .flat_map(|m| m.value_type_of(initial_type, last_type, value_type))
-            .next()
+    fn value_type_of(&self) -> Option<Type> {
+        self.0.iter().flat_map(|m| m.value_type_of()).next()
     }
 
     pub fn new(filters: impl IntoIterator<Item = Filter>) -> Self {
@@ -475,16 +469,8 @@ impl Any {
             .next()
     }
 
-    fn value_type_of(
-        &self,
-        initial_type: Option<Type>,
-        last_type: Option<Type>,
-        value_type: Option<Type>,
-    ) -> Option<Type> {
-        self.0
-            .iter()
-            .flat_map(|m| m.value_type_of(initial_type, last_type, value_type))
-            .next()
+    fn value_type_of(&self) -> Option<Type> {
+        self.0.iter().flat_map(|m| m.value_type_of()).next()
     }
 
     pub fn new(filters: impl IntoIterator<Item = Filter>) -> Self {
@@ -571,8 +557,11 @@ impl IsPointer {
         Some(Type::Pointer)
     }
 
-    fn value_type_of(&self, _: Option<Type>, _: Option<Type>, _: Option<Type>) -> Option<Type> {
-        Some(Type::Pointer)
+    fn value_type_of(&self) -> Option<Type> {
+        match self.expr {
+            ValueExpr::Value => Some(Type::Pointer),
+            _ => None,
+        }
     }
 
     pub fn test(
@@ -622,8 +611,11 @@ impl IsType {
         Some(self.ty)
     }
 
-    fn value_type_of(&self, _: Option<Type>, _: Option<Type>, _: Option<Type>) -> Option<Type> {
-        Some(self.ty)
+    fn value_type_of(&self) -> Option<Type> {
+        match self.expr {
+            ValueExpr::Value => Some(self.ty),
+            _ => None,
+        }
     }
 
     pub fn test(
@@ -671,17 +663,8 @@ impl IsNan {
         )
     }
 
-    fn value_type_of(
-        &self,
-        initial_type: Option<Type>,
-        last_type: Option<Type>,
-        value_type: Option<Type>,
-    ) -> Option<Type> {
-        Some(
-            self.expr
-                .value_type_of(initial_type, last_type, value_type)
-                .unwrap_or(Type::F32),
-        )
+    fn value_type_of(&self) -> Option<Type> {
+        Some(self.expr.value_type_of().unwrap_or(Type::F32))
     }
 
     pub fn test(
@@ -729,13 +712,8 @@ impl Regex {
         self.expr.type_of(initial_type, last_type, value_type)
     }
 
-    fn value_type_of(
-        &self,
-        initial_type: Option<Type>,
-        last_type: Option<Type>,
-        value_type: Option<Type>,
-    ) -> Option<Type> {
-        self.expr.value_type_of(initial_type, last_type, value_type)
+    fn value_type_of(&self) -> Option<Type> {
+        self.expr.value_type_of()
     }
 
     pub fn test(
@@ -793,14 +771,8 @@ impl Not {
         self.filter.type_of(initial_type, last_type, value_type)
     }
 
-    fn value_type_of(
-        &self,
-        initial_type: Option<Type>,
-        last_type: Option<Type>,
-        value_type: Option<Type>,
-    ) -> Option<Type> {
-        self.filter
-            .value_type_of(initial_type, last_type, value_type)
+    fn value_type_of(&self) -> Option<Type> {
+        self.filter.value_type_of()
     }
 
     pub fn special(&self, process: &Process, value_type: Type) -> anyhow::Result<Option<Special>> {

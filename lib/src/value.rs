@@ -2,7 +2,7 @@ use crate::{
     error::Error,
     process::Process,
     utils::{EscapeString, Hex},
-    Address, Type,
+    Address, Encoding, Endianness, Type,
 };
 use anyhow::bail;
 use num_bigint::Sign;
@@ -85,7 +85,7 @@ pub enum Value {
     #[serde(rename = "f64")]
     F64(f64),
     #[serde(rename = "string")]
-    String(String),
+    String(Encoding, String),
     #[serde(rename = "bytes")]
     Bytes(Vec<u8>),
 }
@@ -122,7 +122,7 @@ impl Value {
             Self::I128(value) => value == 0,
             Self::F32(value) => value == 0f32,
             Self::F64(value) => value == 0f64,
-            Self::String(ref s, ..) => s.as_bytes().iter().all(|c| *c == 0),
+            Self::String(_, ref s) => s.as_bytes().iter().all(|c| *c == 0),
             Self::Bytes(ref bytes) => bytes.iter().all(|c| *c == 0),
         })
     }
@@ -173,7 +173,7 @@ impl Value {
     /// Test if value is aligned by default or not.
     pub fn is_default_aligned(&self) -> bool {
         match self {
-            Self::None(Type::String) | Self::String(..) => false,
+            Self::None(Type::String(..)) | Self::String(..) => false,
             Self::None(Type::Bytes(..)) | Self::Bytes(..) => false,
             _ => true,
         }
@@ -222,10 +222,26 @@ impl Value {
             Self::I128(value) => process.encode_u128(buf, value as u128),
             Self::F32(value) => process.encode_f32(buf, value),
             Self::F64(value) => process.encode_f64(buf, value),
-            Self::String(ref s, ..) => {
-                let len = usize::min(s.len(), buf.len());
-                buf[..len].clone_from_slice(&s.as_bytes()[..len]);
-            }
+            Self::String(encoding, ref s) => match encoding {
+                Encoding::Utf8 => {
+                    let len = usize::min(s.len(), buf.len());
+                    buf[..len].clone_from_slice(&s.as_bytes()[..len]);
+                }
+                Encoding::Utf16 => match process.endianness {
+                    Endianness::LittleEndian => {
+                        Self::encode_utf16::<byteorder::LittleEndian>(s, buf);
+                    }
+                    Endianness::BigEndian => {
+                        Self::encode_utf16::<byteorder::BigEndian>(s, buf);
+                    }
+                },
+                Encoding::Utf16LE => {
+                    Self::encode_utf16::<byteorder::LittleEndian>(s, buf);
+                }
+                Encoding::Utf16BE => {
+                    Self::encode_utf16::<byteorder::BigEndian>(s, buf);
+                }
+            },
             Self::Bytes(ref bytes) => {
                 let len = usize::min(bytes.len(), buf.len());
                 buf[..len].clone_from_slice(&bytes[..len]);
@@ -233,6 +249,20 @@ impl Value {
         }
 
         Ok(())
+    }
+
+    fn encode_utf16<B>(s: &str, mut buf: &mut [u8])
+    where
+        B: byteorder::ByteOrder,
+    {
+        for c in s.encode_utf16() {
+            if buf.len() < 2 {
+                break;
+            }
+
+            B::write_u16(&mut buf[..2], c);
+            buf = &mut buf[2..];
+        }
     }
 
     /// Cast this value.
@@ -272,7 +302,7 @@ impl Value {
             Self::I128(..) => Type::I128,
             Self::F32(..) => Type::F32,
             Self::F64(..) => Type::F64,
-            Self::String(..) => Type::String,
+            Self::String(encoding, ..) => Type::String(encoding),
             Self::Bytes(ref bytes) => Type::Bytes(bytes.len()),
         }
     }
@@ -294,7 +324,7 @@ impl Value {
             Self::I128(..) => mem::size_of::<i128>(),
             Self::F32(..) => mem::size_of::<f32>(),
             Self::F64(..) => mem::size_of::<f64>(),
-            Self::String(string, ..) => string.len(),
+            Self::String(encoding, string) => encoding.len(string),
             Self::Bytes(bytes) => bytes.len(),
         })
     }
@@ -366,7 +396,7 @@ impl Default for Value {
 }
 
 impl str::FromStr for Value {
-    type Err = Error;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (hex, s) = if s.starts_with("0x") {
@@ -388,11 +418,7 @@ impl str::FromStr for Value {
             None => (s, Type::I32),
         };
 
-        if hex {
-            ty.parse_hex(s)
-        } else {
-            ty.parse(s)
-        }
+        Ok(if hex { ty.parse_hex(s)? } else { ty.parse(s)? })
     }
 }
 
@@ -413,7 +439,7 @@ impl fmt::Display for Value {
             Value::I128(value) => write!(fmt, "{}", value),
             Value::F32(value) => write!(fmt, "{}", value),
             Value::F64(value) => write!(fmt, "{}", value),
-            Value::String(string, ..) => write!(fmt, "{}", EscapeString(&*string)),
+            Value::String(_, string) => write!(fmt, "{}", EscapeString(&*string)),
             Value::Bytes(bytes) => write!(fmt, "{{{}}}", Hex(&*bytes)),
         }
     }

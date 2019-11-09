@@ -1,6 +1,6 @@
 use std::{convert::TryFrom, ffi, fmt, ptr, slice, sync::Arc};
 
-use crate::{error::Error, module, utils, Address, AddressRange, ProcessId, Size};
+use crate::{error::Error, module, utils, Address, AddressRange, Endianness, ProcessId, Size};
 
 use ntapi::ntpsapi;
 use winapi::{
@@ -42,6 +42,7 @@ pub struct Process {
     pub process_id: ProcessId,
     pub is_64bit: bool,
     pub pointer_width: usize,
+    pub endianness: Endianness,
     pub(crate) handle: Arc<utils::Handle>,
 }
 
@@ -391,11 +392,13 @@ impl OpenProcessBuilder {
         let handle = Arc::new(handle);
 
         let pointer_width = if is_64bit { 8 } else { 4 };
+        let endianness = Endianness::LittleEndian;
 
         Ok(Process {
             process_id,
             is_64bit,
             pointer_width,
+            endianness,
             handle,
         })
     }

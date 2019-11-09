@@ -21,6 +21,12 @@ pub type ProcessId = DWORD;
 pub type ThreadId = DWORD;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+#[derive(Debug, Clone, Copy)]
+pub enum Endianness {
+    LittleEndian,
+    BigEndian,
+}
+
 pub use self::address::{Address, AddressRange, Offset, Size};
 pub use self::error::Error;
 pub use self::filter_expr::{FilterExpr, Special, Test};
@@ -31,7 +37,7 @@ pub use self::process_handle::{AddressProxy, Location, ProcessHandle, ProcessNam
 pub use self::scan::{InitialScanConfig, Scan, ScanProgress, ScanResult};
 pub use self::thread::Thread;
 pub use self::token::Token;
-pub use self::ty::Type;
+pub use self::ty::{Encoding, Type};
 pub use self::utils::IteratorExtension;
 pub use self::value::Value;
 pub use self::value_expr::ValueExpr;

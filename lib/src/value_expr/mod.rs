@@ -4,7 +4,7 @@ use crate::{
     process::Process,
     utils::{EscapeString, Hex},
     value::Value,
-    Address, AddressProxy, Type,
+    Address, AddressProxy, Encoding, Type,
 };
 use anyhow::bail;
 use bigdecimal::BigDecimal;
@@ -94,7 +94,7 @@ pub enum ValueExpr {
     },
     /// A string literal.
     #[serde(rename = "string")]
-    String { value: String },
+    String { encoding: Encoding, value: String },
     /// A number of raw bytes.
     #[serde(rename = "bytes")]
     Bytes { value: Vec<u8> },
@@ -150,7 +150,7 @@ impl ValueExpr {
                     ValueTrait::NonZero
                 }
             }
-            Self::String { value } => {
+            Self::String { value, .. } => {
                 if value.as_bytes().iter().all(|c| *c == 0) {
                     ValueTrait::Zero
                 } else {
@@ -262,7 +262,7 @@ impl ValueExpr {
             Self::Number { ty: None, .. } => Some((Implicit, Type::U32)),
             Self::Decimal { ty: Some(ty), .. } => Some((Explicit, ty)),
             Self::Decimal { ty: None, .. } => Some((Implicit, Type::F32)),
-            Self::String { .. } => Some((Implicit, Type::String)),
+            Self::String { encoding, .. } => Some((Implicit, Type::String(encoding))),
             Self::Bytes { ref value } => Some((Implicit, Type::Bytes(value.len()))),
         })
     }
@@ -272,7 +272,7 @@ impl ValueExpr {
         Ok(match self {
             Self::Number { .. } => Some(Type::U32),
             Self::Decimal { .. } => Some(Type::F32),
-            Self::String { .. } => Some(Type::String),
+            Self::String { .. } => Some(Type::String(Encoding::Utf8)),
             Self::Bytes { value } => Some(Type::Bytes(value.len())),
             Self::Binary { lhs, rhs, .. } => {
                 if let Some(ty) = lhs.implicit_type_of()? {
@@ -328,7 +328,10 @@ impl ValueExpr {
             Self::Last => Ok(last.clone()),
             Self::Number { ref value, .. } => Ok(Value::from_bigint(expr_type, value)?),
             Self::Decimal { ref value, .. } => Ok(Value::from_bigdecimal(expr_type, value)?),
-            Self::String { ref value } => Ok(Value::String(value.to_owned())),
+            Self::String {
+                encoding,
+                ref value,
+            } => Ok(Value::String(encoding, value.to_owned())),
             Self::Bytes { ref value } => Ok(Value::Bytes(value.clone())),
             Self::Deref { ref value } => {
                 let value = value.eval(initial, last, value_type, Type::Pointer, proxy)?;
@@ -397,7 +400,7 @@ impl fmt::Display for ValueExpr {
                 value,
                 ty: Some(ty),
             } => write!(fmt, "{}{}", value, ty),
-            Self::String { value } => write!(fmt, "{}", EscapeString(value)),
+            Self::String { value, .. } => write!(fmt, "{}", EscapeString(value)),
             Self::Bytes { value } => write!(fmt, "{}", Hex(value)),
             Self::Cast { expr, ty } => write!(fmt, "{} as {}", expr, ty),
         }

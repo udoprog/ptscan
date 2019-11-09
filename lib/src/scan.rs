@@ -4,6 +4,7 @@ use crate::{
     error::Error, Address, FilterExpr, Pointer, PointerBase, ProcessHandle, RawPointer, Size,
     Special, Test, Token, Type, Value, ValueExpr,
 };
+use anyhow::anyhow;
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
@@ -219,14 +220,12 @@ impl Scan {
 
         let mut last_error = None;
 
-        let type_size = value_type.size(&handle.process);
         let aligned = aligned.unwrap_or_else(|| value_type.is_default_aligned());
-        let type_size = if aligned { type_size.unwrap_or(1) } else { 1 };
-        let alignment = if aligned && type_size > 1 {
-            Some(type_size)
-        } else {
-            None
-        };
+        let alignment = value_type
+            .alignment(&handle.process)
+            .ok_or_else(|| anyhow!("cannot scan for none"))?;
+        let step_size = if aligned { alignment } else { 1 };
+        let alignment = if aligned { Some(alignment) } else { None };
 
         let special = filter.special(&handle.process, value_type)?;
         let special = special.as_ref();
@@ -241,7 +240,9 @@ impl Scan {
 
         let mut ranges = Vec::new();
 
-        if !config.modules_only {
+        if config.modules_only {
+            ranges.extend(handle.modules.iter().map(|m| m.range));
+        } else {
             ranges.extend(
                 handle
                     .process
@@ -251,8 +252,6 @@ impl Scan {
                     .collect::<Result<Vec<_>, Error>>()?,
             );
         }
-
-        ranges.extend(handle.modules.iter().map(|m| m.range));
 
         let mut total = 0;
 
@@ -292,7 +291,7 @@ impl Scan {
                             value_type,
                             special,
                             alignment,
-                            type_size,
+                            step_size,
                             buffer_size,
                             cancel,
                         });
@@ -356,7 +355,7 @@ impl Scan {
             value_type: Type,
             special: Option<&'a Special>,
             alignment: Option<usize>,
-            type_size: usize,
+            step_size: usize,
             buffer_size: usize,
             cancel: &'a Token,
         }
@@ -371,7 +370,7 @@ impl Scan {
                 value_type,
                 special,
                 alignment,
-                type_size,
+                step_size,
                 buffer_size,
                 cancel,
             } = work;
@@ -402,7 +401,7 @@ impl Scan {
                         hits: &mut hits,
                         base: address,
                         data,
-                        type_size,
+                        step_size,
                         none,
                         alignment,
                         special,
@@ -426,7 +425,7 @@ impl Scan {
             hits: &'a mut u64,
             base: Address,
             data: &'a [u8],
-            type_size: usize,
+            step_size: usize,
             none: &'a Value,
             alignment: Option<usize>,
             special: Option<&'a Special>,
@@ -443,7 +442,7 @@ impl Scan {
                 hits,
                 base,
                 data,
-                type_size,
+                step_size,
                 none,
                 alignment,
                 special,
@@ -487,10 +486,10 @@ impl Scan {
                     if let Some(advance) = advance {
                         offset += advance;
                     } else {
-                        offset += type_size;
+                        offset += step_size;
                     }
                 } else {
-                    offset += type_size;
+                    offset += step_size;
                 }
 
                 if offset >= data.len() {

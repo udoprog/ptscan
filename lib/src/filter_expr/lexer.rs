@@ -45,6 +45,8 @@ pub enum Token {
     Eq,
     /// `!=`.
     Neq,
+    /// `!~`.
+    NotTilde,
     /// `<=`.
     Lte,
     /// `>=`.
@@ -415,6 +417,10 @@ impl<'a> Iterator for Lexer<'a> {
                 Some((s, '!', '=')) => {
                     let e = self.step_n(2);
                     return Some(Ok((s, Token::Neq, e)));
+                }
+                Some((s, '!', '~')) => {
+                    let e = self.step_n(2);
+                    return Some(Ok((s, Token::NotTilde, e)));
                 }
                 Some((s, '<', '=')) => {
                     let e = self.step_n(2);

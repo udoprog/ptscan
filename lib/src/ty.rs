@@ -1,4 +1,4 @@
-use crate::{error::Error, process::MemoryReader, Address, Process, Size, Value};
+use crate::{error::Error, process::MemoryReader, Address, Endianness, Process, Size, Value};
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
 use std::{convert::TryFrom as _, fmt, mem, str};
@@ -50,6 +50,135 @@ macro_rules! convert {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum Encoding {
+    #[serde(rename = "utf-8")]
+    Utf8,
+    #[serde(rename = "utf-16")]
+    Utf16,
+    #[serde(rename = "utf-16-le")]
+    Utf16LE,
+    #[serde(rename = "utf-16-be")]
+    Utf16BE,
+}
+
+impl Encoding {
+    /// Get the length of the string in the specified encoding.
+    pub fn len(self, s: &str) -> usize {
+        match self {
+            Self::Utf8 => s.len(),
+            Self::Utf16 | Self::Utf16LE | Self::Utf16BE => s.encode_utf16().count() * 2,
+        }
+    }
+
+    fn decode<'a>(
+        self,
+        reader: impl MemoryReader<'a>,
+        mut address: Address,
+    ) -> anyhow::Result<(Value, Option<usize>)> {
+        let mut buf = vec![0u8; 0x100];
+        let mut string = Vec::new();
+
+        loop {
+            let buf = match reader.read_memory(address, &mut buf)? {
+                Some(buf) => buf,
+                None => return Ok((Value::None(Type::String(self)), None)),
+            };
+
+            if let Some(index) = memchr::memchr(0x0, &buf) {
+                string.extend(&buf[..index]);
+                break;
+            }
+
+            string.extend(buf);
+            address.add_assign(Size::new(0x100))?;
+        }
+
+        let len = string.len() + 1;
+
+        let string = match self {
+            Self::Utf8 => {
+                let string = match String::from_utf8(string) {
+                    Err(e) => {
+                        let len = e.utf8_error().valid_up_to();
+                        let mut string = e.into_bytes();
+                        string.resize_with(len, u8::default);
+                        String::from_utf8(string)?
+                    }
+                    Ok(string) => string,
+                };
+
+                string
+            }
+            Self::Utf16 => match reader.process().endianness {
+                Endianness::LittleEndian => Self::decode_utf16::<byteorder::LittleEndian>(&string)?,
+                Endianness::BigEndian => Self::decode_utf16::<byteorder::BigEndian>(&string)?,
+            },
+            Self::Utf16LE => Self::decode_utf16::<byteorder::LittleEndian>(&string)?,
+            Self::Utf16BE => Self::decode_utf16::<byteorder::BigEndian>(&string)?,
+        };
+
+        return Ok((Value::String(self, string), Some(len)));
+    }
+
+    /// Default alignment for various encodings.
+    fn alignment(self) -> usize {
+        match self {
+            Self::Utf8 => 1,
+            Self::Utf16 => 2,
+            Self::Utf16LE => 2,
+            Self::Utf16BE => 2,
+        }
+    }
+
+    /// Helper function to decode UTF-16.
+    fn decode_utf16<B>(mut string: &[u8]) -> anyhow::Result<String>
+    where
+        B: byteorder::ByteOrder,
+    {
+        use std::{char, iter};
+
+        let mut s = String::new();
+
+        while string.len() >= 2 {
+            let c = B::read_u16(&string[..2]);
+
+            for c in char::decode_utf16(iter::once(c)) {
+                s.push(c?);
+            }
+
+            string = &string[2..];
+        }
+
+        Ok(s)
+    }
+}
+
+impl fmt::Display for Encoding {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Utf8 => "utf-8".fmt(fmt),
+            Self::Utf16 => "utf-16".fmt(fmt),
+            Self::Utf16LE => "utf-16-le".fmt(fmt),
+            Self::Utf16BE => "utf-16-be".fmt(fmt),
+        }
+    }
+}
+
+impl str::FromStr for Encoding {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "utf-8" => Encoding::Utf8,
+            "utf-16" => Encoding::Utf16,
+            "utf-16-be" => Encoding::Utf16BE,
+            "utf-16-le" => Encoding::Utf16LE,
+            other => bail!("bad encodign: {}", other),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
 pub enum Type {
     #[serde(rename = "none")]
@@ -81,7 +210,7 @@ pub enum Type {
     #[serde(rename = "f64")]
     F64,
     #[serde(rename = "string")]
-    String,
+    String(Encoding),
     #[serde(rename = "bytes")]
     Bytes(usize),
 }
@@ -90,7 +219,7 @@ impl Type {
     /// Indicates if this type is aligned by default or not.
     pub fn is_default_aligned(&self) -> bool {
         match self {
-            Self::String => false,
+            Self::String(..) => false,
             Self::Bytes(..) => false,
             _ => true,
         }
@@ -111,8 +240,8 @@ impl Type {
             (Self::I64, other @ Value::I64(..)) => return Some(other),
             (Self::U128, other @ Value::U128(..)) => return Some(other),
             (Self::I128, other @ Value::I128(..)) => return Some(other),
-            (Self::String, Value::String(string)) => {
-                return Some(Value::String(string));
+            (Self::String(encoding), Value::String(_, string)) => {
+                return Some(Value::String(encoding, string));
             }
             (Self::Bytes(..), other @ Value::Bytes(..)) => return Some(other),
             (_, other) => other,
@@ -138,7 +267,7 @@ impl Type {
             Self::I128 => Value::I128(Default::default()),
             Self::F32 => Value::F32(Default::default()),
             Self::F64 => Value::F64(Default::default()),
-            Self::String => Value::String(Default::default()),
+            Self::String(..) => Value::String(Encoding::Utf8, Default::default()),
             Self::Bytes(..) => Value::Bytes(Default::default()),
         }
     }
@@ -172,7 +301,7 @@ impl Type {
                     str::parse::<f64>(input).map_err(|_| Error::TypeParseError)?,
                 ))
             }
-            Self::String => return Err(Error::TypeParseString),
+            Self::String(..) => return Err(Error::TypeParseString),
             Self::Bytes(..) => return Err(Error::TypeParseBytes),
         };
 
@@ -198,11 +327,34 @@ impl Type {
             Self::I128 => i128::from_str_radix(input, 16).map(Value::I128),
             Self::F32 => return Err(Error::TypeParseFloat),
             Self::F64 => return Err(Error::TypeParseFloat),
-            Self::String => return Err(Error::TypeParseString),
+            Self::String(..) => return Err(Error::TypeParseString),
             Self::Bytes(..) => return Err(Error::TypeParseBytes),
         };
 
         value.map_err(|_| Error::TypeParseError)
+    }
+
+    /// The default alignment for every type.
+    #[inline]
+    pub fn alignment(&self, process: &Process) -> Option<usize> {
+        Some(match *self {
+            Self::None => return None,
+            Self::Pointer => process.pointer_width,
+            Self::U8 => mem::size_of::<u8>(),
+            Self::I8 => mem::size_of::<i8>(),
+            Self::U16 => mem::size_of::<u16>(),
+            Self::I16 => mem::size_of::<i16>(),
+            Self::U32 => mem::size_of::<u32>(),
+            Self::I32 => mem::size_of::<i32>(),
+            Self::U64 => mem::size_of::<u64>(),
+            Self::I64 => mem::size_of::<i64>(),
+            Self::U128 => mem::size_of::<u128>(),
+            Self::I128 => mem::size_of::<i128>(),
+            Self::F32 => mem::size_of::<f32>(),
+            Self::F64 => mem::size_of::<f64>(),
+            Self::Bytes(_) => 1,
+            Self::String(encoding) => encoding.alignment(),
+        })
     }
 
     /// The known in-memory size that a type has.
@@ -224,7 +376,7 @@ impl Type {
             Self::F32 => mem::size_of::<f32>(),
             Self::F64 => mem::size_of::<f64>(),
             Self::Bytes(len) => len,
-            Self::String => return None,
+            Self::String(..) => return None,
         })
     }
 
@@ -288,46 +440,9 @@ impl Type {
         }
 
         return match self {
-            Self::String => decode_string(reader, address),
+            Self::String(encoding) => Ok(encoding.decode(reader, address)?),
             other => bail!("tried to decode sized {} as unsized", other),
         };
-
-        fn decode_string<'a>(
-            reader: impl MemoryReader<'a>,
-            mut address: Address,
-        ) -> anyhow::Result<(Value, Option<usize>)> {
-            let mut buf = vec![0u8; 0x100];
-            let mut string = Vec::new();
-
-            loop {
-                let buf = match reader.read_memory(address, &mut buf)? {
-                    Some(buf) => buf,
-                    None => return Ok((Value::None(Type::String), None)),
-                };
-
-                if let Some(index) = memchr::memchr(0x0, &buf) {
-                    string.extend(&buf[..index]);
-                    break;
-                }
-
-                string.extend(buf);
-                address.add_assign(Size::new(0x100))?;
-            }
-
-            let len = string.len() + 1;
-
-            let string = match String::from_utf8(string) {
-                Err(e) => {
-                    let len = e.utf8_error().valid_up_to();
-                    let mut string = e.into_bytes();
-                    string.resize_with(len, u8::default);
-                    String::from_utf8(string)?
-                }
-                Ok(string) => string,
-            };
-
-            Ok((Value::String(string), Some(len)))
-        }
     }
 
     /// Convert into a type which implements `fmt::Display` for a human-readable string.
@@ -359,7 +474,7 @@ impl fmt::Display for Type {
             Type::I128 => "i128",
             Type::F32 => "f32",
             Type::F64 => "f64",
-            Type::String => "string",
+            Type::String(encoding) => return write!(fmt, "string/{}", encoding),
             Type::Bytes(len) => return write!(fmt, "bytes/{}", len),
         };
 
@@ -368,14 +483,14 @@ impl fmt::Display for Type {
 }
 
 impl str::FromStr for Type {
-    type Err = Error;
+    type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut it = s.split('/');
 
         let first = match it.next() {
             Some(base) => base,
-            None => return Err(Error::TypeBadBase),
+            None => return Err(Error::TypeBadBase.into()),
         };
 
         let ty = match first {
@@ -392,7 +507,14 @@ impl str::FromStr for Type {
             "i128" => Type::I128,
             "f32" => Type::F32,
             "f64" => Type::F64,
-            "string" => Type::String,
+            "string" => {
+                let encoding = match it.next() {
+                    Some(s) => str::parse::<Encoding>(s)?,
+                    None => Encoding::Utf8,
+                };
+
+                Type::String(encoding)
+            }
             "bytes" => {
                 let size = match it.next() {
                     Some(size) => str::parse::<usize>(size).map_err(|_| Error::TypeBadSize)?,
@@ -402,7 +524,7 @@ impl str::FromStr for Type {
                 Type::Bytes(size)
             }
             "none" => Type::None,
-            other => return Err(Error::IllegalType(other.to_string())),
+            other => return Err(Error::IllegalType(other.to_string()).into()),
         };
 
         Ok(ty)
@@ -431,7 +553,7 @@ impl fmt::Display for HumanDisplay {
             Type::I128 => write!(fmt, "signed 128-bit number"),
             Type::F32 => write!(fmt, "32-bit floating point number"),
             Type::F64 => write!(fmt, "64-bit floating point number"),
-            Type::String => write!(fmt, "utf-8-encoded null-terminated string"),
+            Type::String(encoding) => write!(fmt, "{} string", encoding),
             Type::Bytes(len) => write!(fmt, "a byte array of length {}", len),
         }
     }

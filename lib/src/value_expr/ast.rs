@@ -1,7 +1,7 @@
 use crate::{
     process::Process,
     utils::{EscapeString, Hex},
-    Type,
+    Encoding, Type,
 };
 use bigdecimal::BigDecimal;
 use num_bigint::BigInt;
@@ -26,7 +26,7 @@ pub enum ValueExpr {
     /// A decimal literal.
     Decimal(BigDecimal, Option<Type>),
     /// A string literal.
-    String(String),
+    String(Encoding, String),
     /// A number of raw bytes.
     Bytes(Vec<u8>),
     /// Casting a value.
@@ -53,7 +53,7 @@ impl ValueExpr {
             }
             Self::Number(value, ty) => Number { value, ty },
             Self::Decimal(value, ty) => Decimal { value, ty },
-            Self::String(value) => String { value },
+            Self::String(encoding, value) => String { encoding, value },
             Self::Bytes(value) => Bytes { value },
             Self::AddressOf(value) => AddressOf {
                 value: Box::new(value.eval(process)?),
@@ -85,7 +85,7 @@ impl fmt::Display for ValueExpr {
             Self::Number(number, None) => write!(fmt, "{}", number),
             Self::Decimal(decimal, None) => write!(fmt, "{}", decimal),
             Self::Decimal(decimal, Some(ty)) => write!(fmt, "{}{}", decimal, ty),
-            Self::String(s) => EscapeString(s).fmt(fmt),
+            Self::String(_, s) => EscapeString(s).fmt(fmt),
             Self::Bytes(bytes) => Hex(bytes).fmt(fmt),
             Self::Cast(expr, ty) => write!(fmt, "{} as {}", expr, ty),
         }

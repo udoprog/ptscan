@@ -1,10 +1,6 @@
 //! Abstraction to help deal with virtual addresses.
 
-use crate::{
-    error::Error,
-    process_handle::{Location, ProcessHandle},
-    Process,
-};
+use crate::{error::Error, Process};
 
 use std::{
     convert::{self, TryFrom, TryInto},
@@ -168,14 +164,6 @@ impl Address {
         T::convert(self)
     }
 
-    /// Display the address relative to the process handle.
-    pub fn display<'a>(&'a self, handle: &'a ProcessHandle) -> AddressDisplay<'a> {
-        AddressDisplay {
-            address: self,
-            handle,
-        }
-    }
-
     /// Convert into usize.
     ///
     /// Internal function, use `convert` instead.
@@ -193,6 +181,18 @@ impl str::FromStr for Address {
         Ok(Address(
             u64::from_str_radix(s, 16).map_err(|_| Error::AddressFromStr)?,
         ))
+    }
+}
+
+impl fmt::Display for Address {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "0x{:X}", self.0)
+    }
+}
+
+impl fmt::Debug for Address {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, fmt)
     }
 }
 
@@ -216,18 +216,6 @@ impl<T> Convertible<Address> for *const T {
 
     fn convert(value: Address) -> Result<Self, Self::Error> {
         Ok(value.as_usize() as *const T)
-    }
-}
-
-impl fmt::Display for Address {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "0x{:X}", self.0)
-    }
-}
-
-impl fmt::Debug for Address {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, fmt)
     }
 }
 
@@ -401,54 +389,6 @@ impl<T> TryFrom<*const T> for Address {
                 .try_into()
                 .map_err(|_| Error::AddressConversion)?,
         ))
-    }
-}
-
-// An address displayed with a process handle.
-pub struct AddressDisplay<'a> {
-    address: &'a Address,
-    handle: &'a ProcessHandle,
-}
-
-impl<'a> fmt::Display for AddressDisplay<'a> {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let AddressDisplay { address, handle } = *self;
-
-        let location = handle.find_location(*address);
-
-        match location {
-            Location::Module(module) => match address.offset_of(module.range.base).ok() {
-                Some(offset) => {
-                    write!(fmt, "{}{}", module.name, offset)?;
-                }
-                // TODO: handle error differently?
-                None => {
-                    write!(fmt, "{}", address)?;
-                }
-            },
-            Location::Thread(thread) => {
-                let base = thread
-                    .stack_exit
-                    .as_ref()
-                    .cloned()
-                    .unwrap_or(thread.stack.base);
-
-                match address.offset_of(base).ok() {
-                    Some(offset) => {
-                        write!(fmt, "THREADSTACK{}{}", thread.id, offset)?;
-                    }
-                    // TODO: handle error differently?
-                    None => {
-                        write!(fmt, "{}", address)?;
-                    }
-                }
-            }
-            Location::None => {
-                write!(fmt, "{}", address)?;
-            }
-        };
-
-        Ok(())
     }
 }
 

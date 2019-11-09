@@ -9,11 +9,12 @@ use ptscan::{
 };
 use std::{
     collections::{BTreeMap, VecDeque},
+    fmt,
     fs::File,
     io::{self, Write as _},
     path::PathBuf,
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use crossterm::{
@@ -26,6 +27,7 @@ use crossterm::{
 };
 
 static DEFAULT_LIMIT: usize = 10;
+static DEFAULT_INCREMENTAL_LIMIT: usize = 10_000;
 
 #[derive(Debug, Default)]
 pub struct Opts {
@@ -95,7 +97,7 @@ fn try_main() -> anyhow::Result<()> {
 
     if let Some(file) = opts.load_file {
         app.current_file = file;
-        app.load(None, false)?;
+        app.load(None, false, None)?;
     }
 
     if app.process_name.is_some() {
@@ -345,6 +347,8 @@ struct Application {
     current_compress: bool,
     /// The current active limit.
     limit: usize,
+    /// The watch limit in use.
+    incremental_limit: usize,
     /// Get the color mapped to the given index.
     colors: BTreeMap<usize, style::Color>,
 }
@@ -364,6 +368,7 @@ impl Application {
             current_format: FileFormat::Cbor,
             current_compress: true,
             limit: DEFAULT_LIMIT,
+            incremental_limit: DEFAULT_INCREMENTAL_LIMIT,
             colors: Self::colors(),
         }
     }
@@ -522,10 +527,13 @@ impl Application {
                     None => bail!("No active scan"),
                 };
 
+                let updated_expr;
+
                 let value_expr = if let (Some(expr), Some(handle)) = (&expr, self.handle.as_ref()) {
-                    ValueExpr::parse(expr, &handle.process)?
+                    updated_expr = ValueExpr::parse(expr, &handle.process)?;
+                    &updated_expr
                 } else {
-                    ValueExpr::Value
+                    &scan.value_expr
                 };
 
                 let mut stored;
@@ -541,7 +549,7 @@ impl Application {
                         None,
                         ty,
                         NoopProgress,
-                        &value_expr,
+                        value_expr,
                     )?;
                     current = &stored;
                 }
@@ -553,7 +561,7 @@ impl Application {
                     scan.len(),
                     current.iter().map(|r| &**r).enumerate(),
                     &scan.comments,
-                    &value_expr,
+                    value_expr,
                     verbose,
                 )?;
             }
@@ -564,21 +572,39 @@ impl Application {
                 incremental,
             } => {
                 if let Some(limit) = limit {
-                    self.limit = limit;
+                    if incremental {
+                        self.incremental_limit = limit;
+                    } else {
+                        self.limit = limit;
+                    }
                 }
 
                 self.watch(filter.as_ref(), change_length, incremental)?;
             }
-            Action::Del { index } => {
-                let scan = match self.scans.get_mut(&self.current_scan) {
+            Action::Del { scan, mut indexes } => {
+                let Self {
+                    ref current_scan,
+                    ref mut scans,
+                    ..
+                } = *self;
+
+                let scan = scan
+                    .as_ref()
+                    .map(String::as_str)
+                    .unwrap_or_else(|| current_scan.as_str());
+                let scan = match scans.get_mut(scan) {
                     Some(scan) => scan,
                     None => bail!("No active scan"),
                 };
 
-                if index < scan.len() {
-                    let result = scan.results.swap_remove(index);
-                    writeln!(self.term, "deleted:")?;
-                    writeln!(self.term, "{} = {}", result.pointer, result.last())?;
+                indexes.sort_by(|a, b| b.cmp(&a));
+
+                for index in indexes {
+                    if index < scan.len() {
+                        let result = scan.results.swap_remove(index);
+                        writeln!(self.term, "deleted:")?;
+                        writeln!(self.term, "{} = {}", result.pointer, result.last())?;
+                    }
                 }
             }
             Action::Add {
@@ -631,7 +657,25 @@ impl Application {
             Action::Scan { filter, ty, config } => {
                 self.scan(&filter, ty, config)?;
             }
-            Action::Refresh { ty, expr, indexes } => {
+            Action::Refresh {
+                ty,
+                expr,
+                indexes,
+                all,
+                limit,
+            } => {
+                if !all && indexes.is_empty() {
+                    writeln!(
+                        self.term,
+                        "Must specify either `--all` or `--index <number>`"
+                    )?;
+                    return Ok(false);
+                }
+
+                if let Some(limit) = limit {
+                    self.limit = limit;
+                }
+
                 let handle = match self.handle.as_ref() {
                     Some(handle) => handle,
                     None => bail!("not attached to a process"),
@@ -642,9 +686,12 @@ impl Application {
                     None => bail!("no active scan to refresh!"),
                 };
 
-                let mut stored = vec![];
+                let mut stored = Vec::new();
                 let mut replace = vec![];
-                let results = if !indexes.is_empty() {
+
+                let results = if all {
+                    &mut scan.results[..]
+                } else {
                     for index in indexes {
                         if let Some(result) = scan.get_mut(index) {
                             stored.push(result.clone());
@@ -653,12 +700,14 @@ impl Application {
                     }
 
                     &mut stored[..]
-                } else {
-                    &mut scan.results[..]
                 };
 
-                if let (Some(expr), Some(handle)) = (&expr, self.handle.as_ref()) {
-                    scan.value_expr = ValueExpr::parse(expr, &handle.process)?;
+                let mut update_value_expr = None;
+
+                let value_expr = if let (Some(expr), Some(handle)) = (&expr, self.handle.as_ref()) {
+                    &*update_value_expr.get_or_insert(ValueExpr::parse(expr, &handle.process)?)
+                } else {
+                    &scan.value_expr
                 };
 
                 handle.refresh_values(
@@ -667,22 +716,27 @@ impl Application {
                     None,
                     ty,
                     SimpleProgress::new(&mut self.term, "Refreshing values", None, &self.colors),
-                    &scan.value_expr,
+                    value_expr,
+                )?;
+
+                let len = usize::min(scan.len(), self.limit);
+
+                Self::print(
+                    &mut self.term,
+                    scan.len(),
+                    scan.iter().take(len).map(|r| &**r).enumerate(),
+                    &scan.comments,
+                    value_expr,
+                    false,
                 )?;
 
                 for (index, result) in replace.into_iter().zip(stored.into_iter()) {
                     scan[index] = result;
                 }
 
-                let len = usize::min(scan.len(), self.limit);
-                Self::print(
-                    &mut self.term,
-                    scan.len(),
-                    scan.iter().take(len).map(|r| &**r).enumerate(),
-                    &scan.comments,
-                    &scan.value_expr,
-                    false,
-                )?;
+                if let Some(value_expr) = update_value_expr {
+                    scan.value_expr = value_expr;
+                }
             }
             Action::PointerScan {
                 name,
@@ -735,6 +789,8 @@ impl Application {
                         writeln!(self.term, "no scan in use")?;
                     }
                 }
+
+                writeln!(self.term, "Reset scan `{}`", name)?;
             }
             Action::Save {
                 file,
@@ -763,6 +819,7 @@ impl Application {
                 append,
                 format,
                 compress,
+                comment,
                 ..
             } => {
                 if let Some(file) = file {
@@ -777,18 +834,19 @@ impl Application {
                     self.current_compress = compress;
                 }
 
-                self.load(scan.as_ref().map(String::as_str), append)?;
+                self.load(
+                    scan.as_ref().map(String::as_str),
+                    append,
+                    comment.as_ref().map(String::as_str),
+                )?;
             }
             Action::Sort { reverse } => {
-                let scan = match self.scans.get_mut(&self.current_scan) {
-                    Some(scan) => scan,
-                    None => bail!("No active scan"),
-                };
-
-                if reverse {
-                    scan.sort_by(|a, b| a.pointer.cmp(&b.pointer));
-                } else {
-                    scan.sort_by(|a, b| b.pointer.cmp(&a.pointer));
+                if let Some(scan) = self.scans.get_mut(&self.current_scan) {
+                    if reverse {
+                        scan.sort_by(|a, b| b.pointer.cmp(&a.pointer));
+                    } else {
+                        scan.sort_by(|a, b| a.pointer.cmp(&b.pointer));
+                    }
                 }
             }
             Action::Comment { index, text } => {
@@ -856,7 +914,12 @@ impl Application {
         Ok(())
     }
 
-    fn load(&mut self, scan: Option<&str>, append: bool) -> anyhow::Result<()> {
+    fn load(
+        &mut self,
+        scan: Option<&str>,
+        append: bool,
+        comment: Option<&str>,
+    ) -> anyhow::Result<()> {
         use flate2::read::GzDecoder;
 
         let Self {
@@ -881,6 +944,13 @@ impl Application {
 
             let scan = scans.entry(scan.to_string()).or_default();
 
+            if let Some(comment) = comment {
+                for result in &deserialized.results {
+                    scan.comments
+                        .insert(result.pointer.raw().clone(), comment.to_owned());
+                }
+            }
+
             if append {
                 scan.append_scan(deserialized);
             } else {
@@ -904,7 +974,7 @@ impl Application {
         change_length: usize,
         incremental: bool,
     ) -> anyhow::Result<()> {
-        use std::{thread, time::Duration};
+        use std::thread;
 
         let thread_pool = &self.thread_pool;
 
@@ -922,6 +992,7 @@ impl Application {
 
         let refresh_rate = Duration::from_millis(500);
 
+        let incremental_limit = self.incremental_limit;
         let limit = self.limit;
 
         self.term.clear(ClearType::All)?;
@@ -936,7 +1007,7 @@ impl Application {
                     scan,
                     refresh_rate,
                     filter,
-                    limit,
+                    incremental_limit,
                 )
             } else {
                 refresh_loop(
@@ -982,7 +1053,7 @@ impl Application {
             thread_pool: &rayon::ThreadPool,
             handle: &ProcessHandle,
             term: &mut Term,
-            token: &Token,
+            cancel: &Token,
             scan: &mut Scan,
             refresh_rate: Duration,
             filter: Option<&FilterExpr>,
@@ -990,7 +1061,7 @@ impl Application {
         ) -> anyhow::Result<usize> {
             use std::fmt::Write as _;
 
-            let mut last = Vec::with_capacity(limit);
+            let mut previous = Vec::with_capacity(limit);
             let mut offset = 0;
             let mut to_remove = Vec::new();
             let mut buf = String::new();
@@ -1005,7 +1076,9 @@ impl Application {
                 refresh_rate,
             )?;
 
-            while !token.test() && !scan.is_empty() {
+            let start = Instant::now();
+
+            while !cancel.test() && !scan.is_empty() {
                 // wrap around.
                 if offset >= limit {
                     offset = 0;
@@ -1014,7 +1087,7 @@ impl Application {
                 let len = usize::min(scan.len().saturating_sub(offset), limit);
 
                 let mut results = &mut scan.results[..len];
-                last.extend(results.iter().map(|v| v.last().clone()));
+                previous.extend(results.iter().map(|v| v.last().clone()));
 
                 handle.refresh_values(
                     thread_pool,
@@ -1025,7 +1098,11 @@ impl Application {
                     &scan.value_expr,
                 )?;
 
-                for (o, (last, result)) in last.iter().zip(results).enumerate() {
+                for (o, (prev, result)) in previous.iter().zip(results).enumerate() {
+                    if cancel.test() {
+                        break;
+                    }
+
                     let index = offset + o;
 
                     let mut removed = false;
@@ -1033,9 +1110,10 @@ impl Application {
 
                     if let Some(filter) = filter {
                         let mut proxy = handle.address_proxy(&result.pointer);
-                        let ty = result.last().ty();
 
-                        if let Test::False = filter.test(result.initial(), last, ty, &mut proxy)? {
+                        if let Test::False =
+                            filter.test(result.initial(), prev, prev.ty(), &mut proxy)?
+                        {
                             to_remove.push(index);
                             removed = true;
                         } else {
@@ -1043,31 +1121,41 @@ impl Application {
                         }
                     }
 
-                    if last != result.last() {
+                    if prev != result.last() {
                         changed = true;
                     }
 
                     if removed || changed {
-                        if let Some(address) = result.pointer.address() {
-                            write!(buf, "{:03} : {} = ", index, address)?;
-                        } else {
-                            write!(buf, "{:03} : ? = ", index)?;
+                        if let Some(d) = Instant::now().checked_duration_since(start) {
+                            write!(buf, "{} : ", FormatDuration(d))?;
                         }
 
+                        if let Some(address) = result.pointer.address() {
+                            write!(buf, "{:03} : {}", index, address)?;
+                        } else {
+                            write!(buf, "{:03} : ?", index)?;
+                        }
+
+                        if let Some(comment) = scan.comments.get(result.pointer.raw()) {
+                            write!(buf, " /* {} */", comment)?;
+                        }
+
+                        write!(buf, " =")?;
+
                         if changed {
-                            write!(buf, "{} -> ", last)?;
+                            write!(buf, " {} ->", prev)?;
                         }
 
                         if removed {
                             write!(
                                 buf,
-                                "{} (filtered)",
+                                " {} (filtered)",
                                 style::style(result.last()).with(style::Color::Red)
                             )?;
                         } else {
                             write!(
                                 buf,
-                                "{}",
+                                " {}",
                                 style::style(result.last()).with(style::Color::Blue)
                             )?;
                         }
@@ -1081,13 +1169,15 @@ impl Application {
                     scan.results.swap_remove(*i);
                 }
 
-                last.clear();
+                previous.clear();
                 to_remove.clear();
                 offset += limit;
 
-                if !token.test() && !scan.is_empty() {
-                    thread::sleep(refresh_rate);
+                if scan.is_empty() {
+                    break;
                 }
+
+                thread::sleep(refresh_rate);
             }
 
             Ok(0)
@@ -1285,6 +1375,7 @@ impl Application {
                 }
 
                 term.move_to_line(index as u16)?;
+                term.clear(ClearType::CurrentLine)?;
                 writeln!(term, "{}", buf)?;
                 state.changed = false;
             }
@@ -1536,8 +1627,6 @@ impl Application {
 
                 while !token.test() {
                     if let Some(extra) = visited.get(&address) {
-                        visited_count -= extra.len();
-
                         for p in extra {
                             let mut path = path.clone();
                             path.extend(p.iter().rev().cloned());
@@ -1809,52 +1898,60 @@ impl Application {
     fn print<'a>(
         term: &mut Term,
         len: usize,
-        results: impl IntoIterator<Item = (usize, &'a ScanResult)>,
+        results: impl IntoIterator<Item = (usize, &'a ScanResult)> + Send,
         comments: &HashMap<RawPointer, String>,
         value_expr: &ValueExpr,
         verbose: bool,
     ) -> anyhow::Result<()> {
         use std::fmt::Write as _;
 
-        let mut buf = String::new();
-        let mut count = 0;
+        term.work(move |term, cancel| {
+            let mut buf = String::new();
+            let mut count = 0;
 
-        for (index, result) in results {
-            count += 1;
+            for (index, result) in results {
+                if cancel.test() {
+                    break;
+                }
 
-            buf.clear();
+                count += 1;
 
-            write!(buf, "{:>03} : {}", index, result.pointer)?;
+                buf.clear();
 
-            if let Some(comment) = comments.get(result.pointer.raw()) {
-                write!(buf, " /* {} */", comment)?;
+                write!(buf, "{:>03} : {}", index, result.pointer)?;
+
+                if let Some(comment) = comments.get(result.pointer.raw()) {
+                    write!(buf, " /* {} */", comment)?;
+                }
+
+                if ValueExpr::Value != *value_expr {
+                    write!(buf, " : {}", value_expr)?;
+                }
+
+                write!(buf, " = ")?;
+                write!(buf, "{}", result.last())?;
+
+                if verbose {
+                    write!(buf, " as {}", result.last().ty())?;
+                }
+
+                term.clear(ClearType::CurrentLine)?;
+                writeln!(term, "{}", buf)?;
             }
 
-            if ValueExpr::Value != *value_expr {
-                write!(buf, " : {}", value_expr)?;
+            if count == 0 {
+                term.clear(ClearType::CurrentLine)?;
+                writeln!(term, "no matching addresses")?;
+                return Ok(());
             }
 
-            write!(buf, " = ")?;
-            write!(buf, "{}", result.last())?;
-
-            if verbose {
-                write!(buf, " as {}", result.last().ty())?;
+            if count < len {
+                term.clear(ClearType::CurrentLine)?;
+                writeln!(term, "... {} more omitted", len - count)?;
             }
 
-            term.clear(ClearType::CurrentLine)?;
-            writeln!(term, "{}", buf)?;
-        }
-
-        if count == 0 {
-            term.clear(ClearType::CurrentLine)?;
-            writeln!(term, "no matching addresses")?;
-            return Ok(());
-        }
-
-        if count < len {
-            term.clear(ClearType::CurrentLine)?;
-            writeln!(term, "... {} more omitted", len - count)?;
-        }
+            Ok(())
+        })?;
 
         Ok(())
     }
@@ -1901,10 +1998,23 @@ impl Application {
                         .multiple(true),
                 )
                 .arg(
+                    Arg::with_name("all")
+                        .help("Refresh all results.")
+                        .long("all")
+                        .short("a"),
+                )
+                .arg(
                     Arg::with_name("expr")
                         .help("Value expression to use when printing.")
                         .value_name("expr")
                         .multiple(true),
+                )
+                .arg(
+                    Arg::with_name("limit")
+                        .help("Limit the number of results.")
+                        .long("limit")
+                        .value_name("number")
+                        .takes_value(true),
                 ),
         );
 
@@ -2126,6 +2236,13 @@ impl Application {
                         .long("format")
                         .value_name("format")
                         .takes_value(true),
+                )
+                .arg(
+                    Arg::with_name("comment")
+                        .help("Assign the specified comment to all loaded results.")
+                        .long("comment")
+                        .value_name("comment")
+                        .takes_value(true),
                 ),
         );
 
@@ -2136,7 +2253,13 @@ impl Application {
                     Arg::with_name("index")
                         .help("The index to delete.")
                         .value_name("index")
-                        .required(true)
+                        .multiple(true),
+                )
+                .arg(
+                    Arg::with_name("scan")
+                        .help("The scan to delete from.")
+                        .long("scan")
+                        .value_name("scan")
                         .takes_value(true),
                 ),
         );
@@ -2363,7 +2486,15 @@ impl Application {
                     None => vec![],
                 };
 
-                Ok(Action::Refresh { ty, expr, indexes })
+                let all = m.is_present("all");
+                let limit = m.value_of("limit").map(str::parse).transpose()?;
+                Ok(Action::Refresh {
+                    ty,
+                    expr,
+                    indexes,
+                    all,
+                    limit,
+                })
             }
             ("attach", Some(m)) => {
                 let name = m.value_of("name").map(|s| s.to_string());
@@ -2406,6 +2537,7 @@ impl Application {
                 let scan = m.value_of("scan").map(|s| s.to_string());
                 let append = m.is_present("append");
                 let format = m.value_of("format").map(str::parse).transpose()?;
+                let comment = m.value_of("comment").map(String::from);
 
                 let compress = if m.is_present("no-compress") {
                     Some(false)
@@ -2421,15 +2553,19 @@ impl Application {
                     append,
                     format,
                     compress,
+                    comment,
                 })
             }
             ("del", Some(m)) => {
-                let index = m
-                    .value_of("index")
-                    .map(str::parse)
-                    .transpose()?
-                    .ok_or_else(|| anyhow!("missing <index>"))?;
-                Ok(Action::Del { index })
+                let scan = m.value_of("scan").map(String::from);
+                let indexes = match m.values_of("index") {
+                    Some(values) => values
+                        .map(|s| str::parse(s).map_err(anyhow::Error::from))
+                        .collect::<anyhow::Result<Vec<usize>>>()?,
+                    None => vec![],
+                };
+
+                Ok(Action::Del { scan, indexes })
             }
             ("add", Some(m)) => {
                 let ty = m.value_of("type").map(str::parse).transpose()?;
@@ -2595,9 +2731,10 @@ pub enum Action {
         change_length: usize,
         incremental: bool,
     },
-    /// Delete the given address from the current scan.
+    /// Delete the given address from the specified or current scan.
     Del {
-        index: usize,
+        scan: Option<String>,
+        indexes: Vec<usize>,
     },
     /// Add the given address with the given type.
     Add {
@@ -2634,6 +2771,8 @@ pub enum Action {
         append: bool,
         format: Option<FileFormat>,
         compress: Option<bool>,
+        /// Comment to apply to all loaded results.
+        comment: Option<String>,
     },
     Sort {
         reverse: bool,
@@ -2642,9 +2781,31 @@ pub enum Action {
         ty: Option<Type>,
         expr: Option<String>,
         indexes: Vec<usize>,
+        all: bool,
+        limit: Option<usize>,
     },
     Comment {
         index: usize,
         text: String,
     },
+}
+
+struct FormatDuration(Duration);
+
+impl fmt::Display for FormatDuration {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut millis = self.0.as_millis();
+
+        if millis >= 3_600_000 {
+            write!(fmt, "{:02}:", millis / 3_600_000)?;
+            millis = millis % 3_600_000;
+        }
+
+        write!(fmt, "{:02}", millis / 60_000)?;
+        millis = millis % 60_000;
+        write!(fmt, ":{:02}", millis / 1_000)?;
+        millis = millis % 1_000;
+        write!(fmt, ".{:03}", millis)?;
+        Ok(())
+    }
 }

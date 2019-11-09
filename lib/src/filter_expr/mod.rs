@@ -4,7 +4,7 @@ use crate::{
     process::{MemoryInformation, Process},
     value,
     value_expr::TypeMatch,
-    AddressProxy, AddressRange, Type, Value, ValueExpr,
+    AddressProxy, AddressRange, Encoding, Type, Value, ValueExpr,
 };
 use anyhow::bail;
 use num_bigint::Sign;
@@ -184,7 +184,7 @@ impl Binary {
                     (Value::I64($a), Value::I64($b)) => $a $op $b,
                     (Value::U128($a), Value::U128($b)) => $a $op $b,
                     (Value::I128($a), Value::I128($b)) => $a $op $b,
-                    (Value::String($a, ..), Value::String($b, ..)) => $a $op $b,
+                    (Value::String(_, $a), Value::String(_, $b)) => $a $op $b,
                     (Value::Bytes($a), Value::Bytes($b)) => $a $op $b,
                     _ => false,
                 }
@@ -226,13 +226,13 @@ impl Binary {
             Op::Gt => binary!(lhs, rhs, a > b),
             Op::Gte => binary!(lhs, rhs, a >= b),
             Op::StartsWith => match lhs {
-                Value::String(lhs, ..) => match rhs {
-                    Value::String(rhs, ..) => lhs.starts_with(&rhs),
+                Value::String(_, lhs) => match rhs {
+                    Value::String(_, rhs) => lhs.starts_with(&rhs),
                     Value::Bytes(rhs) => lhs.as_bytes().starts_with(&rhs),
                     _ => false,
                 },
-                Value::Bytes(lhs, ..) => match rhs {
-                    Value::String(rhs, ..) => lhs.starts_with(rhs.as_bytes()),
+                Value::Bytes(lhs) => match rhs {
+                    Value::String(_, rhs) => lhs.starts_with(rhs.as_bytes()),
                     Value::Bytes(rhs) => lhs.starts_with(&rhs),
                     _ => false,
                 },
@@ -258,14 +258,15 @@ impl Binary {
             (Op::Eq, Decimal { value, .. }, Value) | (Op::Eq, Value, Decimal { value, .. }) => {
                 Some(value::Value::from_bigdecimal(value_type, value)?)
             }
-            (Op::Eq, String { value }, Value) | (Op::Eq, Value, String { value }) => {
-                Some(value::Value::String(value.to_owned()))
+            (Op::Eq, String { encoding, value }, Value)
+            | (Op::Eq, Value, String { encoding, value }) => {
+                Some(value::Value::String(*encoding, value.to_owned()))
             }
             (Op::Eq, Bytes { value }, Value) | (Op::Eq, Value, Bytes { value }) => {
                 Some(value::Value::Bytes(value.clone()))
             }
-            (Op::StartsWith, Value, String { value }) => {
-                Some(value::Value::String(value.to_owned()))
+            (Op::StartsWith, Value, String { encoding, value }) => {
+                Some(value::Value::String(*encoding, value.to_owned()))
             }
             (Op::StartsWith, Value, Bytes { value }) => Some(value::Value::Bytes(value.clone())),
             _ => None,
@@ -635,7 +636,11 @@ impl Regex {
     }
 
     fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
-        Ok(Some(self.expr.value_type_of()?.unwrap_or(Type::String)))
+        Ok(Some(
+            self.expr
+                .value_type_of()?
+                .unwrap_or(Type::String(Encoding::Utf8)),
+        ))
     }
 
     pub fn test(
@@ -656,7 +661,7 @@ impl Regex {
 
         let bytes = match &value {
             Value::Bytes(bytes) => &bytes[..],
-            Value::String(s, ..) => s.as_bytes(),
+            Value::String(_, s, ..) => s.as_bytes(),
             Value::None(..) => return Ok(Test::Undefined),
             _ => return Ok(Test::False),
         };

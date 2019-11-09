@@ -5,7 +5,7 @@ lalrpop_util::lalrpop_mod!(
     "/pointer/parser.rs"
 );
 
-use crate::{address::Sign, process_handle::ProcessHandle, utils::EscapeString, Address, Offset};
+use crate::{process_handle::ProcessHandle, utils::EscapeString, Address, Offset, Sign};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 

@@ -4,11 +4,12 @@ use crate::{
     error::Error,
     filter_expr::FilterExpr,
     process::{MemoryInformation, MemoryReader},
-    scan::{self, ScanProgress, ScanResult},
+    progress_reporter::ProgressReporter,
+    scan::ScanProgress,
     system,
     thread::Thread,
-    Address, AddressRange, Pointer, PointerBase, Process, ProcessId, Size, Test, Token, Type,
-    Value, ValueExpr,
+    Address, AddressRange, Pointer, PointerBase, Process, ProcessId, ScanResult, Size, Test, Token,
+    Type, Value, ValueExpr,
 };
 use anyhow::{bail, Context as _};
 use hashbrown::HashMap;
@@ -313,7 +314,7 @@ impl ProcessHandle {
         }
 
         let mut last_error = None;
-        let mut reporter = scan::Reporter::new(progress, results.len(), cancel, &mut last_error);
+        let mut reporter = ProgressReporter::new(progress, results.len(), cancel, &mut last_error);
 
         // how many tasks to run in parallel.
         let mut tasks = thread_pool.current_num_threads();
@@ -451,7 +452,7 @@ impl ProcessHandle {
         }
 
         let mut last_error = None;
-        let mut reporter = scan::Reporter::new(progress, results.len(), cancel, &mut last_error);
+        let mut reporter = ProgressReporter::new(progress, results.len(), cancel, &mut last_error);
 
         // how many tasks to run in parallel.
         let mut tasks = thread_pool.current_num_threads();

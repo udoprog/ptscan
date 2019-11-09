@@ -1,4 +1,4 @@
-use crate::address::{Address, Offset, Sign};
+use crate::{Address, Offset, Sign};
 use std::{borrow::Cow, fmt, str};
 use thiserror::Error;
 

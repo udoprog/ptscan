@@ -1,8 +1,8 @@
 //! Predicates used for matching against memory.
 
 use crate::{
-    error::Error, Address, FilterExpr, Pointer, PointerBase, ProcessHandle, RawPointer, Size,
-    Special, Test, Token, Type, Value, ValueExpr,
+    error::Error, progress_reporter::ProgressReporter, Address, FilterExpr, Pointer, PointerBase,
+    ProcessHandle, RawPointer, ScanResult, Size, Special, Test, Token, Type, Value, ValueExpr,
 };
 use anyhow::anyhow;
 use crossbeam_queue::SegQueue;
@@ -304,7 +304,7 @@ impl Scan {
                     });
                 }
 
-                let mut reporter = Reporter::new(progress, total, cancel, &mut last_error);
+                let mut reporter = ProgressReporter::new(progress, total, cancel, &mut last_error);
 
                 reporter.report_bytes(bytes);
 
@@ -558,119 +558,5 @@ impl<I: slice::SliceIndex<[Box<ScanResult>]>> ops::IndexMut<I> for Scan {
 impl Default for Scan {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-pub struct Reporter<'token, 'err, P> {
-    progress: P,
-    /// Current progress.
-    current: usize,
-    /// Last percentage encountered.
-    last_percentage: usize,
-    /// Total.
-    total: usize,
-    /// Whether to report progress or not.
-    token: &'token Token,
-    /// Last error captured from the progress.
-    last_err: &'err mut Option<anyhow::Error>,
-}
-
-impl<'token, 'err, P> Reporter<'token, 'err, P> {
-    /// Create a new reporter.
-    pub fn new(
-        progress: P,
-        total: usize,
-        token: &'token Token,
-        last_err: &'err mut Option<anyhow::Error>,
-    ) -> Reporter<'token, 'err, P> {
-        Reporter {
-            progress,
-            current: 0,
-            last_percentage: 0,
-            total,
-            token,
-            last_err,
-        }
-    }
-
-    /// Evaluate the given result.
-    pub fn eval<T>(&mut self, result: anyhow::Result<T>) -> Option<T> {
-        match result {
-            Ok(value) => Some(value),
-            Err(e) => {
-                self.token.set();
-                *self.last_err = Some(e);
-                None
-            }
-        }
-    }
-
-    /// Report a number of bytes.
-    pub fn report_bytes(&mut self, bytes: Size)
-    where
-        P: ScanProgress,
-    {
-        if let Err(e) = self.progress.report_bytes(bytes) {
-            *self.last_err = Some(e);
-            self.token.set();
-        }
-    }
-
-    /// Tick a single task.
-    pub fn tick(&mut self, results: u64)
-    where
-        P: ScanProgress,
-    {
-        self.tick_n(1, results);
-    }
-
-    /// Tick a single task.
-    pub fn tick_n(&mut self, count: usize, results: u64)
-    where
-        P: ScanProgress,
-    {
-        self.current += count;
-        let p = (self.current * 100) / self.total;
-
-        if p > self.last_percentage {
-            if let Err(e) = self.progress.report(p, results) {
-                *self.last_err = Some(e);
-                self.token.set();
-            }
-
-            self.last_percentage = p;
-        }
-    }
-}
-
-/// A single scan result.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScanResult {
-    /// Address where the scanned value lives.
-    pub pointer: Pointer,
-    /// The initial value in the scan. Is not rotated out.
-    pub initial: Value,
-    /// Subsequent values. Might be rotated out in length sequence.
-    pub last: Option<Value>,
-}
-
-impl ScanResult {
-    /// Construct a new scan result where the last value is specified.
-    pub fn new(pointer: Pointer, value: Value) -> Self {
-        Self {
-            pointer,
-            initial: value,
-            last: None,
-        }
-    }
-
-    /// Access the initial value of this result.
-    pub fn initial(&self) -> &Value {
-        &self.initial
-    }
-
-    /// Access the last value of the scan.
-    pub fn last(&self) -> &Value {
-        self.last.as_ref().unwrap_or(&self.initial)
     }
 }

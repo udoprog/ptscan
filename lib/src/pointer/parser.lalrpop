@@ -1,6 +1,6 @@
 // vim: ft=rust
 use crate::{
-    address::Offset,
+    Offset,
     pointer::{Pointer, PointerBase, lexer::{Hex, Token}},
 };
 

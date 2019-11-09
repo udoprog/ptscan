@@ -1,8 +1,4 @@
-use crate::{
-    address::{Address, Size},
-    filter_expr::Binary,
-    ProcessId, ThreadId, Type, ValueExpr,
-};
+use crate::{filter_expr::Binary, Address, ProcessId, Size, ThreadId, Type, ValueExpr};
 use std::io;
 use thiserror::Error;
 

@@ -71,18 +71,20 @@ impl Address {
 
     /// Add an offset in a checked manner.
     pub fn checked_offset(self, offset: Offset) -> Option<Address> {
-        Some(Address(match offset {
-            Offset(Sign::Pos, o) => self.0.checked_add(o)?,
-            Offset(Sign::Neg, o) => self.0.checked_sub(o)?,
-        }))
+        Some(match offset {
+            Offset(Sign::NoSign, _) => self,
+            Offset(Sign::Plus, o) => Address(self.0.checked_add(o)?),
+            Offset(Sign::Minus, o) => Address(self.0.checked_sub(o)?),
+        })
     }
 
     /// Add an offset in a saturating manner.
     pub fn saturating_offset(self, offset: Offset) -> Address {
-        Address(match offset {
-            Offset(Sign::Pos, o) => self.0.saturating_add(o),
-            Offset(Sign::Neg, o) => self.0.saturating_sub(o),
-        })
+        match offset {
+            Offset(Sign::NoSign, _) => self,
+            Offset(Sign::Plus, o) => Address(self.0.saturating_add(o)),
+            Offset(Sign::Minus, o) => Address(self.0.saturating_sub(o)),
+        }
     }
 
     /// Add the given size in a saturating manner.
@@ -132,9 +134,9 @@ impl Address {
     /// Find how far this address offsets another one.
     pub fn offset_of(self, base: Address) -> Result<Offset, io::Error> {
         if self.0 >= base.0 {
-            Ok(Offset(Sign::Pos, self.0 - base.0))
+            Ok(Offset(Sign::Plus, self.0 - base.0))
         } else {
-            Ok(Offset(Sign::Neg, base.0 - self.0))
+            Ok(Offset(Sign::Minus, base.0 - self.0))
         }
     }
 

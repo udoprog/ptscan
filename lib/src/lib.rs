@@ -15,6 +15,7 @@ mod process_handle;
 mod progress_reporter;
 mod scan;
 mod scan_result;
+mod sign;
 mod size;
 mod system;
 mod thread;
@@ -34,17 +35,6 @@ pub enum Endianness {
     BigEndian,
 }
 
-/// The sign of a number or offset.
-#[derive(
-    Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
-pub enum Sign {
-    #[serde(rename = "pos")]
-    Pos,
-    #[serde(rename = "neg")]
-    Neg,
-}
-
 pub use self::address::Address;
 pub use self::address_range::AddressRange;
 pub use self::encoding::Encoding;
@@ -57,6 +47,7 @@ pub use self::process::{MemoryInformation, MemoryState, MemoryType, Process};
 pub use self::process_handle::{AddressProxy, Location, ProcessHandle, ProcessName};
 pub use self::scan::{InitialScanConfig, Scan, ScanProgress};
 pub use self::scan_result::ScanResult;
+pub use self::sign::Sign;
 pub use self::size::Size;
 pub use self::thread::Thread;
 pub use self::token::Token;

@@ -12,9 +12,9 @@ impl Offset {
         Offset(sign, offset)
     }
 
-    /// Initialize the zero offset.
+    /// Construct a zero offset.
     pub fn zero() -> Self {
-        Offset(Sign::Pos, 0)
+        Offset(Sign::NoSign, 0)
     }
 
     /// Add two offsets together in a saturating manner.
@@ -22,22 +22,27 @@ impl Offset {
         use self::Sign::*;
 
         match (self, offset) {
-            (Offset(Pos, a), Offset(Pos, b)) => Offset(Pos, a.saturating_add(b)),
-            (Offset(Pos, a), Offset(Neg, b)) => {
-                if a >= b {
-                    Offset(Pos, a - b)
-                } else {
-                    Offset(Neg, b - a)
-                }
-            }
-            (Offset(Neg, a), Offset(Pos, b)) => {
+            (other, Offset(NoSign, _)) | (Offset(NoSign, _), other) => other,
+            (Offset(Plus, a), Offset(Plus, b)) => Offset(Plus, a.saturating_add(b)),
+            (Offset(Plus, a), Offset(Minus, b)) => {
                 if a > b {
-                    Offset(Neg, a - b)
+                    Offset(Plus, a.saturating_sub(b))
+                } else if a < b {
+                    Offset(Minus, b.saturating_sub(a))
                 } else {
-                    Offset(Pos, b - a)
+                    Offset(NoSign, b.saturating_sub(a))
                 }
             }
-            (Offset(Neg, a), Offset(Neg, b)) => Offset(Neg, a.saturating_add(b)),
+            (Offset(Minus, a), Offset(Plus, b)) => {
+                if a > b {
+                    Offset(Minus, a.saturating_sub(b))
+                } else if a < b {
+                    Offset(Plus, b.saturating_sub(a))
+                } else {
+                    Offset(NoSign, 0)
+                }
+            }
+            (Offset(Minus, a), Offset(Minus, b)) => Offset(Minus, a.saturating_add(b)),
         }
     }
 
@@ -65,8 +70,8 @@ impl Offset {
 impl fmt::Display for Offset {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Offset(Sign::Pos, o) => write!(fmt, "0x{:X}", o),
-            Offset(Sign::Neg, o) => write!(fmt, "-0x{:X}", o),
+            Offset(Sign::Plus, o) | Offset(Sign::NoSign, o) => write!(fmt, "0x{:X}", o),
+            Offset(Sign::Minus, o) => write!(fmt, "-0x{:X}", o),
         }
     }
 }
@@ -86,38 +91,38 @@ mod tests {
         use self::Sign::*;
 
         assert_eq!(
-            Offset(Pos, 0),
-            Offset(Neg, 0x10).saturating_add(Offset(Pos, 0x10))
+            Offset(Plus, 0),
+            Offset(Minus, 0x10).saturating_add(Offset(Plus, 0x10))
         );
         assert_eq!(
-            Offset(Pos, 0x10),
-            Offset(Neg, 0x10).saturating_add(Offset(Pos, 0x20))
+            Offset(Plus, 0x10),
+            Offset(Minus, 0x10).saturating_add(Offset(Plus, 0x20))
         );
         assert_eq!(
-            Offset(Neg, 0x10),
-            Offset(Neg, 0x20).saturating_add(Offset(Pos, 0x10))
-        );
-
-        assert_eq!(
-            Offset(Pos, 0),
-            Offset(Pos, 0x10).saturating_add(Offset(Neg, 0x10))
-        );
-        assert_eq!(
-            Offset(Neg, 0x10),
-            Offset(Pos, 0x10).saturating_add(Offset(Neg, 0x20))
-        );
-        assert_eq!(
-            Offset(Pos, 0x10),
-            Offset(Pos, 0x20).saturating_add(Offset(Neg, 0x10))
+            Offset(Minus, 0x10),
+            Offset(Minus, 0x20).saturating_add(Offset(Plus, 0x10))
         );
 
         assert_eq!(
-            Offset(Pos, 0),
-            Offset(Pos, 0).saturating_add(Offset(Pos, 0))
+            Offset(Plus, 0),
+            Offset(Plus, 0x10).saturating_add(Offset(Minus, 0x10))
         );
         assert_eq!(
-            Offset(Pos, 0x20),
-            Offset(Pos, 0x10).saturating_add(Offset(Pos, 0x10))
+            Offset(Minus, 0x10),
+            Offset(Plus, 0x10).saturating_add(Offset(Minus, 0x20))
+        );
+        assert_eq!(
+            Offset(Plus, 0x10),
+            Offset(Plus, 0x20).saturating_add(Offset(Minus, 0x10))
+        );
+
+        assert_eq!(
+            Offset(Plus, 0),
+            Offset(Plus, 0).saturating_add(Offset(Plus, 0))
+        );
+        assert_eq!(
+            Offset(Plus, 0x20),
+            Offset(Plus, 0x10).saturating_add(Offset(Plus, 0x10))
         );
     }
 }

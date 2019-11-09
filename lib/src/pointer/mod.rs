@@ -45,8 +45,8 @@ impl fmt::Display for PointerBase {
 
                 if offset.abs() > 0 {
                     match offset.sign() {
-                        Sign::Pos => write!(fmt, " + {}", offset)?,
-                        Sign::Neg => write!(fmt, " - {}", offset.abs())?,
+                        Sign::Plus | Sign::NoSign => write!(fmt, " + {}", offset)?,
+                        Sign::Minus => write!(fmt, " - {}", offset.abs())?,
                     }
                 }
 

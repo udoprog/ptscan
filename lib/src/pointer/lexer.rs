@@ -23,9 +23,11 @@ impl Hex {
     /// Forcibly convert into an offset.
     pub fn into_offset(self) -> Offset {
         if self.0 < 0 {
-            Offset::new(Sign::Neg, (-self.0) as u64)
+            Offset::new(Sign::Minus, (-self.0) as u64)
+        } else if self.0 > 0 {
+            Offset::new(Sign::Plus, self.0 as u64)
         } else {
-            Offset::new(Sign::Pos, self.0 as u64)
+            Offset::zero()
         }
     }
 

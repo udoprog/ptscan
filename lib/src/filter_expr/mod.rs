@@ -4,10 +4,9 @@ use crate::{
     process::{MemoryInformation, Process},
     value,
     value_expr::TypeMatch,
-    AddressProxy, AddressRange, Encoding, Type, Value, ValueExpr,
+    AddressProxy, AddressRange, Encoding, Sign, Type, Value, ValueExpr,
 };
 use anyhow::bail;
-use num_bigint::Sign;
 use std::fmt;
 
 pub use self::special::Special;

@@ -4,11 +4,11 @@ use crate::{
     process::Process,
     utils::{EscapeString, Hex},
     value::Value,
-    Address, AddressProxy, Encoding, Type,
+    Address, AddressProxy, Encoding, Sign, Type,
 };
 use anyhow::bail;
 use bigdecimal::BigDecimal;
-use num_bigint::{BigInt, Sign};
+use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 pub enum TypeMatch {
@@ -168,7 +168,7 @@ impl ValueExpr {
         };
 
         let sign = match self {
-            Self::Number { value, .. } => value.sign(),
+            Self::Number { value, .. } => Sign::from(value.sign()),
             _ => Sign::NoSign,
         };
 

@@ -661,17 +661,8 @@ impl Application {
                 ty,
                 expr,
                 indexes,
-                all,
                 limit,
             } => {
-                if !all && indexes.is_empty() {
-                    writeln!(
-                        self.term,
-                        "Must specify either `--all` or `--index <number>`"
-                    )?;
-                    return Ok(false);
-                }
-
                 if let Some(limit) = limit {
                     self.limit = limit;
                 }
@@ -689,7 +680,7 @@ impl Application {
                 let mut stored = Vec::new();
                 let mut replace = vec![];
 
-                let results = if all {
+                let results = if indexes.is_empty() {
                     &mut scan.results[..]
                 } else {
                     for index in indexes {
@@ -1998,12 +1989,6 @@ impl Application {
                         .multiple(true),
                 )
                 .arg(
-                    Arg::with_name("all")
-                        .help("Refresh all results.")
-                        .long("all")
-                        .short("a"),
-                )
-                .arg(
                     Arg::with_name("expr")
                         .help("Value expression to use when printing.")
                         .value_name("expr")
@@ -2486,13 +2471,11 @@ impl Application {
                     None => vec![],
                 };
 
-                let all = m.is_present("all");
                 let limit = m.value_of("limit").map(str::parse).transpose()?;
                 Ok(Action::Refresh {
                     ty,
                     expr,
                     indexes,
-                    all,
                     limit,
                 })
             }
@@ -2781,7 +2764,6 @@ pub enum Action {
         ty: Option<Type>,
         expr: Option<String>,
         indexes: Vec<usize>,
-        all: bool,
         limit: Option<usize>,
     },
     Comment {

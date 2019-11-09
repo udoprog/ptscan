@@ -35,26 +35,7 @@ impl Encoding {
         address: Address,
     ) -> anyhow::Result<(Value, Option<usize>)> {
         let (string, len) = match self {
-            Self::Utf8 => {
-                let string = match read_until_null(reader, address)? {
-                    Some(string) => string,
-                    None => return Ok((Value::None(Type::String(self)), None)),
-                };
-
-                let len = string.len() + 1;
-
-                let string = match String::from_utf8(string) {
-                    Err(e) => {
-                        let len = e.utf8_error().valid_up_to();
-                        let mut string = e.into_bytes();
-                        string.resize_with(len, u8::default);
-                        String::from_utf8(string)?
-                    }
-                    Ok(string) => string,
-                };
-
-                (string, len)
-            }
+            Self::Utf8 => return self.decode_utf8(reader, address),
             Self::Utf16 => match reader.process().endianness {
                 Endianness::LittleEndian => {
                     let string = match read_until_null(reader, address)? {
@@ -104,6 +85,32 @@ impl Encoding {
         };
 
         return Ok((Value::String(self, string), Some(len)));
+    }
+
+    /// Decode an UTF-8 string efficiently.
+    pub fn decode_utf8<'a>(
+        self,
+        reader: impl MemoryReader<'a>,
+        address: Address,
+    ) -> anyhow::Result<(Value, Option<usize>)> {
+        let string = match read_until_null(reader, address)? {
+            Some(string) => string,
+            None => return Ok((Value::None(Type::String(self)), None)),
+        };
+
+        let len = string.len() + 1;
+
+        let string = match String::from_utf8(string) {
+            Err(e) => {
+                let len = e.utf8_error().valid_up_to();
+                let mut string = e.into_bytes();
+                string.resize_with(len, u8::default);
+                String::from_utf8(string)?
+            }
+            Ok(string) => string,
+        };
+
+        Ok((Value::String(self, string), Some(len)))
     }
 
     /// Default alignment for various encodings.

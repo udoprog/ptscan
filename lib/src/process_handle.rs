@@ -271,6 +271,7 @@ impl ProcessHandle {
             handle: self,
             memory_cache: None,
             followed: Cached::None,
+            evaled: Cached::None,
         }
     }
 
@@ -559,11 +560,16 @@ pub struct AddressProxy<'a> {
     memory_cache: Option<&'a MemoryCache>,
     /// cached, followed address.
     followed: Cached<Option<Address>>,
+    evaled: Cached<(Value, Option<usize>)>,
 }
 
 impl AddressProxy<'_> {
     /// Evaluate the pointer of the proxy.
     pub fn eval(&mut self, ty: Type) -> anyhow::Result<(Value, Option<usize>)> {
+        if let Cached::Some(result) = &self.evaled {
+            return Ok(result.clone());
+        }
+
         if let Some(memory_cache) = self.memory_cache {
             let address = match self.followed {
                 Cached::Some(address) => address,
@@ -582,12 +588,13 @@ impl AddressProxy<'_> {
                 None => return Ok((Value::None(ty), None)),
             };
 
-            Ok(
-                match ty.decode((memory_cache, &self.handle.process), address) {
-                    Ok(value) => value,
-                    Err(..) => (Value::None(ty), None),
-                },
-            )
+            let result = match ty.decode((memory_cache, &self.handle.process), address) {
+                Ok(value) => value,
+                Err(..) => (Value::None(ty), None),
+            };
+
+            self.evaled = Cached::Some(result.clone());
+            Ok(result)
         } else {
             let address = match self.followed {
                 Cached::Some(address) => address,
@@ -603,10 +610,13 @@ impl AddressProxy<'_> {
                 None => return Ok((Value::None(ty), None)),
             };
 
-            Ok(match ty.decode(&self.handle.process, address) {
+            let result = match ty.decode(&self.handle.process, address) {
                 Ok(value) => value,
                 Err(..) => (Value::None(ty), None),
-            })
+            };
+
+            self.evaled = Cached::Some(result.clone());
+            Ok(result)
         }
     }
 
@@ -797,6 +807,7 @@ impl<'a> Session<'a> {
             handle: self.handle,
             memory_cache: Some(&self.memory_cache),
             followed: Cached::None,
+            evaled: Cached::None,
         }
     }
 }

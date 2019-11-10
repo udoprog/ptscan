@@ -57,7 +57,7 @@ ValueTerm: ValueExpr = {
     initial => ValueExpr::Initial,
     <number:number> => ValueExpr::Number(number.0, number.1),
     <decimal:decimal> => ValueExpr::Decimal(decimal.0, decimal.1),
-    <string:"string"> => ValueExpr::String(Encoding::Utf8, string),
+    <string:"string"> => ValueExpr::String(Encoding::default(), string),
     <bytes:bytes> => ValueExpr::Bytes(bytes),
 };
 

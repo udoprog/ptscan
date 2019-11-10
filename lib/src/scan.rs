@@ -4,7 +4,7 @@ use crate::{
     error::Error, progress_reporter::ProgressReporter, Address, FilterExpr, Pointer, PointerBase,
     ProcessHandle, RawPointer, ScanResult, Size, Special, Test, Token, Type, Value, ValueExpr,
 };
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
 use serde::{Deserialize, Serialize};
@@ -258,6 +258,16 @@ impl Scan {
         let queue = SegQueue::new();
 
         for range in &ranges {
+            if let Some(alignment) = alignment {
+                if usize::try_from(range.base)? % alignment != 0 {
+                    bail!(
+                        "range {:?} is not supported with alignment `{}`",
+                        range,
+                        alignment
+                    );
+                }
+            }
+
             bytes.add_assign(range.size)?;
             total += range.size.as_usize();
 
@@ -476,8 +486,15 @@ impl Scan {
                     Pointer::new(PointerBase::Address { address }, vec![], Some(address));
                 let mut proxy = handle.address_proxy(&pointer);
 
+                // sanity check
                 if let Some(last_address) = last_address {
-                    assert!(address > last_address, "address must always increase");
+                    if last_address >= address {
+                        bail!(
+                            "BUG: address did not increase during scan: {} -> {}",
+                            last_address,
+                            address
+                        )
+                    }
                 }
 
                 last_address = Some(address);
@@ -490,6 +507,10 @@ impl Scan {
                     results.push(Box::new(ScanResult::new(pointer, value)));
 
                     if let Some(advance) = advance {
+                        if advance == 0 {
+                            bail!("BUG: attempt to advance by 0 bytes");
+                        }
+
                         offset += advance;
                     } else {
                         offset += step_size;
@@ -521,7 +542,7 @@ impl Scan {
             let rem = *to_align % alignment;
 
             if rem > 0 {
-                *to_align -= rem;
+                *to_align += alignment - rem;
             }
         }
     }

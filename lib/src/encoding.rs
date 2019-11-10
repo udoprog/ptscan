@@ -1,67 +1,74 @@
 use crate::{
-    filter_expr::special::find_first_nonzero, process::MemoryReader, Address, Endianness, Size,
-    Type, Value,
+    filter_expr::special::find_first_nonzero, process::MemoryReader, Address, Size, Type, Value,
 };
 use anyhow::bail;
-use serde::{Deserialize, Serialize};
 use std::{convert::TryFrom as _, fmt, str};
 
 const READ_BUFFER_SIZE: usize = 0x100;
 
 /// The encoding for a string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum Encoding {
-    #[serde(rename = "utf-8")]
-    Utf8,
-    #[serde(rename = "utf-16")]
-    Utf16,
-    #[serde(rename = "utf-16-le")]
-    Utf16LE,
-    #[serde(rename = "utf-16-be")]
-    Utf16BE,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Encoding(&'static encoding_rs::Encoding);
+
+impl serde::Serialize for Encoding {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.name().serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Encoding {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let name = String::deserialize(deserializer)?;
+
+        match encoding_rs::Encoding::for_label(name.as_bytes()) {
+            Some(encoding) => Ok(Self(encoding)),
+            None => Err(serde::de::Error::custom(format!("bad encoding: {}", name))),
+        }
+    }
 }
 
 impl Encoding {
-    /// Get the length of the string in the specified encoding.
-    pub fn len(self, s: &str) -> usize {
-        match self {
-            Self::Utf8 => s.len(),
-            Self::Utf16 | Self::Utf16LE | Self::Utf16BE => s.encode_utf16().count() * 2,
+    /// Get the size of the buffer needed to store the specified string.
+    pub fn size(self, s: &str) -> Option<usize> {
+        if self.0 == encoding_rs::UTF_8 {
+            Some(s.len())
+        } else {
+            let encoder = self.0.new_encoder();
+            encoder.max_buffer_length_from_utf8_if_no_unmappables(s.len())
         }
     }
 
-    /// Decode a string with the specified encoding from memory.
-    ///
-    /// This returns the Value (the decoded string), and the amount of bytes
-    /// that the scanner can safely advance without missing the next string.
-    pub fn decode<'a>(
-        self,
-        reader: impl MemoryReader<'a>,
-        address: Address,
-    ) -> anyhow::Result<(Value, Option<usize>)> {
-        use encoding_rs::{UTF_16BE, UTF_16LE, UTF_8};
+    /// Encode the specified string into the specified buffer.
+    pub fn encode(self, buf: &mut [u8], s: &str) -> anyhow::Result<()> {
+        use encoding_rs::EncoderResult;
 
-        let decoder = match self {
-            Self::Utf8 => UTF_8.new_decoder(),
-            Self::Utf16 => match reader.process().endianness {
-                Endianness::LittleEndian => UTF_16LE.new_decoder(),
-                Endianness::BigEndian => UTF_16BE.new_decoder(),
-            },
-            Self::Utf16LE => UTF_16LE.new_decoder(),
-            Self::Utf16BE => UTF_16BE.new_decoder(),
-        };
+        let mut encoder = self.0.new_encoder();
+        let (result, _, _) = encoder.encode_from_utf8_without_replacement(s, buf, true);
 
-        self.decode_string(decoder, reader, address)
+        match result {
+            EncoderResult::InputEmpty => (),
+            EncoderResult::OutputFull => bail!("output buffer too small"),
+            EncoderResult::Unmappable(c) => bail!("encountered unmappable character: {}", c),
+        }
+
+        Ok(())
     }
 
     /// Decode an UTF-8 string efficiently.
-    pub fn decode_string<'a>(
+    pub fn stream_decode<'a>(
         self,
-        mut decoder: encoding_rs::Decoder,
         reader: impl MemoryReader<'a>,
         mut address: Address,
     ) -> anyhow::Result<(Value, Option<usize>)> {
         use encoding_rs::DecoderResult;
+
+        let mut decoder = self.0.new_decoder();
 
         // NB: start out as empty to quickly skip over malformed sequences.
         let mut output = String::new();
@@ -87,11 +94,14 @@ impl Encoding {
                 match find_first_nonzero(input) {
                     Some(0) => (),
                     Some(other) => {
-                        return Ok((Value::None(Type::String(self)), Some(offset + other - 1)))
+                        return Ok((Value::None(Type::String(self)), Some(offset + other)));
                     }
                     // NB: buffer is _all_ zeros.
                     None => {
-                        return Ok((Value::None(Type::String(self)), Some(offset + input.len())))
+                        return Ok((
+                            Value::None(Type::String(self)),
+                            Some(offset + input.len() + 1),
+                        ))
                     }
                 }
 
@@ -122,35 +132,45 @@ impl Encoding {
                         output.reserve(READ_BUFFER_SIZE);
                     }
                     DecoderResult::Malformed(..) => {
+                        if output.is_empty() {
+                            return Ok((Value::None(Type::String(self)), Some(1)));
+                        }
+
                         break 'outer;
                     }
                 }
             }
         }
 
-        let len = output.len();
-        Ok((Value::String(self, output), Some(len)))
+        let advance = output.len() + 1;
+        Ok((Value::String(self, output), Some(advance)))
     }
 
     /// Default alignment for various encodings.
     pub fn alignment(self) -> usize {
-        match self {
-            Self::Utf8 => 1,
-            Self::Utf16 => 2,
-            Self::Utf16LE => 2,
-            Self::Utf16BE => 2,
+        use encoding_rs::*;
+
+        if self.0 == UTF_8 {
+            return 1;
         }
+
+        if self.0 == UTF_16LE || self.0 == UTF_16BE {
+            return 2;
+        }
+
+        1
+    }
+}
+
+impl Default for Encoding {
+    fn default() -> Self {
+        Self(encoding_rs::UTF_8)
     }
 }
 
 impl fmt::Display for Encoding {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Self::Utf8 => "utf-8".fmt(fmt),
-            Self::Utf16 => "utf-16".fmt(fmt),
-            Self::Utf16LE => "utf-16-le".fmt(fmt),
-            Self::Utf16BE => "utf-16-be".fmt(fmt),
-        }
+        self.0.name().fmt(fmt)
     }
 }
 
@@ -158,12 +178,9 @@ impl str::FromStr for Encoding {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
-            "utf-8" => Encoding::Utf8,
-            "utf-16" => Encoding::Utf16,
-            "utf-16-be" => Encoding::Utf16BE,
-            "utf-16-le" => Encoding::Utf16LE,
-            other => bail!("bad encodign: {}", other),
-        })
+        match encoding_rs::Encoding::for_label(s.as_bytes()) {
+            Some(encoding) => Ok(Self(encoding)),
+            None => bail!("bad encoding: {}", s),
+        }
     }
 }

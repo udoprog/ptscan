@@ -272,7 +272,7 @@ impl ValueExpr {
         Ok(match self {
             Self::Number { .. } => Some(Type::U32),
             Self::Decimal { .. } => Some(Type::F32),
-            Self::String { .. } => Some(Type::String(Encoding::Utf8)),
+            Self::String { .. } => Some(Type::String(Encoding::default())),
             Self::Bytes { value } => Some(Type::Bytes(value.len())),
             Self::Binary { lhs, rhs, .. } => {
                 if let Some(ty) = lhs.implicit_type_of()? {

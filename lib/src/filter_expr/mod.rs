@@ -4,7 +4,7 @@ use crate::{
     process::{MemoryInformation, Process},
     value,
     value_expr::TypeMatch,
-    AddressProxy, AddressRange, Encoding, Sign, Type, Value, ValueExpr,
+    AddressProxy, AddressRange, Sign, Type, Value, ValueExpr,
 };
 use anyhow::bail;
 use std::fmt;
@@ -638,7 +638,7 @@ impl Regex {
         Ok(Some(
             self.expr
                 .value_type_of()?
-                .unwrap_or(Type::String(Encoding::Utf8)),
+                .unwrap_or(Type::String(Default::default())),
         ))
     }
 
@@ -669,7 +669,24 @@ impl Regex {
     }
 
     pub fn special(&self) -> anyhow::Result<Option<Special>> {
-        Ok(Some(Special::Regex(self.regex.clone())))
+        if !self.regex.as_str().starts_with('^') && !self.regex.as_str().ends_with('$') {
+            Ok(Some(Special::Regex(self.regex.clone())))
+        } else {
+            let regex = self
+                .regex
+                .as_str()
+                .trim_start_matches('^')
+                .trim_end_matches('$');
+
+            if let Ok(regex) = regex::bytes::Regex::new(regex) {
+                return Ok(Some(Special::Regex(regex)));
+            }
+        }
+
+        match self.expr.reduced() {
+            ValueExpr::Value => Ok(Some(Special::NonZero(None))),
+            _ => Ok(None),
+        }
     }
 }
 

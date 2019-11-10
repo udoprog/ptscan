@@ -2,7 +2,7 @@ use crate::{
     error::Error,
     process::Process,
     utils::{EscapeString, Hex},
-    Address, Encoding, Endianness, Type,
+    Address, Encoding, Type,
 };
 use anyhow::bail;
 use num_bigint::Sign;
@@ -202,7 +202,7 @@ impl Value {
     }
 
     /// Encode the given buffer into a value.
-    pub fn encode(&self, process: &Process, buf: &mut [u8]) -> Result<(), Error> {
+    pub fn encode(&self, process: &Process, buf: &mut [u8]) -> anyhow::Result<()> {
         match *self {
             Self::None(..) => (),
             Self::Pointer(address) => address.encode(process, buf)?,
@@ -222,26 +222,7 @@ impl Value {
             Self::I128(value) => process.encode_u128(buf, value as u128),
             Self::F32(value) => process.encode_f32(buf, value),
             Self::F64(value) => process.encode_f64(buf, value),
-            Self::String(encoding, ref s) => match encoding {
-                Encoding::Utf8 => {
-                    let len = usize::min(s.len(), buf.len());
-                    buf[..len].clone_from_slice(&s.as_bytes()[..len]);
-                }
-                Encoding::Utf16 => match process.endianness {
-                    Endianness::LittleEndian => {
-                        Self::encode_utf16::<byteorder::LittleEndian>(s, buf);
-                    }
-                    Endianness::BigEndian => {
-                        Self::encode_utf16::<byteorder::BigEndian>(s, buf);
-                    }
-                },
-                Encoding::Utf16LE => {
-                    Self::encode_utf16::<byteorder::LittleEndian>(s, buf);
-                }
-                Encoding::Utf16BE => {
-                    Self::encode_utf16::<byteorder::BigEndian>(s, buf);
-                }
-            },
+            Self::String(encoding, ref s) => encoding.encode(buf, s)?,
             Self::Bytes(ref bytes) => {
                 let len = usize::min(bytes.len(), buf.len());
                 buf[..len].clone_from_slice(&bytes[..len]);
@@ -249,20 +230,6 @@ impl Value {
         }
 
         Ok(())
-    }
-
-    fn encode_utf16<B>(s: &str, mut buf: &mut [u8])
-    where
-        B: byteorder::ByteOrder,
-    {
-        for c in s.encode_utf16() {
-            if buf.len() < 2 {
-                break;
-            }
-
-            B::write_u16(&mut buf[..2], c);
-            buf = &mut buf[2..];
-        }
     }
 
     /// Cast this value.
@@ -288,7 +255,7 @@ impl Value {
     /// Get the type of the value.
     pub fn ty(&self) -> Type {
         match *self {
-            Self::None(ty) => ty,
+            Self::None(..) => Type::None,
             Self::Pointer(..) => Type::Pointer,
             Self::U8(..) => Type::U8,
             Self::I8(..) => Type::I8,
@@ -324,7 +291,7 @@ impl Value {
             Self::I128(..) => mem::size_of::<i128>(),
             Self::F32(..) => mem::size_of::<f32>(),
             Self::F64(..) => mem::size_of::<f64>(),
-            Self::String(encoding, string) => encoding.len(string),
+            Self::String(encoding, string) => return encoding.size(string),
             Self::Bytes(bytes) => bytes.len(),
         })
     }

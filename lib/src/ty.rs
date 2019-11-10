@@ -49,7 +49,7 @@ macro_rules! convert {
     };
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
 pub enum Type {
     #[serde(rename = "none")]
@@ -138,7 +138,7 @@ impl Type {
             Self::I128 => Value::I128(Default::default()),
             Self::F32 => Value::F32(Default::default()),
             Self::F64 => Value::F64(Default::default()),
-            Self::String(..) => Value::String(Encoding::Utf8, Default::default()),
+            Self::String(..) => Value::String(Default::default(), Default::default()),
             Self::Bytes(..) => Value::Bytes(Default::default()),
         }
     }
@@ -314,7 +314,7 @@ impl Type {
         }
 
         return match self {
-            Self::String(encoding) => Ok(encoding.decode(reader, address)?),
+            Self::String(encoding) => Ok(encoding.stream_decode(reader, address)?),
             other => bail!("tried to decode sized {} as unsized", other),
         };
     }
@@ -384,7 +384,7 @@ impl str::FromStr for Type {
             "string" => {
                 let encoding = match it.next() {
                     Some(s) => str::parse::<Encoding>(s)?,
-                    None => Encoding::Utf8,
+                    None => Encoding::default(),
                 };
 
                 Type::String(encoding)

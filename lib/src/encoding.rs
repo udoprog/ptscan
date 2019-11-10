@@ -1,7 +1,12 @@
-use crate::{process::MemoryReader, Address, Endianness, Size, Type, Value};
+use crate::{
+    filter_expr::special::find_first_nonzero, process::MemoryReader, Address, Endianness, Size,
+    Type, Value,
+};
 use anyhow::bail;
 use serde::{Deserialize, Serialize};
-use std::{fmt, str};
+use std::{convert::TryFrom as _, fmt, str};
+
+const READ_BUFFER_SIZE: usize = 0x100;
 
 /// The encoding for a string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -34,83 +39,88 @@ impl Encoding {
         reader: impl MemoryReader<'a>,
         address: Address,
     ) -> anyhow::Result<(Value, Option<usize>)> {
-        let (string, len) = match self {
-            Self::Utf8 => return self.decode_utf8(reader, address),
+        use encoding_rs::{UTF_16BE, UTF_16LE, UTF_8};
+
+        let decoder = match self {
+            Self::Utf8 => UTF_8.new_decoder(),
             Self::Utf16 => match reader.process().endianness {
-                Endianness::LittleEndian => {
-                    let string = match read_until_null(reader, address)? {
-                        Some(string) => string,
-                        None => return Ok((Value::None(Type::String(self)), None)),
-                    };
-
-                    (
-                        decode_utf16::<byteorder::LittleEndian>(&string)?,
-                        string.len() + 1,
-                    )
-                }
-                Endianness::BigEndian => {
-                    let string = match read_until_null(reader, address)? {
-                        Some(string) => string,
-                        None => return Ok((Value::None(Type::String(self)), None)),
-                    };
-
-                    (
-                        decode_utf16::<byteorder::BigEndian>(&string)?,
-                        string.len() + 1,
-                    )
-                }
+                Endianness::LittleEndian => UTF_16LE.new_decoder(),
+                Endianness::BigEndian => UTF_16BE.new_decoder(),
             },
-            Self::Utf16LE => {
-                let string = match read_until_null(reader, address)? {
-                    Some(string) => string,
-                    None => return Ok((Value::None(Type::String(self)), None)),
-                };
-
-                (
-                    decode_utf16::<byteorder::LittleEndian>(&string)?,
-                    string.len() + 1,
-                )
-            }
-            Self::Utf16BE => {
-                let string = match read_until_null(reader, address)? {
-                    Some(string) => string,
-                    None => return Ok((Value::None(Type::String(self)), None)),
-                };
-
-                (
-                    decode_utf16::<byteorder::BigEndian>(&string)?,
-                    string.len() + 1,
-                )
-            }
+            Self::Utf16LE => UTF_16LE.new_decoder(),
+            Self::Utf16BE => UTF_16BE.new_decoder(),
         };
 
-        return Ok((Value::String(self, string), Some(len)));
+        self.decode_string(decoder, reader, address)
     }
 
     /// Decode an UTF-8 string efficiently.
-    pub fn decode_utf8<'a>(
+    pub fn decode_string<'a>(
         self,
+        mut decoder: encoding_rs::Decoder,
         reader: impl MemoryReader<'a>,
-        address: Address,
+        mut address: Address,
     ) -> anyhow::Result<(Value, Option<usize>)> {
-        let string = match read_until_null(reader, address)? {
-            Some(string) => string,
-            None => return Ok((Value::None(Type::String(self)), None)),
-        };
+        use encoding_rs::DecoderResult;
 
-        let len = string.len() + 1;
+        // NB: start out as empty to quickly skip over malformed sequences.
+        let mut output = String::new();
+        let mut input = vec![0u8; READ_BUFFER_SIZE];
+        let read_buffer_size = Size::try_from(READ_BUFFER_SIZE)?;
 
-        let string = match String::from_utf8(string) {
-            Err(e) => {
-                let len = e.utf8_error().valid_up_to();
-                let mut string = e.into_bytes();
-                string.resize_with(len, u8::default);
-                String::from_utf8(string)?
+        'outer: loop {
+            let mut input = match reader.read_memory(address, &mut input)? {
+                Some(input) => input,
+                None => &[],
+            };
+
+            let last = if input.is_empty() {
+                true
+            } else {
+                address.add_assign(read_buffer_size)?;
+
+                match find_first_nonzero(input) {
+                    Some(0) => (),
+                    Some(other) => return Ok((Value::None(Type::String(self)), Some(other - 1))),
+                    // NB: buffer is _all_ zeros.
+                    None => return Ok((Value::None(Type::String(self)), Some(input.len()))),
+                }
+
+                input = match memchr::memchr(0x0, &input) {
+                    Some(index) => &input[..index],
+                    None => input,
+                };
+
+                false
+            };
+
+            loop {
+                let (result, read) =
+                    decoder.decode_to_string_without_replacement(input, &mut output, last);
+
+                match result {
+                    DecoderResult::InputEmpty => {
+                        assert_eq!(read, input.len());
+
+                        if last {
+                            break 'outer;
+                        } else {
+                            break;
+                        }
+                    }
+                    DecoderResult::OutputFull => {
+                        input = &input[read..];
+                        output.reserve(READ_BUFFER_SIZE);
+                    }
+                    DecoderResult::Malformed(..) => {
+                        break 'outer;
+                    }
+                }
             }
-            Ok(string) => string,
-        };
+        }
 
-        Ok((Value::String(self, string), Some(len)))
+        let len = output.len();
+        Ok((Value::String(self, output), Some(len)))
     }
 
     /// Default alignment for various encodings.
@@ -147,52 +157,4 @@ impl str::FromStr for Encoding {
             other => bail!("bad encodign: {}", other),
         })
     }
-}
-
-/// Read until we encounter a null.
-fn read_until_null<'a>(
-    reader: impl MemoryReader<'a>,
-    mut address: Address,
-) -> anyhow::Result<Option<Vec<u8>>> {
-    let mut buf = vec![0u8; 0x100];
-    let mut string = Vec::new();
-
-    loop {
-        let buf = match reader.read_memory(address, &mut buf)? {
-            Some(buf) => buf,
-            None => return Ok(None),
-        };
-
-        if let Some(index) = memchr::memchr(0x0, &buf) {
-            string.extend(&buf[..index]);
-            break;
-        }
-
-        string.extend(buf);
-        address.add_assign(Size::new(0x100))?;
-    }
-
-    Ok(Some(string))
-}
-
-/// Helper function to decode UTF-16.
-fn decode_utf16<B>(mut string: &[u8]) -> anyhow::Result<String>
-where
-    B: byteorder::ByteOrder,
-{
-    use std::{char, iter};
-
-    let mut s = String::new();
-
-    while string.len() >= 2 {
-        let c = B::read_u16(&string[..2]);
-
-        for c in char::decode_utf16(iter::once(c)) {
-            s.push(c?);
-        }
-
-        string = &string[2..];
-    }
-
-    Ok(s)
 }

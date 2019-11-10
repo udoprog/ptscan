@@ -2,7 +2,7 @@ const ZERO: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
 /// test if the given slice contains all zeros.
 /// Hopefully this gets vectorized (please check!).
-fn is_all_zeros(mut data: &[u8]) -> bool {
+pub(crate) fn is_all_zeros(mut data: &[u8]) -> bool {
     while !data.is_empty() {
         let len = usize::min(data.len(), ZERO.len());
 
@@ -17,8 +17,17 @@ fn is_all_zeros(mut data: &[u8]) -> bool {
 }
 
 /// Find first nonzero byte in a slice.
-fn find_first_nonzero(mut data: &[u8]) -> Option<usize> {
+pub(crate) fn find_first_nonzero(mut data: &[u8]) -> Option<usize> {
     let mut local = 0;
+
+    // quick, constant time checks.
+    if data.is_empty() {
+        return None;
+    }
+
+    if data[0] != 0 {
+        return Some(0);
+    }
 
     while !data.is_empty() {
         let len = usize::min(data.len(), ZERO.len());

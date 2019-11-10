@@ -8,7 +8,7 @@ pub struct Size(pub(crate) u64);
 
 impl Size {
     /// Construct a new size.
-    pub fn new(value: u64) -> Size {
+    pub const fn new(value: u64) -> Size {
         Size(value)
     }
 

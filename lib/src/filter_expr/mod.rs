@@ -216,10 +216,7 @@ impl Binary {
 
         let result = match op {
             Op::Eq => binary!(lhs, rhs, a == b),
-            Op::Neq => match (lhs, rhs) {
-                (Value::None(..), other) | (other, Value::None(..)) if other.is_some() => true,
-                (lhs, rhs) => binary!(lhs, rhs, a != b),
-            },
+            Op::Neq => binary!(lhs, rhs, a != b),
             Op::Lt => binary!(lhs, rhs, a < b),
             Op::Lte => binary!(lhs, rhs, a <= b),
             Op::Gt => binary!(lhs, rhs, a > b),

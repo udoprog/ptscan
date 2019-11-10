@@ -6,7 +6,7 @@ use crate::{
     value::Value,
     Address, AddressProxy, Encoding, Sign, Type,
 };
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use bigdecimal::BigDecimal;
 use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
@@ -263,7 +263,7 @@ impl ValueExpr {
             Self::Decimal { ty: Some(ty), .. } => Some((Explicit, ty)),
             Self::Decimal { ty: None, .. } => Some((Implicit, Type::F32)),
             Self::String { encoding, .. } => Some((Implicit, Type::String(encoding))),
-            Self::Bytes { ref value } => Some((Implicit, Type::Bytes(value.len()))),
+            Self::Bytes { ref value } => Some((Implicit, Type::Bytes(Some(value.len())))),
         })
     }
 
@@ -273,7 +273,7 @@ impl ValueExpr {
             Self::Number { .. } => Some(Type::U32),
             Self::Decimal { .. } => Some(Type::F32),
             Self::String { .. } => Some(Type::String(Encoding::default())),
-            Self::Bytes { value } => Some(Type::Bytes(value.len())),
+            Self::Bytes { value } => Some(Type::Bytes(Some(value.len()))),
             Self::Binary { lhs, rhs, .. } => {
                 if let Some(ty) = lhs.implicit_type_of()? {
                     return Ok(Some(ty));
@@ -356,8 +356,12 @@ impl ValueExpr {
                 Ok(Value::Pointer(new_address))
             }
             Self::Cast { ref expr, ty } => {
-                let value = expr.eval(initial, last, value_type, ty, proxy)?;
-                let value = ty.convert(value).unwrap_or_else(|| Value::None(ty));
+                let (_, inner_type) = expr
+                    .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?
+                    .ok_or_else(|| anyhow!("cannot determine type of expression: {}", expr))?;
+
+                let value = expr.eval(initial, last, value_type, inner_type, proxy)?;
+                let value = expr_type.convert(value).unwrap_or_else(|| Value::None(ty));
                 Ok(value)
             }
             Self::Binary {

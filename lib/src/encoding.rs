@@ -60,6 +60,27 @@ impl Encoding {
         Ok(())
     }
 
+    /// Stream encode.
+    pub fn stream_encode(self, buf: &mut Vec<u8>, mut s: &str) -> anyhow::Result<()> {
+        use encoding_rs::EncoderResult;
+
+        loop {
+            let mut encoder = self.0.new_encoder();
+            let (result, read) = encoder.encode_from_utf8_to_vec_without_replacement(s, buf, false);
+            s = &s[read..];
+
+            match result {
+                EncoderResult::InputEmpty => break,
+                EncoderResult::OutputFull => {
+                    buf.reserve(READ_BUFFER_SIZE);
+                }
+                EncoderResult::Unmappable(c) => bail!("encountered unmappable character: {}", c),
+            }
+        }
+
+        Ok(())
+    }
+
     /// Decode an UTF-8 string efficiently.
     pub fn stream_decode<'a>(
         self,
@@ -182,5 +203,20 @@ impl str::FromStr for Encoding {
             Some(encoding) => Ok(Self(encoding)),
             None => bail!("bad encoding: {}", s),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Encoding;
+
+    #[test]
+    fn test_stream_encode() -> anyhow::Result<()> {
+        let encoding = Encoding::default();
+
+        let mut buf = Vec::new();
+        encoding.stream_encode(&mut buf, "foobar")?;
+        assert_eq!("foobar".as_bytes(), &buf[..]);
+        Ok(())
     }
 }

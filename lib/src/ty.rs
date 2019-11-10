@@ -83,7 +83,7 @@ pub enum Type {
     #[serde(rename = "string")]
     String(Encoding),
     #[serde(rename = "bytes")]
-    Bytes(usize),
+    Bytes(Option<usize>),
 }
 
 impl Type {
@@ -115,6 +115,17 @@ impl Type {
                 return Some(Value::String(encoding, string));
             }
             (Self::Bytes(..), other @ Value::Bytes(..)) => return Some(other),
+            (Self::Bytes(None), Value::String(encoding, string)) => {
+                let mut buf = Vec::new();
+                encoding.stream_encode(&mut buf, string.as_str()).ok()?;
+                return Some(Value::Bytes(buf));
+            }
+            (Self::Bytes(Some(len)), Value::String(encoding, string)) => {
+                let mut buf = Vec::new();
+                encoding.stream_encode(&mut buf, string.as_str()).ok()?;
+                buf.resize_with(usize::min(len, buf.len()), u8::default);
+                return Some(Value::Bytes(buf));
+            }
             (_, other) => other,
         };
 
@@ -246,7 +257,7 @@ impl Type {
             Self::I128 => mem::size_of::<i128>(),
             Self::F32 => mem::size_of::<f32>(),
             Self::F64 => mem::size_of::<f64>(),
-            Self::Bytes(len) => len,
+            Self::Bytes(len) => return len,
             Self::String(..) => return None,
         })
     }
@@ -349,7 +360,8 @@ impl fmt::Display for Type {
             Type::F32 => "f32",
             Type::F64 => "f64",
             Type::String(encoding) => return write!(fmt, "string/{}", encoding),
-            Type::Bytes(len) => return write!(fmt, "bytes/{}", len),
+            Type::Bytes(None) => "bytes",
+            Type::Bytes(Some(len)) => return write!(fmt, "bytes/{}", len),
         };
 
         o.fmt(fmt)
@@ -391,8 +403,8 @@ impl str::FromStr for Type {
             }
             "bytes" => {
                 let size = match it.next() {
-                    Some(size) => str::parse::<usize>(size).map_err(|_| Error::TypeBadSize)?,
-                    None => 0x100,
+                    Some(size) => Some(str::parse::<usize>(size).map_err(|_| Error::TypeBadSize)?),
+                    None => None,
                 };
 
                 Type::Bytes(size)
@@ -428,7 +440,8 @@ impl fmt::Display for HumanDisplay {
             Type::F32 => write!(fmt, "32-bit floating point number"),
             Type::F64 => write!(fmt, "64-bit floating point number"),
             Type::String(encoding) => write!(fmt, "{} string", encoding),
-            Type::Bytes(len) => write!(fmt, "a byte array of length {}", len),
+            Type::Bytes(Some(len)) => write!(fmt, "a byte array of length {}", len),
+            Type::Bytes(None) => write!(fmt, "an unsized byte array"),
         }
     }
 }

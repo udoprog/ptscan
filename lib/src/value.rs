@@ -270,7 +270,7 @@ impl Value {
             Self::F32(..) => Type::F32,
             Self::F64(..) => Type::F64,
             Self::String(encoding, ..) => Type::String(encoding),
-            Self::Bytes(ref bytes) => Type::Bytes(bytes.len()),
+            Self::Bytes(ref bytes) => Type::Bytes(Some(bytes.len())),
         }
     }
 

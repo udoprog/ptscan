@@ -30,7 +30,7 @@ impl Offset {
                 } else if a < b {
                     Offset(Minus, b.saturating_sub(a))
                 } else {
-                    Offset(NoSign, b.saturating_sub(a))
+                    Offset::zero()
                 }
             }
             (Offset(Minus, a), Offset(Plus, b)) => {
@@ -39,7 +39,7 @@ impl Offset {
                 } else if a < b {
                     Offset(Plus, b.saturating_sub(a))
                 } else {
-                    Offset(NoSign, 0)
+                    Offset::zero()
                 }
             }
             (Offset(Minus, a), Offset(Minus, b)) => Offset(Minus, a.saturating_add(b)),
@@ -91,7 +91,7 @@ mod tests {
         use self::Sign::*;
 
         assert_eq!(
-            Offset(Plus, 0),
+            Offset(NoSign, 0),
             Offset(Minus, 0x10).saturating_add(Offset(Plus, 0x10))
         );
         assert_eq!(
@@ -104,7 +104,7 @@ mod tests {
         );
 
         assert_eq!(
-            Offset(Plus, 0),
+            Offset(NoSign, 0),
             Offset(Plus, 0x10).saturating_add(Offset(Minus, 0x10))
         );
         assert_eq!(
@@ -117,8 +117,8 @@ mod tests {
         );
 
         assert_eq!(
-            Offset(Plus, 0),
-            Offset(Plus, 0).saturating_add(Offset(Plus, 0))
+            Offset(NoSign, 0),
+            Offset(NoSign, 0).saturating_add(Offset(NoSign, 0))
         );
         assert_eq!(
             Offset(Plus, 0x20),

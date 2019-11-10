@@ -5,7 +5,7 @@ use hashbrown::{hash_map, HashMap};
 use ptscan::{
     Address, FilterExpr, InitialScanConfig, Location, MemoryInformation, Offset, Pointer,
     PointerBase, ProcessHandle, ProcessId, RawPointer, Scan, ScanProgress, ScanResult, Size, Test,
-    Token, Type, Value, ValueExpr,
+    Token, Type, TypeHint, Value, ValueExpr,
 };
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -1762,12 +1762,9 @@ impl Application {
         } = *self;
 
         let result = if scan.initial {
-            let ty = match ty {
-                Some(ty) => ty,
-                None => filter
-                    .value_type_of()?
-                    .ok_or_else(|| anyhow!("cannot determine type of value"))?,
-            };
+            let ty = filter
+                .value_type_of(ty.map(TypeHint::Explicit).unwrap_or(TypeHint::None))?
+                .ok_or_else(|| anyhow!("cannot determine type of value"))?;
 
             handle
                 .refresh_threads()

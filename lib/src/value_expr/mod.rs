@@ -4,17 +4,13 @@ use crate::{
     process::Process,
     utils::{EscapeString, Hex},
     value::Value,
-    Address, AddressProxy, Encoding, Sign, Type,
+    Address, AddressProxy, Encoding, Sign, Type, TypeHint,
 };
 use anyhow::{anyhow, bail};
 use bigdecimal::BigDecimal;
 use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-pub enum TypeMatch {
-    Implicit,
-    Explicit,
-}
 
 pub(crate) mod ast;
 
@@ -219,51 +215,50 @@ impl ValueExpr {
     /// Get the type of the expression.
     pub fn type_of(
         &self,
-        initial_type: Option<Type>,
-        last_type: Option<Type>,
-        value_type: Option<Type>,
-    ) -> anyhow::Result<Option<(TypeMatch, Type)>> {
-        use self::TypeMatch::*;
+        initial_type: TypeHint,
+        last_type: TypeHint,
+        value_type: TypeHint,
+    ) -> anyhow::Result<TypeHint> {
+        use self::TypeHint::*;
 
         Ok(match *self {
-            Self::Value => value_type.map(|ty| (Explicit, ty)),
-            Self::Last => last_type.map(|ty| (Explicit, ty)),
-            Self::Initial => initial_type.map(|ty| (Explicit, ty)),
+            Self::Initial => initial_type.unwrap_or(None),
+            Self::Last => last_type.unwrap_or(None),
+            Self::Value => value_type.unwrap_or(None),
             Self::Deref { .. } => None,
-            Self::AddressOf { .. } => Some((Explicit, Type::Pointer)),
+            Self::AddressOf { .. } => Explicit(Type::Pointer),
             Self::Binary {
                 op,
                 ref lhs,
                 ref rhs,
             } => {
-                let lhs_type = lhs.type_of(initial_type, last_type, value_type)?;
-                let rhs_type = rhs.type_of(initial_type, last_type, value_type)?;
+                let lhs = lhs.type_of(initial_type, last_type, value_type)?;
+                let rhs = rhs.type_of(initial_type, last_type, value_type)?;
 
-                match (lhs_type, rhs_type) {
-                    (Some((Explicit, lhs_type)), Some((Explicit, rhs_type))) => {
-                        if lhs_type == rhs_type {
-                            Some((Explicit, lhs_type))
-                        } else {
-                            bail!(
-                                "incompatible types in expression: {} {} {}",
-                                lhs_type,
-                                op,
-                                rhs_type
-                            )
+                match (lhs, rhs) {
+                    (Explicit(lhs), Explicit(rhs)) => {
+                        if lhs != rhs {
+                            bail!("incompatible types in expression: {} {} {}", lhs, op, rhs)
                         }
+
+                        Explicit(lhs)
                     }
-                    (Some((Explicit, ty)), _) | (_, Some((Explicit, ty))) => Some((Explicit, ty)),
-                    (Some((Implicit, ty)), _) | (_, Some((Implicit, ty))) => Some((Implicit, ty)),
+                    (Explicit(ty), _) | (_, Explicit(ty)) => Explicit(ty),
+                    (Implicit(ty), _) | (_, Implicit(ty)) => Implicit(ty),
                     _ => None,
                 }
             }
-            Self::Cast { ty, .. } => Some((Explicit, ty)),
-            Self::Number { ty: Some(ty), .. } => Some((Explicit, ty)),
-            Self::Number { ty: None, .. } => Some((Implicit, Type::U32)),
-            Self::Decimal { ty: Some(ty), .. } => Some((Explicit, ty)),
-            Self::Decimal { ty: None, .. } => Some((Implicit, Type::F32)),
-            Self::String { encoding, .. } => Some((Implicit, Type::String(encoding))),
-            Self::Bytes { ref value } => Some((Implicit, Type::Bytes(Some(value.len())))),
+            Self::Cast { ty, .. } => Explicit(ty),
+            Self::Number { ty: Some(ty), .. } => Explicit(ty),
+            Self::Number {
+                ty: Option::None, ..
+            } => Implicit(Type::U32),
+            Self::Decimal { ty: Some(ty), .. } => Explicit(ty),
+            Self::Decimal {
+                ty: Option::None, ..
+            } => Implicit(Type::F32),
+            Self::String { encoding, .. } => Implicit(Type::String(encoding)),
+            Self::Bytes { ref value } => Implicit(Type::Bytes(Some(value.len()))),
         })
     }
 
@@ -290,22 +285,42 @@ impl ValueExpr {
     }
 
     /// Get a type hint for the value type.
-    pub fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
-        Ok(match self {
-            Self::Deref { value, .. } => match &**value {
-                Self::Value => Some(Type::Pointer),
-                other => other.value_type_of()?,
-            },
-            Self::Binary { lhs, rhs, .. } => {
-                if let Some(lhs) = lhs.value_type_of()? {
-                    return Ok(Some(lhs));
-                }
+    pub fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
+        use self::TypeHint::*;
 
-                rhs.value_type_of()?
-            }
-            Self::Cast { expr, ty } => match &**expr {
-                Self::Value => Some(*ty),
-                other => other.value_type_of()?,
+        Ok(match *self {
+            Self::Deref { ref value, .. } => match &**value {
+                Self::Value => Explicit(Type::Pointer),
+                other => other.value_type_of(None)?,
+            },
+            Self::Binary {
+                op,
+                ref lhs,
+                ref rhs,
+                ..
+            } => match (&**lhs, &**rhs) {
+                (Self::Value, other) | (other, Self::Value) => other.type_of(None, None, None)?,
+                (lhs, rhs) => {
+                    let lhs = lhs.value_type_of(cast_type)?;
+                    let rhs = rhs.value_type_of(cast_type)?;
+
+                    match (lhs, rhs) {
+                        (Explicit(lhs), Explicit(rhs)) => {
+                            if lhs != rhs {
+                                bail!("incompatible types in expression: {} {} {}", lhs, op, rhs)
+                            }
+
+                            Explicit(lhs)
+                        }
+                        (Explicit(ty), _) | (_, Explicit(ty)) => (Explicit(ty)),
+                        (Implicit(ty), _) | (_, Implicit(ty)) => (Implicit(ty)),
+                        _ => None,
+                    }
+                }
+            },
+            Self::Cast { ref expr, ty } => match &**expr {
+                Self::Value => Explicit(ty),
+                ref other => other.value_type_of(Explicit(ty))?,
             },
             _ => None,
         })
@@ -320,10 +335,7 @@ impl ValueExpr {
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Value> {
         match *self {
-            Self::Value => {
-                let (value, _) = proxy.eval(value_type)?;
-                Ok(value)
-            }
+            Self::Value => Ok(proxy.eval(expr_type)?.0),
             Self::Initial => Ok(initial.clone()),
             Self::Last => Ok(last.clone()),
             Self::Number { ref value, .. } => Ok(Value::from_bigint(expr_type, value)?),
@@ -350,19 +362,25 @@ impl ValueExpr {
                 let new_address =
                     match value.address_of(initial, last, value_type, expr_type, proxy)? {
                         Some(address) => address,
-                        None => return Ok(Value::None(value_type)),
+                        None => return Ok(Value::None(expr_type)),
                     };
 
                 Ok(Value::Pointer(new_address))
             }
-            Self::Cast { ref expr, ty } => {
-                let (_, inner_type) = expr
-                    .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?
+            Self::Cast { ref expr, .. } => {
+                let inner_type = expr
+                    .type_of(
+                        TypeHint::Explicit(initial.ty()),
+                        TypeHint::Explicit(last.ty()),
+                        TypeHint::Explicit(value_type),
+                    )?
                     .ok_or_else(|| anyhow!("cannot determine type of expression: {}", expr))?;
 
                 let value = expr.eval(initial, last, value_type, inner_type, proxy)?;
-                let value = expr_type.convert(value).unwrap_or_else(|| Value::None(ty));
-                Ok(value)
+
+                Ok(expr_type
+                    .convert(value)
+                    .unwrap_or_else(|| Value::None(expr_type)))
             }
             Self::Binary {
                 ref lhs,

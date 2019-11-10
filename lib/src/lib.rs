@@ -21,6 +21,7 @@ mod system;
 mod thread;
 mod token;
 mod ty;
+mod type_hint;
 mod value;
 mod value_expr;
 
@@ -52,6 +53,7 @@ pub use self::size::Size;
 pub use self::thread::Thread;
 pub use self::token::Token;
 pub use self::ty::Type;
+pub use self::type_hint::TypeHint;
 pub use self::utils::IteratorExtension;
 pub use self::value::Value;
 pub use self::value_expr::ValueExpr;

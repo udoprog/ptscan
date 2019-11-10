@@ -2,11 +2,10 @@ use self::ast::{Op, ValueTrait};
 use crate::{
     error::Error,
     process::{MemoryInformation, Process},
-    value,
-    value_expr::TypeMatch,
-    AddressProxy, AddressRange, Sign, Type, Value, ValueExpr,
+    value, AddressProxy, AddressRange, Sign, Type, TypeHint, Value, ValueExpr,
 };
 use anyhow::bail;
+use hashbrown::HashSet;
 use std::fmt;
 
 pub use self::special::Special;
@@ -68,16 +67,16 @@ impl FilterExpr {
         Ok(Self::IsPointer(IsPointer::new(expr, process)?))
     }
 
-    pub fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
+    pub fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
         match self {
-            Self::Binary(m) => m.value_type_of(),
-            Self::All(m) => m.value_type_of(),
-            Self::Any(m) => m.value_type_of(),
-            Self::IsPointer(m) => m.value_type_of(),
-            Self::IsType(m) => m.value_type_of(),
-            Self::IsNan(m) => m.value_type_of(),
-            Self::Not(m) => m.value_type_of(),
-            Self::Regex(m) => m.value_type_of(),
+            Self::Binary(m) => m.value_type_of(cast_type),
+            Self::All(m) => m.value_type_of(cast_type),
+            Self::Any(m) => m.value_type_of(cast_type),
+            Self::IsPointer(m) => m.value_type_of(cast_type),
+            Self::IsType(m) => m.value_type_of(cast_type),
+            Self::IsNan(m) => m.value_type_of(cast_type),
+            Self::Not(m) => m.value_type_of(cast_type),
+            Self::Regex(m) => m.value_type_of(cast_type),
         }
     }
 
@@ -136,24 +135,40 @@ impl fmt::Display for FilterExpr {
 pub struct Binary(Op, ValueExpr, ValueExpr);
 
 impl Binary {
-    fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
+    fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
+        use self::TypeHint::*;
+
         // comparison including value.
-        let Binary(_, lhs, rhs) = self;
+        let Binary(op, lhs, rhs) = self;
+
+        let (lhs, rhs) = match (lhs, rhs) {
+            (ValueExpr::Value, rhs) => {
+                let lhs = lhs.value_type_of(cast_type)?;
+                let rhs = rhs.type_of(None, None, cast_type)?;
+                (lhs, rhs)
+            }
+            (lhs, ValueExpr::Value) => {
+                let lhs = lhs.type_of(None, None, cast_type)?;
+                let rhs = rhs.value_type_of(cast_type)?;
+                (lhs, rhs)
+            }
+            (lhs, rhs) => {
+                let lhs = lhs.value_type_of(cast_type)?;
+                let rhs = rhs.value_type_of(cast_type)?;
+                (lhs, rhs)
+            }
+        };
 
         // explicit value type
-        if let Some(value_type) = lhs.value_type_of()? {
-            return Ok(Some(value_type));
-        }
-
-        if let Some(value_type) = rhs.value_type_of()? {
-            return Ok(Some(value_type));
-        }
-
         Ok(match (lhs, rhs) {
-            (ValueExpr::Value, ValueExpr::Value) => None,
-            (ValueExpr::Value, other) | (other, ValueExpr::Value) => {
-                other.type_of(None, None, None)?.map(|(_, ty)| ty)
+            (Explicit(lhs), Explicit(rhs)) => {
+                if lhs != rhs {
+                    bail!("incompatible value in expression: {} {} {}", lhs, op, rhs)
+                }
+
+                Explicit(lhs)
             }
+            (result, None) | (None, result) => result,
             _ => None,
         })
     }
@@ -165,7 +180,7 @@ impl Binary {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        use self::TypeMatch::*;
+        use self::TypeHint::*;
 
         macro_rules! binary {
             ($expr_a:expr, $expr_b:expr, $a:ident $op:tt $b:ident) => {
@@ -192,19 +207,28 @@ impl Binary {
 
         let Binary(op, lhs, rhs) = self;
 
-        let lhs_type = lhs.type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?;
-        let rhs_type = rhs.type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?;
+        let lhs_type = lhs.type_of(
+            Explicit(initial.ty()),
+            Explicit(last.ty()),
+            Explicit(value_type),
+        )?;
+
+        let rhs_type = rhs.type_of(
+            Explicit(initial.ty()),
+            Explicit(last.ty()),
+            Explicit(value_type),
+        )?;
 
         let expr_type = match (lhs_type, rhs_type) {
-            (Some((Explicit, lhs)), Some((Explicit, rhs))) => {
+            (Explicit(lhs), Explicit(rhs)) => {
                 if lhs == rhs {
                     lhs
                 } else {
                     bail!("incompatible types in expression: {} {} {}", lhs, op, rhs)
                 }
             }
-            (Some((Explicit, ty)), _) | (_, Some((Explicit, ty))) => ty,
-            (Some((Implicit, ty)), _) | (_, Some((Implicit, ty))) => ty,
+            (Explicit(ty), _) | (_, Explicit(ty)) => ty,
+            (Implicit(ty), _) | (_, Implicit(ty)) => ty,
             _ => return Err(Error::BinaryTypeInference(self.clone()).into()),
         };
 
@@ -321,14 +345,8 @@ impl fmt::Display for Binary {
 pub struct All(Vec<FilterExpr>);
 
 impl All {
-    fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
-        for v in &self.0 {
-            if let Some(ty) = v.value_type_of()? {
-                return Ok(Some(ty));
-            }
-        }
-
-        Ok(None)
+    fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
+        collection_value_type_of(self, &self.0, cast_type)
     }
 
     pub fn new(filters: impl IntoIterator<Item = FilterExpr>) -> Self {
@@ -391,14 +409,8 @@ impl fmt::Display for All {
 pub struct Any(Vec<FilterExpr>);
 
 impl Any {
-    fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
-        for v in &self.0 {
-            if let Some(ty) = v.value_type_of()? {
-                return Ok(Some(ty));
-            }
-        }
-
-        Ok(None)
+    fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
+        collection_value_type_of(self, &self.0, cast_type)
     }
 
     pub fn new(filters: impl IntoIterator<Item = FilterExpr>) -> Self {
@@ -481,11 +493,8 @@ impl IsPointer {
         })
     }
 
-    fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
-        Ok(match self.expr {
-            ValueExpr::Value => Some(Type::Pointer),
-            _ => None,
-        })
+    fn value_type_of(&self, _: TypeHint) -> anyhow::Result<TypeHint> {
+        self.expr.value_type_of(TypeHint::Explicit(Type::Pointer))
     }
 
     pub fn test(
@@ -495,9 +504,13 @@ impl IsPointer {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let (_, expr_type) = self
+        let expr_type = self
             .expr
-            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?
+            .type_of(
+                TypeHint::Explicit(initial.ty()),
+                TypeHint::Explicit(last.ty()),
+                TypeHint::Explicit(value_type),
+            )?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
 
         let value = self
@@ -538,11 +551,8 @@ impl IsType {
         Ok(Self { expr, ty })
     }
 
-    fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
-        Ok(match self.expr {
-            ValueExpr::Value => Some(self.ty),
-            _ => None,
-        })
+    fn value_type_of(&self, _: TypeHint) -> anyhow::Result<TypeHint> {
+        self.expr.value_type_of(TypeHint::Explicit(self.ty))
     }
 
     pub fn test(
@@ -552,9 +562,13 @@ impl IsType {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let (_, expr_type) = self
+        let expr_type = self
             .expr
-            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?
+            .type_of(
+                TypeHint::Explicit(initial.ty()),
+                TypeHint::Explicit(last.ty()),
+                TypeHint::Explicit(value_type),
+            )?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
 
         let value = self
@@ -584,8 +598,8 @@ impl IsNan {
         Ok(Some(Special::NonZero(value_type.size(process))))
     }
 
-    fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
-        Ok(Some(self.expr.value_type_of()?.unwrap_or(Type::F32)))
+    fn value_type_of(&self, _: TypeHint) -> anyhow::Result<TypeHint> {
+        self.expr.value_type_of(TypeHint::Implicit(Type::F32))
     }
 
     pub fn test(
@@ -595,9 +609,13 @@ impl IsNan {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let (_, expr_type) = self
+        let expr_type = self
             .expr
-            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?
+            .type_of(
+                TypeHint::Explicit(initial.ty()),
+                TypeHint::Explicit(last.ty()),
+                TypeHint::Explicit(value_type),
+            )?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
 
         let value = self
@@ -631,12 +649,9 @@ impl Regex {
         Self { expr, regex }
     }
 
-    fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
-        Ok(Some(
-            self.expr
-                .value_type_of()?
-                .unwrap_or(Type::String(Default::default())),
-        ))
+    fn value_type_of(&self, _: TypeHint) -> anyhow::Result<TypeHint> {
+        self.expr
+            .value_type_of(TypeHint::Implicit(Type::String(Default::default())))
     }
 
     pub fn test(
@@ -646,9 +661,13 @@ impl Regex {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let (_, expr_type) = self
+        let expr_type = self
             .expr
-            .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?
+            .type_of(
+                TypeHint::Explicit(initial.ty()),
+                TypeHint::Explicit(last.ty()),
+                TypeHint::Explicit(value_type),
+            )?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
 
         let value = self
@@ -709,8 +728,8 @@ impl Not {
         Ok(self.filter.test(initial, last, value_type, proxy)?.invert())
     }
 
-    fn value_type_of(&self) -> anyhow::Result<Option<Type>> {
-        self.filter.value_type_of()
+    fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
+        self.filter.value_type_of(cast_type)
     }
 
     pub fn special(&self, process: &Process, value_type: Type) -> anyhow::Result<Option<Special>> {
@@ -761,4 +780,54 @@ mod tests {
 
         Ok(())
     }
+}
+
+/// Helper to figure out the value type of a collection of expressions.
+fn collection_value_type_of(
+    expr: &impl fmt::Display,
+    exprs: &[FilterExpr],
+    cast_type: TypeHint,
+) -> anyhow::Result<TypeHint> {
+    use self::TypeHint::*;
+
+    let mut explicits = HashSet::new();
+    let mut implicits = HashSet::new();
+
+    for v in exprs {
+        match v.value_type_of(cast_type)? {
+            Explicit(ty) => {
+                explicits.insert(ty);
+            }
+            Implicit(ty) => {
+                implicits.insert(ty);
+            }
+            _ => (),
+        }
+    }
+
+    if explicits.len() > 2 {
+        bail!(
+            "found multiple conflicting explicit types {:?} in expression: {}",
+            explicits,
+            expr
+        );
+    }
+
+    if let Some(ty) = explicits.into_iter().next() {
+        return Ok(Explicit(ty));
+    }
+
+    if implicits.len() > 2 {
+        bail!(
+            "found multiple conflicting implicit types {:?} in expression: {}",
+            implicits,
+            expr
+        );
+    }
+
+    if let Some(ty) = implicits.into_iter().next() {
+        return Ok(Implicit(ty));
+    }
+
+    Ok(None)
 }

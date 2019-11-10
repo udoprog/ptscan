@@ -345,7 +345,7 @@ impl Default for Type {
 impl fmt::Display for Type {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let o = match *self {
-            Type::None => "?",
+            Type::None => "none",
             Type::Pointer => "pointer",
             Type::U8 => "u8",
             Type::I8 => "i8",

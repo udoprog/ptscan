@@ -7,7 +7,6 @@ use crate::{
 use anyhow::bail;
 use num_bigint::Sign;
 use serde::{Deserialize, Serialize};
-use std::convert::TryFrom as _;
 use std::{fmt, mem, str};
 
 macro_rules! numeric_op {
@@ -28,26 +27,9 @@ macro_rules! numeric_op {
     };
 
     (@a $a:ident $op:tt $b:ident, $checked_op:ident, {$([$variant:ident, $ty:ty]),*}) => {
-        match $a {
-            $(
-                Self::$variant(lhs) => numeric_op!(
-                    @b lhs, $ty, $variant, $a $op $b,
-                    $checked_op,
-                    [Pointer, U8, I8, U16, I16, U32, I32, U64, I64, U128, I128]
-                ),
-            )*
-            _ => bail!("bad operation: {} {} {}", $a.ty(), stringify!($op), $b.ty()),
-        }
-    };
-
-    (@b $lhs:ident, $ty:ty, $variant:ident, $a:ident $op:tt $b:ident, $checked_op:ident, [$($variant2:ident),*]) => {
-        match $b {
-            $(
-                Self::$variant2(rhs) => {
-                    $lhs.$checked_op(<$ty>::try_from(rhs)?).map(Self::$variant)
-                },
-            )+
-            _ => bail!("bad operation: {} {} {}", $a.ty(), stringify!($op), $b.ty()),
+        match ($a, $b) {
+            $((Self::$variant(lhs), Self::$variant(rhs)) => lhs.$checked_op(rhs).map(Self::$variant),)*
+            (lhs, rhs) => bail!("bad operation: {} {} {}", lhs.ty(), stringify!($op), rhs.ty()),
         }
     };
 }

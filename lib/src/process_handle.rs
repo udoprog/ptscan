@@ -9,7 +9,7 @@ use crate::{
     system,
     thread::Thread,
     Address, AddressRange, Pointer, PointerBase, Process, ProcessId, ScanResult, Size, Test, Token,
-    Type, Value, ValueExpr,
+    Type, TypeHint, Value, ValueExpr,
 };
 use anyhow::{bail, Context as _};
 use hashbrown::HashMap;
@@ -461,7 +461,7 @@ impl ProcessHandle {
 
         let new_type = match new_type {
             Some(new_type) => Some(new_type),
-            None => expr.value_type_of()?,
+            None => expr.value_type_of(TypeHint::None)?.option(),
         };
 
         thread_pool.install(|| {
@@ -490,8 +490,12 @@ impl ProcessHandle {
                                 let initial = result.initial();
                                 let last = result.last();
 
-                                let (_, expr_type) = expr
-                                    .type_of(Some(initial.ty()), Some(last.ty()), Some(value_type))?
+                                let expr_type = expr
+                                    .type_of(
+                                        TypeHint::Explicit(initial.ty()),
+                                        TypeHint::Explicit(last.ty()),
+                                        TypeHint::Explicit(value_type),
+                                    )?
                                     .ok_or_else(|| Error::TypeInference(expr.clone()))?;
 
                                 let value =

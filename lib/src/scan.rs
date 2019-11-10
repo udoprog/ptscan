@@ -1,12 +1,12 @@
 //! Predicates used for matching against memory.
 
 use crate::{
-    error::Error, progress_reporter::ProgressReporter, Address, FilterExpr, Pointer, PointerBase,
-    ProcessHandle, RawPointer, ScanResult, Size, Special, Test, Token, Type, Value, ValueExpr,
+    progress_reporter::ProgressReporter, Address, FilterExpr, Pointer, PointerBase, ProcessHandle,
+    RawPointer, ScanResult, Size, Special, Test, Token, Type, Value, ValueExpr,
 };
 use anyhow::{anyhow, bail};
 use crossbeam_queue::SegQueue;
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp,
@@ -240,17 +240,24 @@ impl Scan {
 
         let mut ranges = Vec::new();
 
-        if config.modules_only {
-            ranges.extend(handle.modules.iter().map(|m| m.range));
-        } else {
-            ranges.extend(
-                handle
-                    .process
-                    .virtual_memory_regions()
-                    .only_relevant()
-                    .map(|m| m.map(|m| m.range))
-                    .collect::<Result<Vec<_>, Error>>()?,
-            );
+        {
+            let thread_stacks = handle
+                .threads
+                .iter()
+                .map(|t| t.stack.clone())
+                .collect::<HashSet<_>>();
+
+            if config.modules_only {
+                ranges.extend(handle.modules.iter().map(|m| m.range));
+            } else {
+                for m in handle.process.virtual_memory_regions().only_relevant() {
+                    let m = m?;
+
+                    if !thread_stacks.contains(&m.range) {
+                        ranges.push(m.range);
+                    }
+                }
+            }
         }
 
         let mut total = 0;

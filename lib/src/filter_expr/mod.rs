@@ -670,7 +670,7 @@ impl Regex {
 
     pub fn special(&self) -> anyhow::Result<Option<Special>> {
         if !self.regex.as_str().starts_with('^') && !self.regex.as_str().ends_with('$') {
-            Ok(Some(Special::Regex(self.regex.clone())))
+            return Ok(Some(Special::Regex(self.regex.clone())));
         } else {
             let regex = self
                 .regex

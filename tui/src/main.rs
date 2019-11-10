@@ -740,7 +740,7 @@ impl Application {
                 let value_type = value_type.unwrap_or(Type::None);
 
                 let Self {
-                    ref handle,
+                    ref mut handle,
                     ref mut scans,
                     ref thread_pool,
                     ref colors,
@@ -751,7 +751,7 @@ impl Application {
                     Self::pointer_scan(
                         term,
                         token,
-                        handle.as_ref(),
+                        handle.as_mut(),
                         scans,
                         thread_pool,
                         colors,
@@ -1425,7 +1425,7 @@ impl Application {
     fn pointer_scan(
         term: &mut Term,
         token: &Token,
-        handle: Option<&ProcessHandle>,
+        handle: Option<&mut ProcessHandle>,
         scans: &mut HashMap<String, Scan>,
         thread_pool: &rayon::ThreadPool,
         colors: &BTreeMap<usize, style::Color>,
@@ -1438,7 +1438,7 @@ impl Application {
     ) -> anyhow::Result<()> {
         type SVec = Vec<Offset>;
 
-        let handle = match handle.as_ref() {
+        let handle = match handle {
             Some(handle) => handle,
             None => bail!("not attached to a process"),
         };
@@ -1451,6 +1451,10 @@ impl Application {
             .or_insert_with(Scan::new);
 
         if scan.initial {
+            handle
+                .refresh_threads()
+                .with_context(|| anyhow!("failed to refresh threads before scan"))?;
+
             scan.initial_scan(
                 thread_pool,
                 handle,
@@ -1734,7 +1738,7 @@ impl Application {
         ty: Option<Type>,
         config: ScanConfig,
     ) -> anyhow::Result<()> {
-        let handle = match self.handle.as_ref() {
+        let handle = match self.handle.as_mut() {
             Some(handle) => handle,
             None => bail!("not attached to a process"),
         };
@@ -1764,6 +1768,10 @@ impl Application {
                     .value_type_of()?
                     .ok_or_else(|| anyhow!("cannot determine type of value"))?,
             };
+
+            handle
+                .refresh_threads()
+                .with_context(|| anyhow!("failed to refresh threads before scan"))?;
 
             let mut c = InitialScanConfig::default();
             c.modules_only = config.modules_only;

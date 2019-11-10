@@ -652,10 +652,10 @@ impl MemoryCache {
         process: &Process,
         address: Address,
         buf: &'a mut [u8],
-    ) -> anyhow::Result<Option<&'a [u8]>> {
+    ) -> anyhow::Result<usize> {
         let region = match self.regions.find_region_for(address) {
             Some(region) => region,
-            None => return Ok(None),
+            None => return Ok(0),
         };
 
         let s = address.as_usize() - region.base.as_usize();
@@ -666,11 +666,11 @@ impl MemoryCache {
 
             if let Some(data) = cache.peek(region) {
                 if e >= data.len() {
-                    return Ok(None);
+                    return Ok(0);
                 }
 
                 buf.clone_from_slice(&data[s..e]);
-                return Ok(Some(&buf[..]));
+                return Ok(buf.len());
             }
         }
 
@@ -678,29 +678,30 @@ impl MemoryCache {
         let len = region.size.as_usize();
         let mut data = vec![0u8; len];
 
-        match process.read_process_memory(region.base, &mut data)? {
-            Some(data) if data.len() == len => (),
-            _ => return Ok(None),
-        };
+        let read = process.read_process_memory(region.base, &mut data)?;
 
-        let ret = if e < data.len() {
+        if read != data.len() {
+            return Ok(0);
+        }
+
+        let len = if e <= data.len() {
+            // full read
             buf.clone_from_slice(&data[s..e]);
-            Some(&buf[..])
+            buf.len()
         } else {
-            None
+            // partial read
+            let len = buf.len() - (e - data.len());
+            buf[..len].clone_from_slice(&data[s..]);
+            len
         };
 
         cache.put(region.clone(), data);
-        Ok(ret)
+        Ok(len)
     }
 }
 
 impl<'a> MemoryReader<'a> for (&'a MemoryCache, &'a Process) {
-    fn read_memory<'m>(
-        self,
-        address: Address,
-        buf: &'m mut [u8],
-    ) -> anyhow::Result<Option<&'m [u8]>> {
+    fn read_memory<'m>(self, address: Address, buf: &'m mut [u8]) -> anyhow::Result<usize> {
         Ok(self.0.read_process_memory(self.1, address, buf)?)
     }
 

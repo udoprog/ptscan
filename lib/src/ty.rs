@@ -283,10 +283,13 @@ impl Type {
         if let Some(size) = self.size(reader.process()) {
             let mut buf = vec![0u8; size];
 
-            let buf = match reader.read_memory(address, &mut buf)? {
-                Some(buf) if buf.len() == size => buf,
-                _ => return Ok((Value::None(self), None)),
-            };
+            let len = reader.read_memory(address, &mut buf)?;
+
+            if len != buf.len() {
+                return Ok((Value::None(self), None));
+            }
+
+            let buf = &buf[..];
 
             let value = match self {
                 Self::None => Value::None(Type::None),

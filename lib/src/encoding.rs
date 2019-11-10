@@ -68,31 +68,40 @@ impl Encoding {
         let mut input = vec![0u8; READ_BUFFER_SIZE];
         let read_buffer_size = Size::try_from(READ_BUFFER_SIZE)?;
 
+        let mut offset = 0;
+
         'outer: loop {
-            let mut input = match reader.read_memory(address, &mut input)? {
-                Some(input) => input,
-                None => &[],
+            let len = reader.read_memory(address, &mut input)?;
+
+            let (mut last, mut input) = match len {
+                0 => (true, &[][..]),
+                len if len == input.len() => (true, &input[..]),
+                len => (true, &input[..len]),
             };
 
-            let last = if input.is_empty() {
-                true
-            } else {
+            if !last {
                 address.add_assign(read_buffer_size)?;
+            }
 
+            if !input.is_empty() {
                 match find_first_nonzero(input) {
                     Some(0) => (),
-                    Some(other) => return Ok((Value::None(Type::String(self)), Some(other - 1))),
+                    Some(other) => {
+                        return Ok((Value::None(Type::String(self)), Some(offset + other - 1)))
+                    }
                     // NB: buffer is _all_ zeros.
-                    None => return Ok((Value::None(Type::String(self)), Some(input.len()))),
+                    None => {
+                        return Ok((Value::None(Type::String(self)), Some(offset + input.len())))
+                    }
                 }
 
-                input = match memchr::memchr(0x0, &input) {
-                    Some(index) => &input[..index],
-                    None => input,
-                };
-
-                false
-            };
+                if let Some(index) = memchr::memchr(0x0, &input) {
+                    input = &input[..index];
+                    last = true;
+                } else {
+                    offset += input.len();
+                }
+            }
 
             loop {
                 let (result, read) =

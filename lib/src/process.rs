@@ -13,21 +13,13 @@ use winapi::{
 };
 
 pub trait MemoryReader<'a>: Copy {
-    fn read_memory<'m>(
-        self,
-        address: Address,
-        buf: &'m mut [u8],
-    ) -> anyhow::Result<Option<&'m [u8]>>;
+    fn read_memory<'m>(self, address: Address, buf: &'m mut [u8]) -> anyhow::Result<usize>;
 
     fn process(self) -> &'a Process;
 }
 
 impl<'a> MemoryReader<'a> for &'a Process {
-    fn read_memory<'m>(
-        self,
-        address: Address,
-        buf: &'m mut [u8],
-    ) -> anyhow::Result<Option<&'m [u8]>> {
+    fn read_memory<'m>(self, address: Address, buf: &'m mut [u8]) -> anyhow::Result<usize> {
         Ok(self.read_process_memory(address, buf)?)
     }
 
@@ -176,9 +168,10 @@ impl Process {
         let mut out: T = mem::zeroed();
         let buf = slice::from_raw_parts_mut(&mut out as *mut T as *mut u8, mem::size_of::<T>());
 
-        match self.read_process_memory(address, buf)? {
-            Some(buf) if buf.len() == mem::size_of::<T>() => (),
-            _ => return Err(Error::ReadUnderflow),
+        let len = self.read_process_memory(address, buf)?;
+
+        if len != buf.len() {
+            return Err(Error::ReadUnderflow);
         }
 
         Ok(out)
@@ -217,7 +210,7 @@ impl Process {
         &self,
         address: Address,
         buffer: &'a mut [u8],
-    ) -> Result<Option<&'a [u8]>, Error> {
+    ) -> Result<usize, Error> {
         let mut bytes_read: SIZE_T = 0;
 
         let result = checked!(memoryapi::ReadProcessMemory(
@@ -229,9 +222,9 @@ impl Process {
         ));
 
         match result {
-            Ok(()) => Ok(Some(&buffer[..bytes_read])),
-            Err(ref e) if e.raw_os_error() == Some(winerror::ERROR_PARTIAL_COPY as i32) => Ok(None),
-            Err(ref e) if e.raw_os_error() == Some(winerror::ERROR_NOACCESS as i32) => Ok(None),
+            Ok(()) => Ok(bytes_read),
+            Err(ref e) if e.raw_os_error() == Some(winerror::ERROR_PARTIAL_COPY as i32) => Ok(0),
+            Err(ref e) if e.raw_os_error() == Some(winerror::ERROR_NOACCESS as i32) => Ok(0),
             Err(e) => Err(e),
         }
     }

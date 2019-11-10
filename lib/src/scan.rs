@@ -392,22 +392,28 @@ impl Scan {
                 let start = Instant::now();
                 let mut hits = 0;
 
-                if let Some(data) = handle.process.read_process_memory(address, data)? {
-                    process_one(ProcessOne {
-                        handle,
-                        filter,
-                        value_type,
-                        results: &mut results,
-                        hits: &mut hits,
-                        base: address,
-                        data,
-                        step_size,
-                        none,
-                        alignment,
-                        special,
-                        cancel,
-                    })?;
+                let len = handle.process.read_process_memory(address, data)?;
+
+                if len == 0 {
+                    continue;
                 }
+
+                let data = &data[..len];
+
+                process_one(ProcessOne {
+                    handle,
+                    filter,
+                    value_type,
+                    results: &mut results,
+                    hits: &mut hits,
+                    base: address,
+                    data,
+                    step_size,
+                    none,
+                    alignment,
+                    special,
+                    cancel,
+                })?;
 
                 let duration = Instant::now().duration_since(start);
                 tx.send(Task::Tick(data.len(), hits, duration, Instant::now()))

@@ -144,11 +144,11 @@ impl Binary {
         let (lhs, rhs) = match (lhs, rhs) {
             (ValueExpr::Value, rhs) => {
                 let lhs = lhs.value_type_of(cast_type)?;
-                let rhs = rhs.type_of(None, None, cast_type)?;
+                let rhs = rhs.type_of(NoHint, NoHint, cast_type)?;
                 (lhs, rhs)
             }
             (lhs, ValueExpr::Value) => {
-                let lhs = lhs.type_of(None, None, cast_type)?;
+                let lhs = lhs.type_of(NoHint, NoHint, cast_type)?;
                 let rhs = rhs.value_type_of(cast_type)?;
                 (lhs, rhs)
             }
@@ -168,8 +168,8 @@ impl Binary {
 
                 Explicit(lhs)
             }
-            (result, None) | (None, result) => result,
-            _ => None,
+            (result, NoHint) | (NoHint, result) => result,
+            _ => NoHint,
         })
     }
 
@@ -829,5 +829,5 @@ fn collection_value_type_of(
         return Ok(Implicit(ty));
     }
 
-    Ok(None)
+    Ok(NoHint)
 }

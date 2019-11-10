@@ -222,10 +222,10 @@ impl ValueExpr {
         use self::TypeHint::*;
 
         Ok(match *self {
-            Self::Initial => initial_type.unwrap_or(None),
-            Self::Last => last_type.unwrap_or(None),
-            Self::Value => value_type.unwrap_or(None),
-            Self::Deref { .. } => None,
+            Self::Initial => initial_type.unwrap_or(NoHint),
+            Self::Last => last_type.unwrap_or(NoHint),
+            Self::Value => value_type.unwrap_or(NoHint),
+            Self::Deref { .. } => NoHint,
             Self::AddressOf { .. } => Explicit(Type::Pointer),
             Self::Binary {
                 op,
@@ -245,18 +245,14 @@ impl ValueExpr {
                     }
                     (Explicit(ty), _) | (_, Explicit(ty)) => Explicit(ty),
                     (Implicit(ty), _) | (_, Implicit(ty)) => Implicit(ty),
-                    _ => None,
+                    _ => NoHint,
                 }
             }
             Self::Cast { ty, .. } => Explicit(ty),
             Self::Number { ty: Some(ty), .. } => Explicit(ty),
-            Self::Number {
-                ty: Option::None, ..
-            } => Implicit(Type::U32),
+            Self::Number { ty: None, .. } => Implicit(Type::U32),
             Self::Decimal { ty: Some(ty), .. } => Explicit(ty),
-            Self::Decimal {
-                ty: Option::None, ..
-            } => Implicit(Type::F32),
+            Self::Decimal { ty: None, .. } => Implicit(Type::F32),
             Self::String { encoding, .. } => Implicit(Type::String(encoding)),
             Self::Bytes { ref value } => Implicit(Type::Bytes(Some(value.len()))),
         })
@@ -291,7 +287,7 @@ impl ValueExpr {
         Ok(match *self {
             Self::Deref { ref value, .. } => match &**value {
                 Self::Value => Explicit(Type::Pointer),
-                other => other.value_type_of(None)?,
+                other => other.value_type_of(NoHint)?,
             },
             Self::Binary {
                 op,
@@ -299,7 +295,9 @@ impl ValueExpr {
                 ref rhs,
                 ..
             } => match (&**lhs, &**rhs) {
-                (Self::Value, other) | (other, Self::Value) => other.type_of(None, None, None)?,
+                (Self::Value, other) | (other, Self::Value) => {
+                    other.type_of(NoHint, NoHint, NoHint)?
+                }
                 (lhs, rhs) => {
                     let lhs = lhs.value_type_of(cast_type)?;
                     let rhs = rhs.value_type_of(cast_type)?;
@@ -314,7 +312,7 @@ impl ValueExpr {
                         }
                         (Explicit(ty), _) | (_, Explicit(ty)) => (Explicit(ty)),
                         (Implicit(ty), _) | (_, Implicit(ty)) => (Implicit(ty)),
-                        _ => None,
+                        _ => NoHint,
                     }
                 }
             },
@@ -322,7 +320,7 @@ impl ValueExpr {
                 Self::Value => Explicit(ty),
                 ref other => other.value_type_of(Explicit(ty))?,
             },
-            _ => None,
+            _ => NoHint,
         })
     }
 

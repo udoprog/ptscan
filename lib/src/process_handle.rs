@@ -461,7 +461,7 @@ impl ProcessHandle {
 
         let new_type = match new_type {
             Some(new_type) => Some(new_type),
-            None => expr.value_type_of(TypeHint::None)?.option(),
+            None => expr.value_type_of(TypeHint::NoHint)?.option(),
         };
 
         thread_pool.install(|| {

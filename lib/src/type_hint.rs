@@ -2,7 +2,7 @@ use crate::Type;
 
 #[derive(Debug, Clone, Copy)]
 pub enum TypeHint {
-    None,
+    NoHint,
     Implicit(Type),
     Explicit(Type),
 }
@@ -14,7 +14,7 @@ impl TypeHint {
         T: FnOnce() -> E,
     {
         match self {
-            Self::None => Err(fallback()),
+            Self::NoHint => Err(fallback()),
             Self::Implicit(ty) | Self::Explicit(ty) => Ok(ty),
         }
     }
@@ -22,7 +22,7 @@ impl TypeHint {
     /// Make into an Option.
     pub fn option(self) -> Option<Type> {
         match self {
-            Self::None => None,
+            Self::NoHint => None,
             Self::Implicit(ty) | Self::Explicit(ty) => Some(ty),
         }
     }
@@ -30,7 +30,7 @@ impl TypeHint {
     /// Unwrap into a default type if this is None.
     pub fn unwrap_or(self, fallback: TypeHint) -> TypeHint {
         match self {
-            Self::None => fallback,
+            Self::NoHint => fallback,
             other => other,
         }
     }

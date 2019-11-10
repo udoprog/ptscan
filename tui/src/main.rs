@@ -1763,7 +1763,7 @@ impl Application {
 
         let result = if scan.initial {
             let ty = filter
-                .value_type_of(ty.map(TypeHint::Explicit).unwrap_or(TypeHint::None))?
+                .value_type_of(ty.map(TypeHint::Explicit).unwrap_or(TypeHint::NoHint))?
                 .ok_or_else(|| anyhow!("cannot determine type of value"))?;
 
             handle

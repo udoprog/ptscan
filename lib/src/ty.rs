@@ -1,5 +1,6 @@
-use crate::{error::Error, process::MemoryReader, Address, Encoding, Process, Value};
+use crate::{error::Error, process::MemoryReader, Address, Encoding, ProcessInfo, Value};
 use anyhow::bail;
+use byteorder::ByteOrder as _;
 use serde::{Deserialize, Serialize};
 use std::{convert::TryFrom as _, fmt, mem, str};
 
@@ -218,10 +219,13 @@ impl Type {
 
     /// The default alignment for every type.
     #[inline]
-    pub fn alignment(&self, process: &Process) -> Option<usize> {
+    pub fn alignment<P>(&self, process: &P) -> Option<usize>
+    where
+        P: ProcessInfo,
+    {
         Some(match *self {
             Self::None => return None,
-            Self::Pointer => process.pointer_width,
+            Self::Pointer => process.pointer_width(),
             Self::U8 => mem::size_of::<u8>(),
             Self::I8 => mem::size_of::<i8>(),
             Self::U16 => mem::size_of::<u16>(),
@@ -241,10 +245,13 @@ impl Type {
 
     /// The known in-memory size that a type has.
     #[inline]
-    pub fn size(&self, process: &Process) -> Option<usize> {
+    pub fn size<P>(&self, process: &P) -> Option<usize>
+    where
+        P: ProcessInfo,
+    {
         Some(match *self {
             Self::None => 0,
-            Self::Pointer => process.pointer_width,
+            Self::Pointer => process.pointer_width(),
             Self::U8 => mem::size_of::<u8>(),
             Self::I8 => mem::size_of::<i8>(),
             Self::U16 => mem::size_of::<u16>(),
@@ -263,11 +270,10 @@ impl Type {
     }
 
     /// Decode the given buffer into a value.
-    pub fn decode<'a>(
-        self,
-        reader: impl MemoryReader<'a>,
-        address: Address,
-    ) -> anyhow::Result<(Value, Option<usize>)> {
+    pub fn decode<R>(self, reader: &R, address: Address) -> anyhow::Result<(Value, Option<usize>)>
+    where
+        R: MemoryReader,
+    {
         // Decode a buffer, and depending on its width decode it differently.
         macro_rules! decode_buf {
             ($buf:expr, $ty:ty, $reader:ident) => {{
@@ -277,7 +283,7 @@ impl Type {
                     );
                 }
 
-                reader.process().$reader($buf) as $ty
+                <<R as MemoryReader>::Process as ProcessInfo>::ByteOrder::$reader($buf) as $ty
             }};
         }
 

@@ -52,6 +52,7 @@ pub(crate) fn find_first_nonzero(mut data: &[u8]) -> Option<usize> {
     Some(local + index)
 }
 
+#[derive(Debug, Clone)]
 pub enum Special {
     Bytes(Vec<u8>),
     NotBytes(Vec<u8>),

@@ -1,7 +1,6 @@
 use crate::{
-    process::Process,
     utils::{EscapeString, Hex},
-    Encoding, Type,
+    Encoding, ProcessInfo, Type,
 };
 use bigdecimal::BigDecimal;
 use num_bigint::BigInt;
@@ -35,7 +34,7 @@ pub enum ValueExpr {
 
 impl ValueExpr {
     /// Evaluate the expression.
-    pub fn eval(self, process: &Process) -> anyhow::Result<super::ValueExpr> {
+    pub fn eval(self, process: &impl ProcessInfo) -> anyhow::Result<super::ValueExpr> {
         use super::ValueExpr::*;
 
         Ok(match self {

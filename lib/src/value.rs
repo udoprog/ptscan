@@ -1,8 +1,7 @@
 use crate::{
     error::Error,
-    process::Process,
     utils::{EscapeString, Hex},
-    Address, Encoding, Type,
+    Address, Encoding, ProcessInfo, Type,
 };
 use anyhow::bail;
 use num_bigint::Sign;
@@ -184,7 +183,12 @@ impl Value {
     }
 
     /// Encode the given buffer into a value.
-    pub fn encode(&self, process: &Process, buf: &mut [u8]) -> anyhow::Result<()> {
+    pub fn encode<P>(&self, process: &P, buf: &mut [u8]) -> anyhow::Result<()>
+    where
+        P: ProcessInfo,
+    {
+        use byteorder::ByteOrder as _;
+
         match *self {
             Self::None(..) => (),
             Self::Pointer(address) => address.encode(process, buf)?,
@@ -194,16 +198,16 @@ impl Value {
             Self::I8(value) => {
                 buf[0] = value as u8;
             }
-            Self::U16(value) => process.encode_u16(buf, value),
-            Self::I16(value) => process.encode_u16(buf, value as u16),
-            Self::U32(value) => process.encode_u32(buf, value),
-            Self::I32(value) => process.encode_u32(buf, value as u32),
-            Self::U64(value) => process.encode_u64(buf, value),
-            Self::I64(value) => process.encode_u64(buf, value as u64),
-            Self::U128(value) => process.encode_u128(buf, value),
-            Self::I128(value) => process.encode_u128(buf, value as u128),
-            Self::F32(value) => process.encode_f32(buf, value),
-            Self::F64(value) => process.encode_f64(buf, value),
+            Self::U16(value) => P::ByteOrder::write_u16(buf, value),
+            Self::I16(value) => P::ByteOrder::write_u16(buf, value as u16),
+            Self::U32(value) => P::ByteOrder::write_u32(buf, value),
+            Self::I32(value) => P::ByteOrder::write_u32(buf, value as u32),
+            Self::U64(value) => P::ByteOrder::write_u64(buf, value),
+            Self::I64(value) => P::ByteOrder::write_u64(buf, value as u64),
+            Self::U128(value) => P::ByteOrder::write_u128(buf, value),
+            Self::I128(value) => P::ByteOrder::write_u128(buf, value as u128),
+            Self::F32(value) => P::ByteOrder::write_f32(buf, value),
+            Self::F64(value) => P::ByteOrder::write_f64(buf, value),
             Self::String(encoding, ref s) => encoding.encode(buf, s)?,
             Self::Bytes(ref bytes) => {
                 let len = usize::min(bytes.len(), buf.len());
@@ -257,10 +261,10 @@ impl Value {
     }
 
     /// Get the size in bytes of this value.
-    pub fn size(&self, process: &Process) -> Option<usize> {
+    pub fn size(&self, process: &impl ProcessInfo) -> Option<usize> {
         Some(match self {
             Self::None(ty) => return ty.size(process),
-            Self::Pointer(..) => process.pointer_width,
+            Self::Pointer(..) => process.pointer_width(),
             Self::U8(..) => mem::size_of::<u8>(),
             Self::I8(..) => mem::size_of::<i8>(),
             Self::U16(..) => mem::size_of::<u16>(),

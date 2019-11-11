@@ -2,7 +2,7 @@
 
 use crate::{
     progress_reporter::ProgressReporter, Address, FilterExpr, Pointer, PointerBase, ProcessHandle,
-    RawPointer, ScanResult, Size, Special, Test, Token, Type, Value, ValueExpr,
+    ProcessInfo as _, RawPointer, ScanResult, Size, Special, Test, Token, Type, Value, ValueExpr,
 };
 use anyhow::{anyhow, bail};
 use crossbeam_queue::SegQueue;

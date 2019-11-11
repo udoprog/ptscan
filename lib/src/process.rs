@@ -12,19 +12,60 @@ use winapi::{
     um::{memoryapi, processthreadsapi, psapi, winnt},
 };
 
-pub trait MemoryReader<'a>: Copy {
-    fn read_memory<'m>(self, address: Address, buf: &'m mut [u8]) -> anyhow::Result<usize>;
+pub trait MemoryReader {
+    type Process: ProcessInfo;
 
-    fn process(self) -> &'a Process;
+    fn read_memory(&self, address: Address, buf: &mut [u8]) -> anyhow::Result<usize>;
+
+    fn process(&self) -> &Self::Process;
 }
 
-impl<'a> MemoryReader<'a> for &'a Process {
-    fn read_memory<'m>(self, address: Address, buf: &'m mut [u8]) -> anyhow::Result<usize> {
+impl MemoryReader for Process {
+    type Process = Process;
+
+    fn read_memory(&self, address: Address, buf: &mut [u8]) -> anyhow::Result<usize> {
         Ok(self.read_process_memory(address, buf)?)
     }
 
-    fn process(self) -> &'a Process {
+    fn process(&self) -> &Process {
         self
+    }
+}
+
+pub trait ProcessInfo {
+    type ByteOrder: byteorder::ByteOrder;
+
+    /// The pointer width of the process.
+    fn pointer_width(&self) -> usize;
+
+    /// Access information on virtual memory for the given address.
+    fn virtual_query(&self, address: Address) -> Result<Option<MemoryInformation>, Error>;
+
+    /// Access virtual memory regions of the process.
+    fn virtual_memory_regions(&self) -> VirtualMemoryRegions<'_, Self>
+    where
+        Self: Sized,
+    {
+        VirtualMemoryRegions {
+            process: self,
+            current: Address::null(),
+        }
+    }
+
+    /// Encode a pointer into the specified buffer.
+    fn encode_pointer(&self, buf: &mut [u8], value: u64) -> anyhow::Result<(), Error> {
+        assert!(buf.len() == self.pointer_width());
+
+        match self.pointer_width() {
+            8 => <Self::ByteOrder as byteorder::ByteOrder>::write_u64(buf, value),
+            4 => {
+                let value = u32::try_from(value).map_err(|_| Error::PointerConversionError)?;
+                <Self::ByteOrder as byteorder::ByteOrder>::write_u32(buf, value);
+            }
+            n => return Err(Error::UnsupportedPointerWidth(n)),
+        }
+
+        Ok(())
     }
 }
 
@@ -44,88 +85,6 @@ impl Process {
             desired_access: Default::default(),
             inherit_handles: FALSE,
         }
-    }
-
-    pub fn read_u16(&self, buf: &[u8]) -> u16 {
-        use byteorder::ByteOrder as _;
-        // FUTURE TODO: take endianness into account for remote scans.
-        byteorder::NativeEndian::read_u16(buf)
-    }
-
-    pub fn read_u32(&self, buf: &[u8]) -> u32 {
-        use byteorder::ByteOrder as _;
-        // FUTURE TODO: take endianness into account for remote scans.
-        byteorder::NativeEndian::read_u32(buf)
-    }
-
-    pub fn read_u64(&self, buf: &[u8]) -> u64 {
-        use byteorder::ByteOrder as _;
-        // FUTURE TODO: take endianness into account for remote scans.
-        byteorder::NativeEndian::read_u64(buf)
-    }
-
-    pub fn read_u128(&self, buf: &[u8]) -> u128 {
-        use byteorder::ByteOrder as _;
-        // FUTURE TODO: take endianness into account for remote scans.
-        byteorder::NativeEndian::read_u128(buf)
-    }
-
-    pub fn read_f32(&self, buf: &[u8]) -> f32 {
-        use byteorder::ByteOrder as _;
-        // FUTURE TODO: take endianness into account for remote scans.
-        byteorder::NativeEndian::read_f32(buf)
-    }
-
-    pub fn read_f64(&self, buf: &[u8]) -> f64 {
-        use byteorder::ByteOrder as _;
-        // FUTURE TODO: take endianness into account for remote scans.
-        byteorder::NativeEndian::read_f64(buf)
-    }
-
-    pub fn encode_u16(&self, buf: &mut [u8], value: u16) {
-        use byteorder::ByteOrder as _;
-        byteorder::NativeEndian::write_u16(buf, value)
-    }
-
-    pub fn encode_u32(&self, buf: &mut [u8], value: u32) {
-        use byteorder::ByteOrder as _;
-        byteorder::NativeEndian::write_u32(buf, value)
-    }
-
-    pub fn encode_u64(&self, buf: &mut [u8], value: u64) {
-        use byteorder::ByteOrder as _;
-        byteorder::NativeEndian::write_u64(buf, value)
-    }
-
-    pub fn encode_u128(&self, buf: &mut [u8], value: u128) {
-        use byteorder::ByteOrder as _;
-        byteorder::NativeEndian::write_u128(buf, value)
-    }
-
-    pub fn encode_f32(&self, buf: &mut [u8], value: f32) {
-        use byteorder::ByteOrder as _;
-        byteorder::NativeEndian::write_f32(buf, value)
-    }
-
-    pub fn encode_f64(&self, buf: &mut [u8], value: f64) {
-        use byteorder::ByteOrder as _;
-        byteorder::NativeEndian::write_f64(buf, value)
-    }
-
-    /// Encode a pointer into the specified buffer.
-    pub fn encode_pointer(&self, buf: &mut [u8], value: u64) -> anyhow::Result<(), Error> {
-        assert!(buf.len() == self.pointer_width);
-
-        match self.pointer_width {
-            8 => self.encode_u64(buf, value),
-            4 => {
-                let value = u32::try_from(value).map_err(|_| Error::PointerConversionError)?;
-                self.encode_u32(buf, value);
-            }
-            n => return Err(Error::UnsupportedPointerWidth(n)),
-        }
-
-        Ok(())
     }
 
     /// Get the name of the process.
@@ -206,11 +165,7 @@ impl Process {
     ///
     /// Returns `true` if the region was successfully read.
     /// Returns `false` if there was not enough space in the region that we attempted to read.
-    pub fn read_process_memory<'a>(
-        &self,
-        address: Address,
-        buffer: &'a mut [u8],
-    ) -> Result<usize, Error> {
+    pub fn read_process_memory(&self, address: Address, buffer: &mut [u8]) -> Result<usize, Error> {
         let mut bytes_read: SIZE_T = 0;
 
         let result = checked!(memoryapi::ReadProcessMemory(
@@ -291,14 +246,6 @@ impl Process {
         }))
     }
 
-    /// Iterate over all virtual memory segments with a given chunk size.
-    pub fn virtual_memory_regions(&self) -> VirtualMemoryRegions<'_> {
-        VirtualMemoryRegions {
-            process: self,
-            current: Address::new(0),
-        }
-    }
-
     /// Suspend the process.
     pub fn suspend(&self) -> Result<(), Error> {
         let status = unsafe { ntpsapi::NtSuspendProcess(**self.handle) };
@@ -319,6 +266,18 @@ impl Process {
         }
 
         Ok(())
+    }
+}
+
+impl ProcessInfo for Process {
+    type ByteOrder = byteorder::NativeEndian;
+
+    fn pointer_width(&self) -> usize {
+        self.pointer_width
+    }
+
+    fn virtual_query(&self, address: Address) -> Result<Option<MemoryInformation>, Error> {
+        Process::virtual_query(self, address)
     }
 }
 
@@ -501,12 +460,15 @@ impl MemoryInformation {
 }
 
 /// Iterator over virtual memory regions.
-pub struct VirtualMemoryRegions<'a> {
-    process: &'a Process,
+pub struct VirtualMemoryRegions<'a, P> {
+    process: &'a P,
     current: Address,
 }
 
-impl<'a> Iterator for VirtualMemoryRegions<'a> {
+impl<'a, P> Iterator for VirtualMemoryRegions<'a, P>
+where
+    P: ProcessInfo,
+{
     type Item = Result<MemoryInformation, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {

@@ -1,7 +1,6 @@
 use crate::{
-    error::Error,
-    process::{MemoryInformation, Process},
-    value, AddressProxy, AddressRange, Sign, Type, TypeHint, Value, ValueExpr,
+    error::Error, process::MemoryInformation, value, AddressProxy, AddressRange, ProcessInfo, Sign,
+    Type, TypeHint, Value, ValueExpr,
 };
 use anyhow::bail;
 use hashbrown::HashSet;
@@ -60,12 +59,12 @@ pub enum FilterExpr {
 
 impl FilterExpr {
     /// Parse a a string into a filter.
-    pub fn parse(input: &str, process: &Process) -> anyhow::Result<Self> {
+    pub fn parse(input: &str, process: &impl ProcessInfo) -> anyhow::Result<Self> {
         let expr = parser::FilterExprParser::new().parse(lexer::Lexer::new(input))?;
         Ok(expr.into_filter(process)?)
     }
 
-    pub fn pointer(expr: ValueExpr, process: &Process) -> anyhow::Result<Self> {
+    pub fn pointer(expr: ValueExpr, process: &impl ProcessInfo) -> anyhow::Result<Self> {
         Ok(Self::IsPointer(IsPointer::new(expr, process)?))
     }
 
@@ -103,7 +102,11 @@ impl FilterExpr {
     }
 
     /// Construct a special filter.
-    pub fn special(&self, process: &Process, value_type: Type) -> anyhow::Result<Option<Special>> {
+    pub fn special(
+        &self,
+        process: &impl ProcessInfo,
+        value_type: Type,
+    ) -> anyhow::Result<Option<Special>> {
         match self {
             Self::Binary(m) => m.special(process, value_type),
             Self::All(m) => m.special(process, value_type),
@@ -267,7 +270,11 @@ impl Binary {
         Ok(result.into())
     }
 
-    fn special(&self, process: &Process, value_type: Type) -> anyhow::Result<Option<Special>> {
+    fn special(
+        &self,
+        process: &impl ProcessInfo,
+        value_type: Type,
+    ) -> anyhow::Result<Option<Special>> {
         use self::FilterOp::*;
         use self::Sign::*;
         use self::ValueExpr::*;
@@ -356,7 +363,11 @@ impl All {
         All(filters.into_iter().collect())
     }
 
-    pub fn special(&self, process: &Process, value_type: Type) -> anyhow::Result<Option<Special>> {
+    pub fn special(
+        &self,
+        process: &impl ProcessInfo,
+        value_type: Type,
+    ) -> anyhow::Result<Option<Special>> {
         let mut all = Vec::new();
 
         for e in &self.0 {
@@ -420,7 +431,11 @@ impl Any {
         Any(filters.into_iter().collect())
     }
 
-    pub fn special(&self, process: &Process, value_type: Type) -> anyhow::Result<Option<Special>> {
+    pub fn special(
+        &self,
+        process: &impl ProcessInfo,
+        value_type: Type,
+    ) -> anyhow::Result<Option<Special>> {
         let mut any = Vec::new();
 
         for e in &self.0 {
@@ -480,7 +495,7 @@ pub struct IsPointer {
 }
 
 impl IsPointer {
-    pub fn new(expr: ValueExpr, process: &Process) -> anyhow::Result<Self> {
+    pub fn new(expr: ValueExpr, process: &impl ProcessInfo) -> anyhow::Result<Self> {
         use crate::utils::IteratorExtension;
 
         let mut memory_regions = process
@@ -597,7 +612,11 @@ impl IsNan {
         Ok(Self { expr })
     }
 
-    pub fn special(&self, process: &Process, value_type: Type) -> anyhow::Result<Option<Special>> {
+    pub fn special(
+        &self,
+        process: &impl ProcessInfo,
+        value_type: Type,
+    ) -> anyhow::Result<Option<Special>> {
         Ok(Some(Special::NonZero(value_type.size(process))))
     }
 
@@ -690,16 +709,20 @@ impl Regex {
     pub fn special(&self) -> anyhow::Result<Option<Special>> {
         if !self.regex.as_str().starts_with('^') && !self.regex.as_str().ends_with('$') {
             return Ok(Some(Special::Regex(self.regex.clone())));
-        } else {
-            let regex = self
-                .regex
-                .as_str()
-                .trim_start_matches('^')
-                .trim_end_matches('$');
+        }
 
-            if let Ok(regex) = regex::bytes::Regex::new(regex) {
-                return Ok(Some(Special::Regex(regex)));
-            }
+        let mut regex = self.regex.as_str();
+
+        if regex.starts_with('^') {
+            regex = &regex[1..];
+        }
+
+        if regex.ends_with('$') && !regex.ends_with("\\$") {
+            regex = &regex[..regex.len() - 1];
+        }
+
+        if let Ok(regex) = regex::bytes::Regex::new(regex) {
+            return Ok(Some(Special::Regex(regex)));
         }
 
         match self.expr.reduced() {
@@ -735,7 +758,11 @@ impl Not {
         self.filter.value_type_of(cast_type)
     }
 
-    pub fn special(&self, process: &Process, value_type: Type) -> anyhow::Result<Option<Special>> {
+    pub fn special(
+        &self,
+        process: &impl ProcessInfo,
+        value_type: Type,
+    ) -> anyhow::Result<Option<Special>> {
         // erase or fix specializations produced.
         let special = match self.filter.special(process, value_type)? {
             Some(special) => special,
@@ -818,14 +845,50 @@ fn collection_value_type_of(
 
 #[cfg(test)]
 mod tests {
-    use super::{ast::FilterExpr as F, lexer, parser, FilterOp};
-    use crate::value_expr::ast::ValueExpr as V;
+    use super::{ast::FilterExpr as F, lexer, parser, FilterOp, Special};
+    use crate::{
+        error::Error, process::MemoryInformation, value_expr::ast::ValueExpr as V, Address,
+        ProcessInfo, Type,
+    };
+
+    struct FakeProcess {
+        pointer_width: usize,
+    }
+
+    impl FakeProcess {
+        pub fn new() -> Self {
+            Self { pointer_width: 8 }
+        }
+    }
+
+    impl ProcessInfo for FakeProcess {
+        type ByteOrder = byteorder::NativeEndian;
+
+        fn pointer_width(&self) -> usize {
+            self.pointer_width
+        }
+
+        fn virtual_query(&self, _: Address) -> Result<Option<MemoryInformation>, Error> {
+            Ok(None)
+        }
+    }
 
     macro_rules! test {
-        ($s:expr, expr = $expr:expr) => {{
-            use self::FilterOp::*;
+        ($s:expr, expr = $expr:expr $(, special = ($special:pat, $value_type:expr))?) => {{
             let e = parse($s)?;
             assert_eq!($expr, e);
+            $(
+                let process = FakeProcess::new();
+                let e = e.into_filter(&process)?;
+                let special = e.special(&process, $value_type)?;
+
+                match special {
+                    $special  => (),
+                    special => {
+                        panic!("special doesn't match: {:?} != {} (expected)", special, stringify!($special));
+                    }
+                }
+            )?
         }};
     }
 
@@ -848,11 +911,68 @@ mod tests {
     }
 
     #[test]
-    fn test_parsing() -> anyhow::Result<()> {
-        test!(
+    fn test_equality() -> anyhow::Result<()> {
+        use self::FilterOp::*;
+        test! {
             "value == 42",
-            expr = F::Binary(Eq, V::Value, V::Number(42.into(), None))
-        );
+            expr = F::Binary(Eq, V::Value, V::Number(42.into(), None)),
+            special = (Some(Special::Bytes(..)), Type::U32)
+        };
+        test! {
+            "value != 0",
+            expr = F::Binary(Neq, V::Value, V::Number(0.into(), None)),
+            special = (Some(Special::NonZero(..)), Type::U32)
+        };
+        test! {
+            "value < 0",
+            expr = F::Binary(Lt, V::Value, V::Number(0.into(), None)),
+            special = (Some(Special::NonZero(..)), Type::U32)
+        };
+        test! {
+            "value > 0",
+            expr = F::Binary(Gt, V::Value, V::Number(0.into(), None)),
+            special = (Some(Special::NonZero(..)), Type::U32)
+        };
+        test! {
+            "value >= 1",
+            expr = F::Binary(Gte, V::Value, V::Number(1.into(), None)),
+            special = (Some(Special::NonZero(..)), Type::U32)
+        };
+        test! {
+            "value <= -1",
+            expr = F::Binary(Lte, V::Value, V::Number((-1).into(), None)),
+            special = (Some(Special::NonZero(..)), Type::U32)
+        };
+        test! {
+            "value <= 0",
+            expr = F::Binary(Lte, V::Value, V::Number(0.into(), None)),
+            special = (None, Type::U32)
+        };
+        Ok(())
+    }
+
+    #[test]
+    fn test_regex() -> anyhow::Result<()> {
+        test! {
+            "value ~ \"foobar\"",
+            expr = F::Regex(V::Value, V::String(Default::default(), "foobar".into())),
+            special = (Some(Special::Regex(..)), Type::String(Default::default()))
+        };
+        test! {
+            "value ~ \"^foobar\"",
+            expr = F::Regex(V::Value, V::String(Default::default(), "^foobar".into())),
+            special = (Some(Special::Regex(..)), Type::String(Default::default()))
+        };
+        test! {
+            "value ~ \"^foobar\\\\$\"",
+            expr = F::Regex(V::Value, V::String(Default::default(), "^foobar\\$".into())),
+            special = (Some(Special::Regex(..)), Type::String(Default::default()))
+        };
+        test! {
+            "value !~ \"foobar\"",
+            expr = F::Not(Box::new(F::Regex(V::Value, V::String(Default::default(), "foobar".into())))),
+            special = (None, Type::String(Default::default()))
+        };
         Ok(())
     }
 }

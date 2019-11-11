@@ -4,8 +4,8 @@ use anyhow::{anyhow, bail, Context as _};
 use hashbrown::{hash_map, HashMap};
 use ptscan::{
     Address, FilterExpr, InitialScanConfig, Location, MemoryInformation, Offset, Pointer,
-    PointerBase, ProcessHandle, ProcessId, RawPointer, Scan, ScanProgress, ScanResult, Size, Test,
-    Token, Type, TypeHint, Value, ValueExpr,
+    PointerBase, ProcessHandle, ProcessId, ProcessInfo as _, RawPointer, Scan, ScanProgress,
+    ScanResult, Size, Test, Token, Type, TypeHint, Value, ValueExpr,
 };
 use std::{
     collections::{BTreeMap, VecDeque},

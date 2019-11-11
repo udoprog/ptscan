@@ -1,4 +1,4 @@
-use crate::{filter_expr::FilterOp, process::Process, value_expr::ast::ValueExpr, Type};
+use crate::{filter_expr::FilterOp, value_expr::ast::ValueExpr, ProcessInfo, Type};
 use anyhow::bail;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,7 +30,7 @@ pub enum FilterExpr {
 
 impl FilterExpr {
     /// Convert expression into a filter.
-    pub fn into_filter(self, process: &Process) -> anyhow::Result<super::FilterExpr> {
+    pub fn into_filter(self, process: &impl ProcessInfo) -> anyhow::Result<super::FilterExpr> {
         Ok(match self {
             Self::Not(expr) => {
                 let filter = expr.into_filter(process)?;

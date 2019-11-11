@@ -82,9 +82,9 @@ impl Encoding {
     }
 
     /// Decode an UTF-8 string efficiently.
-    pub fn stream_decode<'a>(
+    pub fn stream_decode(
         self,
-        reader: impl MemoryReader<'a>,
+        reader: &impl MemoryReader,
         mut address: Address,
     ) -> anyhow::Result<(Value, Option<usize>)> {
         use encoding_rs::DecoderResult;

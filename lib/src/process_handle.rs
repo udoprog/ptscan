@@ -8,8 +8,8 @@ use crate::{
     scan::ScanProgress,
     system,
     thread::Thread,
-    Address, AddressRange, Pointer, PointerBase, Process, ProcessId, ScanResult, Size, Test, Token,
-    Type, TypeHint, Value, ValueExpr,
+    Address, AddressRange, Pointer, PointerBase, Process, ProcessId, ProcessInfo as _, ScanResult,
+    Size, Test, Token, Type, TypeHint, Value, ValueExpr,
 };
 use anyhow::{bail, Context as _};
 use hashbrown::HashMap;
@@ -592,7 +592,7 @@ impl AddressProxy<'_> {
                 None => return Ok((Value::None(ty), None)),
             };
 
-            let result = match ty.decode((memory_cache, &self.handle.process), address) {
+            let result = match ty.decode(&(memory_cache, &self.handle.process), address) {
                 Ok(value) => value,
                 Err(..) => (Value::None(ty), None),
             };
@@ -714,12 +714,14 @@ impl MemoryCache {
     }
 }
 
-impl<'a> MemoryReader<'a> for (&'a MemoryCache, &'a Process) {
-    fn read_memory<'m>(self, address: Address, buf: &'m mut [u8]) -> anyhow::Result<usize> {
+impl<'m, 'p> MemoryReader for (&'m MemoryCache, &'p Process) {
+    type Process = Process;
+
+    fn read_memory(&self, address: Address, buf: &mut [u8]) -> anyhow::Result<usize> {
         Ok(self.0.read_process_memory(self.1, address, buf)?)
     }
 
-    fn process(self) -> &'a Process {
+    fn process(&self) -> &Self::Process {
         self.1
     }
 }

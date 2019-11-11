@@ -44,7 +44,7 @@ pub use self::filter_expr::{FilterExpr, Special, Test};
 pub use self::module::Module;
 pub use self::offset::Offset;
 pub use self::pointer::{Pointer, PointerBase, RawPointer};
-pub use self::process::{MemoryInformation, MemoryState, MemoryType, Process};
+pub use self::process::{MemoryInformation, MemoryState, MemoryType, Process, ProcessInfo};
 pub use self::process_handle::{AddressProxy, Location, ProcessHandle, ProcessName};
 pub use self::scan::{InitialScanConfig, Scan, ScanProgress};
 pub use self::scan_result::ScanResult;

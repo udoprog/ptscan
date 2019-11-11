@@ -1,4 +1,3 @@
-use self::ast::{Op, ValueTrait};
 use crate::{
     error::Error,
     process::{MemoryInformation, Process},
@@ -8,9 +7,12 @@ use anyhow::bail;
 use hashbrown::HashSet;
 use std::fmt;
 
+use self::ast::ValueTrait;
+pub use self::filter_op::FilterOp;
 pub use self::special::Special;
 
 pub mod ast;
+mod filter_op;
 pub(crate) mod lexer;
 pub mod special;
 lalrpop_util::lalrpop_mod!(#[allow(clippy::all)] pub parser, "/filter_expr/parser.rs");
@@ -59,7 +61,7 @@ pub enum FilterExpr {
 impl FilterExpr {
     /// Parse a a string into a filter.
     pub fn parse(input: &str, process: &Process) -> anyhow::Result<Self> {
-        let expr = parser::OrParser::new().parse(lexer::Lexer::new(input))?;
+        let expr = parser::FilterExprParser::new().parse(lexer::Lexer::new(input))?;
         Ok(expr.into_filter(process)?)
     }
 
@@ -132,7 +134,7 @@ impl fmt::Display for FilterExpr {
 
 /// Only match values which are exactly equal.
 #[derive(Debug, Clone)]
-pub struct Binary(Op, ValueExpr, ValueExpr);
+pub struct Binary(FilterOp, ValueExpr, ValueExpr);
 
 impl Binary {
     fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
@@ -180,6 +182,7 @@ impl Binary {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
+        use self::FilterOp::*;
         use self::TypeHint::*;
 
         macro_rules! binary {
@@ -239,13 +242,13 @@ impl Binary {
         // The only allowed match on none is to compare against something which is strictly not equal to it, like value != none.
 
         let result = match op {
-            Op::Eq => binary!(lhs, rhs, a == b),
-            Op::Neq => binary!(lhs, rhs, a != b),
-            Op::Lt => binary!(lhs, rhs, a < b),
-            Op::Lte => binary!(lhs, rhs, a <= b),
-            Op::Gt => binary!(lhs, rhs, a > b),
-            Op::Gte => binary!(lhs, rhs, a >= b),
-            Op::StartsWith => match lhs {
+            Eq => binary!(lhs, rhs, a == b),
+            Neq => binary!(lhs, rhs, a != b),
+            Lt => binary!(lhs, rhs, a < b),
+            Lte => binary!(lhs, rhs, a <= b),
+            Gt => binary!(lhs, rhs, a > b),
+            Gte => binary!(lhs, rhs, a >= b),
+            StartsWith => match lhs {
                 Value::String(_, lhs) => match rhs {
                     Value::String(_, rhs) => lhs.starts_with(&rhs),
                     Value::Bytes(rhs) => lhs.as_bytes().starts_with(&rhs),
@@ -265,6 +268,7 @@ impl Binary {
     }
 
     fn special(&self, process: &Process, value_type: Type) -> anyhow::Result<Option<Special>> {
+        use self::FilterOp::*;
         use self::Sign::*;
         use self::ValueExpr::*;
         use self::ValueTrait::*;
@@ -272,23 +276,22 @@ impl Binary {
         let self::Binary(op, lhs, rhs) = self;
 
         let exact = match (op, lhs.reduced(), rhs.reduced()) {
-            (Op::Eq, Number { value, .. }, Value) | (Op::Eq, Value, Number { value, .. }) => {
+            (Eq, Number { value, .. }, Value) | (Eq, Value, Number { value, .. }) => {
                 Some(value::Value::from_bigint(value_type, value)?)
             }
-            (Op::Eq, Decimal { value, .. }, Value) | (Op::Eq, Value, Decimal { value, .. }) => {
+            (Eq, Decimal { value, .. }, Value) | (Eq, Value, Decimal { value, .. }) => {
                 Some(value::Value::from_bigdecimal(value_type, value)?)
             }
-            (Op::Eq, String { encoding, value }, Value)
-            | (Op::Eq, Value, String { encoding, value }) => {
+            (Eq, String { encoding, value }, Value) | (Eq, Value, String { encoding, value }) => {
                 Some(value::Value::String(*encoding, value.to_owned()))
             }
-            (Op::Eq, Bytes { value }, Value) | (Op::Eq, Value, Bytes { value }) => {
+            (Eq, Bytes { value }, Value) | (Eq, Value, Bytes { value }) => {
                 Some(value::Value::Bytes(value.clone()))
             }
-            (Op::StartsWith, Value, String { encoding, value }) => {
+            (StartsWith, Value, String { encoding, value }) => {
                 Some(value::Value::String(*encoding, value.to_owned()))
             }
-            (Op::StartsWith, Value, Bytes { value }) => Some(value::Value::Bytes(value.clone())),
+            (StartsWith, Value, Bytes { value }) => Some(value::Value::Bytes(value.clone())),
             _ => None,
         };
 
@@ -310,19 +313,19 @@ impl Binary {
             // any derefs must be done on a non-zero value.
             (_, (IsDeref, _), _) | (_, _, (IsDeref, _)) => true,
             // value equals something that is non-zero.
-            (Op::Eq, (IsValue, _), (NonZero, _)) | (Op::Eq, (NonZero, _), (IsValue, _)) => true,
+            (Eq, (IsValue, _), (NonZero, _)) | (Eq, (NonZero, _), (IsValue, _)) => true,
             // value does not equal to zero.
-            (Op::Neq, (IsValue, _), (Zero, _)) | (Op::Neq, (Zero, _), (IsValue, _)) => true,
+            (Neq, (IsValue, _), (Zero, _)) | (Neq, (Zero, _), (IsValue, _)) => true,
             // value is greater than non-zero positive.
-            (Op::Gte, (IsValue, _), (NonZero, Plus)) => true,
+            (Gte, (IsValue, _), (NonZero, Plus)) => true,
             // value is less than non-zero negative.
-            (Op::Lte, (IsValue, _), (NonZero, Minus)) => true,
+            (Lte, (IsValue, _), (NonZero, Minus)) => true,
             // less than zero.
-            (Op::Lt, (IsValue, _), (NonZero, Minus)) => true,
-            (Op::Lt, (IsValue, _), (Zero, _)) => true,
+            (Lt, (IsValue, _), (NonZero, Minus)) => true,
+            (Lt, (IsValue, _), (Zero, _)) => true,
             // greater than zero.
-            (Op::Gt, (IsValue, _), (NonZero, Plus)) => true,
-            (Op::Gt, (IsValue, _), (Zero, _)) => true,
+            (Gt, (IsValue, _), (NonZero, Plus)) => true,
+            (Gt, (IsValue, _), (Zero, _)) => true,
             _ => false,
         };
 
@@ -763,25 +766,6 @@ impl fmt::Display for Not {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{lexer, parser};
-
-    #[test]
-    fn test_basic_parsing() -> anyhow::Result<()> {
-        let parser = parser::OrParser::new();
-        let a = parser.parse(lexer::Lexer::new("value == 1"))?;
-        let b = parser.parse(lexer::Lexer::new("value == 1 and value == 2"))?;
-        let c = parser.parse(lexer::Lexer::new("value == 1 and value == 2 or value == 3"))?;
-
-        dbg!(a);
-        dbg!(b);
-        dbg!(c);
-
-        Ok(())
-    }
-}
-
 /// Helper to figure out the value type of a collection of expressions.
 fn collection_value_type_of(
     expr: &impl fmt::Display,
@@ -830,4 +814,45 @@ fn collection_value_type_of(
     }
 
     Ok(NoHint)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ast::FilterExpr as F, lexer, parser, FilterOp};
+    use crate::value_expr::ast::ValueExpr as V;
+
+    macro_rules! test {
+        ($s:expr, expr = $expr:expr) => {{
+            use self::FilterOp::*;
+            let e = parse($s)?;
+            assert_eq!($expr, e);
+        }};
+    }
+
+    fn parse(input: &str) -> anyhow::Result<F> {
+        Ok(parser::FilterExprParser::new().parse(lexer::Lexer::new(input))?)
+    }
+
+    #[test]
+    fn test_basic_parsing() -> anyhow::Result<()> {
+        let parser = parser::FilterExprParser::new();
+        let a = parser.parse(lexer::Lexer::new("value == 1"))?;
+        let b = parser.parse(lexer::Lexer::new("value == 1 and value == 2"))?;
+        let c = parser.parse(lexer::Lexer::new("value == 1 and value == 2 or value == 3"))?;
+
+        dbg!(a);
+        dbg!(b);
+        dbg!(c);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_parsing() -> anyhow::Result<()> {
+        test!(
+            "value == 42",
+            expr = F::Binary(Eq, V::Value, V::Number(42.into(), None))
+        );
+        Ok(())
+    }
 }

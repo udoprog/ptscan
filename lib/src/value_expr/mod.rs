@@ -12,42 +12,10 @@ use num_bigint::BigInt;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+pub use self::value_op::ValueOp;
+
 pub(crate) mod ast;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ValueOp {
-    #[serde(rename = "add")]
-    Add,
-    #[serde(rename = "sub")]
-    Sub,
-    #[serde(rename = "mul")]
-    Mul,
-    #[serde(rename = "div")]
-    Div,
-}
-
-impl ValueOp {
-    /// Apply the operation to the two arguments.
-    pub fn apply(self, lhs: Value, rhs: Value) -> anyhow::Result<Option<Value>> {
-        match self {
-            Self::Add => lhs.checked_add(rhs),
-            Self::Sub => lhs.checked_sub(rhs),
-            Self::Mul => lhs.checked_mul(rhs),
-            Self::Div => lhs.checked_div(rhs),
-        }
-    }
-}
-
-impl fmt::Display for ValueOp {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match *self {
-            Self::Add => "+".fmt(fmt),
-            Self::Sub => "-".fmt(fmt),
-            Self::Mul => "*".fmt(fmt),
-            Self::Div => "/".fmt(fmt),
-        }
-    }
-}
+mod value_op;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -424,5 +392,62 @@ impl fmt::Display for ValueExpr {
             Self::Bytes { value } => write!(fmt, "{}", Hex(value)),
             Self::Cast { expr, ty } => write!(fmt, "{} as {}", expr, ty),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ast::ValueExpr as V, ValueOp};
+    use crate::{
+        filter_expr::{lexer, parser},
+        Type,
+    };
+
+    fn parse(input: &str) -> anyhow::Result<V> {
+        Ok(parser::ValueExprParser::new().parse(lexer::Lexer::new(input))?)
+    }
+
+    #[test]
+    fn test_parsing() -> anyhow::Result<()> {
+        use self::ValueOp::*;
+
+        assert_eq!(V::Value, parse("value")?);
+        assert_eq!(V::Number(42.into(), None), parse("42")?);
+        assert_eq!(V::Number(42.into(), Some(Type::U32)), parse("42u32")?);
+        assert_eq!(
+            V::Decimal(42.42.into(), Some(Type::U32)),
+            parse("42.42u32")?
+        );
+        assert_eq!(
+            V::Cast(Box::new(V::Value), Type::U32),
+            parse("value as u32")?
+        );
+        assert_eq!(
+            V::Binary(Add, Box::new(V::Value), Box::new(V::Value)),
+            parse("value + value")?
+        );
+        assert_eq!(
+            V::Binary(Sub, Box::new(V::Value), Box::new(V::Value)),
+            parse("value - value")?
+        );
+        assert_eq!(
+            V::Binary(Mul, Box::new(V::Value), Box::new(V::Value)),
+            parse("value * value")?
+        );
+        assert_eq!(
+            V::Binary(Div, Box::new(V::Value), Box::new(V::Value)),
+            parse("value / value")?
+        );
+
+        assert_eq!(
+            V::Binary(
+                Mul,
+                Box::new(V::Binary(Add, Box::new(V::Value), Box::new(V::Value))),
+                Box::new(V::Value)
+            ),
+            parse("(value + value) * value")?
+        );
+
+        Ok(())
     }
 }

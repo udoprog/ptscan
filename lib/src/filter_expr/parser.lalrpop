@@ -1,22 +1,22 @@
 // vim: ft=rust
-use crate::{Encoding, Type, filter_expr::{lexer::Token, ast::*}, value_expr::{ValueOp, ast::*}};
+use crate::{Encoding, Type, filter_expr::{FilterOp, lexer::Token, ast::*}, value_expr::{ValueOp, ast::*}};
 use num_bigint::BigInt;
 use bigdecimal::BigDecimal;
 
 grammar<'input>;
 
-pub Or: FilterExpr = {
-    <left:And> <rest:(or And)+> => {
+pub FilterExpr: FilterExpr = {
+    <left:FilterAnd> <rest:(or FilterAnd)+> => {
         let mut or = Vec::new();
         or.push(left);
         or.extend(rest.into_iter().map(|(_, r)| r));
         FilterExpr::Or(or)
     },
 
-    And,
+    FilterAnd,
 }
 
-And: FilterExpr = {
+FilterAnd: FilterExpr = {
     <left:Filter> <rest:(and Filter)+> => {
         let mut and = Vec::new();
         and.push(left);
@@ -28,14 +28,22 @@ And: FilterExpr = {
 }
 
 pub ValueExpr: ValueExpr = {
-    <lhs:ValueExpr> "+" <rhs:ValueFactor> => ValueExpr::Binary(ValueOp::Add, Box::new(lhs), Box::new(rhs)),
-    <lhs:ValueExpr> "-" <rhs:ValueFactor> => ValueExpr::Binary(ValueOp::Sub, Box::new(lhs), Box::new(rhs)),
+    <lhs:ValueExpr> "+" <rhs:ValueFactor> => {
+        ValueExpr::Binary(ValueOp::Add, Box::new(lhs), Box::new(rhs))
+    },
+    <lhs:ValueExpr> "-" <rhs:ValueFactor> => {
+        ValueExpr::Binary(ValueOp::Sub, Box::new(lhs), Box::new(rhs))
+    },
     ValueFactor,
 }
 
 ValueFactor: ValueExpr = {
-    <lhs:ValueFactor> "*" <rhs:ValueCast> => ValueExpr::Binary(ValueOp::Mul, Box::new(lhs), Box::new(rhs)),
-    <lhs:ValueFactor> "/" <rhs:ValueCast> => ValueExpr::Binary(ValueOp::Div, Box::new(lhs), Box::new(rhs)),
+    <lhs:ValueFactor> "*" <rhs:ValueCast> => {
+        ValueExpr::Binary(ValueOp::Mul, Box::new(lhs), Box::new(rhs))
+    },
+    <lhs:ValueFactor> "/" <rhs:ValueCast> => {
+        ValueExpr::Binary(ValueOp::Div, Box::new(lhs), Box::new(rhs))
+    },
     ValueCast,
 }
 
@@ -62,17 +70,18 @@ ValueTerm: ValueExpr = {
 };
 
 Filter: FilterExpr = {
+    "(" <filter:FilterExpr> ")" => filter,
     <expr:ValueExpr> is <ty:ty> => FilterExpr::IsType(expr, ty),
     <expr:ValueExpr> is not <ty:ty> => FilterExpr::Not(Box::new(FilterExpr::IsType(expr, ty))),
     <expr:ValueExpr> is nan => FilterExpr::IsNan(expr),
     <expr:ValueExpr> is not nan => FilterExpr::Not(Box::new(FilterExpr::IsNan(expr))),
-    <lhs:ValueExpr> "==" <rhs:ValueExpr> => FilterExpr::Binary(Op::Eq, lhs, rhs),
-    <lhs:ValueExpr> "!=" <rhs:ValueExpr> => FilterExpr::Binary(Op::Neq, lhs, rhs),
-    <lhs:ValueExpr> "<=" <rhs:ValueExpr> => FilterExpr::Binary(Op::Lte, lhs, rhs),
-    <lhs:ValueExpr> ">=" <rhs:ValueExpr> => FilterExpr::Binary(Op::Gte, lhs, rhs),
-    <lhs:ValueExpr> "<" <rhs:ValueExpr> => FilterExpr::Binary(Op::Lt, lhs, rhs),
-    <lhs:ValueExpr> ">" <rhs:ValueExpr> => FilterExpr::Binary(Op::Gt, lhs, rhs),
-    <lhs:ValueExpr> "^" <rhs:ValueExpr> => FilterExpr::Binary(Op::StartsWith, lhs, rhs),
+    <lhs:ValueExpr> "==" <rhs:ValueExpr> => FilterExpr::Binary(FilterOp::Eq, lhs, rhs),
+    <lhs:ValueExpr> "!=" <rhs:ValueExpr> => FilterExpr::Binary(FilterOp::Neq, lhs, rhs),
+    <lhs:ValueExpr> "<=" <rhs:ValueExpr> => FilterExpr::Binary(FilterOp::Lte, lhs, rhs),
+    <lhs:ValueExpr> ">=" <rhs:ValueExpr> => FilterExpr::Binary(FilterOp::Gte, lhs, rhs),
+    <lhs:ValueExpr> "<" <rhs:ValueExpr> => FilterExpr::Binary(FilterOp::Lt, lhs, rhs),
+    <lhs:ValueExpr> ">" <rhs:ValueExpr> => FilterExpr::Binary(FilterOp::Gt, lhs, rhs),
+    <lhs:ValueExpr> "^" <rhs:ValueExpr> => FilterExpr::Binary(FilterOp::StartsWith, lhs, rhs),
     <expr:ValueExpr> "~" <pattern:ValueExpr> => FilterExpr::Regex(expr, pattern),
     <expr:ValueExpr> "!~" <pattern:ValueExpr> => FilterExpr::Not(Box::new(FilterExpr::Regex(expr, pattern))),
 };

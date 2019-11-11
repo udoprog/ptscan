@@ -1,31 +1,5 @@
-use crate::{process::Process, value_expr::ast::ValueExpr, Type};
+use crate::{filter_expr::FilterOp, process::Process, value_expr::ast::ValueExpr, Type};
 use anyhow::bail;
-use std::fmt;
-
-#[derive(Debug, Clone, Copy)]
-pub enum Op {
-    Eq,
-    Neq,
-    Gt,
-    Gte,
-    Lt,
-    Lte,
-    StartsWith,
-}
-
-impl fmt::Display for Op {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Op::Eq => "==".fmt(fmt),
-            Op::Neq => "!=".fmt(fmt),
-            Op::Gt => ">".fmt(fmt),
-            Op::Gte => ">=".fmt(fmt),
-            Op::Lt => "<".fmt(fmt),
-            Op::Lte => "<=".fmt(fmt),
-            Op::StartsWith => "^".fmt(fmt),
-        }
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueTrait {
@@ -36,7 +10,7 @@ pub enum ValueTrait {
     Zero,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum FilterExpr {
     /// Invert the truth value of an expression.
     Not(Box<FilterExpr>),
@@ -45,7 +19,7 @@ pub enum FilterExpr {
     /// Test if value is nan.
     IsNan(ValueExpr),
     /// Test that the value equals the expected value.
-    Binary(Op, ValueExpr, ValueExpr),
+    Binary(FilterOp, ValueExpr, ValueExpr),
     /// Multiple expressions and:ed together.
     And(Vec<FilterExpr>),
     /// Multiple expressions or:ed together.

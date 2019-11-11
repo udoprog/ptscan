@@ -7,7 +7,7 @@ use bigdecimal::BigDecimal;
 use num_bigint::BigInt;
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ValueExpr {
     /// The value of the address.
     Value,

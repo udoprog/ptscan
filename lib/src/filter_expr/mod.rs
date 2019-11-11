@@ -149,11 +149,11 @@ impl Binary {
         let (lhs, rhs) = match (lhs, rhs) {
             (ValueExpr::Value, rhs) => {
                 let lhs = lhs.value_type_of(cast_type)?;
-                let rhs = rhs.type_of(NoHint, NoHint, cast_type)?;
+                let rhs = rhs.type_of(NoHint, NoHint, cast_type, NoHint)?;
                 (lhs, rhs)
             }
             (lhs, ValueExpr::Value) => {
-                let lhs = lhs.type_of(NoHint, NoHint, cast_type)?;
+                let lhs = lhs.type_of(NoHint, NoHint, cast_type, NoHint)?;
                 let rhs = rhs.value_type_of(cast_type)?;
                 (lhs, rhs)
             }
@@ -217,12 +217,14 @@ impl Binary {
             Explicit(initial.ty()),
             Explicit(last.ty()),
             Explicit(value_type),
+            TypeHint::NoHint,
         )?;
 
         let rhs_type = rhs.type_of(
             Explicit(initial.ty()),
             Explicit(last.ty()),
             Explicit(value_type),
+            TypeHint::NoHint,
         )?;
 
         let expr_type = match (lhs_type, rhs_type) {
@@ -528,6 +530,7 @@ impl IsPointer {
                 TypeHint::Explicit(initial.ty()),
                 TypeHint::Explicit(last.ty()),
                 TypeHint::Explicit(value_type),
+                TypeHint::NoHint,
             )?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
 
@@ -586,12 +589,18 @@ impl IsType {
                 TypeHint::Explicit(initial.ty()),
                 TypeHint::Explicit(last.ty()),
                 TypeHint::Explicit(value_type),
+                TypeHint::NoHint,
             )?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
 
         let value = self
             .expr
             .eval(initial, last, value_type, expr_type, proxy)?;
+
+        if value.is_none() {
+            return Ok(Test::Undefined);
+        }
+
         Ok((value.ty() == self.ty).into())
     }
 }
@@ -637,6 +646,7 @@ impl IsNan {
                 TypeHint::Explicit(initial.ty()),
                 TypeHint::Explicit(last.ty()),
                 TypeHint::Explicit(value_type),
+                TypeHint::NoHint,
             )?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
 
@@ -689,6 +699,7 @@ impl Regex {
                 TypeHint::Explicit(initial.ty()),
                 TypeHint::Explicit(last.ty()),
                 TypeHint::Explicit(value_type),
+                TypeHint::NoHint,
             )?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
 

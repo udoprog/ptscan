@@ -38,14 +38,18 @@ macro_rules! convert {
                     I128
                 }),
             )*
-            _ => return None,
+            _ => Value::None($a),
         }
     };
 
     (@b $a:ident, $b:ident, $into:ident, $ty:ty, {$($variant:ident),*}) => {
         match $b {
-            $(Value::$variant(value) => Value::$into(<$ty>::try_from(value).ok()?),)*
-            _ => return None,
+            $(
+                Value::$variant(value) => {
+                    return <$ty>::try_from(value).map(Value::$into).unwrap_or_else(|_| Value::None($a));
+                },
+            )*
+            _ => Value::None($a),
         }
     };
 }
@@ -98,39 +102,43 @@ impl Type {
     }
 
     /// Convert one value into the given type.
-    pub fn convert(self, other: Value) -> Option<Value> {
-        let other = match (self, other) {
-            (Self::None, Value::None(..)) => return None,
-            (Self::Pointer, other @ Value::Pointer(..)) => return Some(other),
-            (Self::U8, other @ Value::U8(..)) => return Some(other),
-            (Self::I8, other @ Value::I8(..)) => return Some(other),
-            (Self::U16, other @ Value::U16(..)) => return Some(other),
-            (Self::I16, other @ Value::I16(..)) => return Some(other),
-            (Self::U32, other @ Value::U32(..)) => return Some(other),
-            (Self::I32, other @ Value::I32(..)) => return Some(other),
-            (Self::U64, other @ Value::U64(..)) => return Some(other),
-            (Self::I64, other @ Value::I64(..)) => return Some(other),
-            (Self::U128, other @ Value::U128(..)) => return Some(other),
-            (Self::I128, other @ Value::I128(..)) => return Some(other),
-            (Self::String(encoding), Value::String(_, string)) => {
-                return Some(Value::String(encoding, string));
-            }
-            (Self::Bytes(..), other @ Value::Bytes(..)) => return Some(other),
+    pub fn convert(self, other: Value) -> Value {
+        match (self, other) {
+            (Self::None, Value::None(..)) => Value::None(Self::None),
+            (Self::Pointer, other @ Value::Pointer(..)) => other,
+            (Self::U8, other @ Value::U8(..)) => other,
+            (Self::I8, other @ Value::I8(..)) => other,
+            (Self::U16, other @ Value::U16(..)) => other,
+            (Self::I16, other @ Value::I16(..)) => other,
+            (Self::U32, other @ Value::U32(..)) => other,
+            (Self::I32, other @ Value::I32(..)) => other,
+            (Self::U64, other @ Value::U64(..)) => other,
+            (Self::I64, other @ Value::I64(..)) => other,
+            (Self::U128, other @ Value::U128(..)) => other,
+            (Self::I128, other @ Value::I128(..)) => other,
+            (Self::String(a), Value::String(_, string)) => Value::String(a, string),
+            (Self::Bytes(..), other @ Value::Bytes(..)) => other,
             (Self::Bytes(None), Value::String(encoding, string)) => {
                 let mut buf = Vec::new();
-                encoding.stream_encode(&mut buf, string.as_str()).ok()?;
-                return Some(Value::Bytes(buf));
+
+                match encoding.stream_encode(&mut buf, string.as_str()) {
+                    Ok(()) => Value::Bytes(buf),
+                    Err(..) => Value::None(self),
+                }
             }
             (Self::Bytes(Some(len)), Value::String(encoding, string)) => {
                 let mut buf = Vec::new();
-                encoding.stream_encode(&mut buf, string.as_str()).ok()?;
-                buf.resize_with(usize::min(len, buf.len()), u8::default);
-                return Some(Value::Bytes(buf));
-            }
-            (_, other) => other,
-        };
 
-        Some(convert!(self, other))
+                match encoding.stream_encode(&mut buf, string.as_str()) {
+                    Ok(()) => {
+                        buf.resize_with(usize::min(len, buf.len()), u8::default);
+                        Value::Bytes(buf)
+                    }
+                    Err(..) => Value::None(self),
+                }
+            }
+            (_, other) => convert!(self, other),
+        }
     }
 
     /// Initialize a default value of the given type.

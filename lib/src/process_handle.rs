@@ -3,6 +3,7 @@
 use crate::{
     error::Error,
     filter_expr::FilterExpr,
+    pointer,
     process::{MemoryInformation, MemoryReader},
     progress_reporter::ProgressReporter,
     scan::ScanProgress,
@@ -264,6 +265,16 @@ impl ProcessHandle {
         Ok(None)
     }
 
+    pub fn null_address_proxy(&self) -> AddressProxy<'_> {
+        AddressProxy {
+            pointer: &pointer::NULL_POINTER,
+            handle: self,
+            memory_cache: None,
+            followed: Cached::None,
+            evaled: Cached::None,
+        }
+    }
+
     /// Construct an address proxy for the given address.
     pub fn address_proxy<'a>(&'a self, pointer: &'a Pointer) -> AddressProxy<'a> {
         AddressProxy {
@@ -495,6 +506,7 @@ impl ProcessHandle {
                                         TypeHint::Explicit(initial.ty()),
                                         TypeHint::Explicit(last.ty()),
                                         TypeHint::Explicit(value_type),
+                                        TypeHint::NoHint,
                                     )?
                                     .ok_or_else(|| Error::TypeInference(expr.clone()))?;
 

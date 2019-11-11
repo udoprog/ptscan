@@ -63,6 +63,14 @@ impl Scan {
         }
     }
 
+    /// Find a single result by address.
+    pub fn find_result_by_address<'a>(&'a self, address: Address) -> Option<&'a Box<ScanResult>> {
+        self.results.iter().find(|r| match r.pointer.address() {
+            Some(a) if a == address => true,
+            _ => false,
+        })
+    }
+
     /// Construct a scan from an already existing collection of results.
     pub fn from_results(results: Vec<Box<ScanResult>>) -> Self {
         Self {

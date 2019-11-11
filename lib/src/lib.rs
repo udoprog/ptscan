@@ -10,6 +10,7 @@ mod filter_expr;
 mod module;
 mod offset;
 mod pointer;
+mod pointer_scan;
 mod process;
 mod process_handle;
 mod progress_reporter;
@@ -44,6 +45,9 @@ pub use self::filter_expr::{FilterExpr, Special, Test};
 pub use self::module::Module;
 pub use self::offset::Offset;
 pub use self::pointer::{Pointer, PointerBase, RawPointer};
+pub use self::pointer_scan::{
+    PointerScan, PointerScanBackreferenceProgress, PointerScanInitialProgress,
+};
 pub use self::process::{MemoryInformation, MemoryState, MemoryType, Process, ProcessInfo};
 pub use self::process_handle::{AddressProxy, Location, ProcessHandle, ProcessName};
 pub use self::scan::{InitialScanConfig, Scan, ScanProgress};

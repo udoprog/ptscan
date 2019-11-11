@@ -186,22 +186,23 @@ impl ValueExpr {
         initial_type: TypeHint,
         last_type: TypeHint,
         value_type: TypeHint,
+        default_hint: TypeHint,
     ) -> anyhow::Result<TypeHint> {
         use self::TypeHint::*;
 
         Ok(match *self {
-            Self::Initial => initial_type.unwrap_or(NoHint),
-            Self::Last => last_type.unwrap_or(NoHint),
-            Self::Value => value_type.unwrap_or(NoHint),
-            Self::Deref { .. } => NoHint,
+            Self::Initial => initial_type.unwrap_or(default_hint),
+            Self::Last => last_type.unwrap_or(default_hint),
+            Self::Value => value_type.unwrap_or(default_hint),
+            Self::Deref { .. } => default_hint,
             Self::AddressOf { .. } => Explicit(Type::Pointer),
             Self::Binary {
                 op,
                 ref lhs,
                 ref rhs,
             } => {
-                let lhs = lhs.type_of(initial_type, last_type, value_type)?;
-                let rhs = rhs.type_of(initial_type, last_type, value_type)?;
+                let lhs = lhs.type_of(initial_type, last_type, value_type, default_hint)?;
+                let rhs = rhs.type_of(initial_type, last_type, value_type, default_hint)?;
 
                 match (lhs, rhs) {
                     (Explicit(lhs), Explicit(rhs)) => {
@@ -213,38 +214,16 @@ impl ValueExpr {
                     }
                     (Explicit(ty), _) | (_, Explicit(ty)) => Explicit(ty),
                     (Implicit(ty), _) | (_, Implicit(ty)) => Implicit(ty),
-                    _ => NoHint,
+                    _ => default_hint,
                 }
             }
             Self::Cast { ty, .. } => Explicit(ty),
             Self::Number { ty: Some(ty), .. } => Explicit(ty),
-            Self::Number { ty: None, .. } => Implicit(Type::U32),
+            Self::Number { ty: None, .. } => default_hint.or_implicit(Type::U32),
             Self::Decimal { ty: Some(ty), .. } => Explicit(ty),
-            Self::Decimal { ty: None, .. } => Implicit(Type::F32),
-            Self::String { encoding, .. } => Implicit(Type::String(encoding)),
-            Self::Bytes { ref value } => Implicit(Type::Bytes(Some(value.len()))),
-        })
-    }
-
-    /// Get the implicit type of the expression.
-    pub fn implicit_type_of(&self) -> anyhow::Result<Option<Type>> {
-        Ok(match self {
-            Self::Number { .. } => Some(Type::U32),
-            Self::Decimal { .. } => Some(Type::F32),
-            Self::String { .. } => Some(Type::String(Encoding::default())),
-            Self::Bytes { value } => Some(Type::Bytes(Some(value.len()))),
-            Self::Binary { lhs, rhs, .. } => {
-                if let Some(ty) = lhs.implicit_type_of()? {
-                    return Ok(Some(ty));
-                }
-
-                if let Some(ty) = rhs.implicit_type_of()? {
-                    return Ok(Some(ty));
-                }
-
-                None
-            }
-            _ => None,
+            Self::Decimal { ty: None, .. } => default_hint.or_implicit(Type::F32),
+            Self::String { encoding, .. } => default_hint.or_implicit(Type::String(encoding)),
+            Self::Bytes { ref value } => default_hint.or_implicit(Type::Bytes(Some(value.len()))),
         })
     }
 
@@ -265,7 +244,7 @@ impl ValueExpr {
                 ..
             } => match (&**lhs, &**rhs) {
                 (Self::Value, other) | (other, Self::Value) => {
-                    other.type_of(NoHint, NoHint, NoHint)?
+                    other.type_of(NoHint, NoHint, NoHint, NoHint)?
                 }
                 (lhs, rhs) => {
                     let lhs = lhs.value_type_of(cast_type)?;
@@ -301,9 +280,11 @@ impl ValueExpr {
         expr_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Value> {
+        use self::TypeHint::*;
+
         match *self {
-            Self::Value => Ok(proxy.eval(expr_type)?.0),
-            Self::Initial => Ok(initial.clone()),
+            Self::Value => Ok(expr_type.convert(proxy.eval(value_type)?.0)),
+            Self::Initial => Ok(expr_type.convert(initial.clone())),
             Self::Last => Ok(last.clone()),
             Self::Number { ref value, .. } => Ok(Value::from_bigint(expr_type, value)?),
             Self::Decimal { ref value, .. } => Ok(Value::from_bigdecimal(expr_type, value)?),
@@ -334,20 +315,18 @@ impl ValueExpr {
 
                 Ok(Value::Pointer(new_address))
             }
-            Self::Cast { ref expr, .. } => {
+            Self::Cast { ref expr, ty } => {
                 let inner_type = expr
                     .type_of(
-                        TypeHint::Explicit(initial.ty()),
-                        TypeHint::Explicit(last.ty()),
-                        TypeHint::Explicit(value_type),
+                        Explicit(initial.ty()),
+                        Explicit(last.ty()),
+                        Explicit(value_type),
+                        Explicit(ty),
                     )?
                     .ok_or_else(|| anyhow!("cannot determine type of expression: {}", expr))?;
 
                 let value = expr.eval(initial, last, value_type, inner_type, proxy)?;
-
-                Ok(expr_type
-                    .convert(value)
-                    .unwrap_or_else(|| Value::None(expr_type)))
+                Ok(ty.convert(value))
             }
             Self::Binary {
                 ref lhs,

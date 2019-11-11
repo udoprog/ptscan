@@ -9,6 +9,8 @@ use crate::{process_handle::ProcessHandle, utils::EscapeString, Address, Offset,
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+pub static NULL_POINTER: Pointer = Pointer::null();
+
 /// The base of the pointer.
 ///
 /// Can either be a module identified by a string that has to be looked up from a `ProcessHandle`, or a fixed address.
@@ -85,6 +87,19 @@ impl Pointer {
                 offsets: offsets.into_iter().collect(),
             },
             last_address,
+        }
+    }
+
+    /// Construct the pointer associated with null.
+    pub const fn null() -> Self {
+        Self {
+            raw: RawPointer {
+                base: PointerBase::Address {
+                    address: Address::null(),
+                },
+                offsets: Vec::new(),
+            },
+            last_address: None,
         }
     }
 

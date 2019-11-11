@@ -34,4 +34,11 @@ impl TypeHint {
             other => other,
         }
     }
+
+    pub fn or_implicit(self, ty: Type) -> TypeHint {
+        match self {
+            Self::NoHint => Self::Implicit(ty),
+            other => other,
+        }
+    }
 }

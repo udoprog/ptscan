@@ -242,7 +242,7 @@ impl Value {
     /// Get the type of the value.
     pub fn ty(&self) -> Type {
         match *self {
-            Self::None(..) => Type::None,
+            Self::None(ty) => ty,
             Self::Pointer(..) => Type::Pointer,
             Self::U8(..) => Type::U8,
             Self::I8(..) => Type::I8,

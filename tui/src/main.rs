@@ -1,11 +1,12 @@
 #![feature(backtrace)]
 
 use anyhow::{anyhow, bail, Context as _};
-use hashbrown::{hash_map, HashMap};
+use hashbrown::HashMap;
 use ptscan::{
-    Address, FilterExpr, InitialScanConfig, Location, MemoryInformation, Offset, Pointer,
-    PointerBase, ProcessHandle, ProcessId, ProcessInfo as _, RawPointer, Scan, ScanProgress,
-    ScanResult, Size, Test, Token, Type, TypeHint, Value, ValueExpr,
+    Address, FilterExpr, InitialScanConfig, MemoryInformation, Pointer, PointerBase, PointerScan,
+    PointerScanBackreferenceProgress, PointerScanInitialProgress, ProcessHandle, ProcessId,
+    ProcessInfo as _, RawPointer, Scan, ScanProgress, ScanResult, Size, Test, Token, Type,
+    TypeHint, Value, ValueExpr,
 };
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -565,6 +566,34 @@ impl Application {
                     verbose,
                 )?;
             }
+            Action::Eval { expr } => {
+                let handle = match self.handle.as_ref() {
+                    Some(handle) => handle,
+                    None => bail!("not attached to process"),
+                };
+
+                let expr = ValueExpr::parse(&expr, &handle.process)?;
+
+                let expr_type = expr
+                    .type_of(
+                        TypeHint::NoHint,
+                        TypeHint::NoHint,
+                        TypeHint::NoHint,
+                        TypeHint::NoHint,
+                    )?
+                    .ok_or_else(|| anyhow!("cannot determine type of expression"))?;
+
+                let initial = Value::None(Type::None);
+                let last = Value::None(Type::None);
+                let mut proxy = handle.null_address_proxy();
+                let value = expr.eval(&initial, &last, Type::None, expr_type, &mut proxy)?;
+                writeln!(
+                    self.term,
+                    " => {ty} : {value}",
+                    ty = value.ty(),
+                    value = value
+                )?;
+            }
             Action::Watch {
                 limit,
                 filter,
@@ -737,7 +766,16 @@ impl Application {
                 max_depth,
                 max_offset,
             } => {
-                let value_type = value_type.unwrap_or(Type::None);
+                let value_type = match value_type {
+                    Some(value_type) => value_type,
+                    None => {
+                        match self.scans.get(&self.current_scan).and_then(|s| s.find_result_by_address(address)) {
+                            Some(result) => result.last().ty(),
+                            None => bail!("Cannot determine type of destination. \
+                            Either specify it using `--type` or use an address from the current scan."),
+                        }
+                    }
+                };
 
                 let Self {
                     ref mut handle,
@@ -1471,8 +1509,6 @@ impl Application {
         max_depth: Option<usize>,
         max_offset: Option<u64>,
     ) -> anyhow::Result<()> {
-        type SVec = Vec<Offset>;
-
         let handle = match handle {
             Some(handle) => handle,
             None => bail!("not attached to a process"),
@@ -1513,198 +1549,32 @@ impl Application {
             return Ok(());
         }
 
-        let mut forward = BTreeMap::new();
-        let mut reverse = BTreeMap::new();
+        let mut pointer_scan = PointerScan::new(thread_pool, handle, token);
+        pointer_scan.max_depth = max_depth.unwrap_or(7);
+        pointer_scan.max_offset = Size::new(max_offset.unwrap_or(0x1000));
 
-        for result in scan.iter() {
-            let to = match result.last().as_address() {
-                Some(address) => address,
-                None => continue,
-            };
-
-            let from = match result.pointer.follow_default(handle)? {
-                Some(address) => address,
-                None => continue,
-            };
-
-            forward.insert(from, to);
-            reverse.insert(to, from);
-        }
-
-        let max_depth = max_depth.unwrap_or(7);
-        let max_offset = Size::new(max_offset.unwrap_or(0x1000));
+        pointer_scan.build_references(scan.iter())?;
 
         term.clear(ClearType::CurrentLine)?;
-        writeln!(term.output, "Using {} references", forward.len())?;
-        writeln!(term.output, "Max Depth: {}", max_depth)?;
-        writeln!(term.output, "Max Offset: 0x{}", max_offset)?;
+        writeln!(
+            term.output,
+            "Using {} references",
+            pointer_scan.forward.len()
+        )?;
+        writeln!(term.output, "Max Depth: {}", pointer_scan.max_depth)?;
+        writeln!(term.output, "Max Offset: 0x{}", pointer_scan.max_offset)?;
 
         let mut results = Vec::new();
-
-        let mut queue = VecDeque::new();
-        queue.push_back((needle, 0usize, SVec::new()));
-
-        // contains both all visited links and alternative paths for each address.
-        let mut visited: HashMap<Address, Vec<SVec>> = HashMap::new();
-        let mut visited_count = 0usize;
-
-        let mut moved = false;
-
-        while let Some((n, depth, path)) = queue.pop_front() {
-            if token.test() {
-                break;
-            }
-
-            let it = reverse.range(..=n).rev();
-
-            for (from, hit) in it {
-                let offset = n.offset_of(*from)?;
-
-                if !offset.is_within(max_offset) {
-                    break;
-                }
-
-                let mut path = path.clone();
-                path.push(offset);
-
-                match visited.entry(*hit) {
-                    hash_map::Entry::Occupied(mut e) => {
-                        e.get_mut().push(path);
-                        visited_count += 1;
-                        continue;
-                    }
-                    hash_map::Entry::Vacant(e) => {
-                        e.insert(Vec::new());
-                    }
-                }
-
-                match handle.find_location(*hit) {
-                    Location::Module(module) => {
-                        let mut path = path.clone();
-                        let offset = hit.offset_of(module.range.base)?;
-                        path.reverse();
-
-                        let pointer = Pointer::new(
-                            PointerBase::Module {
-                                name: module.name.to_string(),
-                                offset,
-                            },
-                            path.clone(),
-                            Some(needle),
-                        );
-
-                        results.push(Box::new(ScanResult::new(pointer, Value::None(ty))));
-                    }
-                    // ignore thread stacks
-                    Location::Thread(..) => {
-                        continue;
-                    }
-                    _ => (),
-                }
-
-                let depth = depth + 1;
-
-                if depth >= max_depth {
-                    continue;
-                }
-
-                queue.push_back((*hit, depth, path));
-            }
-
-            // only write every one hundred to avoid spamming the terminal buffer.
-            if queue.len() % 100 == 0 {
-                if moved {
-                    term.move_up(2)?;
-                }
-
-                term.clear(ClearType::CurrentLine)?;
-                writeln!(
-                    term.output,
-                    "Queue Length: {}",
-                    style::style(queue.len()).with(style::Color::Green),
-                )?;
-                term.clear(ClearType::CurrentLine)?;
-                writeln!(
-                    term.output,
-                    "Found Pointers: {}",
-                    style::style(results.len()).with(style::Color::Blue)
-                )?;
-                term.flush()?;
-                moved = true;
-            }
-        }
+        pointer_scan.scan(ty, needle, &mut results, &mut InitialProgress::new(term))?;
 
         if !token.test() {
             writeln!(term.output, "Adding trailing backreferences")?;
-
-            let mut moved = false;
-            // add all tailing pointers.
-            let mut additions = Vec::new();
-
-            for (i, result) in results.iter().enumerate() {
-                if token.test() {
-                    break;
-                }
-
-                let mut address = result
-                    .pointer
-                    .base()
-                    .eval(handle)?
-                    .ok_or_else(|| anyhow!("should resolve to address"))?;
-
-                let mut path = SVec::new();
-                let mut it = result.pointer.offsets().iter().copied();
-
-                while !token.test() {
-                    if let Some(extra) = visited.get(&address) {
-                        for p in extra {
-                            let mut path = path.clone();
-                            path.extend(p.iter().rev().cloned());
-
-                            let pointer =
-                                Pointer::new(result.pointer.base().clone(), path, Some(needle));
-
-                            additions.push(Box::new(ScanResult::new(pointer, Value::None(ty))));
-                        }
-                    }
-
-                    if let Some(a) = forward.get(&address).copied() {
-                        if let Some(o) = it.next() {
-                            address = a.saturating_offset(o);
-                            path.push(o);
-                            continue;
-                        }
-                    }
-
-                    break;
-                }
-
-                let rest = results.len() - (i + 1);
-
-                if rest % 100 == 0 {
-                    if moved {
-                        term.move_up(2)?;
-                    }
-
-                    term.clear(ClearType::CurrentLine)?;
-                    writeln!(
-                        term.output,
-                        "To Process: {}",
-                        style::style(rest).with(style::Color::Green),
-                    )?;
-
-                    term.clear(ClearType::CurrentLine)?;
-                    writeln!(
-                        term.output,
-                        "Found Pointers: {}",
-                        style::style(results.len() + additions.len()).with(style::Color::Blue)
-                    )?;
-
-                    moved = true;
-                }
-            }
-
-            results.append(&mut additions);
+            pointer_scan.backreference_scan(
+                ty,
+                needle,
+                &mut results,
+                &mut BackreferenceProgress::new(term),
+            )?;
         }
 
         let len = results.len();
@@ -1728,12 +1598,12 @@ impl Application {
             "1/3 {}",
             style::style(format!(
                 "Freeing visited set w/ {} entries...",
-                visited_count
+                pointer_scan.visited_count
             ))
             .with(style::Color::Yellow)
         )?;
         term.flush()?;
-        drop(visited);
+        pointer_scan.visited = Default::default();
         term.move_up(1)?;
         term.clear(ClearType::CurrentLine)?;
 
@@ -1743,7 +1613,7 @@ impl Application {
             style::style("Freeing forward set...").with(style::Color::Yellow)
         )?;
         term.flush()?;
-        drop(forward);
+        pointer_scan.forward = Default::default();
         term.move_up(1)?;
         term.clear(ClearType::CurrentLine)?;
 
@@ -1753,7 +1623,7 @@ impl Application {
             style::style("Freeing reverse set...").with(style::Color::Yellow)
         )?;
         term.flush()?;
-        drop(reverse);
+        pointer_scan.reverse = Default::default();
         term.move_up(1)?;
         term.clear(ClearType::CurrentLine)?;
 
@@ -1763,7 +1633,87 @@ impl Application {
             style::style("Done!").with(style::Color::Green)
         )?;
 
-        Ok(())
+        return Ok(());
+
+        struct InitialProgress<'a> {
+            term: &'a mut Term,
+            moved: bool,
+        }
+
+        impl<'a> InitialProgress<'a> {
+            fn new(term: &'a mut Term) -> Self {
+                Self { term, moved: false }
+            }
+        }
+
+        impl PointerScanInitialProgress for InitialProgress<'_> {
+            fn report(&mut self, queue_len: usize, results: usize) -> anyhow::Result<()> {
+                // only write every one hundred to avoid spamming the terminal buffer.
+                if queue_len % 100 != 0 {
+                    return Ok(());
+                }
+
+                if self.moved {
+                    self.term.move_up(2)?;
+                }
+
+                self.term.clear(ClearType::CurrentLine)?;
+                writeln!(
+                    self.term.output,
+                    "Queue Length: {}",
+                    style::style(queue_len).with(style::Color::Green),
+                )?;
+                self.term.clear(ClearType::CurrentLine)?;
+                writeln!(
+                    self.term.output,
+                    "Found Pointers: {}",
+                    style::style(results).with(style::Color::Blue)
+                )?;
+                self.term.flush()?;
+                self.moved = true;
+                Ok(())
+            }
+        }
+
+        struct BackreferenceProgress<'a> {
+            term: &'a mut Term,
+            moved: bool,
+        }
+
+        impl<'a> BackreferenceProgress<'a> {
+            fn new(term: &'a mut Term) -> Self {
+                Self { term, moved: false }
+            }
+        }
+
+        impl PointerScanBackreferenceProgress for BackreferenceProgress<'_> {
+            fn report(&mut self, remaining: usize, results: usize) -> anyhow::Result<()> {
+                if remaining % 100 != 0 {
+                    return Ok(());
+                }
+
+                if self.moved {
+                    self.term.move_up(2)?;
+                }
+
+                self.term.clear(ClearType::CurrentLine)?;
+                writeln!(
+                    self.term.output,
+                    "To Process: {}",
+                    style::style(remaining).with(style::Color::Green),
+                )?;
+
+                self.term.clear(ClearType::CurrentLine)?;
+                writeln!(
+                    self.term.output,
+                    "Found Pointers: {}",
+                    style::style(results).with(style::Color::Blue)
+                )?;
+
+                self.moved = true;
+                Ok(())
+            }
+        }
     }
 
     /// Scan memory using the given filter and the currently selected scan.
@@ -2137,6 +2087,19 @@ impl Application {
                 .arg(type_argument("The type of the expression to print.")),
         );
 
+        let app = app.subcommand(
+            App::new("eval")
+                .alias("e")
+                .about("Evaluate the specified value expression")
+                .arg(
+                    Arg::with_name("expr")
+                        .help("Value expression to evaluate.")
+                        .value_name("expr")
+                        .required(true)
+                        .multiple(true),
+                ),
+        );
+
         let app = app.subcommand(App::new("clear").alias("cls").about("Clear the screen"));
 
         let app = app.subcommand(
@@ -2428,6 +2391,15 @@ impl Application {
                     ty,
                     verbose,
                 })
+            }
+            ("eval", Some(m)) => {
+                let expr = m
+                    .values_of("expr")
+                    .ok_or_else(|| anyhow!("missing <expr>"))?
+                    .collect::<Vec<_>>()
+                    .join(" ");
+
+                Ok(Action::Eval { expr })
             }
             ("watch", Some(m)) => {
                 let limit = m.value_of("limit").map(str::parse).transpose()?;
@@ -2899,6 +2871,9 @@ pub enum Action {
         ty: Option<Type>,
         /// Print results verbosely.
         verbose: bool,
+    },
+    Eval {
+        expr: String,
     },
     /// Watch changes to the scan.
     Watch {

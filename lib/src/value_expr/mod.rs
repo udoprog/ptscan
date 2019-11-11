@@ -253,6 +253,7 @@ impl ValueExpr {
         use self::TypeHint::*;
 
         Ok(match *self {
+            Self::Value => cast_type,
             Self::Deref { ref value, .. } => match &**value {
                 Self::Value => Explicit(Type::Pointer),
                 other => other.value_type_of(NoHint)?,

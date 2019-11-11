@@ -25,7 +25,7 @@ impl<'token, 'err, P> ProgressReporter<'token, 'err, P> {
         Self {
             progress,
             current: 0,
-            last_percentage: 0,
+            last_percentage: std::usize::MAX,
             total,
             token,
             last_err,
@@ -71,7 +71,7 @@ impl<'token, 'err, P> ProgressReporter<'token, 'err, P> {
         self.current += count;
         let p = (self.current * 100) / self.total;
 
-        if p > self.last_percentage {
+        if p != self.last_percentage {
             if let Err(e) = self.progress.report(p, results) {
                 *self.last_err = Some(e);
                 self.token.set();

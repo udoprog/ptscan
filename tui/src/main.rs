@@ -344,7 +344,7 @@ struct Application {
     current_file: PathBuf,
     current_format: FileFormat,
     /// If the save file should be compressed or not.
-    current_compress: bool,
+    current_compress: Option<bool>,
     /// The current active limit.
     limit: usize,
     /// The watch limit in use.
@@ -365,8 +365,8 @@ impl Application {
             scans: HashMap::new(),
             current_scan: String::from("default"),
             current_file: PathBuf::from("state"),
-            current_format: FileFormat::Cbor,
-            current_compress: true,
+            current_format: FileFormat::default(),
+            current_compress: None,
             limit: DEFAULT_LIMIT,
             incremental_limit: DEFAULT_INCREMENTAL_LIMIT,
             colors: Self::colors(),
@@ -799,7 +799,7 @@ impl Application {
                 }
 
                 if let Some(compress) = compress {
-                    self.current_compress = compress;
+                    self.current_compress = Some(compress);
                 }
 
                 self.save(scan.as_ref().map(String::as_str))?;
@@ -824,7 +824,7 @@ impl Application {
                 }
 
                 if let Some(compress) = compress {
-                    self.current_compress = compress;
+                    self.current_compress = Some(compress);
                 }
 
                 self.load(
@@ -868,38 +868,53 @@ impl Application {
     }
 
     fn save(&mut self, scan: Option<&str>) -> anyhow::Result<()> {
-        use flate2::{write::GzEncoder, Compression};
+        use lz4::EncoderBuilder;
 
         let Self {
             ref mut scans,
             ref current_file,
             ref current_scan,
+            current_compress,
+            ref current_format,
+            ref colors,
             ..
-        } = self;
+        } = *self;
+
+        let compress = current_compress
+            .as_ref()
+            .copied()
+            .unwrap_or_else(|| current_format.default_compression());
 
         let scan = scan.unwrap_or_else(|| current_scan.as_str());
 
-        let count = {
+        let written = {
             let scan = scans.entry(scan.to_string()).or_default();
 
             let mut f = File::create(current_file)
                 .with_context(|| anyhow!("failed to create file `{}`", current_file.display()))?;
 
-            if self.current_compress {
-                let mut f = GzEncoder::new(&mut f, Compression::default());
-                self.current_format.serialize(&mut f, scan)?;
-                f.finish()?;
-            } else {
-                self.current_format.serialize(&mut f, scan)?
-            };
+            let written = self.term.work(|term, cancel| {
+                let progress = SimpleProgress::new(term, "Saving...", Some(cancel), colors);
 
-            scan.len()
+                let written = if compress {
+                    let mut f = EncoderBuilder::new().level(4).build(f)?;
+                    let written = current_format.serialize_scan(&mut f, scan, cancel, progress)?;
+                    f.finish().1?;
+                    written
+                } else {
+                    current_format.serialize_scan(&mut f, scan, cancel, progress)?
+                };
+
+                Ok(written)
+            })?;
+
+            written
         };
 
         writeln!(
             self.term,
             "Saved {} results from scan `{}` to file `{}`",
-            count,
+            written,
             scan,
             current_file.display()
         )?;
@@ -913,27 +928,39 @@ impl Application {
         append: bool,
         comment: Option<&str>,
     ) -> anyhow::Result<()> {
-        use flate2::read::GzDecoder;
+        use lz4::Decoder;
 
         let Self {
             ref mut scans,
             ref current_file,
             ref current_scan,
+            ref colors,
+            ref current_format,
+            ref current_compress,
             ..
-        } = self;
+        } = *self;
+
+        let compress = current_compress
+            .as_ref()
+            .copied()
+            .unwrap_or_else(|| current_format.default_compression());
 
         let scan = scan.unwrap_or_else(|| current_scan.as_str());
 
-        {
+        let (read, errors) = {
             let mut f = File::open(current_file)
                 .with_context(|| anyhow!("Failed to open file `{}`", current_file.display()))?;
 
-            let deserialized: Scan = if self.current_compress {
-                self.current_format
-                    .deserialize(&mut GzDecoder::new(&mut f))?
-            } else {
-                self.current_format.deserialize(&mut f)?
-            };
+            let (deserialized, errors) = self.term.work(|term, cancel| {
+                let progress = SimpleProgress::new(term, "Loading...", Some(cancel), colors);
+
+                if compress {
+                    let mut f = Decoder::new(f)?;
+                    current_format.deserialize_scan(&mut f, cancel, progress)
+                } else {
+                    current_format.deserialize_scan(&mut f, cancel, progress)
+                }
+            })?;
 
             let scan = scans.entry(scan.to_string()).or_default();
 
@@ -944,18 +971,24 @@ impl Application {
                 }
             }
 
+            let read = deserialized.results.len();
+
             if append {
                 scan.append_scan(deserialized);
             } else {
                 scan.load_scan(deserialized);
             }
-        }
+
+            (read, errors)
+        };
 
         writeln!(
             self.term,
-            "Loaded scan `{}` from file `{}`",
-            scan,
-            current_file.display()
+            "Loaded {read} results ({errors} errors) to scan `{scan}` from file `{file}`",
+            read = read,
+            errors = errors,
+            scan = scan,
+            file = current_file.display(),
         )?;
 
         Ok(())
@@ -2633,33 +2666,185 @@ pub struct ScanConfig {
 pub enum FileFormat {
     Cbor,
     Yaml,
+    Custom,
 }
 
 impl FileFormat {
+    pub fn default_compression(self) -> bool {
+        match self {
+            Self::Cbor => true,
+            Self::Yaml => false,
+            Self::Custom => true,
+        }
+    }
+
     /// Deserialize the given thing using the current file format.
-    pub fn deserialize<T, R>(self, r: &mut R) -> anyhow::Result<T>
+    pub fn deserialize_scan<R>(
+        self,
+        r: &mut R,
+        cancel: &Token,
+        progress: impl ScanProgress,
+    ) -> anyhow::Result<(Scan, usize)>
     where
-        T: for<'a> serde::Deserialize<'a>,
         R: io::Read,
     {
         Ok(match self {
-            Self::Cbor => serde_cbor::from_reader(r)?,
-            Self::Yaml => serde_yaml::from_reader(r)?,
+            Self::Cbor => (serde_cbor::from_reader(r)?, 0),
+            Self::Yaml => (serde_yaml::from_reader(r)?, 0),
+            Self::Custom => custom_read_from(r, cancel, progress)?,
         })
     }
 
     /// Serialize the given thing using the current file format.
-    pub fn serialize<T, W>(self, r: &mut W, value: &T) -> anyhow::Result<()>
+    pub fn serialize_scan<W>(
+        self,
+        w: &mut W,
+        value: &Scan,
+        cancel: &Token,
+        progress: impl ScanProgress,
+    ) -> anyhow::Result<usize>
     where
-        T: serde::Serialize,
         W: io::Write,
     {
         match self {
-            Self::Cbor => serde_cbor::to_writer(r, value)?,
-            Self::Yaml => serde_yaml::to_writer(r, value)?,
+            Self::Cbor => serde_cbor::to_writer(w, value)?,
+            Self::Yaml => serde_yaml::to_writer(w, value)?,
+            Self::Custom => return Ok(custom_write_to(w, value, cancel, progress)?),
         }
 
-        Ok(())
+        Ok(value.results.len())
+    }
+}
+
+impl Default for FileFormat {
+    fn default() -> Self {
+        Self::Custom
+    }
+}
+
+/// Write the scan using a custom format that is considerably faster (but unsafe!) than typical serialization.
+///
+/// This format is _not_ portable.
+fn custom_write_to<W: std::io::Write>(
+    w: &mut W,
+    scan: &Scan,
+    cancel: &Token,
+    mut progress: impl ScanProgress,
+) -> anyhow::Result<usize> {
+    use byteorder::{LittleEndian, WriteBytesExt as _};
+    use std::convert::TryInto;
+
+    let header = Header {
+        aligned: scan.aligned,
+        initial: scan.initial,
+        value_expr: &scan.value_expr,
+        comments: &scan.comments,
+        results_len: scan.results.len(),
+    };
+
+    let mut buf = Vec::new();
+
+    let mut p = std::usize::MAX;
+    serde_cbor::to_writer(&mut buf, &header)?;
+    w.write_u32::<LittleEndian>(buf.len().try_into()?)?;
+    w.write_all(&buf)?;
+
+    for (index, result) in scan.results.iter().enumerate() {
+        if cancel.test() {
+            return Ok(index);
+        }
+
+        buf.clear();
+
+        serde_cbor::to_writer(&mut buf, result)?;
+        w.write_u16::<LittleEndian>(buf.len().try_into()?)?;
+        w.write_all(&buf)?;
+
+        let next_p = (index * 100) / scan.results.len();
+
+        if p != next_p {
+            p = next_p;
+            progress.report(p, index as u64)?;
+        }
+    }
+
+    return Ok(scan.results.len());
+
+    #[derive(Debug, serde::Serialize)]
+    struct Header<'a> {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub aligned: Option<bool>,
+        pub initial: bool,
+        #[serde(skip_serializing_if = "ValueExpr::is_default")]
+        pub value_expr: &'a ValueExpr,
+        #[serde(skip_serializing_if = "HashMap::is_empty")]
+        pub comments: &'a HashMap<RawPointer, String>,
+        pub results_len: usize,
+    }
+}
+
+/// Write the scan using a custom format that is considerably faster (but unsafe!) than typical serialization.
+///
+/// This format is _not_ portable.
+fn custom_read_from<R: std::io::Read>(
+    r: &mut R,
+    cancel: &Token,
+    mut progress: impl ScanProgress,
+) -> anyhow::Result<(Scan, usize)> {
+    use byteorder::{LittleEndian, ReadBytesExt as _};
+    use std::{convert::TryInto as _, io::Cursor};
+
+    let mut p = std::usize::MAX;
+
+    let mut buf = Vec::new();
+
+    let len = r.read_u32::<LittleEndian>()?.try_into()?;
+    buf.resize_with(len, u8::default);
+    r.read_exact(&mut buf)?;
+    let header: Header = serde_cbor::from_reader(&mut Cursor::new(&buf))?;
+
+    let mut results = Vec::with_capacity(header.results_len);
+    let mut errors = 0usize;
+
+    for index in (0..header.results_len).take_while(|_| !cancel.test()) {
+        let len = r.read_u16::<LittleEndian>()?.try_into()?;
+        buf.resize_with(len, u8::default);
+        r.read_exact(&mut buf)?;
+
+        if let Ok(result) = serde_cbor::from_reader(&mut Cursor::new(&buf)) {
+            results.push(result);
+        } else {
+            errors += 1;
+        }
+
+        let next_p = (index * 100) / header.results_len;
+
+        if p != next_p {
+            p = next_p;
+            progress.report(p, index as u64)?;
+        }
+    }
+
+    let scan = Scan {
+        aligned: header.aligned,
+        initial: header.initial,
+        value_expr: header.value_expr,
+        comments: header.comments,
+        results,
+    };
+
+    return Ok((scan, errors));
+
+    #[derive(Debug, serde::Deserialize)]
+    struct Header {
+        #[serde(default)]
+        pub aligned: Option<bool>,
+        pub initial: bool,
+        #[serde(default)]
+        pub value_expr: ValueExpr,
+        #[serde(default)]
+        pub comments: HashMap<RawPointer, String>,
+        pub results_len: usize,
     }
 }
 
@@ -2670,6 +2855,7 @@ impl std::str::FromStr for FileFormat {
         Ok(match s {
             "yaml" => FileFormat::Yaml,
             "cbor" => FileFormat::Cbor,
+            "custom" => FileFormat::Custom,
             _ => bail!("invalid file format: {}", s),
         })
     }

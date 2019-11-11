@@ -814,7 +814,9 @@ impl Application {
                 ..
             } => {
                 if let Some(file) = file {
-                    self.current_file = file;
+                    if !append {
+                        self.current_file = file;
+                    }
                 }
 
                 if let Some(format) = format {

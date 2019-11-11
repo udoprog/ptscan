@@ -28,6 +28,7 @@ macro_rules! numeric_op {
     (@a $a:ident $op:tt $b:ident, $checked_op:ident, {$([$variant:ident, $ty:ty]),*}) => {
         match ($a, $b) {
             $((Self::$variant(lhs), Self::$variant(rhs)) => lhs.$checked_op(rhs).map(Self::$variant),)*
+            (Self::None(..), _) | (_, Self::None(..)) => None,
             (lhs, rhs) => bail!("bad operation: {} {} {}", lhs.ty(), stringify!($op), rhs.ty()),
         }
     };

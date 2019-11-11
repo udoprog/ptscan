@@ -12,7 +12,7 @@ These filters are used in commands such as `scan` and `watch`.
 
 All expressions support the following types:
 
-* `none` - The special `none` type. Any value of this type is undefined, and any comparison _except_ `value is none` or `value is not none` is `false`.
+* `none` - The special `none` type. Any value of this type is _undefined_. See the section below for more details.
 * `pointer` -  A pointer value, who's size depends on the process being attached to.
 * `u8` - An unsigned 8-bit number.
 * `i8` - A signed 8-bit number.
@@ -30,6 +30,24 @@ All expressions support the following types:
 * `string/<encoding>` - A null-terminated string with the specified `<encoding>`, as per [the whatwg Encoding standard](https://encoding.spec.whatwg.org/#names-and-labels).
 * `bytes` - An unsized byte array.
 * `bytes/<len>` - A byte array of length `<len>`.
+
+#### The `none` type
+
+The `none` type is a special type which any value can assume.
+
+Any comparison (`==`, `!=`, `<`, `>`, ..) _except_ `value is none` or `value is not none` is `false`.
+
+Any expression (`+`, `-`, `*`, `/`) involving a value of the `none` type results in another `none` type.
+For example, `*value + 1` would be `none` if `*value` is not a valid pointer.
+
+A value of type `none` still retains the old type information to make sure it can be successfully refresh if needed.
+Therefore you'll see things like:
+
+```
+none(u128)
+```
+
+Which means that an expression which was expected to evaluate to a `u128` value, evaluated to `none`.
 
 ## Value Expressions
 

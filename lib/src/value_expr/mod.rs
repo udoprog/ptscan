@@ -291,8 +291,8 @@ impl ValueExpr {
             Self::String {
                 encoding,
                 ref value,
-            } => Ok(Value::String(encoding, value.to_owned())),
-            Self::Bytes { ref value } => Ok(Value::Bytes(value.clone())),
+            } => Ok(expr_type.convert(Value::String(encoding, value.to_owned()))),
+            Self::Bytes { ref value } => Ok(expr_type.convert(Value::Bytes(value.clone()))),
             Self::Deref { ref value } => {
                 let value = value.eval(initial, last, value_type, Type::Pointer, proxy)?;
 
@@ -325,19 +325,22 @@ impl ValueExpr {
                     )?
                     .ok_or_else(|| anyhow!("cannot determine type of expression: {}", expr))?;
 
-                let value = expr.eval(initial, last, value_type, inner_type, proxy)?;
-                Ok(ty.convert(value))
+                Ok(expr.eval(initial, last, value_type, inner_type, proxy)?)
             }
             Self::Binary {
+                op,
                 ref lhs,
                 ref rhs,
-                op,
             } => {
                 let lhs = lhs.eval(initial, last, value_type, expr_type, proxy)?;
                 let rhs = rhs.eval(initial, last, value_type, expr_type, proxy)?;
-                Ok(op
-                    .apply(lhs, rhs)?
-                    .unwrap_or_else(|| Value::None(Type::None)))
+
+                let value = match op.apply(lhs, rhs)? {
+                    Some(value) => value,
+                    None => return Ok(Value::None(expr_type)),
+                };
+
+                Ok(expr_type.convert(value))
             }
         }
     }

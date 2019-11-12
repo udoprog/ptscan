@@ -1653,7 +1653,7 @@ impl Application {
         impl PointerScanInitialProgress for InitialProgress<'_> {
             fn report(&mut self, queue_len: usize, results: usize) -> anyhow::Result<()> {
                 // only write every one hundred to avoid spamming the terminal buffer.
-                if queue_len % 100 != 0 {
+                if queue_len > 1000 && queue_len % 1000 != 0 {
                     return Ok(());
                 }
 

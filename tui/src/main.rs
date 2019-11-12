@@ -586,7 +586,11 @@ impl Application {
                 let initial = Value::None(Type::None);
                 let last = Value::None(Type::None);
                 let mut proxy = handle.null_address_proxy();
-                let value = expr.eval(&initial, &last, Type::None, expr_type, &mut proxy)?;
+
+                let value = expr
+                    .type_check(Type::None, Type::None, Type::None, expr_type)?
+                    .eval(&initial, &last, &mut proxy)?;
+
                 writeln!(
                     self.term,
                     " => {ty} : {value}",

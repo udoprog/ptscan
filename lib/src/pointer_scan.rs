@@ -21,12 +21,10 @@ pub trait PointerScanBackreferenceProgress {
 ///
 /// The configuration to use during a scan.
 ///
-/// Defaults are:
+/// Defaults are
 ///
-/// ```
 /// max_offset: 0x1000
 /// max_depth: 7
-/// ```
 pub struct PointerScan<'a> {
     #[allow(unused)]
     thread_pool: &'a rayon::ThreadPool,

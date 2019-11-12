@@ -501,17 +501,21 @@ impl ProcessHandle {
                                 let initial = result.initial();
                                 let last = result.last();
 
+                                let initial_type = initial.ty();
+                                let last_type = last.ty();
+
                                 let expr_type = expr
                                     .type_of(
-                                        TypeHint::Explicit(initial.ty()),
-                                        TypeHint::Explicit(last.ty()),
+                                        TypeHint::Explicit(initial_type),
+                                        TypeHint::Explicit(last_type),
                                         TypeHint::Explicit(value_type),
                                         TypeHint::NoHint,
                                     )?
                                     .ok_or_else(|| Error::TypeInference(expr.clone()))?;
 
-                                let value =
-                                    expr.eval(initial, last, value_type, expr_type, &mut proxy)?;
+                                let value = expr
+                                    .type_check(initial_type, last_type, value_type, expr_type)?
+                                    .eval(&initial, &last, &mut proxy)?;
 
                                 result.initial = value;
                                 result.last = None;

@@ -17,6 +17,119 @@ pub use self::value_op::ValueOp;
 pub(crate) mod ast;
 mod value_op;
 
+/// A value expression after it has been type checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypedValueExpr<'a> {
+    Value(Type),
+    Last(Type),
+    Initial(Type),
+    Deref(Type, Box<TypedValueExpr<'a>>),
+    AddressOf(Type, Box<TypedValueExpr<'a>>),
+    Binary(
+        Type,
+        ValueOp,
+        Box<TypedValueExpr<'a>>,
+        Box<TypedValueExpr<'a>>,
+    ),
+    Number(Type, &'a BigInt),
+    Decimal(Type, &'a BigDecimal),
+    String(Type, Encoding, &'a String),
+    Bytes(Type, &'a Vec<u8>),
+    Cast(Type, Box<TypedValueExpr<'a>>),
+}
+
+impl TypedValueExpr<'_> {
+    /// Evaluate the expression to return a value.
+    pub fn eval(
+        &self,
+        initial: &Value,
+        last: &Value,
+        proxy: &mut AddressProxy<'_>,
+    ) -> anyhow::Result<Value> {
+        Ok(match *self {
+            Self::Value(expr_type) => proxy.eval(expr_type)?.0,
+            Self::Initial(expr_type) => expr_type.convert(initial.clone()),
+            Self::Last(expr_type) => expr_type.convert(last.clone()),
+            Self::Number(expr_type, value) => Value::from_bigint(expr_type, value)?,
+            Self::Decimal(expr_type, value) => Value::from_bigdecimal(expr_type, value)?,
+            Self::String(expr_type, encoding, value) => {
+                expr_type.convert(Value::String(encoding, value.to_string()))
+            }
+            Self::Bytes(expr_type, value) => expr_type.convert(Value::Bytes(value.clone())),
+            Self::Deref(expr_type, ref value) => {
+                let value = Type::Pointer.convert(value.eval(initial, last, proxy)?);
+
+                let address = match value.as_address() {
+                    Some(address) => address,
+                    None => return Ok(Value::None(expr_type)),
+                };
+
+                let pointer = pointer::Pointer::from_address(address);
+                let mut proxy = proxy.handle.address_proxy(&pointer);
+                let (value, _) = proxy.eval(expr_type)?;
+                expr_type.convert(value)
+            }
+            Self::AddressOf(expr_type, ref value) => {
+                let new_address = match value.address_of(initial, last, proxy)? {
+                    Some(address) => address,
+                    None => return Ok(Value::None(expr_type)),
+                };
+
+                expr_type.convert(Value::Pointer(new_address))
+            }
+            Self::Cast(expr_type, ref expr) => expr_type.convert(expr.eval(initial, last, proxy)?),
+            Self::Binary(expr_type, op, ref lhs, ref rhs) => {
+                let lhs = lhs.eval(initial, last, proxy)?;
+                let rhs = rhs.eval(initial, last, proxy)?;
+
+                let value = match op.apply(lhs, rhs)? {
+                    Some(value) => value,
+                    None => return Ok(Value::None(expr_type)),
+                };
+
+                expr_type.convert(value)
+            }
+        })
+    }
+
+    pub fn address_of(
+        &self,
+        initial: &Value,
+        last: &Value,
+        proxy: &mut AddressProxy<'_>,
+    ) -> anyhow::Result<Option<Address>> {
+        let mut stack = Vec::new();
+        self.stacked_address_of(&mut stack, initial, last, proxy)?;
+        Ok(stack.last().copied().and_then(|a| a))
+    }
+
+    /// Get the address of a value expression.
+    pub fn stacked_address_of(
+        &self,
+        stack: &mut Vec<Option<Address>>,
+        initial: &Value,
+        last: &Value,
+        proxy: &mut AddressProxy<'_>,
+    ) -> anyhow::Result<()> {
+        match self {
+            Self::Value(..) => {
+                stack.push(proxy.follow_default()?);
+            }
+            Self::Deref(_, value) => {
+                let value = value.eval(initial, last, proxy)?;
+                stack.push(value.as_address());
+            }
+            Self::AddressOf(_, value) => {
+                value.stacked_address_of(stack, initial, last, proxy)?;
+                stack.pop();
+            }
+            other => bail!("cannot get address of: {:?}", other),
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ValueExpr {
@@ -46,15 +159,13 @@ pub enum ValueExpr {
     #[serde(rename = "number")]
     Number {
         value: BigInt,
-        #[serde(rename = "type_hint")]
-        ty: Option<Type>,
+        type_hint: Option<Type>,
     },
     /// A decimal literal.
     #[serde(rename = "decimal")]
     Decimal {
         value: BigDecimal,
-        #[serde(rename = "type_hint")]
-        ty: Option<Type>,
+        type_hint: Option<Type>,
     },
     /// A string literal.
     #[serde(rename = "string")]
@@ -66,8 +177,7 @@ pub enum ValueExpr {
     #[serde(rename = "as")]
     Cast {
         expr: Box<ValueExpr>,
-        #[serde(rename = "as_type")]
-        ty: Type,
+        cast_type: Type,
     },
 }
 
@@ -139,47 +249,6 @@ impl ValueExpr {
         (value_trait, sign)
     }
 
-    pub fn address_of(
-        &self,
-        initial: &Value,
-        last: &Value,
-        value_type: Type,
-        expr_type: Type,
-        proxy: &mut AddressProxy<'_>,
-    ) -> anyhow::Result<Option<Address>> {
-        let mut stack = Vec::new();
-        self.stacked_address_of(&mut stack, initial, last, value_type, expr_type, proxy)?;
-        Ok(stack.last().copied().and_then(|a| a))
-    }
-
-    /// Get the address of a value expression.
-    pub fn stacked_address_of(
-        &self,
-        stack: &mut Vec<Option<Address>>,
-        initial: &Value,
-        last: &Value,
-        value_type: Type,
-        expr_type: Type,
-        proxy: &mut AddressProxy<'_>,
-    ) -> anyhow::Result<()> {
-        match self {
-            Self::Value => {
-                stack.push(proxy.follow_default()?);
-            }
-            Self::Deref { value } => {
-                let value = value.eval(initial, last, value_type, expr_type, proxy)?;
-                stack.push(value.as_address());
-            }
-            Self::AddressOf { value } => {
-                value.stacked_address_of(stack, initial, last, value_type, expr_type, proxy)?;
-                stack.pop();
-            }
-            other => bail!("cannot get address of: {}", other),
-        }
-
-        Ok(())
-    }
-
     /// Get the type of the expression.
     pub fn type_of(
         &self,
@@ -217,11 +286,21 @@ impl ValueExpr {
                     _ => default_hint,
                 }
             }
-            Self::Cast { ty, .. } => Explicit(ty),
-            Self::Number { ty: Some(ty), .. } => Explicit(ty),
-            Self::Number { ty: None, .. } => default_hint.or_implicit(Type::U32),
-            Self::Decimal { ty: Some(ty), .. } => Explicit(ty),
-            Self::Decimal { ty: None, .. } => default_hint.or_implicit(Type::F32),
+            Self::Cast { cast_type, .. } => Explicit(cast_type),
+            Self::Number {
+                type_hint: Some(type_hint),
+                ..
+            } => Explicit(type_hint),
+            Self::Number {
+                type_hint: None, ..
+            } => default_hint.or_implicit(Type::U32),
+            Self::Decimal {
+                type_hint: Some(type_hint),
+                ..
+            } => Explicit(type_hint),
+            Self::Decimal {
+                type_hint: None, ..
+            } => default_hint.or_implicit(Type::F32),
             Self::String { encoding, .. } => default_hint.or_implicit(Type::String(encoding)),
             Self::Bytes { ref value } => default_hint.or_implicit(Type::Bytes(Some(value.len()))),
         })
@@ -264,85 +343,72 @@ impl ValueExpr {
                     }
                 }
             },
-            Self::Cast { ref expr, ty } => match &**expr {
-                Self::Value => Explicit(ty),
-                ref other => other.value_type_of(Explicit(ty))?,
+            Self::Cast {
+                ref expr,
+                cast_type,
+            } => match &**expr {
+                Self::Value => Explicit(cast_type),
+                ref other => other.value_type_of(Explicit(cast_type))?,
             },
             _ => NoHint,
         })
     }
 
-    pub fn eval(
-        &self,
-        initial: &Value,
-        last: &Value,
+    /// Evaluate the expression to return a value.
+    pub fn type_check<'a>(
+        &'a self,
+        initial_type: Type,
+        last_type: Type,
         value_type: Type,
         expr_type: Type,
-        proxy: &mut AddressProxy<'_>,
-    ) -> anyhow::Result<Value> {
+    ) -> anyhow::Result<TypedValueExpr<'a>> {
         use self::TypeHint::*;
 
-        match *self {
-            Self::Value => Ok(expr_type.convert(proxy.eval(value_type)?.0)),
-            Self::Initial => Ok(expr_type.convert(initial.clone())),
-            Self::Last => Ok(last.clone()),
-            Self::Number { ref value, .. } => Ok(Value::from_bigint(expr_type, value)?),
-            Self::Decimal { ref value, .. } => Ok(Value::from_bigdecimal(expr_type, value)?),
+        Ok(match *self {
+            Self::Value => TypedValueExpr::Value(expr_type),
+            Self::Initial => TypedValueExpr::Initial(expr_type),
+            Self::Last => TypedValueExpr::Last(expr_type),
+            Self::Number { ref value, .. } => TypedValueExpr::Number(expr_type, value),
+            Self::Decimal { ref value, .. } => TypedValueExpr::Decimal(expr_type, value),
             Self::String {
                 encoding,
                 ref value,
-            } => Ok(expr_type.convert(Value::String(encoding, value.to_owned()))),
-            Self::Bytes { ref value } => Ok(expr_type.convert(Value::Bytes(value.clone()))),
+            } => TypedValueExpr::String(expr_type, encoding, value),
+            Self::Bytes { ref value } => TypedValueExpr::Bytes(expr_type, value),
             Self::Deref { ref value } => {
-                let value = value.eval(initial, last, value_type, Type::Pointer, proxy)?;
-
-                let address = match value.as_address() {
-                    Some(address) => address,
-                    None => return Ok(Value::None(value_type)),
-                };
-
-                let pointer = pointer::Pointer::from_address(address);
-                let mut proxy = proxy.handle.address_proxy(&pointer);
-                let (value, _) = proxy.eval(expr_type)?;
-                Ok(value)
+                let value = value.type_check(initial_type, last_type, value_type, Type::Pointer)?;
+                TypedValueExpr::Deref(expr_type, Box::new(value))
             }
             Self::AddressOf { ref value } => {
-                let new_address =
-                    match value.address_of(initial, last, value_type, expr_type, proxy)? {
-                        Some(address) => address,
-                        None => return Ok(Value::None(expr_type)),
-                    };
-
-                Ok(Value::Pointer(new_address))
+                let value = value.type_check(initial_type, last_type, value_type, Type::Pointer)?;
+                TypedValueExpr::AddressOf(expr_type, Box::new(value))
             }
-            Self::Cast { ref expr, ty } => {
+            Self::Cast {
+                ref expr,
+                cast_type,
+            } => {
                 let inner_type = expr
                     .type_of(
-                        Explicit(initial.ty()),
-                        Explicit(last.ty()),
+                        Explicit(initial_type),
+                        Explicit(last_type),
                         Explicit(value_type),
-                        Explicit(ty),
+                        Explicit(cast_type),
                     )?
                     .ok_or_else(|| anyhow!("cannot determine type of expression: {}", expr))?;
 
-                Ok(expr.eval(initial, last, value_type, inner_type, proxy)?)
+                let expr = expr.type_check(initial_type, last_type, value_type, inner_type)?;
+                TypedValueExpr::Cast(expr_type, Box::new(expr))
             }
             Self::Binary {
                 op,
                 ref lhs,
                 ref rhs,
             } => {
-                let lhs = lhs.eval(initial, last, value_type, expr_type, proxy)?;
-                let rhs = rhs.eval(initial, last, value_type, expr_type, proxy)?;
-
-                let value = match op.apply(lhs, rhs)? {
-                    Some(value) => value,
-                    None => return Ok(Value::None(expr_type)),
-                };
-
-                Ok(expr_type.convert(value))
+                let lhs = lhs.type_check(initial_type, last_type, value_type, expr_type)?;
+                let rhs = rhs.type_check(initial_type, last_type, value_type, expr_type)?;
+                TypedValueExpr::Binary(expr_type, op, Box::new(lhs), Box::new(rhs))
             }
-        }
+        })
     }
 }
 
@@ -361,19 +427,25 @@ impl fmt::Display for ValueExpr {
             Self::Deref { value } => write!(fmt, "*{}", value),
             Self::AddressOf { value } => write!(fmt, "&{}", value),
             Self::Binary { op, lhs, rhs } => write!(fmt, "{} {} {}", lhs, op, rhs),
-            Self::Number { value, ty: None } => write!(fmt, "{}", value),
             Self::Number {
                 value,
-                ty: Some(ty),
+                type_hint: None,
+            } => write!(fmt, "{}", value),
+            Self::Number {
+                value,
+                type_hint: Some(ty),
             } => write!(fmt, "{}{}", value, ty),
-            Self::Decimal { value, ty: None } => write!(fmt, "{}", value),
             Self::Decimal {
                 value,
-                ty: Some(ty),
+                type_hint: None,
+            } => write!(fmt, "{}", value),
+            Self::Decimal {
+                value,
+                type_hint: Some(ty),
             } => write!(fmt, "{}{}", value, ty),
             Self::String { value, .. } => write!(fmt, "{}", EscapeString(value)),
             Self::Bytes { value } => write!(fmt, "{}", Hex(value)),
-            Self::Cast { expr, ty } => write!(fmt, "{} as {}", expr, ty),
+            Self::Cast { expr, cast_type } => write!(fmt, "{} as {}", expr, cast_type),
         }
     }
 }

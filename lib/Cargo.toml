@@ -62,5 +62,4 @@ features = [
 version = "0.2"
 
 [build-dependencies]
-failure = "0.1"
 lalrpop = "0.16.3"

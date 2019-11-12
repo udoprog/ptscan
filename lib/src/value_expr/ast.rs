@@ -50,8 +50,8 @@ impl ValueExpr {
                     rhs: Box::new(rhs),
                 }
             }
-            Self::Number(value, ty) => Number { value, ty },
-            Self::Decimal(value, ty) => Decimal { value, ty },
+            Self::Number(value, type_hint) => Number { value, type_hint },
+            Self::Decimal(value, type_hint) => Decimal { value, type_hint },
             Self::String(encoding, value) => String { encoding, value },
             Self::Bytes(value) => Bytes { value },
             Self::AddressOf(value) => AddressOf {
@@ -60,11 +60,11 @@ impl ValueExpr {
             Self::Deref(value) => Deref {
                 value: Box::new(value.eval(process)?),
             },
-            Self::Cast(expr, ty) => {
+            Self::Cast(expr, cast_type) => {
                 let expr = expr.eval(process)?;
                 Cast {
                     expr: Box::new(expr),
-                    ty,
+                    cast_type,
                 }
             }
         })

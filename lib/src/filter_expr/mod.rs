@@ -213,39 +213,44 @@ impl Binary {
 
         let Binary(op, lhs, rhs) = self;
 
+        let initial_type = initial.ty();
+        let last_type = last.ty();
+
         let lhs_type = lhs.type_of(
-            Explicit(initial.ty()),
-            Explicit(last.ty()),
+            Explicit(initial_type),
+            Explicit(last_type),
             Explicit(value_type),
             TypeHint::NoHint,
         )?;
 
         let rhs_type = rhs.type_of(
-            Explicit(initial.ty()),
-            Explicit(last.ty()),
+            Explicit(initial_type),
+            Explicit(last_type),
             Explicit(value_type),
             TypeHint::NoHint,
         )?;
 
         let expr_type = match (lhs_type, rhs_type) {
             (Explicit(lhs), Explicit(rhs)) => {
-                if lhs == rhs {
-                    lhs
-                } else {
+                if lhs != rhs {
                     bail!("incompatible types in expression: {} {} {}", lhs, op, rhs)
                 }
+
+                lhs
             }
             (Explicit(ty), _) | (_, Explicit(ty)) => ty,
             (Implicit(ty), _) | (_, Implicit(ty)) => ty,
             _ => return Err(Error::BinaryTypeInference(self.clone()).into()),
         };
 
-        let lhs = lhs.eval(initial, last, value_type, expr_type, proxy)?;
-        let rhs = rhs.eval(initial, last, value_type, expr_type, proxy)?;
+        let lhs = lhs.type_check(initial_type, last_type, value_type, expr_type)?;
+        let rhs = rhs.type_check(initial_type, last_type, value_type, expr_type)?;
+
+        let lhs = lhs.eval(initial, last, proxy)?;
+        let rhs = rhs.eval(initial, last, proxy)?;
 
         // NB: we treat 'none' specially:
         // The only allowed match on none is to compare against something which is strictly not equal to it, like value != none.
-
         let result = match op {
             Eq => binary!(lhs, rhs, a == b),
             Neq => binary!(lhs, rhs, a != b),
@@ -255,11 +260,13 @@ impl Binary {
             Gte => binary!(lhs, rhs, a >= b),
             StartsWith => match lhs {
                 Value::String(_, lhs) => match rhs {
+                    Value::None(..) => return Ok(Test::Undefined),
                     Value::String(_, rhs) => lhs.starts_with(&rhs),
                     Value::Bytes(rhs) => lhs.as_bytes().starts_with(&rhs),
                     _ => false,
                 },
                 Value::Bytes(lhs) => match rhs {
+                    Value::None(..) => return Ok(Test::Undefined),
                     Value::String(_, rhs) => lhs.starts_with(rhs.as_bytes()),
                     Value::Bytes(rhs) => lhs.starts_with(&rhs),
                     _ => false,
@@ -524,11 +531,14 @@ impl IsPointer {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
+        let initial_type = initial.ty();
+        let last_type = last.ty();
+
         let expr_type = self
             .expr
             .type_of(
-                TypeHint::Explicit(initial.ty()),
-                TypeHint::Explicit(last.ty()),
+                TypeHint::Explicit(initial_type),
+                TypeHint::Explicit(last_type),
                 TypeHint::Explicit(value_type),
                 TypeHint::NoHint,
             )?
@@ -536,7 +546,8 @@ impl IsPointer {
 
         let value = self
             .expr
-            .eval(initial, last, value_type, expr_type, proxy)?;
+            .type_check(initial_type, last_type, value_type, expr_type)?
+            .eval(initial, last, proxy)?;
 
         let address = match value {
             Value::Pointer(address) => address,
@@ -583,11 +594,14 @@ impl IsType {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
+        let initial_type = initial.ty();
+        let last_type = last.ty();
+
         let expr_type = self
             .expr
             .type_of(
-                TypeHint::Explicit(initial.ty()),
-                TypeHint::Explicit(last.ty()),
+                TypeHint::Explicit(initial_type),
+                TypeHint::Explicit(last_type),
                 TypeHint::Explicit(value_type),
                 TypeHint::NoHint,
             )?
@@ -595,7 +609,8 @@ impl IsType {
 
         let value = self
             .expr
-            .eval(initial, last, value_type, expr_type, proxy)?;
+            .type_check(initial_type, last_type, value_type, expr_type)?
+            .eval(initial, last, proxy)?;
 
         if value.is_none() {
             return Ok(Test::Undefined);
@@ -640,11 +655,14 @@ impl IsNan {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
+        let initial_type = initial.ty();
+        let last_type = last.ty();
+
         let expr_type = self
             .expr
             .type_of(
-                TypeHint::Explicit(initial.ty()),
-                TypeHint::Explicit(last.ty()),
+                TypeHint::Explicit(initial_type),
+                TypeHint::Explicit(last_type),
                 TypeHint::Explicit(value_type),
                 TypeHint::NoHint,
             )?
@@ -652,7 +670,8 @@ impl IsNan {
 
         let value = self
             .expr
-            .eval(initial, last, value_type, expr_type, proxy)?;
+            .type_check(initial_type, last_type, value_type, expr_type)?
+            .eval(initial, last, proxy)?;
 
         let value = match value {
             Value::F32(value) => value.is_nan(),
@@ -693,11 +712,14 @@ impl Regex {
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
+        let initial_type = initial.ty();
+        let last_type = last.ty();
+
         let expr_type = self
             .expr
             .type_of(
-                TypeHint::Explicit(initial.ty()),
-                TypeHint::Explicit(last.ty()),
+                TypeHint::Explicit(initial_type),
+                TypeHint::Explicit(last_type),
                 TypeHint::Explicit(value_type),
                 TypeHint::NoHint,
             )?
@@ -705,7 +727,8 @@ impl Regex {
 
         let value = self
             .expr
-            .eval(initial, last, value_type, expr_type, proxy)?;
+            .type_check(initial_type, last_type, value_type, expr_type)?
+            .eval(initial, last, proxy)?;
 
         let bytes = match &value {
             Value::Bytes(bytes) => &bytes[..],

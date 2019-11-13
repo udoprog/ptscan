@@ -140,11 +140,13 @@ impl Address {
     }
 
     /// Find how far this address offsets another one.
-    pub fn offset_of(self, base: Address) -> Result<Offset, io::Error> {
-        if self.0 >= base.0 {
-            Ok(Offset(Sign::Plus, self.0 - base.0))
+    pub fn offset_of(self, base: Address) -> Offset {
+        if self.0 > base.0 {
+            Offset(Sign::Plus, self.0.saturating_sub(base.0))
+        } else if self.0 < base.0 {
+            Offset(Sign::Minus, base.0.saturating_sub(self.0))
         } else {
-            Ok(Offset(Sign::Minus, base.0 - self.0))
+            Offset(Sign::NoSign, 0)
         }
     }
 

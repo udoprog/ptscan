@@ -91,30 +91,41 @@ impl<'a> PointerScan<'a> {
         results: &mut Vec<Box<ScanResult>>,
         progress: &mut impl PointerScanInitialProgress,
     ) -> anyhow::Result<()> {
+        let Self {
+            ref handle,
+            ref cancel,
+            ref reverse,
+            ref mut visited,
+            ref mut visited_count,
+            max_depth,
+            max_offset,
+            ..
+        } = *self;
+
         let mut queue = VecDeque::new();
         queue.push_back((needle, 0usize, SVec::new()));
 
         while let Some((n, depth, path)) = queue.pop_front() {
-            if self.cancel.test() {
+            if cancel.test() {
                 break;
             }
 
-            let it = self.reverse.range(..=n).rev();
+            let it = reverse.range(..=n).rev();
 
             for (from, hit) in it {
-                let offset = n.offset_of(*from)?;
+                let offset = n.offset_of(*from);
 
-                if !offset.is_within(self.max_offset) {
+                if !offset.is_within(max_offset) {
                     break;
                 }
 
                 let mut path = path.clone();
                 path.push(offset);
 
-                match self.visited.entry(*hit) {
+                match visited.entry(*hit) {
                     hash_map::Entry::Occupied(mut e) => {
                         e.get_mut().push(path);
-                        self.visited_count += 1;
+                        *visited_count += 1;
                         continue;
                     }
                     hash_map::Entry::Vacant(e) => {
@@ -122,10 +133,10 @@ impl<'a> PointerScan<'a> {
                     }
                 }
 
-                match self.handle.find_location(*hit) {
+                match handle.find_location(*hit) {
                     Location::Module(module) => {
                         let mut path = path.clone();
-                        let offset = hit.offset_of(module.range.base)?;
+                        let offset = hit.offset_of(module.range.base);
                         path.reverse();
 
                         let pointer = Pointer::new(
@@ -148,11 +159,9 @@ impl<'a> PointerScan<'a> {
 
                 let depth = depth + 1;
 
-                if depth >= self.max_depth {
-                    continue;
+                if depth < max_depth {
+                    queue.push_back((*hit, depth, path));
                 }
-
-                queue.push_back((*hit, depth, path));
             }
 
             progress.report(queue.len(), results.len())?;

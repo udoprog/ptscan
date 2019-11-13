@@ -199,7 +199,7 @@ impl ProcessHandle {
     pub fn address_to_pointer_base(&self, address: Address) -> anyhow::Result<PointerBase> {
         Ok(match self.find_location(address) {
             Location::Module(module) => {
-                let offset = address.offset_of(module.range.base)?;
+                let offset = address.offset_of(module.range.base);
                 PointerBase::Module {
                     name: module.name.to_string(),
                     offset,

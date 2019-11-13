@@ -687,8 +687,13 @@ impl Application {
                 scan.push(Box::new(ScanResult::new(pointer, value)));
                 scan.initial = false;
             }
-            Action::Scan { filter, ty, config } => {
-                self.scan(&filter, ty, config)?;
+            Action::Scan {
+                filter,
+                initial,
+                ty,
+                config,
+            } => {
+                self.scan(&filter, initial, ty, config)?;
             }
             Action::Refresh {
                 ty,
@@ -1724,6 +1729,7 @@ impl Application {
     fn scan(
         &mut self,
         filter: &FilterExpr,
+        initial: bool,
         ty: Option<Type>,
         config: ScanConfig,
     ) -> anyhow::Result<()> {
@@ -1750,7 +1756,7 @@ impl Application {
             ..
         } = *self;
 
-        let result = if scan.initial {
+        let result = if initial || scan.initial {
             let ty = filter
                 .value_type_of(ty.map(TypeHint::Explicit).unwrap_or(TypeHint::NoHint))?
                 .ok_or_else(|| anyhow!("cannot determine type of value"))?;
@@ -1763,6 +1769,7 @@ impl Application {
             c.modules_only = config.modules_only;
             c.tasks = config.tasks;
             c.buffer_size = config.buffer_size;
+            c.alignment = config.alignment;
 
             let result = term.work(|term, token| {
                 scan.initial_scan(
@@ -2044,6 +2051,17 @@ impl Application {
                         .help("Buffer size to use in bytes for each worker thread.")
                         .long("buffer-size")
                         .value_name("bytes"),
+                )
+                .arg(
+                    Arg::with_name("initial")
+                        .help("If we should force an initial scan or not. An initial scan scans the whole memory.")
+                        .long("init"),
+                )
+                .arg(
+                    Arg::with_name("alignment")
+                        .help("Alignment to use for the initial scan.")
+                        .long("alignment")
+                        .value_name("size"),
                 )
                 .arg(
                     Arg::with_name("filter")
@@ -2461,12 +2479,20 @@ impl Application {
 
                 let filter = FilterExpr::parse(&filter, process)?;
 
+                let initial = m.is_present("initial");
+
                 let mut config = ScanConfig::default();
                 config.modules_only = m.is_present("modules-only");
                 config.suspend = m.is_present("suspend");
                 config.tasks = m.value_of("tasks").map(str::parse).transpose()?;
                 config.buffer_size = m.value_of("buffer-size").map(str::parse).transpose()?;
-                Ok(Action::Scan { filter, ty, config })
+                config.alignment = m.value_of("alignment").map(str::parse).transpose()?;
+                Ok(Action::Scan {
+                    filter,
+                    initial,
+                    ty,
+                    config,
+                })
             }
 
             ("refresh", Some(m)) => {
@@ -2636,6 +2662,7 @@ pub struct ScanConfig {
     suspend: bool,
     tasks: Option<usize>,
     buffer_size: Option<usize>,
+    alignment: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2858,6 +2885,7 @@ pub enum Action {
     /// Initialize or refine the existing scan.
     Scan {
         filter: FilterExpr,
+        initial: bool,
         ty: Option<Type>,
         config: ScanConfig,
     },

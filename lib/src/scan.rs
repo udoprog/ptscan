@@ -21,6 +21,7 @@ pub struct InitialScanConfig {
     pub modules_only: bool,
     pub tasks: Option<usize>,
     pub buffer_size: Option<usize>,
+    pub alignment: Option<usize>,
 }
 
 /// A trait to track the progress of processes.
@@ -233,7 +234,9 @@ impl Scan {
             .alignment(&handle.process)
             .ok_or_else(|| anyhow!("cannot scan for none"))?;
         let step_size = if aligned { alignment } else { 1 };
-        let alignment = if aligned { Some(alignment) } else { None };
+        let alignment = config
+            .alignment
+            .or_else(|| if aligned { Some(alignment) } else { None });
 
         let special = filter.special(&handle.process, value_type)?;
         let special = special.as_ref();

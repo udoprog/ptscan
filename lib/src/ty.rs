@@ -1,8 +1,32 @@
-use crate::{error::Error, process::MemoryReader, Address, Encoding, ProcessInfo, Value};
+use crate::{
+    address, encoding, error::Error, process::MemoryReader, Address, Encoding, ProcessInfo, Value,
+};
 use anyhow::bail;
 use byteorder::ByteOrder as _;
 use serde::{Deserialize, Serialize};
-use std::{convert::TryFrom as _, fmt, mem, str};
+use std::{convert::TryFrom as _, fmt, mem, num, str};
+
+#[derive(Debug, thiserror::Error)]
+pub enum ParseTypeError {
+    #[error("failed to parse encoding")]
+    Encoding(#[source] encoding::ParseEncodingError),
+    #[error("not a valid type: {0}")]
+    Invalid(String),
+    #[error("invalid size: {0}")]
+    InvalidSize(String, #[source] num::ParseIntError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ValueParseError {
+    #[error("type cannot be parsed from string: {0}")]
+    Unsupported(Type),
+    #[error("failed to parse address")]
+    Address(#[source] address::ParseError),
+    #[error("failed to parse integer")]
+    Integer(#[source] num::ParseIntError),
+    #[error("failed to parse float")]
+    Float(#[source] num::ParseFloatError),
+}
 
 macro_rules! convert {
     ($a:ident, $b:ident) => {
@@ -164,12 +188,11 @@ impl Type {
     }
 
     /// Parse a string value of the type.
-    pub fn parse(&self, input: &str) -> Result<Value, Error> {
+    pub fn parse(&self, input: &str) -> Result<Value, ValueParseError> {
         let value = match *self {
-            Self::None => return Err(Error::TypeParseNone),
             Self::Pointer => {
                 return Ok(Value::Pointer(
-                    str::parse::<Address>(input).map_err(|_| Error::TypeParseError)?,
+                    str::parse::<Address>(input).map_err(ValueParseError::Address)?,
                 ));
             }
             Self::U8 => str::parse::<u8>(input).map(Value::U8),
@@ -184,27 +207,29 @@ impl Type {
             Self::I128 => str::parse::<i128>(input).map(Value::I128),
             Self::F32 => {
                 return Ok(Value::F32(
-                    str::parse::<f32>(input).map_err(|_| Error::TypeParseError)?,
+                    str::parse::<f32>(input).map_err(ValueParseError::Float)?,
                 ))
             }
             Self::F64 => {
                 return Ok(Value::F64(
-                    str::parse::<f64>(input).map_err(|_| Error::TypeParseError)?,
+                    str::parse::<f64>(input).map_err(ValueParseError::Float)?,
                 ))
             }
-            Self::String(..) => return Err(Error::TypeParseString),
-            Self::Bytes(..) => return Err(Error::TypeParseBytes),
+            ty => return Err(ValueParseError::Unsupported(ty)),
         };
 
-        value.map_err(|_| Error::TypeParseError)
+        value.map_err(ValueParseError::Integer)
     }
 
     /// Parse a string as hex.
-    pub fn parse_hex(&self, input: &str) -> Result<Value, Error> {
+    pub fn parse_hex(&self, input: &str) -> Result<Value, ValueParseError> {
+        use std::str::FromStr as _;
+
         let value = match *self {
-            Self::None => return Err(Error::TypeParseNone),
             Self::Pointer => {
-                u64::from_str_radix(input, 16).map(|a| Value::Pointer(Address::new(a)))
+                return Address::from_str(input)
+                    .map(Value::Pointer)
+                    .map_err(ValueParseError::Address)
             }
             Self::U8 => u8::from_str_radix(input, 16).map(Value::U8),
             Self::I8 => i8::from_str_radix(input, 16).map(Value::I8),
@@ -216,13 +241,10 @@ impl Type {
             Self::I64 => i64::from_str_radix(input, 16).map(Value::I64),
             Self::U128 => u128::from_str_radix(input, 16).map(Value::U128),
             Self::I128 => i128::from_str_radix(input, 16).map(Value::I128),
-            Self::F32 => return Err(Error::TypeParseFloat),
-            Self::F64 => return Err(Error::TypeParseFloat),
-            Self::String(..) => return Err(Error::TypeParseString),
-            Self::Bytes(..) => return Err(Error::TypeParseBytes),
+            ty => return Err(ValueParseError::Unsupported(ty)),
         };
 
-        value.map_err(|_| Error::TypeParseError)
+        value.map_err(ValueParseError::Integer)
     }
 
     /// The default alignment for every type.
@@ -383,48 +405,52 @@ impl fmt::Display for Type {
 }
 
 impl str::FromStr for Type {
-    type Err = anyhow::Error;
+    type Err = ParseTypeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut it = s.split('/');
-
-        let first = match it.next() {
-            Some(base) => base,
-            None => return Err(Error::TypeBadBase.into()),
+        let (first, ext) = match s.find('/') {
+            Some(index) => {
+                let (s, ext) = s.split_at(index);
+                (s, Some(&ext[1..]))
+            }
+            None => (s, None),
         };
 
-        let ty = match first {
-            "pointer" => Type::Pointer,
-            "u8" => Type::U8,
-            "i8" => Type::I8,
-            "u16" => Type::U16,
-            "i16" => Type::I16,
-            "u32" => Type::U32,
-            "i32" => Type::I32,
-            "u64" => Type::U64,
-            "i64" => Type::I64,
-            "u128" => Type::U128,
-            "i128" => Type::I128,
-            "f32" => Type::F32,
-            "f64" => Type::F64,
-            "string" => {
-                let encoding = match it.next() {
-                    Some(s) => str::parse::<Encoding>(s)?,
+        let ty = match (first, ext) {
+            ("pointer", None) => Type::Pointer,
+            ("u8", None) => Type::U8,
+            ("i8", None) => Type::I8,
+            ("u16", None) => Type::U16,
+            ("i16", None) => Type::I16,
+            ("u32", None) => Type::U32,
+            ("i32", None) => Type::I32,
+            ("u64", None) => Type::U64,
+            ("i64", None) => Type::I64,
+            ("u128", None) => Type::U128,
+            ("i128", None) => Type::I128,
+            ("f32", None) => Type::F32,
+            ("f64", None) => Type::F64,
+            ("none", None) => Type::None,
+            ("string", encoding) => {
+                let encoding = match encoding {
+                    Some(s) => str::parse::<Encoding>(s).map_err(ParseTypeError::Encoding)?,
                     None => Encoding::default(),
                 };
 
                 Type::String(encoding)
             }
-            "bytes" => {
-                let size = match it.next() {
-                    Some(size) => Some(str::parse::<usize>(size).map_err(|_| Error::TypeBadSize)?),
+            ("bytes", size) => {
+                let size = match size {
+                    Some(size) => Some(
+                        str::parse::<usize>(size)
+                            .map_err(|e| ParseTypeError::InvalidSize(size.to_string(), e))?,
+                    ),
                     None => None,
                 };
 
                 Type::Bytes(size)
             }
-            "none" => Type::None,
-            other => return Err(Error::IllegalType(other.to_string()).into()),
+            _ => return Err(ParseTypeError::Invalid(s.to_string())),
         };
 
         Ok(ty)

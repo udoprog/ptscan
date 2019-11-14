@@ -1,6 +1,5 @@
-use crate::error::Error;
 use serde::{Deserialize, Serialize};
-use std::{convert::TryFrom, fmt};
+use std::{convert::TryFrom, fmt, num};
 
 #[derive(Clone, Copy, Default, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(transparent)]
@@ -65,7 +64,7 @@ impl From<u64> for Size {
 
 impl fmt::Display for Size {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "{:X}", self.0)
+        write!(fmt, "0x{:X}", self.0)
     }
 }
 
@@ -76,11 +75,9 @@ impl fmt::Debug for Size {
 }
 
 impl TryFrom<usize> for Size {
-    type Error = Error;
+    type Error = num::TryFromIntError;
 
     fn try_from(value: usize) -> Result<Self, Self::Error> {
-        Ok(Size(
-            u64::try_from(value).map_err(|_| Error::SizeConversion)?,
-        ))
+        Ok(Size(u64::try_from(value)?))
     }
 }

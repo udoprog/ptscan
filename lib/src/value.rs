@@ -34,6 +34,14 @@ macro_rules! numeric_op {
     };
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("failed to convert bigint `{0}` into type {1}")]
+pub struct FromBigIntError(num_bigint::BigInt, Type);
+
+#[derive(Debug, thiserror::Error)]
+#[error("failed to convert bigdecimal `{0}` into type {1}")]
+pub struct FromBigDecimalError(bigdecimal::BigDecimal, Type);
+
 /// A single dynamic literal value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
@@ -284,7 +292,7 @@ impl Value {
     }
 
     /// Convert from a big integer.
-    pub fn from_bigint(ty: Type, value: &num_bigint::BigInt) -> Result<Self, Error> {
+    pub fn from_bigint(ty: Type, value: &num_bigint::BigInt) -> Result<Self, FromBigIntError> {
         use num::ToPrimitive;
 
         let out = match ty {
@@ -304,12 +312,15 @@ impl Value {
             _ => return Ok(Value::None(ty)),
         };
 
-        let out = out.ok_or_else(|| Error::ValueNumberConversion(value.clone(), ty))?;
+        let out = out.ok_or_else(|| FromBigIntError(value.clone(), ty))?;
         Ok(out)
     }
 
     /// Convert from a big decimal.
-    pub fn from_bigdecimal(ty: Type, value: &bigdecimal::BigDecimal) -> Result<Self, Error> {
+    pub fn from_bigdecimal(
+        ty: Type,
+        value: &bigdecimal::BigDecimal,
+    ) -> Result<Self, FromBigDecimalError> {
         use num_traits::cast::ToPrimitive as _;
 
         let out = match ty {
@@ -318,7 +329,7 @@ impl Value {
             _ => return Ok(Value::None(ty)),
         };
 
-        let out = out.ok_or_else(|| Error::ValueDecimalConversion(value.clone(), ty))?;
+        let out = out.ok_or_else(|| FromBigDecimalError(value.clone(), ty))?;
         Ok(out)
     }
 

@@ -6,6 +6,10 @@ use std::{convert::TryFrom as _, fmt, str};
 
 const READ_BUFFER_SIZE: usize = 0x100;
 
+#[derive(Debug, thiserror::Error)]
+#[error("bad encoding: {0}")]
+pub struct ParseEncodingError(String);
+
 /// The encoding for a string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Encoding(&'static encoding_rs::Encoding);
@@ -224,12 +228,12 @@ impl fmt::Display for Encoding {
 }
 
 impl str::FromStr for Encoding {
-    type Err = anyhow::Error;
+    type Err = ParseEncodingError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match encoding_rs::Encoding::for_label(s.as_bytes()) {
             Some(encoding) => Ok(Self(encoding)),
-            None => bail!("bad encoding: {}", s),
+            None => Err(ParseEncodingError(s.to_string())),
         }
     }
 }

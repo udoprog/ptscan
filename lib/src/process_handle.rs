@@ -297,14 +297,14 @@ impl ProcessHandle {
     }
 
     /// Create a new cached session.
-    pub fn session(&self) -> Result<Session<'_>, Error> {
+    pub fn session(&self) -> anyhow::Result<Session<'_>> {
         use crate::utils::IteratorExtension as _;
 
         let regions = self
             .process
             .virtual_memory_regions()
             .only_relevant()
-            .collect::<Result<_, Error>>()?;
+            .collect::<anyhow::Result<_>>()?;
 
         Ok(Session {
             handle: self,

@@ -30,7 +30,7 @@ macro_rules! try_iter {
     ($expr:expr) => {
         match $expr {
             Ok(value) => value,
-            Err(e) => return Some(Err(e)),
+            Err(e) => return Some(Err(Into::into(e))),
         }
     };
 }
@@ -146,7 +146,7 @@ unsafe impl Send for Handle {}
 pub trait IteratorExtension {
     fn chunked(self, chunk_size: Size) -> Chunked<Self>
     where
-        Self: Sized + Iterator<Item = Result<MemoryInformation, Error>>,
+        Self: Sized + Iterator<Item = anyhow::Result<MemoryInformation>>,
     {
         Chunked {
             iter: self,
@@ -158,7 +158,7 @@ pub trait IteratorExtension {
 
     fn only_relevant(self) -> OnlyRelevant<Self>
     where
-        Self: Sized + Iterator<Item = Result<MemoryInformation, Error>>,
+        Self: Sized + Iterator<Item = anyhow::Result<MemoryInformation>>,
     {
         OnlyRelevant { iter: self }
     }
@@ -176,9 +176,9 @@ where
 
 impl<I> Iterator for OnlyRelevant<I>
 where
-    I: Iterator<Item = Result<MemoryInformation, Error>>,
+    I: Iterator<Item = anyhow::Result<MemoryInformation>>,
 {
-    type Item = Result<MemoryInformation, Error>;
+    type Item = anyhow::Result<MemoryInformation>;
 
     fn next(&mut self) -> Option<Self::Item> {
         use crate::process::{MemoryState, MemoryType};
@@ -228,9 +228,9 @@ where
 
 impl<I> Iterator for Chunked<I>
 where
-    I: Iterator<Item = Result<MemoryInformation, Error>>,
+    I: Iterator<Item = anyhow::Result<MemoryInformation>>,
 {
-    type Item = Result<(MemoryInformation, AddressRange), Error>;
+    type Item = anyhow::Result<(MemoryInformation, AddressRange)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {

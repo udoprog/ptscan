@@ -39,7 +39,7 @@ pub trait ProcessInfo {
     fn pointer_width(&self) -> usize;
 
     /// Access information on virtual memory for the given address.
-    fn virtual_query(&self, address: Address) -> Result<Option<MemoryInformation>, Error>;
+    fn virtual_query(&self, address: Address) -> anyhow::Result<Option<MemoryInformation>>;
 
     /// Access virtual memory regions of the process.
     fn virtual_memory_regions(&self) -> VirtualMemoryRegions<'_, Self>
@@ -185,7 +185,7 @@ impl Process {
     }
 
     /// Retrieve information about the memory page that corresponds to the given virtual `address`.
-    pub fn virtual_query(&self, address: Address) -> Result<Option<MemoryInformation>, Error> {
+    pub fn virtual_query(&self, address: Address) -> anyhow::Result<Option<MemoryInformation>> {
         const LENGTH: SIZE_T = mem::size_of::<winnt::MEMORY_BASIC_INFORMATION>() as SIZE_T;
 
         use std::mem;
@@ -207,7 +207,7 @@ impl Process {
                 return Ok(None);
             }
 
-            return Err(e);
+            return Err(e.into());
         }
 
         let state = match mbi.State {
@@ -215,7 +215,7 @@ impl Process {
             winnt::MEM_FREE => MemoryState::Free,
             winnt::MEM_RESERVE => MemoryState::Reserve,
             state => {
-                return Err(Error::BadRegionState(state));
+                return Err(Error::BadRegionState(state).into());
             }
         };
 
@@ -225,7 +225,7 @@ impl Process {
             (_, winnt::MEM_MAPPED) => MemoryType::Mapped,
             (_, winnt::MEM_PRIVATE) => MemoryType::Private,
             (_, ty) => {
-                return Err(Error::BadRegionType(ty));
+                return Err(Error::BadRegionType(ty).into());
             }
         };
 
@@ -276,7 +276,7 @@ impl ProcessInfo for Process {
         self.pointer_width
     }
 
-    fn virtual_query(&self, address: Address) -> Result<Option<MemoryInformation>, Error> {
+    fn virtual_query(&self, address: Address) -> anyhow::Result<Option<MemoryInformation>> {
         Process::virtual_query(self, address)
     }
 }
@@ -469,7 +469,7 @@ impl<'a, P> Iterator for VirtualMemoryRegions<'a, P>
 where
     P: ProcessInfo,
 {
-    type Item = Result<MemoryInformation, Error>;
+    type Item = anyhow::Result<MemoryInformation>;
 
     fn next(&mut self) -> Option<Self::Item> {
         let m = try_iter!(self.process.virtual_query(self.current))?;

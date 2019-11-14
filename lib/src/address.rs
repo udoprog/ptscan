@@ -9,6 +9,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, thiserror::Error)]
+#[error("failed to parse address")]
+pub struct ParseError;
+
 #[derive(Clone, Default, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Address(pub(crate) u64);
 
@@ -172,14 +176,11 @@ impl Address {
 }
 
 impl str::FromStr for Address {
-    type Err = Error;
+    type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let s = if s.starts_with("0x") { &s[2..] } else { s };
-
-        Ok(Address(
-            u64::from_str_radix(s, 16).map_err(|_| Error::AddressFromStr)?,
-        ))
+        Ok(Address(u64::from_str_radix(s, 16).map_err(|_| ParseError)?))
     }
 }
 

@@ -518,6 +518,7 @@ impl Application {
                 expr,
                 ty,
                 verbose,
+                if_some,
             } => {
                 if let Some(limit) = limit {
                     self.limit = limit;
@@ -555,12 +556,20 @@ impl Application {
                     current = &stored;
                 }
 
+                let filter = move |result: &&ScanResult| {
+                    if !if_some {
+                        true
+                    } else {
+                        result.last().is_some()
+                    }
+                };
+
                 writeln!(self.term, "Scan: {}", self.current_scan)?;
 
                 Self::print(
                     &mut self.term,
                     scan.len(),
-                    current.iter().map(|r| &**r).enumerate(),
+                    current.iter().map(|r| &**r).filter(filter).enumerate(),
                     &scan.comments,
                     value_expr,
                     verbose,
@@ -2101,6 +2110,11 @@ impl Application {
                         .short("v"),
                 )
                 .arg(
+                    Arg::with_name("if-some")
+                        .help("Only print values which are not none.")
+                        .long("if-some"),
+                )
+                .arg(
                     Arg::with_name("expr")
                         .help("Value expression to use when printing.")
                         .value_name("expr")
@@ -2406,12 +2420,14 @@ impl Application {
 
                 let ty = m.value_of("type").map(str::parse).transpose()?;
                 let verbose = m.is_present("verbose");
+                let if_some = m.is_present("if-some");
 
                 Ok(Action::Print {
                     limit,
                     expr,
                     ty,
                     verbose,
+                    if_some,
                 })
             }
             ("eval", Some(m)) => {
@@ -2903,6 +2919,8 @@ pub enum Action {
         ty: Option<Type>,
         /// Print results verbosely.
         verbose: bool,
+        /// Only print values which are some.
+        if_some: bool,
     },
     Eval {
         expr: String,

@@ -1873,7 +1873,7 @@ impl Application {
                     self.term,
                     " - {ty:?} [{}-{}] {protect:?} {state:?}",
                     range.base,
-                    range.base.saturating_add(range.size),
+                    range.base.saturating_add_size(range.size),
                     ty = ty,
                     protect = protect,
                     state = state,

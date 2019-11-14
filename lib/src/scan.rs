@@ -10,7 +10,7 @@ use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use std::{
     cmp,
-    convert::TryFrom as _,
+    convert::{TryFrom as _, TryInto as _},
     ops, slice,
     sync::mpsc,
     time::{Duration, Instant},
@@ -286,7 +286,10 @@ impl Scan {
                 }
             }
 
-            bytes.add_assign(range.size)?;
+            if !bytes.add_assign(range.size) {
+                bail!("bytes `{}` + range size `{}` overflowed", bytes, range.size);
+            }
+
             total += range.size.as_usize();
 
             let mut offset = 0usize;
@@ -294,7 +297,12 @@ impl Scan {
 
             while offset < range_size && !cancel.test() {
                 let len = usize::min(buffer_size, range_size - offset);
-                let address = range.base.add(Size::try_from(offset)?)?;
+
+                let address = match range.base.checked_add(offset.try_into()?) {
+                    Some(address) => address,
+                    None => bail!("base `{}` + offset `{}` out of range", range.base, offset),
+                };
+
                 queue.push((address, len));
                 offset += len;
             }
@@ -499,7 +507,11 @@ impl Scan {
             let mut last_address = None;
 
             while offset < data.len() && !cancel.test() {
-                let address = base.add(Size::try_from(offset)?)?;
+                let address = match base.checked_add(offset.try_into()?) {
+                    Some(address) => address,
+                    None => bail!("base `{}` + offset `{}` out of range", base, offset),
+                };
+
                 let mut pointer =
                     Pointer::new(PointerBase::Address { address }, vec![], Some(address));
                 let mut proxy = handle.address_proxy(&pointer);

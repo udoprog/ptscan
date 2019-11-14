@@ -473,7 +473,10 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         let m = try_iter!(self.process.virtual_query(self.current))?;
-        self.current = try_iter!(try_iter!(self.current.add(m.range.size)).add(Size::new(1)));
+        self.current = self
+            .current
+            .checked_size(m.range.size)?
+            .checked_size(Size::new(1))?;
         Some(Ok(m))
     }
 }

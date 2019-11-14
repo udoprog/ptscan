@@ -28,28 +28,22 @@ impl Size {
     }
 
     /// Performed a checked add with two sizes.
-    pub fn checked_add(self, rhs: Size) -> Result<Size, Error> {
-        let sum = self
-            .0
-            .checked_add(rhs.0)
-            .ok_or_else(|| Error::Add(self.0, rhs.0))?;
-
-        Ok(Size(sum))
+    pub fn checked_add(self, rhs: Size) -> Option<Size> {
+        Some(Size(self.0.checked_add(rhs.0)?))
     }
 
     /// Performed a checked add with two sizes.
-    pub fn checked_sub(self, rhs: Size) -> Result<Size, Error> {
-        let sum = self
-            .0
-            .checked_sub(rhs.0)
-            .ok_or_else(|| Error::Sub(self.0, rhs.0))?;
-
-        Ok(Size(sum))
+    pub fn checked_sub(self, rhs: Size) -> Option<Size> {
+        Some(Size(self.0.checked_sub(rhs.0)?))
     }
 
-    pub fn add_assign(&mut self, rhs: Size) -> Result<(), Error> {
-        *self = self.checked_add(rhs)?;
-        Ok(())
+    pub fn add_assign(&mut self, rhs: Size) -> bool {
+        if let Some(added) = self.checked_add(rhs) {
+            *self = added;
+            true
+        } else {
+            false
+        }
     }
 
     pub fn min(a: Size, b: Size) -> Size {

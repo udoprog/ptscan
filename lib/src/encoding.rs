@@ -130,7 +130,13 @@ impl Encoding {
             };
 
             if !last {
-                address.add_assign(read_buffer_size)?;
+                if !address.checked_add_assign_size(read_buffer_size) {
+                    bail!(
+                        "adding address `{}` + read buffer size `{}` overflowed",
+                        address,
+                        read_buffer_size
+                    );
+                }
             }
 
             if !input.is_empty() {

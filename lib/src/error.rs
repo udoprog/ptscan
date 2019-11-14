@@ -1,4 +1,4 @@
-use crate::{filter_expr::Binary, Address, ProcessId, Size, ThreadId, Type, ValueExpr};
+use crate::{filter_expr::Binary, ProcessId, ThreadId, Type, ValueExpr};
 use std::io;
 use thiserror::Error;
 
@@ -8,14 +8,6 @@ use winapi::shared::{minwindef::DWORD, ntdef::NTSTATUS};
 pub enum Error {
     #[error("system error: {0}")]
     System(#[source] io::Error),
-    #[error("address {0} is not based on {1}")]
-    SizeFrom(Address, Address),
-    #[error("add operation `{0} + {1}` overflowed")]
-    Add(u64, u64),
-    #[error("sub operation `{0} - {1}` underflowed")]
-    Sub(u64, u64),
-    #[error("address add operation `{0} + {1}` overflowed")]
-    AddressAdd(Address, Size),
     #[error("bad region state: {0}")]
     BadRegionState(DWORD),
     #[error("bad region type: {0}")]

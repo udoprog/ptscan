@@ -2,6 +2,7 @@ use std::{convert::TryFrom, fmt, io, mem, sync::Arc};
 
 use crate::{error::Error, process, utils, Address, AddressRange};
 
+use anyhow::bail;
 use winapi::{
     shared::{
         minwindef::{BOOL, DWORD, FALSE, TRUE},
@@ -52,15 +53,24 @@ impl Thread {
     }
 
     /// Access the thread stack from a 64-bit process.
-    pub fn thread_stack(&self, process: &process::Process) -> Result<AddressRange, Error> {
+    pub fn thread_stack(&self, process: &process::Process) -> anyhow::Result<AddressRange> {
         let tib = self.thread_teb::<winnt::NT_TIB64>(process)?;
 
         let stack_base = Address::try_from(tib.StackBase)?;
         let stack_limit = Address::try_from(tib.StackLimit)?;
 
+        let size = match stack_base.size_from(stack_limit) {
+            Some(size) => size,
+            None => bail!(
+                "stack base `{}` is smaller than stack limit `{}`",
+                stack_base,
+                stack_limit
+            ),
+        };
+
         Ok(AddressRange {
             base: stack_limit,
-            size: stack_base.size_from(stack_limit)?,
+            size,
         })
     }
 
@@ -123,7 +133,7 @@ pub struct ThreadContext<'a> {
 
 impl ThreadContext<'_> {
     /// Find where the thread stack is located.
-    pub fn thread_stack(&self, process: &process::Process) -> Result<AddressRange, Error> {
+    pub fn thread_stack(&self, process: &process::Process) -> anyhow::Result<AddressRange> {
         let entry = self
             .thread
             .thread_selector_entry(self.context.SegFs as DWORD)?;
@@ -136,8 +146,17 @@ impl ThreadContext<'_> {
         })?;
 
         let tib = unsafe { process.read::<winnt::NT_TIB32>(address)? };
-        let size =
-            Address::try_from(tib.StackBase)?.size_from(Address::try_from(tib.StackLimit)?)?;
+        let stack_base = Address::try_from(tib.StackBase)?;
+        let stack_limit = Address::try_from(tib.StackLimit)?;
+
+        let size = match stack_base.size_from(stack_limit) {
+            Some(size) => size,
+            None => bail!(
+                "stack base `{}` is smaller than stack limit `{}`",
+                stack_base,
+                stack_limit
+            ),
+        };
 
         Ok(AddressRange {
             base: Address::try_from(tib.StackLimit)?,

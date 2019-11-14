@@ -220,7 +220,7 @@ impl ProcessHandle {
     }
 
     /// Access the address of the stack for the given thread.
-    pub fn thread_stack(&self, thread: &Thread) -> Result<AddressRange, Error> {
+    pub fn thread_stack(&self, thread: &Thread) -> anyhow::Result<AddressRange> {
         // NB: if ptscan is running in 32-bit mode this might have to be different.
         thread.thread_stack(&self.process)
     }
@@ -239,7 +239,7 @@ impl ProcessHandle {
         let mut buf = vec![0u8; stack.size.as_usize()];
         self.process.read_process_memory(stack.base, &mut buf)?;
 
-        if !stack.base.is_aligned(ptr_width)? {
+        if !stack.base.is_aligned(ptr_width) {
             bail!(
                 "for some reason, the stack {:?} is not aligned with {}",
                 stack,
@@ -257,8 +257,18 @@ impl ProcessHandle {
             let ptr = Address::try_from(LittleEndian::read_u64(w))?;
 
             if kernel32.contains(ptr) {
-                let address = Size::try_from(n * ptr_width.as_usize())?;
-                return Ok(Some(stack.base.add(address)?));
+                let stack_offset = Size::try_from(n * ptr_width.as_usize())?;
+
+                let address = match stack.base.checked_size(stack_offset) {
+                    Some(address) => address,
+                    None => bail!(
+                        "adding stack base `{}` + to stack offset `{}` overflowed",
+                        stack.base,
+                        stack_offset
+                    ),
+                };
+
+                return Ok(Some(address));
             }
         }
 

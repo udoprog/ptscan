@@ -10,7 +10,7 @@ pub struct AddressRange {
 impl AddressRange {
     /// Check if the range contains the given address.
     pub fn contains(&self, value: Address) -> bool {
-        self.base <= value && value <= self.base.saturating_add(self.size)
+        self.base.0 <= value.0 && value.0 <= self.base.0.saturating_add(self.size.0)
     }
 
     /// Helper function to find which memory region a given address is contained in.

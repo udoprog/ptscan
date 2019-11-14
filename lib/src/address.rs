@@ -4,7 +4,7 @@ use crate::{error::Error, Offset, ProcessInfo, Sign, Size};
 
 use std::{
     convert::{self, TryFrom, TryInto},
-    fmt, io, num, str,
+    fmt, num, str,
 };
 
 use serde::{Deserialize, Serialize};
@@ -77,6 +77,20 @@ impl Address {
         Some(Address(self.0.checked_div(other.0)?))
     }
 
+    pub fn checked_add_size(self, rhs: Size) -> Option<Self> {
+        Some(Address(self.0.checked_add(rhs.0)?))
+    }
+
+    /// Add a size to the current address.
+    pub fn checked_add_assign_size(&mut self, rhs: Size) -> bool {
+        if let Some(added) = self.0.checked_add(rhs.0) {
+            self.0 = added;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Add an offset in a checked manner.
     pub fn checked_offset(self, offset: Offset) -> Option<Address> {
         Some(match offset {
@@ -95,27 +109,14 @@ impl Address {
         }
     }
 
+    /// Add the given size in a checked manner.
+    pub fn checked_size(self, rhs: Size) -> Option<Address> {
+        Some(Address(self.0.checked_add(rhs.0)?))
+    }
+
     /// Add the given size in a saturating manner.
-    pub fn saturating_add(self, rhs: Size) -> Address {
-        let sum = self.0.saturating_add(rhs.0);
-
-        Address(sum)
-    }
-
-    /// Performed a checked add with an address and a size.
-    pub fn add(self, rhs: Size) -> Result<Address, Error> {
-        let sum = self
-            .0
-            .checked_add(rhs.0)
-            .ok_or_else(|| Error::AddressAdd(self, rhs))?;
-
-        Ok(Address(sum))
-    }
-
-    /// Add a size to the current address.
-    pub fn add_assign(&mut self, rhs: Size) -> Result<(), Error> {
-        *self = self.add(rhs)?;
-        Ok(())
+    pub fn saturating_add_size(self, rhs: Size) -> Address {
+        Address(self.0.saturating_add(rhs.0))
     }
 
     pub fn align_assign(&mut self, alignment: Size) -> Result<(), Error> {
@@ -127,16 +128,6 @@ impl Address {
 
         self.0 -= rem;
         Ok(())
-    }
-
-    /// Performed a checked subtraction between two addresses.
-    pub fn sub_address(self, rhs: Address) -> Result<Address, Error> {
-        let sum = self
-            .0
-            .checked_sub(rhs.0)
-            .ok_or_else(|| Error::Sub(self.0, rhs.0))?;
-
-        Ok(Address(sum))
     }
 
     /// Find how far this address offsets another one.
@@ -151,21 +142,17 @@ impl Address {
     }
 
     /// Safely convert two addresses into a non-negative size.
-    pub fn size_from(self, base: Address) -> Result<Size, Error> {
+    pub fn size_from(self, base: Address) -> Option<Size> {
         if self.0 < base.0 {
-            return Err(Error::SizeFrom(self, base));
+            return None;
         }
 
-        Ok(Size(self.0 - base.0))
+        Some(Size(self.0 - base.0))
     }
 
     /// Test if the current address is aligned with the given size.
-    pub fn is_aligned(self, size: Size) -> Result<bool, io::Error> {
-        if size.0 == 0 {
-            return Ok(false);
-        }
-
-        Ok((self.0 % size.0) == 0)
+    pub fn is_aligned(self, size: Size) -> bool {
+        size.0 != 0 && (self.0 % size.0) == 0
     }
 
     /// Try to convert into the given type.

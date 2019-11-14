@@ -300,13 +300,9 @@ impl TryFrom<i128> for Address {
     }
 }
 
-impl TryFrom<u64> for Address {
-    type Error = Error;
-
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        Ok(Address(
-            value.try_into().map_err(|_| Error::AddressConversion)?,
-        ))
+impl From<u64> for Address {
+    fn from(value: u64) -> Self {
+        Address(value)
     }
 }
 
@@ -320,13 +316,9 @@ impl TryFrom<i64> for Address {
     }
 }
 
-impl TryFrom<u32> for Address {
-    type Error = Error;
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        Ok(Address(
-            value.try_into().map_err(|_| Error::AddressConversion)?,
-        ))
+impl From<u32> for Address {
+    fn from(value: u32) -> Self {
+        Address(value.into())
     }
 }
 
@@ -340,13 +332,9 @@ impl TryFrom<i32> for Address {
     }
 }
 
-impl TryFrom<u16> for Address {
-    type Error = Error;
-
-    fn try_from(value: u16) -> Result<Self, Self::Error> {
-        Ok(Address(
-            value.try_into().map_err(|_| Error::AddressConversion)?,
-        ))
+impl From<u16> for Address {
+    fn from(value: u16) -> Self {
+        Address(value.into())
     }
 }
 
@@ -360,13 +348,9 @@ impl TryFrom<i16> for Address {
     }
 }
 
-impl TryFrom<u8> for Address {
-    type Error = Error;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        Ok(Address(
-            value.try_into().map_err(|_| Error::AddressConversion)?,
-        ))
+impl From<u8> for Address {
+    fn from(value: u8) -> Self {
+        Address(value.into())
     }
 }
 

@@ -2,6 +2,7 @@
 members = [
     "lib",
     "tui",
+    "pts-gui",
 ]
 
 [profile.dev]

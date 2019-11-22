@@ -54,6 +54,7 @@ pub use self::scan::{InitialScanConfig, Scan, ScanProgress};
 pub use self::scan_result::ScanResult;
 pub use self::sign::Sign;
 pub use self::size::Size;
+pub use self::system::processes;
 pub use self::thread::Thread;
 pub use self::token::Token;
 pub use self::ty::Type;

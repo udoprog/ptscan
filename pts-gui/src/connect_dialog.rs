@@ -16,7 +16,7 @@ pub struct ConnectDialog<A, E> {
     weak_spinner: glib::WeakRef<Spinner>,
     weak_model: glib::WeakRef<ListStore>,
     error: E,
-    refresh_in_progress: bool,
+    refresh_in_progress: Option<task::Handle>,
 }
 
 impl<A, E> ConnectDialog<A, E> {
@@ -36,7 +36,7 @@ impl<A, E> ConnectDialog<A, E> {
             weak_spinner: spinner.downgrade(),
             weak_model: model.downgrade(),
             error,
-            refresh_in_progress: false,
+            refresh_in_progress: None,
         }));
 
         let window = cascade! {
@@ -156,12 +156,6 @@ impl<A, E> ConnectDialog<A, E> {
     {
         let mut slf = dialog.borrow_mut();
 
-        if slf.refresh_in_progress {
-            return;
-        }
-
-        slf.refresh_in_progress = true;
-
         if let Some(spinner) = slf.weak_spinner.upgrade() {
             spinner.show();
             spinner.start();
@@ -169,70 +163,77 @@ impl<A, E> ConnectDialog<A, E> {
 
         let error = slf.error.clone();
 
-        let rx = task::oneshot(move || {
-            let pids = ptscan::processes()?;
-            let mut infos = Vec::new();
+        let task = cascade! {
+            task::Task::new(dialog, move |c| {
+                let pids = ptscan::processes()?;
+                let mut infos = Vec::new();
 
-            for process_id in &pids {
-                let result = ptscan::Process::builder()
-                    .query_information()
-                    .vm_read()
-                    .build(*process_id);
-
-                let process = match result {
-                    Ok(process) => process,
-                    Err(e) => {
-                        error.report(e);
-                        continue;
+                for (index, process_id) in pids.iter().enumerate() {
+                    if c.is_cancelled() {
+                        break;
                     }
-                };
 
-                let name = process.module_base_name()?.into_string().ok();
+                    if index % 10 == 0 {
+                        c.emit(index);
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
 
-                infos.push(ProcessInfo {
-                    process_id: *process_id,
-                    name,
-                })
-            }
+                    let result = ptscan::Process::builder()
+                        .query_information()
+                        .vm_read()
+                        .build(*process_id);
 
-            Ok(infos)
-        });
+                    let process = match result {
+                        Ok(process) => process,
+                        Err(e) => {
+                            error.report(e);
+                            continue;
+                        }
+                    };
 
-        rx.attach(
-            None,
-            clone!(dialog => move |infos| {
-                let mut slf = dialog.borrow_mut();
-                slf.refresh_in_progress = false;
+                    let name = process.module_base_name()?.into_string().ok();
 
-                if let Some(spinner) = slf.weak_spinner.upgrade() {
+                    infos.push(ProcessInfo {
+                        process_id: *process_id,
+                        name,
+                    })
+                }
+
+                Ok(infos)
+            });
+            ..on_complete(|dialog| {
+                if let Some(spinner) = dialog.weak_spinner.upgrade() {
                     spinner.hide();
                     spinner.stop();
                 }
 
-                let infos = match infos {
-                    Ok(infos) => infos,
-                    Err(e) => {
-                        slf.error.report(e);
-                        return glib::Continue(false);
-                    }
-                };
-
-                let model = upgrade_weak!(slf.weak_model, glib::Continue(false));
+                dialog.refresh_in_progress = None;
+            });
+            ..on_emit(|dialog, index| {
+                println!("finished: {}", index);
+            });
+            ..on_ok(|dialog, infos| {
+                let model = upgrade_weak!(dialog.weak_model);
 
                 for info in &infos {
                     model.insert_with_values(None, &[0, 1], &[&info.process_id, &info.name]);
                 }
 
-                slf.processes = infos;
-                glib::Continue(false)
-            }),
-        );
+                dialog.processes = infos;
+            });
+            ..on_err(|dialog, e| {
+                dialog.error.report(e);
+            });
+        };
+
+        slf.refresh_in_progress = Some(task.run());
     }
 
     /// Clear the current state of the dialog model.
     fn clear(&mut self) {
         self.selected = None;
         self.processes.clear();
+        self.refresh_in_progress = None;
     }
 
     /// Get the currently selected process id.

@@ -74,6 +74,7 @@ impl MainMenu {
                     });
                 }));
             });
+            ..show_all();
         };
 
         menu_bar

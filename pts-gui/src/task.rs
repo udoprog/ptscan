@@ -36,7 +36,7 @@ impl<Y, U> Context<Y, U> {
     }
 
     /// Test if the current task is cancelled.
-    pub fn is_cancelled(&self) -> bool {
+    pub fn is_stopped(&self) -> bool {
         self.cancel.load(Ordering::Acquire)
     }
 }
@@ -81,10 +81,8 @@ pub struct Task<C, T, Y, U> {
     cancel: Arc<AtomicBool>,
     context: Rc<RefCell<C>>,
     task: T,
-    on_complete: Option<Box<dyn Fn(&mut C)>>,
-    on_emit: Option<Box<dyn Fn(&mut C, Y)>>,
-    on_ok: Option<Box<dyn Fn(&mut C, U)>>,
-    on_err: Option<Box<dyn Fn(&mut C, anyhow::Error)>>,
+    emit: Option<Box<dyn Fn(&mut C, Y)>>,
+    then: Option<Box<dyn Fn(&mut C, anyhow::Result<U>)>>,
 }
 
 impl<C, T, U> Task<C, T, (), U>
@@ -115,43 +113,25 @@ where
             cancel: Arc::new(AtomicBool::new(false)),
             context: context.clone(),
             task,
-            on_complete: None,
-            on_emit: None,
-            on_ok: None,
-            on_err: None,
+            emit: None,
+            then: None,
         }
     }
 
-    /// Register a handler to be fired when the oneshot is completed.
-    pub fn on_complete<Callback>(&mut self, on_complete: Callback)
-    where
-        Callback: 'static + Fn(&mut C),
-    {
-        self.on_complete = Some(Box::new(on_complete));
-    }
-
     /// Register a handler to be fired when the oneshot is done.
-    pub fn on_emit<Callback>(&mut self, on_emit: Callback)
+    pub fn emit<Callback>(&mut self, emit: Callback)
     where
         Callback: 'static + Fn(&mut C, Y),
     {
-        self.on_emit = Some(Box::new(on_emit));
+        self.emit = Some(Box::new(emit));
     }
 
     /// Register a handler to be fired when the oneshot is done.
-    pub fn on_ok<Callback>(&mut self, on_ok: Callback)
+    pub fn then<Callback>(&mut self, then: Callback)
     where
-        Callback: 'static + Fn(&mut C, U),
+        Callback: 'static + Fn(&mut C, anyhow::Result<U>),
     {
-        self.on_ok = Some(Box::new(on_ok));
-    }
-
-    /// Register a handler to be fired when the oneshot is errored.
-    pub fn on_err<Callback>(&mut self, on_err: Callback)
-    where
-        Callback: 'static + Fn(&mut C, anyhow::Error),
-    {
-        self.on_err = Some(Box::new(on_err));
+        self.then = Some(Box::new(then));
     }
 
     /// Run the oneshot task with the current configuration.
@@ -160,10 +140,8 @@ where
             cancel,
             context,
             task,
-            on_complete,
-            on_emit,
-            on_ok,
-            on_err,
+            emit,
+            then,
         } = self;
 
         let (tx, rx) = glib::MainContext::channel::<Progress<Y, U>>(glib::PRIORITY_DEFAULT);
@@ -172,9 +150,13 @@ where
         TASKS.thread_pool.lock().execute(move || {
             let context = Context { cancel, tx };
 
+            if context.is_stopped() {
+                return;
+            }
+
             let result = task(&context);
 
-            if context.is_cancelled() {
+            if context.is_stopped() {
                 return;
             }
 
@@ -189,8 +171,8 @@ where
 
             let result = match result {
                 Progress::Emit(result) => {
-                    if let Some(on_emit) = &on_emit {
-                        on_emit(&mut *context, result);
+                    if let Some(emit) = &emit {
+                        emit(&mut *context, result);
                     }
 
                     return glib::Continue(true);
@@ -198,21 +180,8 @@ where
                 Progress::Result(result) => result,
             };
 
-            if let Some(on_complete) = &on_complete {
-                on_complete(&mut *context);
-            }
-
-            match result {
-                Ok(result) => {
-                    if let Some(on_ok) = &on_ok {
-                        on_ok(&mut *context, result);
-                    }
-                }
-                Err(e) => {
-                    if let Some(on_err) = &on_err {
-                        on_err(&mut *context, e);
-                    }
-                }
+            if let Some(then) = &then {
+                then(&mut *context, result);
             }
 
             glib::Continue(false)

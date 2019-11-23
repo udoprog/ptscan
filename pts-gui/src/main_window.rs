@@ -1,26 +1,34 @@
-use crate::{prelude::*, MainMenu};
+use crate::{prelude::*, FilterOptions, MainMenu};
 use std::{cell::RefCell, rc::Rc};
 
 use self::Orientation::*;
+use anyhow::anyhow;
+use ptscan::ProcessId;
 
 pub struct MainWindow {
-    attached: Option<ptscan::ProcessHandle>,
+    attached: Option<Rc<ptscan::ProcessHandle>>,
     attached_label: glib::WeakRef<gtk::Label>,
-    error_label: glib::WeakRef<gtk::Label>,
     selected_scan_result: Option<usize>,
+    open_process_task: Option<task::Handle>,
+    filter_options: Rc<RefCell<FilterOptions>>,
 }
 
 impl MainWindow {
     /// Construct a new main window and assocaite it with the given application.
     pub fn build(application: &gtk::Application, error: impl ErrorHandler) {
-        let attached_label = Label::new(Some("Not attached"));
-        let error_label = Label::new(None);
+        let attached_label = cascade! {
+            Label::new(Some("Not attached"));
+            ..show();
+        };
+
+        let (filter_options, filter_options_frame) = FilterOptions::new();
 
         let main = Rc::new(RefCell::new(MainWindow {
             attached: None,
             attached_label: attached_label.downgrade(),
-            error_label: error_label.downgrade(),
             selected_scan_result: None,
+            open_process_task: None,
+            filter_options,
         }));
 
         let accel_group = AccelGroup::new();
@@ -33,54 +41,11 @@ impl MainWindow {
             ..add_accel_group(&accel_group);
         };
 
-        let filter = cascade! {
-            Entry::new();
-            ..set_tooltip_text(Some("Filter to apply to a scan"));
-        };
-
-        let apply_button = cascade! {
-            Button::new();
-            ..set_label("Apply Filter");
-            ..connect_clicked(clone!(filter => move |_| {
-                let buffer = filter.get_buffer();
-                let text = buffer.get_text();
-                println!("filter: {}", text);
-            }));
-        };
-
         let attach = clone!(main => move |process_id| {
-            let mut main = main.borrow_mut();
-
-            let process = match ptscan::ProcessHandle::open(process_id) {
-                Ok(process) => process,
-                Err(e) => {
-                    main.show_error(e);
-                    return;
-                }
-            };
-
-            let process = match process {
-                Some(process) => process,
-                None => {
-                    main.show_error("failed to attach (no such pid)");
-                    return;
-                }
-            };
-
-            main.attach_to(process);
+            Self::attach_process_id(&main, process_id);
         });
 
         let main_menu = MainMenu::new(&window, &accel_group, attach, error);
-
-        let filter: Frame = cascade! {
-            Frame::new(Some("filter"));
-            ..add(&cascade! {
-                gtk::Box::new(Horizontal, 10);
-                ..set_border_width(10);
-                ..pack_start(&filter, true, true, 0);
-                ..pack_start(&apply_button, false, false, 0);
-            });
-        };
 
         let address_cell = CellRendererText::new();
         let value_cell = CellRendererText::new();
@@ -107,6 +72,7 @@ impl MainWindow {
                     ..pack_start(&current_cell, true);
                     ..add_attribute(&current_cell, "text", 2);
             });
+            ..show_all();
         };
 
         scan_results
@@ -125,6 +91,7 @@ impl MainWindow {
             gtk::ScrolledWindow::new(gtk::NONE_ADJUSTMENT, gtk::NONE_ADJUSTMENT);
             ..set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
             ..add(&scan_results);
+            ..show();
         };
 
         window.add(&cascade! {
@@ -133,34 +100,48 @@ impl MainWindow {
             ..pack_start(&cascade! {
                 gtk::Box::new(Vertical, 10);
                 ..set_border_width(10);
-                ..pack_start(&error_label, false, false, 0);
                 ..pack_start(&attached_label, false, false, 0);
-                ..pack_start(&filter, false, false, 0);
+                ..pack_start(&filter_options_frame, false, false, 0);
                 ..pack_start(&scan_results, true, true, 0);
+                ..show();
             }, true, true, 0);
+            ..show();
         });
 
-        window.show_all();
-        error_label.hide();
+        window.show();
     }
 
-    /// Show an error.
-    pub fn show_error(&mut self, error: impl std::fmt::Display) {
-        if let Some(label) = self.error_label.upgrade() {
-            label.set_text(&error.to_string());
-            label.show();
-        }
-    }
+    pub fn attach_process_id(main: &Rc<RefCell<Self>>, process_id: ProcessId) {
+        let mut slf = main.borrow_mut();
 
-    /// Attach the main state to the specified process.
-    pub fn attach_to(&mut self, process: ptscan::ProcessHandle) {
-        println!("attached to: {}", process.name);
+        let task = cascade! {
+            task::Task::oneshot(main, move |_| {
+                let process = ptscan::ProcessHandle::open(process_id)?;
+                let process = process.ok_or_else(|| anyhow!("failed to attach, no such process"))?;
+                Ok(process)
+            });
+            ..then(|main, process| {
+                main.open_process_task = None;
 
-        if let Some(label) = self.attached_label.upgrade() {
-            println!("attached to: {}", process.name);
-            label.set_text(&format!("Attached to: {}", process.name));
-        }
+                match process {
+                    Ok(process) => {
+                        if let Some(label) = main.attached_label.upgrade() {
+                            label.set_text(&format!("Attached to: {}", process.name));
+                        }
 
-        self.attached = Some(process);
+                        let process = Rc::new(process);
+                        main.attached = Some(process.clone());
+                        main.filter_options.borrow_mut().set_process(process);
+                    }
+                    Err(e) => {
+                        if let Some(label) = main.attached_label.upgrade() {
+                            label.set_text(&format!("Failed to attach: {}", e));
+                        }
+                    }
+                }
+            });
+        };
+
+        slf.open_process_task = Some(task.run());
     }
 }

@@ -15,6 +15,7 @@ pub struct ConnectDialog<A, E> {
     selected: Option<usize>,
     weak_spinner: glib::WeakRef<Spinner>,
     weak_model: glib::WeakRef<ListStore>,
+    weak_tree: glib::WeakRef<TreeView>,
     error: E,
     refresh_in_progress: Option<task::Handle>,
 }
@@ -26,25 +27,12 @@ impl<A, E> ConnectDialog<A, E> {
         A: Fn(ptscan::ProcessId) + 'static,
         E: ErrorHandler,
     {
-        let model = ListStore::new(&[ptscan::ProcessId::static_type(), String::static_type()]);
+        let model = ListStore::new(&[
+            u32::static_type(),
+            ptscan::ProcessId::static_type(),
+            String::static_type(),
+        ]);
         let spinner = Spinner::new();
-
-        let dialog = Rc::new(RefCell::new(Self {
-            attach,
-            processes: Vec::new(),
-            selected: None,
-            weak_spinner: spinner.downgrade(),
-            weak_model: model.downgrade(),
-            error,
-            refresh_in_progress: None,
-        }));
-
-        let window = cascade! {
-            gtk::Window::new(gtk::WindowType::Toplevel);
-            ..set_title("Attach to Process");
-            ..set_position(WindowPosition::Center);
-            ..set_size_request(400, 400);
-        };
 
         let id_cell = cascade! {
             CellRendererText::new();
@@ -59,26 +47,38 @@ impl<A, E> ConnectDialog<A, E> {
             ..set_headers_visible(true);
             ..append_column(&cascade! {
                 TreeViewColumn::new();
-                    ..set_title("pid");
-                    ..pack_start(&id_cell, true);
-                    ..add_attribute(&id_cell, "text", 0);
+                ..set_title("pid");
+                ..pack_start(&id_cell, true);
+                ..add_attribute(&id_cell, "text", 1);
+                ..set_clickable(true);
+                ..set_sort_column_id(1);
             });
             ..append_column(&cascade! {
                 TreeViewColumn::new();
-                    ..set_title("name");
-                    ..pack_start(&name_cell, true);
-                    ..add_attribute(&name_cell, "text", 1);
+                ..set_title("name");
+                ..pack_start(&name_cell, true);
+                ..add_attribute(&name_cell, "text", 2);
+                ..set_clickable(true);
+                ..set_sort_column_id(2);
             });
         };
 
-        cascade! {
-            tree.get_selection();
-            ..connect_changed(clone!(dialog => move |tree_selection| {
-                let (left_model, iter) = optional!(tree_selection.get_selected());
-                let path = optional!(left_model.get_path(&iter));
-                let index = optional!(path.get_indices().into_iter().next());
-                dialog.borrow_mut().selected = Some(index as usize);
-            }));
+        let dialog = Rc::new(RefCell::new(Self {
+            attach,
+            processes: Vec::new(),
+            selected: None,
+            weak_spinner: spinner.downgrade(),
+            weak_model: model.downgrade(),
+            weak_tree: tree.downgrade(),
+            error,
+            refresh_in_progress: None,
+        }));
+
+        let window = cascade! {
+            gtk::Window::new(gtk::WindowType::Toplevel);
+            ..set_title("Attach to Process");
+            ..set_position(WindowPosition::Center);
+            ..set_size_request(400, 400);
         };
 
         tree.set_model(Some(&model));
@@ -164,29 +164,25 @@ impl<A, E> ConnectDialog<A, E> {
         let error = slf.error.clone();
 
         let task = cascade! {
-            task::Task::new(dialog, move |c| {
-                let pids = ptscan::processes()?;
+            task::Task::oneshot(dialog, move |c| {
                 let mut infos = Vec::new();
 
-                for (index, process_id) in pids.iter().enumerate() {
-                    if c.is_cancelled() {
+                for process_id in ptscan::processes()? {
+                    // this one is probably not necessary. just to showcase.
+                    if c.is_stopped() {
                         break;
-                    }
-
-                    if index % 10 == 0 {
-                        c.emit(index);
-                        std::thread::sleep(std::time::Duration::from_millis(500));
                     }
 
                     let result = ptscan::Process::builder()
                         .query_information()
                         .vm_read()
-                        .build(*process_id);
+                        .build(process_id)
+                        .map_err(anyhow::Error::from);
 
                     let process = match result {
                         Ok(process) => process,
                         Err(e) => {
-                            error.report(e);
+                            error.report(e.context(format!("failed to get information for process `{}`", process_id)));
                             continue;
                         }
                     };
@@ -194,35 +190,35 @@ impl<A, E> ConnectDialog<A, E> {
                     let name = process.module_base_name()?.into_string().ok();
 
                     infos.push(ProcessInfo {
-                        process_id: *process_id,
+                        process_id,
                         name,
                     })
                 }
 
                 Ok(infos)
             });
-            ..on_complete(|dialog| {
+            ..then(|dialog, infos| {
                 if let Some(spinner) = dialog.weak_spinner.upgrade() {
                     spinner.hide();
                     spinner.stop();
                 }
 
                 dialog.refresh_in_progress = None;
-            });
-            ..on_emit(|dialog, index| {
-                println!("finished: {}", index);
-            });
-            ..on_ok(|dialog, infos| {
-                let model = upgrade_weak!(dialog.weak_model);
 
-                for info in &infos {
-                    model.insert_with_values(None, &[0, 1], &[&info.process_id, &info.name]);
+                match infos {
+                    Ok(infos) => {
+                        let model = upgrade_weak!(dialog.weak_model);
+
+                        for (index, info) in infos.iter().enumerate() {
+                            model.insert_with_values(None, &[0, 1, 2], &[&(index as u32), &info.process_id, &info.name]);
+                        }
+
+                        dialog.processes = infos;
+                    }
+                    Err(e) => {
+                        dialog.error.report(e);
+                    }
                 }
-
-                dialog.processes = infos;
-            });
-            ..on_err(|dialog, e| {
-                dialog.error.report(e);
             });
         };
 
@@ -238,7 +234,9 @@ impl<A, E> ConnectDialog<A, E> {
 
     /// Get the currently selected process id.
     fn get_selected(&self) -> Option<ptscan::ProcessId> {
-        let index = self.selected?;
-        self.processes.get(index).map(|info| info.process_id)
+        let tree = self.weak_tree.upgrade()?;
+        let (model, iter) = tree.get_selection().get_selected()?;
+        let index = model.get_value(&iter, 0).get::<u32>().ok()??;
+        Some(self.processes.get(index as usize)?.process_id)
     }
 }

@@ -1,35 +1,66 @@
 use crate::{prelude::*, FilterOptions, MainMenu};
-use std::{cell::RefCell, rc::Rc};
+use parking_lot::RwLock;
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use self::Orientation::*;
 use anyhow::anyhow;
-use ptscan::ProcessId;
+use ptscan::{ProcessId, Scan, TypeHint};
+
+struct Widgets {
+    attached_label: glib::WeakRef<Label>,
+    scan_progress: glib::WeakRef<ProgressBar>,
+}
 
 pub struct MainWindow {
-    attached: Option<Rc<ptscan::ProcessHandle>>,
-    attached_label: glib::WeakRef<gtk::Label>,
-    selected_scan_result: Option<usize>,
+    thread_pool: Arc<rayon::ThreadPool>,
+    scan: Arc<RwLock<Scan>>,
+    widgets: Widgets,
+    attached: Option<Arc<ptscan::ProcessHandle>>,
     open_process_task: Option<task::Handle>,
-    filter_options: Rc<RefCell<FilterOptions>>,
+    filter_options: Option<Rc<RefCell<FilterOptions>>>,
+    current_major_task: Option<task::Handle>,
 }
 
 impl MainWindow {
     /// Construct a new main window and assocaite it with the given application.
-    pub fn build(application: &gtk::Application, error: impl ErrorHandler) {
+    pub fn build(
+        thread_pool: Arc<rayon::ThreadPool>,
+        application: &gtk::Application,
+        error: impl ErrorHandler,
+    ) {
         let attached_label = cascade! {
             Label::new(Some("Not attached"));
             ..show();
         };
 
-        let (filter_options, filter_options_frame) = FilterOptions::new();
+        let scan_progress = cascade! {
+            ProgressBar::new();
+            ..set_show_text(true);
+        };
 
         let main = Rc::new(RefCell::new(MainWindow {
+            thread_pool,
+            scan: Arc::new(RwLock::new(Scan::new())),
+            widgets: Widgets {
+                attached_label: attached_label.downgrade(),
+                scan_progress: scan_progress.downgrade(),
+            },
             attached: None,
-            attached_label: attached_label.downgrade(),
-            selected_scan_result: None,
             open_process_task: None,
-            filter_options,
+            filter_options: None,
+            current_major_task: None,
         }));
+
+        let (filter_options, filter_options_frame) = FilterOptions::new(
+            clone!(main => move || {
+                Self::scan(&main);
+            }),
+            clone!(main => move || {
+                Self::reset(&main);
+            }),
+        );
+
+        main.borrow_mut().filter_options = Some(filter_options);
 
         let accel_group = AccelGroup::new();
 
@@ -75,15 +106,6 @@ impl MainWindow {
             ..show_all();
         };
 
-        scan_results
-            .get_selection()
-            .connect_changed(clone!(main => move |tree_selection| {
-                let (left_model, iter) = optional!(tree_selection.get_selected());
-                let path = optional!(left_model.get_path(&iter));
-                let index = optional!(path.get_indices().into_iter().next());
-                main.borrow_mut().selected_scan_result = Some(index as usize);
-            }));
-
         let model = ListStore::new(&[ptscan::ProcessId::static_type(), String::static_type()]);
         scan_results.set_model(Some(&model));
 
@@ -105,12 +127,118 @@ impl MainWindow {
                 ..pack_start(&scan_results, true, true, 0);
                 ..show();
             }, true, true, 0);
+            ..pack_start(&scan_progress, false, false, 0);
             ..show();
         });
 
         window.show();
     }
 
+    /// Reset the current scan.
+    pub fn reset(main: &Rc<RefCell<Self>>) {
+        let mut slf = main.borrow_mut();
+
+        if slf.current_major_task.is_some() {
+            return;
+        }
+
+        let scan = slf.scan.clone();
+
+        let task = cascade! {
+            task::Task::oneshot(main, move |_| {
+                scan.write().clear();
+                Ok(())
+            });
+            ..then(|main, _| {
+                main.current_major_task = None;
+            });
+        };
+
+        slf.current_major_task = Some(task.run());
+    }
+
+    /// Perform a scan.
+    pub fn scan(main: &Rc<RefCell<Self>>) {
+        let mut slf = main.borrow_mut();
+
+        if slf.current_major_task.is_some() {
+            return;
+        }
+
+        let handle = optional!(&slf.attached).clone();
+        let filter_options = match slf.filter_options.as_ref() {
+            Some(filter_options) => filter_options,
+            None => return,
+        };
+
+        let filter_expr = optional!(&filter_options.borrow().state.filter_expr).clone();
+
+        let scan = slf.scan.clone();
+        let thread_pool = slf.thread_pool.clone();
+
+        if let Some(progress) = slf.widgets.scan_progress.upgrade() {
+            progress.set_fraction(0f64);
+            progress.set_text(None);
+            progress.show();
+        }
+
+        let mut task = if scan.read().initial {
+            task::Task::new(main, move |s| {
+                let value_type = filter_expr
+                    .value_type_of(TypeHint::NoHint)?
+                    .ok_or_else(|| anyhow!("cannot determine type of value"))?;
+
+                let mut scan = scan.write();
+
+                let result = scan.initial_scan(
+                    &*thread_pool,
+                    &*handle,
+                    &filter_expr,
+                    value_type,
+                    Some(s.as_token()),
+                    ContextProgress::new(s),
+                    Default::default(),
+                );
+
+                scan.initial = false;
+                result
+            })
+        } else {
+            task::Task::new(main, move |s| {
+                let value_type = filter_expr.value_type_of(TypeHint::NoHint)?;
+                let mut scan = scan.write();
+
+                scan.scan(
+                    &*thread_pool,
+                    &*handle,
+                    value_type.option(),
+                    Some(s.as_token()),
+                    ContextProgress::new(s),
+                    &filter_expr,
+                )
+            })
+        };
+
+        task.emit(|main, (percentage, results)| {
+            if let Some(progress) = main.widgets.scan_progress.upgrade() {
+                let fraction = (percentage as f64) / 100f64;
+                progress.set_fraction(fraction);
+                progress.set_text(Some(&format!("found {} result(s)", results)));
+            }
+        });
+
+        task.then(|main, _| {
+            main.current_major_task = None;
+
+            if let Some(progress) = main.widgets.scan_progress.upgrade() {
+                progress.hide();
+            }
+        });
+
+        slf.current_major_task = Some(task.run());
+    }
+
+    /// Attach to the specified process id.
     pub fn attach_process_id(main: &Rc<RefCell<Self>>, process_id: ProcessId) {
         let mut slf = main.borrow_mut();
 
@@ -125,16 +253,19 @@ impl MainWindow {
 
                 match process {
                     Ok(process) => {
-                        if let Some(label) = main.attached_label.upgrade() {
+                        if let Some(label) = main.widgets.attached_label.upgrade() {
                             label.set_text(&format!("Attached to: {}", process.name));
                         }
 
-                        let process = Rc::new(process);
+                        let process = Arc::new(process);
                         main.attached = Some(process.clone());
-                        main.filter_options.borrow_mut().set_process(process);
+
+                        if let Some(filter_options) = &main.filter_options {
+                            filter_options.borrow_mut().set_process(process);
+                        }
                     }
                     Err(e) => {
-                        if let Some(label) = main.attached_label.upgrade() {
+                        if let Some(label) = main.widgets.attached_label.upgrade() {
                             label.set_text(&format!("Failed to attach: {}", e));
                         }
                     }
@@ -143,5 +274,26 @@ impl MainWindow {
         };
 
         slf.open_process_task = Some(task.run());
+    }
+}
+
+struct ContextProgress<'a, T> {
+    context: &'a task::Context<(usize, u64), T>,
+}
+
+impl<'a, T> ContextProgress<'a, T> {
+    pub fn new(context: &'a task::Context<(usize, u64), T>) -> Self {
+        Self { context }
+    }
+}
+
+impl<'a, T> ptscan::ScanProgress for ContextProgress<'a, T> {
+    fn report_bytes(&mut self, _: ptscan::Size) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn report(&mut self, percentage: usize, results: u64) -> anyhow::Result<()> {
+        self.context.emit((percentage, results));
+        Ok(())
     }
 }

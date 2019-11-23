@@ -1,17 +1,17 @@
 use self::Orientation::*;
 use crate::prelude::*;
 use ptscan::{FilterExpr, ProcessHandle, ValueExpr};
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
 
-struct State {
+pub struct State {
     /// The current filter.
-    filter_expr: Option<FilterExpr>,
+    pub filter_expr: Option<FilterExpr>,
     /// The current content of the filter textbox.
-    filter_expr_text: String,
+    pub filter_expr_text: String,
     /// The current value expression in use.
-    value_expr: ValueExpr,
+    pub value_expr: ValueExpr,
     /// Current text for the value expression.
-    value_expr_text: String,
+    pub value_expr_text: String,
 }
 
 struct Widgets {
@@ -22,20 +22,24 @@ struct Widgets {
 }
 
 #[derive(Default)]
-struct Runtime {
+pub struct Runtime {
     /// Runtime state.
-    process: Option<Rc<ProcessHandle>>,
+    process: Option<Arc<ProcessHandle>>,
 }
 
 pub struct FilterOptions {
-    state: State,
+    pub state: State,
     runtime: Runtime,
     widgets: Widgets,
 }
 
 impl FilterOptions {
     /// Construct a widget representing the current state.
-    pub fn new() -> (Rc<RefCell<Self>>, Frame) {
+    pub fn new<Scan, Reset>(scan: Scan, reset: Reset) -> (Rc<RefCell<Self>>, Frame)
+    where
+        Scan: 'static + Fn(),
+        Reset: 'static + Fn(),
+    {
         // TODO: make serializable.
         let state = State {
             filter_expr: None,
@@ -54,8 +58,16 @@ impl FilterOptions {
         let scan_button = cascade! {
             Button::new();
             ..set_label("Scan / Filter");
-            ..connect_clicked(|_| {
-                println!("SCAN");
+            ..connect_clicked(move |_| {
+                scan();
+            });
+        };
+
+        let reset_button = cascade! {
+            Button::new();
+            ..set_label("Reset");
+            ..connect_clicked(move |_| {
+                reset();
             });
         };
 
@@ -118,6 +130,7 @@ impl FilterOptions {
                     gtk::Box::new(Horizontal, 10);
                     ..pack_start(&filter_expr_text, true, true, 0);
                     ..pack_start(&scan_button, false, false, 0);
+                    ..pack_start(&reset_button, false, false, 0);
                 }, false, false, 0);
                 ..pack_start(&filter_expr_error, true, true, 0);
                 ..pack_start(&cascade! {
@@ -202,7 +215,7 @@ impl FilterOptions {
     }
 
     /// Update the current process.
-    pub fn set_process(&mut self, process: Rc<ProcessHandle>) {
+    pub fn set_process(&mut self, process: Arc<ProcessHandle>) {
         self.runtime.process = Some(process);
         self.parse_filter_expr();
         self.parse_value_expr();

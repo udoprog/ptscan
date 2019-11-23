@@ -1,5 +1,6 @@
 use gio::prelude::*;
 use pts_gui::MainWindow;
+use std::sync::Arc;
 
 #[derive(Clone)]
 struct ErrorHandler;
@@ -28,11 +29,17 @@ impl pts_gui::ErrorHandler for ErrorHandler {
 }
 
 fn main() -> anyhow::Result<()> {
+    let thread_pool = Arc::new(
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(usize::max(num_cpus::get(), 4))
+            .build()?,
+    );
+
     let application = gtk::Application::new(Some("com.github.udoprog.ptscan"), Default::default())?;
 
-    application.connect_activate(|app| {
+    application.connect_activate(move |app| {
         let error = ErrorHandler;
-        MainWindow::build(app, error);
+        MainWindow::build(thread_pool.clone(), app, error);
     });
 
     application.run(&std::env::args().collect::<Vec<_>>());

@@ -39,6 +39,10 @@ impl<Y, U> Context<Y, U> {
     pub fn is_stopped(&self) -> bool {
         self.cancel.load(Ordering::Acquire)
     }
+
+    pub fn as_token(&self) -> &ptscan::Token {
+        ptscan::Token::from_raw(&self.cancel)
+    }
 }
 
 pub struct Handle(Arc<AtomicBool>, Option<glib::SourceId>);
@@ -77,42 +81,46 @@ pub enum Progress<Y, T> {
 
 /// A oneshot task that will run until it produces a result.
 #[must_use = "must be finalized with .build"]
-pub struct Task<C, T, Y, U> {
+pub struct Task<C, Y, U> {
     cancel: Arc<AtomicBool>,
     context: Rc<RefCell<C>>,
-    task: T,
+    task: Box<dyn Fn(&Context<Y, U>) -> anyhow::Result<U> + Send>,
     emit: Option<Box<dyn Fn(&mut C, Y)>>,
     then: Option<Box<dyn Fn(&mut C, anyhow::Result<U>)>>,
 }
 
-impl<C, T, U> Task<C, T, (), U>
+impl<C, U> Task<C, (), U>
 where
     C: 'static,
-    T: 'static + Send + Fn(&Context<(), U>) -> anyhow::Result<U>,
     U: 'static + Send,
 {
     /// Run the given task and associate its output to a channel.
     ///
     /// This is a shorthand which assumes that the underlying task emits `()` for
     /// progress.
-    pub fn oneshot(context: &Rc<RefCell<C>>, task: T) -> Task<C, T, (), U> {
+    pub fn oneshot<T>(context: &Rc<RefCell<C>>, task: T) -> Task<C, (), U>
+    where
+        T: 'static + Send + Fn(&Context<(), U>) -> anyhow::Result<U>,
+    {
         Self::new(context, task)
     }
 }
 
-impl<C, T, Y, U> Task<C, T, Y, U>
+impl<C, Y, U> Task<C, Y, U>
 where
     C: 'static,
-    T: 'static + Send + Fn(&Context<Y, U>) -> anyhow::Result<U>,
     Y: 'static + Send,
     U: 'static + Send,
 {
     /// Run the given task and associate its output to a channel.
-    pub fn new(context: &Rc<RefCell<C>>, task: T) -> Task<C, T, Y, U> {
+    pub fn new<T>(context: &Rc<RefCell<C>>, task: T) -> Task<C, Y, U>
+    where
+        T: 'static + Send + Fn(&Context<Y, U>) -> anyhow::Result<U>,
+    {
         Task {
             cancel: Arc::new(AtomicBool::new(false)),
             context: context.clone(),
-            task,
+            task: Box::new(task),
             emit: None,
             then: None,
         }

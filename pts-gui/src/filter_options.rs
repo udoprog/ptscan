@@ -19,6 +19,9 @@ struct Widgets {
     filter_expr_error: glib::WeakRef<Label>,
     value_expr_text: glib::WeakRef<Entry>,
     value_expr_error: glib::WeakRef<Label>,
+    reset_button: glib::WeakRef<Button>,
+    scan_button: glib::WeakRef<Button>,
+    refresh_button: glib::WeakRef<Button>,
 }
 
 #[derive(Default)]
@@ -105,6 +108,9 @@ impl FilterOptions {
                 filter_expr_error: filter_expr_error.downgrade(),
                 value_expr_text: value_expr_text.downgrade(),
                 value_expr_error: value_expr_error.downgrade(),
+                reset_button: reset_button.downgrade(),
+                scan_button: scan_button.downgrade(),
+                refresh_button: refresh_button.downgrade(),
             },
             runtime: Default::default(),
         }));
@@ -132,13 +138,13 @@ impl FilterOptions {
                     ..pack_start(&scan_button, false, false, 0);
                     ..pack_start(&reset_button, false, false, 0);
                 }, false, false, 0);
-                ..pack_start(&filter_expr_error, true, true, 0);
+                ..pack_start(&filter_expr_error, false, false, 0);
                 ..pack_start(&cascade! {
                     gtk::Box::new(Horizontal, 10);
                     ..pack_start(&value_expr_text, true, true, 0);
                     ..pack_start(&refresh_button, false, false, 0);
                 }, false, false, 0);
-                ..pack_start(&value_expr_error, true, true, 0);
+                ..pack_start(&value_expr_error, false, false, 0);
             });
         };
 
@@ -219,5 +225,35 @@ impl FilterOptions {
         self.runtime.process = Some(process);
         self.parse_filter_expr();
         self.parse_value_expr();
+    }
+
+    /// Disable all controls.
+    pub fn disable(&mut self) {
+        if let Some(button) = self.widgets.scan_button.upgrade() {
+            button.set_sensitive(false);
+        }
+
+        if let Some(button) = self.widgets.reset_button.upgrade() {
+            button.set_sensitive(false);
+        }
+
+        if let Some(button) = self.widgets.refresh_button.upgrade() {
+            button.set_sensitive(false);
+        }
+    }
+
+    /// Enable controls.
+    pub fn enable(&mut self) {
+        if let Some(button) = self.widgets.scan_button.upgrade() {
+            button.set_sensitive(true);
+        }
+
+        if let Some(button) = self.widgets.reset_button.upgrade() {
+            button.set_sensitive(true);
+        }
+
+        if let Some(button) = self.widgets.refresh_button.upgrade() {
+            button.set_sensitive(true);
+        }
     }
 }

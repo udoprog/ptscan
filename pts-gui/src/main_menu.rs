@@ -1,26 +1,15 @@
 use self::Orientation::*;
-use crate::{prelude::*, ConnectDialog};
+use crate::prelude::*;
 
 pub struct MainMenu;
 
 impl MainMenu {
-    pub fn new<A>(
-        window: &ApplicationWindow,
+    pub fn new(
+        window: glib::WeakRef<ApplicationWindow>,
         accel_group: &AccelGroup,
-        attach: A,
-        error: impl ErrorHandler,
-    ) -> MenuBar
-    where
-        A: Fn(ptscan::ProcessId) + 'static,
-    {
-        let connect_window = ConnectDialog::new(attach, error);
-
-        connect_window.hide();
-
-        let weak_window = window.downgrade();
-
-        let connect_window = connect_window.downgrade();
-
+        connect_dialog_window: glib::WeakRef<Window>,
+        error_dialog_window: glib::WeakRef<Window>,
+    ) -> MenuBar {
         let file_item = cascade! {
             MenuItem::new();
             ..add(&cascade! {
@@ -28,16 +17,31 @@ impl MainMenu {
                 ..pack_start(&Image::new_from_icon_name(Some("document-open"), IconSize::Menu), false, false, 0);
                 ..pack_start(&Label::new(Some("Attach")), true, true, 0);
             });
-            ..connect_activate(clone!(connect_window => move |_| {
-                let connect_window = upgrade_weak!(connect_window);
-                connect_window.show();
+            ..connect_activate(clone!(connect_dialog_window => move |_| {
+                let connect_dialog_window = upgrade_weak!(connect_dialog_window);
+                connect_dialog_window.show();
+                connect_dialog_window.present();
+            }));
+        };
+
+        let error_dialog_item = cascade! {
+            MenuItem::new();
+            ..add(&cascade! {
+                gtk::Box::new(Horizontal, 0);
+                ..pack_start(&Image::new_from_icon_name(Some("document-open"), IconSize::Menu), false, false, 0);
+                ..pack_start(&Label::new(Some("Show Errors")), true, true, 0);
+            });
+            ..connect_activate(clone!(error_dialog_window => move |_| {
+                let error_dialog_window = upgrade_weak!(error_dialog_window);
+                error_dialog_window.show();
+                error_dialog_window.present();
             }));
         };
 
         let about_item = cascade! {
             MenuItem::new_with_label("About");
-            ..connect_activate(clone!(weak_window => move |_| {
-                let window = upgrade_weak!(weak_window);
+            ..connect_activate(clone!(window => move |_| {
+                let window = upgrade_weak!(window);
                 cascade! {
                     AboutDialog::new();
                     ..set_website_label(Some("ptscan GitHub"));
@@ -66,12 +70,19 @@ impl MainMenu {
                     ..append(&about_item);
                     ..append(&cascade! {
                         MenuItem::new_with_label("Quit");
-                        ..connect_activate(clone!(weak_window => move |_| {
-                            let window = upgrade_weak!(weak_window);
+                        ..connect_activate(clone!(window => move |_| {
+                            let window = upgrade_weak!(window);
                             window.destroy();
                         }));
                         ..add_accelerator("activate", accel_group, key, modifier, AccelFlags::VISIBLE);
                     });
+                }));
+            });
+            ..append(&cascade! {
+                MenuItem::new_with_label("Help");
+                ..set_submenu(Some(&cascade! {
+                    Menu::new();
+                    ..append(&error_dialog_item);
                 }));
             });
             ..show_all();

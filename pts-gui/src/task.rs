@@ -3,6 +3,7 @@
 use parking_lot::Mutex;
 use std::{
     cell::RefCell,
+    fmt,
     rc::Rc,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -32,7 +33,7 @@ impl<Y, U> Context<Y, U> {
     pub fn emit(&self, value: Y) {
         self.tx
             .send(Progress::Emit(value))
-            .expect("failed to send emitted value");
+            .expect("failed to emit value");
     }
 
     /// Test if the current task is cancelled.
@@ -45,28 +46,24 @@ impl<Y, U> Context<Y, U> {
     }
 }
 
-pub struct Handle(Arc<AtomicBool>, Option<glib::SourceId>);
-
-impl Handle {
-    /// Cancel the task associated with the current handle.
-    ///
-    /// Note that this doesn't do anything unless the task is actively
-    /// monitoring for the cancellation flag. In particular, there's no
-    /// guarantee that the underlying task will actually stop working.
-    pub fn cancel(mut self) {
-        if let Some(source_id) = self.1.take() {
-            self.0.store(true, Ordering::Release);
-            glib::source::source_remove(source_id);
-        }
-    }
-}
+/// Handle that when dropped cancels the task associated with it.
+///
+/// Note that this doesn't do anything unless the task is actively
+/// monitoring for the cancellation flag. In particular, there's no
+/// guarantee that the underlying task will actually stop working.
+///
+/// Note: relies on the `Drop` implementation.
+pub struct Handle(Arc<AtomicBool>);
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        if let Some(source_id) = self.1.take() {
-            self.0.store(true, Ordering::Release);
-            glib::source::source_remove(source_id);
-        }
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+impl fmt::Debug for Handle {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "Handle(cancelled: {})", self.0.load(Ordering::Acquire))
     }
 }
 
@@ -84,7 +81,7 @@ pub enum Progress<Y, T> {
 pub struct Task<C, Y, U> {
     cancel: Arc<AtomicBool>,
     context: Rc<RefCell<C>>,
-    task: Box<dyn Fn(&Context<Y, U>) -> anyhow::Result<U> + Send>,
+    task: Box<dyn FnOnce(&Context<Y, U>) -> anyhow::Result<U> + Send>,
     emit: Option<Box<dyn Fn(&mut C, Y)>>,
     then: Option<Box<dyn Fn(&mut C, anyhow::Result<U>)>>,
 }
@@ -100,7 +97,7 @@ where
     /// progress.
     pub fn oneshot<T>(context: &Rc<RefCell<C>>, task: T) -> Task<C, (), U>
     where
-        T: 'static + Send + Fn(&Context<(), U>) -> anyhow::Result<U>,
+        T: 'static + Send + FnOnce(&Context<(), U>) -> anyhow::Result<U>,
     {
         Self::new(context, task)
     }
@@ -115,7 +112,7 @@ where
     /// Run the given task and associate its output to a channel.
     pub fn new<T>(context: &Rc<RefCell<C>>, task: T) -> Task<C, Y, U>
     where
-        T: 'static + Send + Fn(&Context<Y, U>) -> anyhow::Result<U>,
+        T: 'static + Send + FnOnce(&Context<Y, U>) -> anyhow::Result<U>,
     {
         Task {
             cancel: Arc::new(AtomicBool::new(false)),
@@ -157,16 +154,7 @@ where
 
         TASKS.thread_pool.lock().execute(move || {
             let context = Context { cancel, tx };
-
-            if context.is_stopped() {
-                return;
-            }
-
             let result = task(&context);
-
-            if context.is_stopped() {
-                return;
-            }
 
             context
                 .tx
@@ -174,7 +162,7 @@ where
                 .expect("failed to send value");
         });
 
-        let source_id = rx.attach(None, move |result| {
+        rx.attach(None, move |result| {
             let mut context = context.borrow_mut();
 
             let result = match result {
@@ -195,6 +183,6 @@ where
             glib::Continue(false)
         });
 
-        Handle(cancel2, Some(source_id))
+        Handle(cancel2)
     }
 }

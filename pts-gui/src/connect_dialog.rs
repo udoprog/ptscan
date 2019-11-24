@@ -2,29 +2,31 @@ use self::Orientation::*;
 use crate::prelude::*;
 use std::{cell::RefCell, rc::Rc};
 
+struct Widgets {
+    spinner: glib::WeakRef<Spinner>,
+    model: glib::WeakRef<ListStore>,
+    tree: glib::WeakRef<TreeView>,
+}
+
 struct ProcessInfo {
     process_id: ptscan::ProcessId,
     #[allow(unused)]
     name: Option<String>,
 }
 
-#[derive(Default)]
-pub struct ConnectDialog<A, E> {
-    attach: A,
+pub struct ConnectDialog<E> {
+    on_attach: Option<Box<dyn Fn(&Self, ptscan::ProcessId)>>,
+    widgets: Widgets,
     processes: Vec<ProcessInfo>,
     selected: Option<usize>,
-    weak_spinner: glib::WeakRef<Spinner>,
-    weak_model: glib::WeakRef<ListStore>,
-    weak_tree: glib::WeakRef<TreeView>,
     error: E,
     refresh_in_progress: Option<task::Handle>,
 }
 
-impl<A, E> ConnectDialog<A, E> {
+impl<E> ConnectDialog<E> {
     /// Construct a new connect dialog.
-    pub fn new(attach: A, error: E) -> gtk::Window
+    pub fn new(error: E) -> (Rc<RefCell<ConnectDialog<E>>>, gtk::Window)
     where
-        A: Fn(ptscan::ProcessId) + 'static,
         E: ErrorHandler,
     {
         let model = ListStore::new(&[
@@ -64,12 +66,14 @@ impl<A, E> ConnectDialog<A, E> {
         };
 
         let dialog = Rc::new(RefCell::new(Self {
-            attach,
+            on_attach: None,
+            widgets: Widgets {
+                spinner: spinner.downgrade(),
+                model: model.downgrade(),
+                tree: tree.downgrade(),
+            },
             processes: Vec::new(),
             selected: None,
-            weak_spinner: spinner.downgrade(),
-            weak_model: model.downgrade(),
-            weak_tree: tree.downgrade(),
             error,
             refresh_in_progress: None,
         }));
@@ -109,7 +113,11 @@ impl<A, E> ConnectDialog<A, E> {
                 let window = upgrade_weak!(weak_window);
                 let dialog = dialog.borrow();
                 let process_id = optional!(dialog.get_selected());
-                (dialog.attach)(process_id);
+
+                if let Some(on_attach) = &dialog.on_attach {
+                    on_attach(&*dialog, process_id);
+                }
+
                 window.hide();
             }));
         };
@@ -128,8 +136,8 @@ impl<A, E> ConnectDialog<A, E> {
                 ..pack_start(&spinner, true, true, 0);
                 ..pack_start(&tree, true, true, 0);
                 ..pack_start(&buttons, false, false, 0);
+                ..show_all();
             });
-            ..show_all();
         };
 
         // spinner should not be initially visible.
@@ -145,18 +153,29 @@ impl<A, E> ConnectDialog<A, E> {
             Inhibit(true)
         }));
 
-        window
+        (dialog, window)
+    }
+
+    /// Setup a callback to run on attach events.
+    pub fn on_attach<T>(&mut self, on_attach: T)
+    where
+        T: Fn(&Self, ptscan::ProcessId) + 'static,
+    {
+        self.on_attach = Some(Box::new(on_attach));
     }
 
     /// Refresh the available process list.
     fn refresh_processes(dialog: &Rc<RefCell<Self>>)
     where
-        A: 'static,
         E: ErrorHandler,
     {
         let mut slf = dialog.borrow_mut();
 
-        if let Some(spinner) = slf.weak_spinner.upgrade() {
+        if slf.refresh_in_progress.is_some() {
+            return;
+        }
+
+        if let Some(spinner) = slf.widgets.spinner.upgrade() {
             spinner.show();
             spinner.start();
         }
@@ -198,7 +217,7 @@ impl<A, E> ConnectDialog<A, E> {
                 Ok(infos)
             });
             ..then(|dialog, infos| {
-                if let Some(spinner) = dialog.weak_spinner.upgrade() {
+                if let Some(spinner) = dialog.widgets.spinner.upgrade() {
                     spinner.hide();
                     spinner.stop();
                 }
@@ -207,7 +226,9 @@ impl<A, E> ConnectDialog<A, E> {
 
                 match infos {
                     Ok(infos) => {
-                        let model = upgrade_weak!(dialog.weak_model);
+                        let model = upgrade_weak!(dialog.widgets.model);
+
+                        model.clear();
 
                         for (index, info) in infos.iter().enumerate() {
                             model.insert_with_values(None, &[0, 1, 2], &[&(index as u32), &info.process_id, &info.name]);
@@ -234,7 +255,7 @@ impl<A, E> ConnectDialog<A, E> {
 
     /// Get the currently selected process id.
     fn get_selected(&self) -> Option<ptscan::ProcessId> {
-        let tree = self.weak_tree.upgrade()?;
+        let tree = self.widgets.tree.upgrade()?;
         let (model, iter) = tree.get_selection().get_selected()?;
         let index = model.get_value(&iter, 0).get::<u32>().ok()??;
         Some(self.processes.get(index as usize)?.process_id)

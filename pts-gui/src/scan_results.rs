@@ -300,7 +300,7 @@ impl ScanResults {
     }
 
     /// Set the current process handle.
-    pub fn set_process(&mut self, handle: Option<Arc<ProcessHandle>>) {
+    pub fn set_handle(&mut self, handle: Option<Arc<ProcessHandle>>) {
         self.handle = handle;
     }
 }

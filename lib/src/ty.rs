@@ -182,8 +182,9 @@ impl Type {
             Self::I128 => Value::I128(Default::default()),
             Self::F32 => Value::F32(Default::default()),
             Self::F64 => Value::F64(Default::default()),
-            Self::String(..) => Value::String(Default::default(), Default::default()),
-            Self::Bytes(..) => Value::Bytes(Default::default()),
+            Self::String(encoding) => Value::String(encoding, Default::default()),
+            Self::Bytes(Some(len)) => Value::Bytes(vec![0u8; len]),
+            Self::Bytes(None) => Value::Bytes(vec![0u8; 32]),
         }
     }
 

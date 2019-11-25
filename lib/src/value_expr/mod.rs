@@ -424,9 +424,21 @@ impl fmt::Display for ValueExpr {
             Self::Value => "value".fmt(fmt),
             Self::Last => "last".fmt(fmt),
             Self::Initial => "initial".fmt(fmt),
-            Self::Deref { value } => write!(fmt, "*{}", value),
-            Self::AddressOf { value } => write!(fmt, "&{}", value),
-            Self::Binary { op, lhs, rhs } => write!(fmt, "{} {} {}", lhs, op, rhs),
+            Self::Deref { value } => {
+                match **value {
+                    ref binary @ Self::Binary { .. } => write!(fmt, "*({})", binary),
+                    ref other => write!(fmt, "*{}", other),
+                }
+            }
+            Self::AddressOf { value } => {
+                match **value {
+                    ref binary @ Self::Binary { .. } => write!(fmt, "&({})", binary),
+                    ref other => write!(fmt, "&{}", other),
+                }
+            }
+            Self::Binary { op, lhs, rhs } => {
+                write!(fmt, "({}) {} ({})", lhs, op, rhs)
+            }
             Self::Number {
                 value,
                 type_hint: None,
@@ -445,7 +457,12 @@ impl fmt::Display for ValueExpr {
             } => write!(fmt, "{}{}", value, ty),
             Self::String { value, .. } => write!(fmt, "{}", EscapeString(value)),
             Self::Bytes { value } => write!(fmt, "{}", Hex(value)),
-            Self::Cast { expr, cast_type } => write!(fmt, "{} as {}", expr, cast_type),
+            Self::Cast { expr, cast_type } => {
+                match **expr {
+                    ref expr @ Self::Binary { .. } => write!(fmt, "({}) as {}", expr, cast_type),
+                    ref expr => write!(fmt, "{} as {}", expr, cast_type),
+                }
+            }
         }
     }
 }

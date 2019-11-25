@@ -1,5 +1,6 @@
 use crate::{
-    prelude::*, ConnectDialog, ErrorDialog, FilterOptions, MainMenu, ScanResults, ScratchResults,
+    prelude::*, ConnectDialog, ErrorDialog, FilterOptions, MainMenu, ScanResultDialog, ScanResults,
+    ScratchResults,
 };
 use parking_lot::RwLock;
 use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
@@ -14,6 +15,8 @@ struct Widgets {
     error_dialog_window: Window,
     #[allow(unused)]
     connect_dialog_window: Window,
+    #[allow(unused)]
+    scan_result_dialog_window: Window,
     attached_label: glib::WeakRef<Label>,
     scan_progress: glib::WeakRef<ProgressBar>,
     scan_progress_container: glib::WeakRef<gtk::Box>,
@@ -31,6 +34,7 @@ pub struct MainWindow {
     error_dialog: Rc<RefCell<ErrorDialog>>,
     scan_results: Rc<RefCell<ScanResults>>,
     scratch_results: Rc<RefCell<ScratchResults>>,
+    scan_result_dialog: Rc<RefCell<ScanResultDialog>>,
 }
 
 impl MainWindow {
@@ -81,7 +85,12 @@ impl MainWindow {
         let (scan_results, scan_results_window) =
             ScanResults::new(scan.clone(), thread_pool.clone());
 
-        let (scratch_results, scratch_results_window) = ScratchResults::new(thread_pool.clone());
+        let (scan_result_dialog, scan_result_dialog_window) = ScanResultDialog::new();
+        let (scratch_results, scratch_results_window) = ScratchResults::new(
+            thread_pool.clone(),
+            scan_result_dialog.clone(),
+            scan_result_dialog_window.downgrade(),
+        );
 
         let weak_error_dialog_window = error_dialog_window.downgrade();
         let weak_connect_dialog_window = connect_dialog_window.downgrade();
@@ -92,6 +101,7 @@ impl MainWindow {
             widgets: Widgets {
                 error_dialog_window,
                 connect_dialog_window,
+                scan_result_dialog_window,
                 attached_label: attached_label.downgrade(),
                 scan_progress: scan_progress.downgrade(),
                 scan_progress_container: scan_progress_container.downgrade(),
@@ -104,6 +114,7 @@ impl MainWindow {
             error_dialog,
             scan_results: scan_results.clone(),
             scratch_results: scratch_results.clone(),
+            scan_result_dialog: scan_result_dialog.clone(),
         }));
 
         scan_results
@@ -237,6 +248,7 @@ impl MainWindow {
         };
 
         slf.start_major_task(task.run());
+        slf.scan_results.borrow_mut().refresh();
     }
 
     /// Perform a scan.
@@ -381,27 +393,29 @@ impl MainWindow {
 
         let task = cascade! {
             task::Task::oneshot(main, move |_| {
-                let process = ptscan::ProcessHandle::open(process_id)?;
-                let process = process.ok_or_else(|| anyhow!("failed to attach, no such process"))?;
-                Ok(process)
+                let handle = ptscan::ProcessHandle::open(process_id)?;
+                let handle = handle.ok_or_else(|| anyhow!("failed to attach, no such process"))?;
+                Ok(handle)
             });
-            ..then(|main, process| {
+            ..then(|main, handle| {
                 main.open_process_task = None;
 
-                match process {
-                    Ok(process) => {
+                match handle {
+                    Ok(handle) => {
                         if let Some(label) = main.widgets.attached_label.upgrade() {
-                            label.set_text(&format!("Attached to: {}", process.name));
+                            label.set_text(&format!("Attached to: {}", handle.name));
                         }
 
-                        let process = Arc::new(process);
-                        main.attached = Some(process.clone());
+                        let handle = Arc::new(handle);
+                        main.attached = Some(handle.clone());
 
                         if let Some(filter_options) = &main.filter_options {
-                            filter_options.borrow_mut().set_process(process.clone());
+                            filter_options.borrow_mut().set_handle(handle.clone());
                         }
 
-                        main.scan_results.borrow_mut().set_process(Some(process));
+                        main.scan_results.borrow_mut().set_handle(Some(handle.clone()));
+                        main.scratch_results.borrow_mut().set_handle(Some(handle.clone()));
+                        main.scan_result_dialog.borrow_mut().set_handle(Some(handle.clone()));
                     }
                     Err(e) => {
                         if let Some(label) = main.widgets.attached_label.upgrade() {

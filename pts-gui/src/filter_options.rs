@@ -27,7 +27,7 @@ struct Widgets {
 #[derive(Default)]
 pub struct Runtime {
     /// Runtime state.
-    process: Option<Arc<ProcessHandle>>,
+    handle: Option<Arc<ProcessHandle>>,
 }
 
 pub struct FilterOptions {
@@ -166,7 +166,7 @@ impl FilterOptions {
 
     /// Parse the current filter expression.
     pub fn parse_filter_expr(&mut self) {
-        let process = optional!(&self.runtime.process);
+        let handle = optional!(&self.runtime.handle);
 
         if self.state.filter_expr_text.is_empty() {
             if let Some(error) = self.widgets.filter_expr_error.upgrade() {
@@ -176,7 +176,7 @@ impl FilterOptions {
             return;
         }
 
-        match FilterExpr::parse(&self.state.filter_expr_text, &process.process) {
+        match FilterExpr::parse(&self.state.filter_expr_text, &handle.process) {
             Ok(filter_expr) => {
                 self.state.filter_expr = Some(filter_expr);
 
@@ -195,7 +195,7 @@ impl FilterOptions {
 
     /// Parse the current global value expression.
     pub fn parse_value_expr(&mut self) {
-        let process = optional!(&self.runtime.process);
+        let handle = optional!(&self.runtime.handle);
 
         if self.state.value_expr_text.is_empty() {
             if let Some(error) = self.widgets.value_expr_error.upgrade() {
@@ -203,7 +203,7 @@ impl FilterOptions {
             }
         }
 
-        match ValueExpr::parse(&self.state.value_expr_text, &process.process) {
+        match ValueExpr::parse(&self.state.value_expr_text, &handle.process) {
             Ok(value_expr) => {
                 self.state.value_expr = value_expr;
 
@@ -221,8 +221,8 @@ impl FilterOptions {
     }
 
     /// Update the current process.
-    pub fn set_process(&mut self, process: Arc<ProcessHandle>) {
-        self.runtime.process = Some(process);
+    pub fn set_handle(&mut self, handle: Arc<ProcessHandle>) {
+        self.runtime.handle = Some(handle);
         self.parse_filter_expr();
         self.parse_value_expr();
     }

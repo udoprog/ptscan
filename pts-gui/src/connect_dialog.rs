@@ -1,4 +1,3 @@
-use self::Orientation::*;
 use crate::prelude::*;
 use std::{cell::RefCell, rc::Rc};
 
@@ -29,6 +28,8 @@ impl<E> ConnectDialog<E> {
     where
         E: ErrorHandler,
     {
+        let builder = resource("attach_dialog.glade").into_builder();
+
         let model = ListStore::new(&[
             u32::static_type(),
             ptscan::ProcessId::static_type(),
@@ -45,8 +46,10 @@ impl<E> ConnectDialog<E> {
         };
 
         let tree = cascade! {
-            TreeView::new();
+            builder.get_object::<TreeView>("tree");
+            ..set_enable_search(true);
             ..set_headers_visible(true);
+            ..set_search_column(2);
             ..append_column(&cascade! {
                 TreeViewColumn::new();
                 ..set_title("pid");
@@ -65,7 +68,7 @@ impl<E> ConnectDialog<E> {
             });
         };
 
-        let dialog = Rc::new(RefCell::new(Self {
+        let slf = Rc::new(RefCell::new(Self {
             on_attach: None,
             widgets: Widgets {
                 spinner: spinner.downgrade(),
@@ -78,82 +81,63 @@ impl<E> ConnectDialog<E> {
             refresh_in_progress: None,
         }));
 
-        let window = cascade! {
-            gtk::Window::new(gtk::WindowType::Toplevel);
-            ..set_title("Attach to Process");
-            ..set_position(WindowPosition::Center);
-            ..set_size_request(400, 400);
-        };
-
-        tree.set_model(Some(&model));
-
-        let tree = cascade! {
-            gtk::ScrolledWindow::new(gtk::NONE_ADJUSTMENT, gtk::NONE_ADJUSTMENT);
-            ..set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
-            ..add(&tree);
-        };
+        let window = builder.get_object::<Window>("window");
 
         let weak_window = window.downgrade();
 
-        let cancel_button = cascade! {
-            gtk::Button::new_from_icon_name(Some("edit-delete"), IconSize::Button);
-            ..set_label("Cancel");
+        tree.connect_row_activated(clone!(weak_window, slf => move |_, path, _| {
+            let window = upgrade!(weak_window);
+
+            {
+                let slf = slf.borrow();
+                let model = upgrade!(slf.widgets.model);
+                let on_attach = optional!(&slf.on_attach);
+                let iter = optional!(model.get_iter(path));
+                let index = optional!(model.get_value(&iter, 0).get::<u32>().ok());
+                let index = optional!(index);
+                let process_id = optional!(slf.processes.get(index as usize)).process_id;
+                on_attach(&*slf, process_id);
+            }
+
+            window.hide();
+        }));
+
+        tree.set_model(Some(&model));
+
+        cascade! {
+            builder.get_object::<Button>("cancel_button");
             ..connect_clicked(clone!(weak_window => move |_| {
-                let window = upgrade_weak!(weak_window);
+                let window = upgrade!(weak_window);
                 window.hide();
             }));
         };
 
-        let weak_window = window.downgrade();
+        cascade! {
+            builder.get_object::<Button>("ok_button");
+            ..connect_clicked(clone!(slf, weak_window => move |_| {
+                let window = upgrade!(weak_window);
+                let slf = slf.borrow();
+                let process_id = optional!(slf.get_selected());
 
-        let attach_button = cascade! {
-            gtk::Button::new_from_icon_name(Some("list-add"), IconSize::Button);
-            ..set_label("Attach");
-            ..connect_clicked(clone!(dialog, weak_window => move |_| {
-                let window = upgrade_weak!(weak_window);
-                let dialog = dialog.borrow();
-                let process_id = optional!(dialog.get_selected());
-
-                if let Some(on_attach) = &dialog.on_attach {
-                    on_attach(&*dialog, process_id);
+                if let Some(on_attach) = &slf.on_attach {
+                    on_attach(&*slf, process_id);
                 }
 
                 window.hide();
             }));
         };
 
-        let buttons = cascade! {
-            gtk::Box::new(Horizontal, 10);
-                ..pack_start(&cancel_button, false, false, 0);
-                ..pack_start(&attach_button, false, false, 0);
-        };
-
-        let window = cascade! {
-            window;
-            ..add(&cascade! {
-                gtk::Box::new(Vertical, 10);
-                ..set_border_width(10);
-                ..pack_start(&spinner, true, true, 0);
-                ..pack_start(&tree, true, true, 0);
-                ..pack_start(&buttons, false, false, 0);
-                ..show_all();
-            });
-        };
-
-        // spinner should not be initially visible.
-        spinner.hide();
-
-        window.connect_show(clone!(dialog => move |_| {
-            Self::refresh_processes(&dialog);
+        window.connect_show(clone!(slf => move |_| {
+            Self::refresh_processes(&slf);
         }));
 
-        window.connect_delete_event(clone!(dialog => move |window, _| {
-            dialog.borrow_mut().clear();
+        window.connect_delete_event(clone!(slf => move |window, _| {
+            slf.borrow_mut().clear();
             window.hide();
             Inhibit(true)
         }));
 
-        (dialog, window)
+        (slf, window)
     }
 
     /// Setup a callback to run on attach events.
@@ -165,11 +149,11 @@ impl<E> ConnectDialog<E> {
     }
 
     /// Refresh the available process list.
-    fn refresh_processes(dialog: &Rc<RefCell<Self>>)
+    fn refresh_processes(slf_rc: &Rc<RefCell<Self>>)
     where
         E: ErrorHandler,
     {
-        let mut slf = dialog.borrow_mut();
+        let mut slf = slf_rc.borrow_mut();
 
         if slf.refresh_in_progress.is_some() {
             return;
@@ -183,7 +167,7 @@ impl<E> ConnectDialog<E> {
         let error = slf.error.clone();
 
         let task = cascade! {
-            task::Task::oneshot(dialog, move |c| {
+            task::Task::oneshot(slf_rc, move |c| {
                 let mut infos = Vec::new();
 
                 for process_id in ptscan::processes()? {
@@ -226,7 +210,7 @@ impl<E> ConnectDialog<E> {
 
                 match infos {
                     Ok(infos) => {
-                        let model = upgrade_weak!(dialog.widgets.model);
+                        let model = upgrade!(dialog.widgets.model);
 
                         model.clear();
 

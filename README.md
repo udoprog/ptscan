@@ -2,6 +2,8 @@
 
 A memory scanner for Windows, written in Rust.
 
+![Main Window](pts-gui/gfx/main_window.png)
+
 ## Usage
 
 ptscan is a cli tool which allows you to scan and dissect memory using _filters_.

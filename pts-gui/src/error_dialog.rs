@@ -56,7 +56,7 @@ impl ErrorDialog {
             gtk::Button::new_from_icon_name(Some("edit-delete"), IconSize::Button);
             ..set_label("Close");
             ..connect_clicked(clone!(weak_window => move |_| {
-                upgrade_weak!(weak_window).hide();
+                upgrade!(weak_window).hide();
             }));
             ..show();
         };
@@ -112,7 +112,7 @@ impl ErrorDialog {
         };
 
         {
-            let container = upgrade_weak!(self.widgets.container);
+            let container = upgrade!(self.widgets.container);
 
             if container.is_visible() {
                 Self::render_error(&container, &info);
@@ -124,7 +124,7 @@ impl ErrorDialog {
 
     /// Render error information into the dialog window.
     fn render_errors(&mut self) {
-        let container = upgrade_weak!(self.widgets.container);
+        let container = upgrade!(self.widgets.container);
 
         for info in &self.state.errors {
             Self::render_error(&container, info);
@@ -157,7 +157,7 @@ impl ErrorDialog {
 
     /// Destroy all errors in the container.
     fn destroy_errors(&mut self) {
-        let container = upgrade_weak!(self.widgets.container);
+        let container = upgrade!(self.widgets.container);
 
         container.hide();
 

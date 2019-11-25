@@ -28,11 +28,11 @@ macro_rules! optional {
 
 // upgrade weak reference or return
 #[macro_export]
-macro_rules! upgrade_weak {
+macro_rules! upgrade {
     ($x:expr, $r:expr) => {
         optional!($x.upgrade(), $r)
     };
     ($x:expr) => {
-        upgrade_weak!($x, ())
+        upgrade!($x, ())
     };
 }

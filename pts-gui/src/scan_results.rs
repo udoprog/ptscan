@@ -1,29 +1,41 @@
-use self::Orientation::*;
-use crate::prelude::*;
+use crate::{prelude::*, ShowScanResultDialog};
+use gdk::RGBA;
 use parking_lot::RwLock;
-use ptscan::{ProcessHandle, Scan, ScanResult, ValueExpr};
+use ptscan::{ProcessHandle, Scan, ScanResult, Value, ValueExpr};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 struct Widgets {
     model: glib::WeakRef<ListStore>,
     tree: glib::WeakRef<TreeView>,
-    context_add_to_work: glib::WeakRef<MenuItem>,
+    add_item: glib::WeakRef<MenuItem>,
+    info_item: glib::WeakRef<MenuItem>,
+    show_scan_result_dialog_window: glib::WeakRef<Window>,
+    context_menu: Menu,
+}
+
+struct Visible {
+    results: Vec<Box<ScanResult>>,
+    values: Vec<Value>,
 }
 
 pub struct ScanResults {
     scan: Arc<RwLock<Scan>>,
     thread_pool: Arc<rayon::ThreadPool>,
     widgets: Widgets,
-    visible_results: Option<Vec<Box<ScanResult>>>,
+    settings: Arc<Settings>,
+    visible: Option<Visible>,
     timer: Option<glib::SourceId>,
     refresh_task: Option<task::Handle>,
-    handle: Option<Arc<ProcessHandle>>,
+    handle: Option<Arc<RwLock<ProcessHandle>>>,
     /// Keep track of the generation of result being used since it might change
     /// during a refresh.
     results_generation: usize,
     /// Handler to call when it is requested that we add a result.
     on_add_results: Option<Box<dyn Fn(&Self, &Box<ScanResult>)>>,
-    context_menu: Menu,
+    /// Menu for editing scan results.
+    show_scan_result_dialog: Rc<RefCell<ShowScanResultDialog>>,
+    /// Current value expression in use.
+    value_expr: ValueExpr,
 }
 
 impl Drop for ScanResults {
@@ -37,57 +49,56 @@ impl Drop for ScanResults {
 impl ScanResults {
     /// Construct a new container for scan results.
     pub fn new(
+        settings: Arc<Settings>,
+        tree: &TreeView,
         scan: Arc<RwLock<Scan>>,
         thread_pool: Arc<rayon::ThreadPool>,
-    ) -> (Rc<RefCell<Self>>, ScrolledWindow) {
+        show_scan_result_dialog: Rc<RefCell<ShowScanResultDialog>>,
+        show_scan_result_dialog_window: glib::WeakRef<Window>,
+    ) -> Rc<RefCell<Self>> {
+        let builder = resource("scan_results.glade").into_builder();
+
         let model = ListStore::new(&[
             String::static_type(),
             String::static_type(),
             String::static_type(),
             String::static_type(),
             String::static_type(),
+            RGBA::static_type(),
         ]);
 
-        let tree = TreeView::new();
+        let context_menu = builder.get_object::<Menu>("context_menu");
+        let add_item = builder.get_object::<MenuItem>("add_item");
+        let info_item = builder.get_object::<MenuItem>("info_item");
 
-        let context_add_to_work = cascade! {
-            MenuItem::new();
-            ..add(&cascade! {
-                gtk::Box::new(Horizontal, 0);
-                ..pack_start(&Image::new_from_icon_name(Some("list-add"), IconSize::Menu), false, false, 0);
-                ..pack_start(&Label::new(Some("Add to work area")), true, true, 0);
-            });
-        };
-
-        let context_menu = cascade! {
-            Menu::new();
-            ..append(&context_add_to_work);
-            ..show_all();
-        };
-
-        let scan_results = Rc::new(RefCell::new(Self {
+        let slf = Rc::new(RefCell::new(Self {
             scan,
             thread_pool,
             widgets: Widgets {
                 model: model.downgrade(),
                 tree: tree.downgrade(),
-                context_add_to_work: context_add_to_work.downgrade(),
+                add_item: add_item.downgrade(),
+                info_item: info_item.downgrade(),
+                show_scan_result_dialog_window,
+                context_menu,
             },
-            visible_results: None,
+            settings,
+            visible: None,
             timer: None,
             refresh_task: None,
             handle: None,
             results_generation: 0,
             on_add_results: None,
-            context_menu,
+            show_scan_result_dialog,
+            value_expr: ValueExpr::Value,
         }));
 
-        context_add_to_work.connect_activate(clone!(scan_results => move |_| {
-            let scan_results = scan_results.borrow();
-            let tree = upgrade_weak!(scan_results.widgets.tree);
+        add_item.connect_activate(clone!(slf => move |_| {
+            let slf = slf.borrow();
+            let tree = upgrade!(slf.widgets.tree);
 
-            let on_add_results = optional!(&scan_results.on_add_results);
-            let visible_results = optional!(&scan_results.visible_results);
+            let on_add_results = optional!(&slf.on_add_results);
+            let visible = optional!(&slf.visible);
 
             let (selected, _) = tree.get_selection().get_selected_rows();
 
@@ -97,16 +108,29 @@ impl ScanResults {
                     None => continue,
                 };
 
-                if let Some(result) = visible_results.get(index) {
-                    on_add_results(&*scan_results, result);
+                if let Some(result) = visible.results.get(index) {
+                    on_add_results(&*slf, result);
                 }
             }
         }));
 
-        scan_results.borrow_mut().timer = Some(glib::source::timeout_add_local(
+        info_item.connect_activate(clone!(slf => move |_| {
+            let slf = slf.borrow();
+            let visible = optional!(&slf.visible);
+            let tree = upgrade!(slf.widgets.tree);
+            let path = optional!(tree.get_selection().get_selected_rows().0.into_iter().next());
+            let index = optional!(path.get_indices().into_iter().next());
+            let result = optional!(visible.results.get(index as usize)).clone();
+            let window = upgrade!(slf.widgets.show_scan_result_dialog_window);
+            slf.show_scan_result_dialog.borrow_mut().set_result(result);
+            window.show();
+            window.present();
+        }));
+
+        slf.borrow_mut().timer = Some(glib::source::timeout_add_local(
             500,
-            clone!(scan_results => move || {
-                Self::refresh_current(&scan_results);
+            clone!(slf => move || {
+                Self::refresh_current(&slf);
                 glib::Continue(true)
             }),
         ));
@@ -117,65 +141,79 @@ impl ScanResults {
         let last_cell = CellRendererText::new();
         let current_cell = CellRendererText::new();
 
-        let tree = cascade! {
+        cascade! {
             tree;
+            ..set_enable_search(true);
             ..set_headers_visible(true);
             ..append_column(&cascade! {
                 TreeViewColumn::new();
-                    ..set_title("type");
-                    ..pack_start(&type_cell, true);
-                    ..add_attribute(&type_cell, "text", 0);
+                ..set_title("type");
+                ..pack_start(&type_cell, true);
+                ..add_attribute(&type_cell, "text", 0);
+                ..set_resizable(true);
+                ..set_min_width(20);
+                ..set_max_width(100);
             });
             ..append_column(&cascade! {
                 TreeViewColumn::new();
-                    ..set_title("address");
-                    ..pack_start(&pointer_cell, false);
-                    ..add_attribute(&pointer_cell, "text", 1);
+                ..set_title("address");
+                ..pack_start(&pointer_cell, false);
+                ..add_attribute(&pointer_cell, "text", 1);
+                ..set_resizable(true);
+                ..set_min_width(100);
             });
             ..append_column(&cascade! {
                 TreeViewColumn::new();
-                    ..set_title("initial");
-                    ..pack_start(&value_cell, true);
-                    ..add_attribute(&value_cell, "text", 2);
+                ..set_title("initial");
+                ..pack_start(&value_cell, true);
+                ..add_attribute(&value_cell, "text", 2);
+                ..set_resizable(true);
+                ..set_min_width(20);
+                ..set_max_width(100);
             });
             ..append_column(&cascade! {
                 TreeViewColumn::new();
-                    ..set_title("last");
-                    ..pack_start(&last_cell, true);
-                    ..add_attribute(&last_cell, "text", 3);
+                ..set_title("last");
+                ..pack_start(&last_cell, true);
+                ..add_attribute(&last_cell, "text", 3);
+                ..set_resizable(true);
+                ..set_min_width(20);
+                ..set_max_width(100);
             });
             ..append_column(&cascade! {
                 TreeViewColumn::new();
-                    ..set_title("value");
-                    ..pack_start(&current_cell, true);
-                    ..add_attribute(&current_cell, "text", 4);
+                ..set_title("current");
+                ..pack_start(&current_cell, true);
+                ..add_attribute(&current_cell, "text", 4);
+                ..add_attribute(&current_cell, "background-rgba", 5);
+                ..set_resizable(true);
+                ..set_min_width(20);
             });
-            ..connect_row_activated(clone!(scan_results => move |_, path, _| {
-                let scan_results = scan_results.borrow();
+            ..connect_row_activated(clone!(slf => move |_, path, _| {
+                let slf = slf.borrow();
 
-                if let Some(on_add_results) = &scan_results.on_add_results {
-                    let visible_results = optional!(&scan_results.visible_results);
-                    let index = optional!(path.get_indices().into_iter().next());
-                    let result = optional!(visible_results.get(index as usize));
-                    on_add_results(&*scan_results, result);
-                }
+                let on_add_results = optional!(&slf.on_add_results);
+                let visible = optional!(&slf.visible);
+                let index = optional!(path.get_indices().into_iter().next());
+                let result = optional!(visible.results.get(index as usize));
+
+                on_add_results(&*slf, result);
             }));
-            ..connect_button_press_event(clone!(scan_results => move |_, e| {
+            ..connect_button_press_event(clone!(slf => move |_, e| {
                 match (e.get_event_type(), e.get_button()) {
                     (EventType::ButtonPress, 3) => {
-                        let scan_results = scan_results.borrow();
+                        let slf = slf.borrow();
 
-                        let tree = upgrade_weak!(scan_results.widgets.tree, Inhibit(false));
-                        let context_add_to_work = upgrade_weak!(scan_results.widgets.context_add_to_work, Inhibit(false));
+                        let tree = upgrade!(slf.widgets.tree, Inhibit(false));
+                        let add_item = upgrade!(slf.widgets.add_item, Inhibit(false));
+                        let info_item = upgrade!(slf.widgets.info_item, Inhibit(false));
 
-                        if tree.get_selection().count_selected_rows() == 0 {
-                            context_add_to_work.set_sensitive(false);
-                        } else {
-                            context_add_to_work.set_sensitive(true);
-                        }
+                        let any_selected = tree.get_selection().count_selected_rows() > 0;
+                        add_item.set_sensitive(any_selected);
+                        info_item.set_sensitive(any_selected);
 
-                        scan_results.context_menu.popup_at_pointer(Some(&e));
-                        scan_results.context_menu.show();
+                        slf.widgets.context_menu.popup_at_pointer(Some(&e));
+                        slf.widgets.context_menu.show();
                         Inhibit(true)
                     }
                     _ => Inhibit(false),
@@ -186,14 +224,12 @@ impl ScanResults {
             ..show_all();
         };
 
-        let scrolled_window = cascade! {
-            ScrolledWindow::new(gtk::NONE_ADJUSTMENT, gtk::NONE_ADJUSTMENT);
-            ..set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
-            ..add(&tree);
-            ..show();
-        };
+        slf
+    }
 
-        (scan_results, scrolled_window)
+    /// Set the current value expression.
+    pub fn set_value_expr(&mut self, value_expr: ValueExpr) {
+        self.value_expr = value_expr;
     }
 
     /// Request when the component wants a result to be added to the scratch pad.
@@ -204,55 +240,16 @@ impl ScanResults {
         self.on_add_results = Some(Box::new(on_add_results));
     }
 
-    /// Refresh the current set of results.
-    pub fn refresh_current(scan_results: &Rc<RefCell<Self>>) {
-        let mut slf = scan_results.borrow_mut();
-
-        // do not refresh
-        if slf.refresh_task.is_some() {
-            return;
-        }
-
-        let handle = optional!(slf.handle.clone());
-        let mut new_results = optional!(slf.visible_results.clone());
-        let thread_pool = slf.thread_pool.clone();
-        let results_generation = slf.results_generation;
-
-        let task = cascade! {
-            task::Task::oneshot(scan_results, move |c| {
-                handle.refresh_values(
-                    &*thread_pool,
-                    &mut new_results,
-                    Some(c.as_token()),
-                    None,
-                    NoopProgress,
-                    &ValueExpr::Value,
-                )?;
-
-                Ok(new_results)
-            });
-            ..then(move |scan_results, new_results| {
-                if let Ok(new_results) = new_results {
-                    scan_results.refresh_visible_diff(results_generation, new_results);
-                }
-
-                scan_results.refresh_task = None;
-            });
-        };
-
-        slf.refresh_task = Some(task.run());
-    }
-
     /// Refresh the collection of scan results being showed.
     pub fn refresh(&mut self) {
         let scan = optional!(self.scan.try_read());
-        let model = upgrade_weak!(self.widgets.model);
+        let model = upgrade!(self.widgets.model);
 
         model.clear();
 
-        let visible = scan.results.iter().take(1000).cloned().collect::<Vec<_>>();
+        let results = scan.results.iter().take(1000).cloned().collect::<Vec<_>>();
 
-        for result in &visible {
+        for result in &results {
             let last = result.last();
             let ty = last.ty().to_string();
             let pointer = result.pointer.to_string();
@@ -261,38 +258,100 @@ impl ScanResults {
 
             model.insert_with_values(
                 None,
-                &[0, 1, 2, 3, 4],
-                &[&ty, &pointer, &initial, &last, &last],
+                &[0, 1, 2, 3, 4, 5],
+                &[
+                    &ty,
+                    &pointer,
+                    &initial,
+                    &last,
+                    &last,
+                    &self.settings.default_cell_background.to_value(),
+                ],
             );
         }
 
-        self.visible_results = Some(visible);
+        let values = results.iter().map(|r| r.last().clone()).collect();
+        self.visible = Some(Visible { results, values });
         self.results_generation += 1;
     }
 
+    /// Refresh the current set of results.
+    fn refresh_current(slf_rc: &Rc<RefCell<Self>>) {
+        let mut slf = slf_rc.borrow_mut();
+
+        // do not refresh
+        if slf.refresh_task.is_some() {
+            return;
+        }
+
+        let handle = optional!(slf.handle.clone());
+        let mut results = optional!(&slf.visible).results.clone();
+        let thread_pool = slf.thread_pool.clone();
+        let results_generation = slf.results_generation;
+        let value_expr = slf.value_expr.clone();
+
+        let task = cascade! {
+            task::Task::oneshot(slf_rc, move |c| {
+                let handle = match handle.try_read() {
+                    Some(handle) => handle,
+                    None => return Ok(None),
+                };
+
+                handle.refresh_values(
+                    &*thread_pool,
+                    &mut results,
+                    Some(c.as_token()),
+                    None,
+                    NoopProgress,
+                    &value_expr,
+                )?;
+
+                let values = results.into_iter().map(|result| result.last.unwrap_or(result.initial)).collect::<Vec<_>>();
+
+                Ok(Some(values))
+            });
+            ..then(move |slf, values| {
+                if let Ok(Some(values)) = values {
+                    slf.refresh_visible_diff(results_generation, values);
+                }
+
+                slf.refresh_task = None;
+            });
+        };
+
+        slf.refresh_task = Some(task.run());
+    }
+
     /// Refresh the visible results if the differ from the stored ones.
-    pub fn refresh_visible_diff(
-        &mut self,
-        results_generation: usize,
-        new_results: Vec<Box<ScanResult>>,
-    ) {
+    fn refresh_visible_diff(&mut self, results_generation: usize, values: Vec<Value>) {
         if self.results_generation != results_generation {
             return;
         }
 
-        let model = upgrade_weak!(self.widgets.model);
+        let model = upgrade!(self.widgets.model);
 
-        let visible_results = optional!(&mut self.visible_results);
+        let visible = optional!(&mut self.visible);
 
-        for (index, (current, update)) in visible_results.iter_mut().zip(new_results).enumerate() {
-            if current.last() == update.last() {
+        for (index, (current, (result, update))) in visible
+            .values
+            .iter_mut()
+            .zip(visible.results.iter().zip(values))
+            .enumerate()
+        {
+            if *current == update {
                 continue;
             }
 
-            let value = update.last().to_string();
-
             if let Some(iter) = model.iter_nth_child(None, index as i32) {
-                model.set_value(&iter, 4, &value.to_value());
+                model.set_value(&iter, 4, &update.to_string().to_value());
+
+                let background = if *result.last() == update {
+                    &self.settings.default_cell_background
+                } else {
+                    &self.settings.highlight_cell_background
+                };
+
+                model.set_value(&iter, 5, &background.to_value());
             }
 
             *current = update;
@@ -300,7 +359,7 @@ impl ScanResults {
     }
 
     /// Set the current process handle.
-    pub fn set_handle(&mut self, handle: Option<Arc<ProcessHandle>>) {
+    pub fn set_handle(&mut self, handle: Option<Arc<RwLock<ProcessHandle>>>) {
         self.handle = handle;
     }
 }

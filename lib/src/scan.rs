@@ -268,6 +268,8 @@ impl Scan {
                         ranges.push(m.range);
                     }
                 }
+
+                ranges.extend(handle.modules.iter().map(|m| m.range));
             }
         }
 

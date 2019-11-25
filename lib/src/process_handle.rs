@@ -11,6 +11,7 @@ use crate::{
     thread::Thread,
     Address, AddressRange, Pointer, PointerBase, Process, ProcessId, ProcessInfo as _, ScanResult,
     Size, Test, Token, Type, TypeHint, Value, ValueExpr,
+    Cached,
 };
 use anyhow::{bail, Context as _};
 use hashbrown::HashMap;
@@ -577,19 +578,13 @@ impl ProcessHandle {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum Cached<T> {
-    Some(T),
-    None,
-}
-
 #[derive(Debug, Clone)]
 pub struct AddressProxy<'a> {
     pointer: &'a Pointer,
     pub(crate) handle: &'a ProcessHandle,
     memory_cache: Option<&'a MemoryCache>,
     /// cached, followed address.
-    followed: Cached<Option<Address>>,
+    pub followed: Cached<Option<Address>>,
     evaled: Cached<(Value, Option<usize>)>,
 }
 

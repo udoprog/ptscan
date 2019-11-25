@@ -90,6 +90,11 @@ impl Pointer {
         }
     }
 
+    /// Return a struct that performs fancy formatting on the pointer.
+    pub fn fancy(&self) -> FancyDisplay<'_> {
+        FancyDisplay(self)
+    }
+
     /// Construct the pointer associated with null.
     pub const fn null() -> Self {
         Self {
@@ -207,15 +212,13 @@ impl Pointer {
     }
 }
 
-impl fmt::Display for Pointer {
+pub struct FancyDisplay<'a>(&'a Pointer);
+
+impl fmt::Display for FancyDisplay<'_> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "{}", self.raw.base)?;
+        self.0.fmt(fmt)?;
 
-        for o in &self.raw.offsets {
-            write!(fmt, " -> {}", o)?;
-        }
-
-        let last_address = match (&self.raw.base, self.last_address) {
+        let last_address = match (&self.0.raw.base, self.0.last_address) {
             (PointerBase::Address { address }, Some(last_address)) if *address != last_address => {
                 Some(last_address)
             }
@@ -225,6 +228,18 @@ impl fmt::Display for Pointer {
 
         if let Some(address) = last_address {
             write!(fmt, " => {}", address)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl fmt::Display for Pointer {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "{}", self.raw.base)?;
+
+        for o in &self.raw.offsets {
+            write!(fmt, " -> {}", o)?;
         }
 
         Ok(())

@@ -1,14 +1,28 @@
-use self::Orientation::*;
-use crate::{prelude::*, ScanResultDialog};
-use ptscan::{Pointer, ProcessHandle, ScanResult, Value, ValueExpr};
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use crate::{prelude::*, EditScanResultDialog};
+use anyhow::anyhow;
+use parking_lot::RwLock;
+use ptscan::{
+    FilterExpr, Pointer, PointerScan, PointerScanBackreferenceProgress, PointerScanInitialProgress,
+    ProcessHandle, Scan, ScanResult, Size, Type, Value, ValueExpr,
+};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+const SECOND: Duration = Duration::from_secs(1);
 
 struct Widgets {
     model: glib::WeakRef<ListStore>,
     tree: glib::WeakRef<TreeView>,
-    context_remove_item: glib::WeakRef<MenuItem>,
-    context_edit_item: glib::WeakRef<MenuItem>,
+    remove_item: glib::WeakRef<MenuItem>,
+    edit_item: glib::WeakRef<MenuItem>,
+    pointer_scan_item: glib::WeakRef<MenuItem>,
     scan_result_dialog_window: glib::WeakRef<Window>,
+    scan_progress_container: glib::WeakRef<gtk::Box>,
+    scan_progress: glib::WeakRef<ProgressBar>,
 }
 
 #[derive(Default)]
@@ -22,14 +36,16 @@ pub struct ScratchResults {
     widgets: Widgets,
     timer: Option<glib::SourceId>,
     refresh_task: Option<task::Handle>,
-    handle: Option<Arc<ProcessHandle>>,
+    handle: Option<Arc<RwLock<ProcessHandle>>>,
     /// Keep track of the generation of result being used since it might change
     /// during a refresh.
     results_generation: usize,
     /// Reference to context menu to keep it alive.
     context_menu: Menu,
     /// Menu for editing scan results.
-    scan_result_dialog: Rc<RefCell<ScanResultDialog>>,
+    scan_result_dialog: Rc<RefCell<EditScanResultDialog>>,
+    /// A currently running pointer scan.
+    pointer_scan_task: Option<task::Handle>,
 }
 
 impl Drop for ScratchResults {
@@ -43,63 +59,40 @@ impl Drop for ScratchResults {
 impl ScratchResults {
     /// Construct a new container for scan results.
     pub fn new(
+        builder: &Builder,
         thread_pool: Arc<rayon::ThreadPool>,
-        scan_result_dialog: Rc<RefCell<ScanResultDialog>>,
+        scan_result_dialog: Rc<RefCell<EditScanResultDialog>>,
         scan_result_dialog_window: glib::WeakRef<Window>,
-    ) -> (Rc<RefCell<Self>>, ScrolledWindow) {
+    ) -> Rc<RefCell<Self>> {
         let model = ListStore::new(&[
-            String::static_type(),
             String::static_type(),
             String::static_type(),
             String::static_type(),
             String::static_type(),
         ]);
 
-        let tree = TreeView::new();
+        let tree = builder.get_object::<TreeView>("scratch_tree");
+        let remove_item = builder.get_object::<MenuItem>("scratch_remove_item");
+        let context_menu = builder.get_object::<Menu>("scratch_context_menu");
+        let add_item = builder.get_object::<MenuItem>("scratch_add_item");
+        let edit_item = builder.get_object::<MenuItem>("scratch_edit_item");
+        let pointer_scan_item = builder.get_object::<MenuItem>("scratch_pointer_scan_item");
 
-        let context_remove_item = cascade! {
-            MenuItem::new();
-            ..add(&cascade! {
-                gtk::Box::new(Horizontal, 0);
-                ..pack_start(&Image::new_from_icon_name(Some("list-remove"), IconSize::Menu), false, false, 0);
-                ..pack_start(&Label::new(Some("Remove")), true, true, 0);
-            });
-        };
+        let scan_progress_container =
+            builder.get_object::<gtk::Box>("scratch_scan_progress_container");
+        let scan_progress = builder.get_object::<ProgressBar>("scratch_scan_progress");
 
-        let context_edit_item = cascade! {
-            MenuItem::new();
-            ..add(&cascade! {
-                gtk::Box::new(Horizontal, 0);
-                ..pack_start(&Image::new_from_icon_name(Some("list-edit"), IconSize::Menu), false, false, 0);
-                ..pack_start(&Label::new(Some("Edit")), true, true, 0);
-            });
-        };
-
-        let context_add_item = cascade! {
-            MenuItem::new();
-            ..add(&cascade! {
-                gtk::Box::new(Horizontal, 0);
-                ..pack_start(&Image::new_from_icon_name(Some("list-add"), IconSize::Menu), false, false, 0);
-                ..pack_start(&Label::new(Some("Add")), true, true, 0);
-            });
-        };
-
-        let context_menu = cascade! {
-            Menu::new();
-            ..append(&context_remove_item);
-            ..append(&context_edit_item);
-            ..append(&context_add_item);
-            ..show_all();
-        };
-
-        let scratch_results = Rc::new(RefCell::new(Self {
+        let slf = Rc::new(RefCell::new(Self {
             thread_pool,
             widgets: Widgets {
                 model: model.downgrade(),
-                context_remove_item: context_remove_item.downgrade(),
-                context_edit_item: context_edit_item.downgrade(),
+                remove_item: remove_item.downgrade(),
+                edit_item: edit_item.downgrade(),
+                pointer_scan_item: pointer_scan_item.downgrade(),
                 tree: tree.downgrade(),
                 scan_result_dialog_window,
+                scan_progress_container: scan_progress_container.downgrade(),
+                scan_progress: scan_progress.downgrade(),
             },
             state: State::default(),
             timer: None,
@@ -108,12 +101,13 @@ impl ScratchResults {
             results_generation: 0,
             context_menu,
             scan_result_dialog,
+            pointer_scan_task: None,
         }));
 
-        context_remove_item.connect_activate(clone!(scratch_results => move |_| {
-            let mut scratch_results = scratch_results.borrow_mut();
-            let tree = upgrade_weak!(scratch_results.widgets.tree);
-            let model = optional!(scratch_results.widgets.model.upgrade());
+        remove_item.connect_activate(clone!(slf => move |_| {
+            let mut slf = slf.borrow_mut();
+            let tree = upgrade!(slf.widgets.tree);
+            let model = optional!(slf.widgets.model.upgrade());
 
             let (selected, _) = tree.get_selection().get_selected_rows();
 
@@ -141,109 +135,122 @@ impl ScratchResults {
                 };
 
                 model.remove(&iter);
-                scratch_results.state.results.swap_remove(index);
+                slf.state.results.swap_remove(index);
             }
 
-            scratch_results.results_generation += 1;
+            slf.results_generation += 1;
         }));
 
-        context_edit_item.connect_activate(clone!(scratch_results => move |_| {
-            let tree = upgrade_weak!(scratch_results.borrow().widgets.tree);
+        edit_item.connect_activate(clone!(slf => move |_| {
+            let tree = upgrade!(slf.borrow().widgets.tree);
             let path = optional!(tree.get_selection().get_selected_rows().0.into_iter().next());
             let index = optional!(path.get_indices().into_iter().next()) as usize;
-            Self::open_result_editor(&scratch_results, index);
+            Self::open_result_editor(&slf, index);
         }));
 
-        context_add_item.connect_activate(clone!(scratch_results => move |_| {
-            let slf = scratch_results.borrow();
-
-            {
-                let mut scan_result_dialog = slf.scan_result_dialog.borrow_mut();
-
-                scan_result_dialog.set_result(Box::new(ScanResult::new(Pointer::null(), Value::default())));
-
-                scan_result_dialog.on_save(clone!(scratch_results => move |_, result| {
-                    let mut scratch_results = scratch_results.borrow_mut();
-                    scratch_results.add_result(&result);
-                }));
-            }
-
-            let scan_result_dialog_window = upgrade_weak!(slf.widgets.scan_result_dialog_window);
-            scan_result_dialog_window.show();
-            scan_result_dialog_window.present();
+        pointer_scan_item.connect_activate(clone!(slf => move |_| {
+            let tree = upgrade!(slf.borrow().widgets.tree);
+            let path = optional!(tree.get_selection().get_selected_rows().0.into_iter().next());
+            let index = optional!(path.get_indices().into_iter().next()) as usize;
+            Self::pointer_scan_for(&slf, index);
         }));
 
-        scratch_results.borrow_mut().timer = Some(glib::source::timeout_add_local(
+        cascade! {
+            add_item;
+            ..connect_activate(clone!(slf => move |_| {
+                let s = slf.borrow();
+
+                {
+                    let mut scan_result_dialog = s.scan_result_dialog.borrow_mut();
+
+                    scan_result_dialog.set_result(Box::new(ScanResult::new(Pointer::null(), Value::default())));
+
+                    scan_result_dialog.on_save(clone!(slf => move |_, result| {
+                        let mut s = slf.borrow_mut();
+                        s.add_result(&result);
+                    }));
+                }
+
+                let scan_result_dialog_window = upgrade!(s.widgets.scan_result_dialog_window);
+                scan_result_dialog_window.show();
+                scan_result_dialog_window.present();
+            }));
+        };
+
+        slf.borrow_mut().timer = Some(glib::source::timeout_add_local(
             500,
-            clone!(scratch_results => move || {
-                Self::refresh_current(&scratch_results);
+            clone!(slf => move || {
+                Self::refresh_current(&slf);
                 glib::Continue(true)
             }),
         ));
 
         let type_cell = CellRendererText::new();
         let pointer_cell = CellRendererText::new();
-        let value_cell = CellRendererText::new();
+        let initial_cell = CellRendererText::new();
         let last_cell = CellRendererText::new();
-        let current_cell = CellRendererText::new();
 
-        let tree = cascade! {
+        cascade! {
             tree;
+            ..set_enable_search(true);
             ..set_headers_visible(true);
             ..append_column(&cascade! {
                 TreeViewColumn::new();
-                    ..set_title("type");
-                    ..pack_start(&type_cell, true);
-                    ..add_attribute(&type_cell, "text", 0);
+                ..set_title("type");
+                ..pack_start(&type_cell, true);
+                ..add_attribute(&type_cell, "text", 0);
+                ..set_resizable(true);
+                ..set_min_width(20);
+                ..set_max_width(100);
             });
             ..append_column(&cascade! {
                 TreeViewColumn::new();
-                    ..set_title("address");
-                    ..pack_start(&pointer_cell, false);
-                    ..add_attribute(&pointer_cell, "text", 1);
+                ..set_title("address");
+                ..pack_start(&pointer_cell, false);
+                ..add_attribute(&pointer_cell, "text", 1);
+                ..set_resizable(true);
+                ..set_min_width(100);
             });
             ..append_column(&cascade! {
                 TreeViewColumn::new();
-                    ..set_title("initial");
-                    ..pack_start(&value_cell, true);
-                    ..add_attribute(&value_cell, "text", 2);
+                ..set_title("initial");
+                ..pack_start(&initial_cell, true);
+                ..add_attribute(&initial_cell, "text", 2);
+                ..set_resizable(true);
+                ..set_min_width(20);
+                ..set_max_width(100);
             });
             ..append_column(&cascade! {
                 TreeViewColumn::new();
-                    ..set_title("last");
-                    ..pack_start(&last_cell, true);
-                    ..add_attribute(&last_cell, "text", 3);
-            });
-            ..append_column(&cascade! {
-                TreeViewColumn::new();
-                    ..set_title("value");
-                    ..pack_start(&current_cell, true);
-                    ..add_attribute(&current_cell, "text", 4);
+                ..set_title("last");
+                ..pack_start(&last_cell, true);
+                ..add_attribute(&last_cell, "text", 3);
+                ..set_resizable(true);
+                ..set_min_width(20);
+                ..set_max_width(100);
             });
             ..set_model(Some(&model));
             ..get_selection().set_mode(SelectionMode::Multiple);
-            ..connect_row_activated(clone!(scratch_results => move |_, path, _| {
+            ..connect_row_activated(clone!(slf => move |_, path, _| {
                 let index = optional!(path.get_indices().into_iter().next()) as usize;
-                Self::open_result_editor(&scratch_results, index);
+                Self::open_result_editor(&slf, index);
             }));
-            ..connect_button_press_event(clone!(scratch_results => move |_, e| {
+            ..connect_button_press_event(clone!(slf => move |_, e| {
                 match (e.get_event_type(), e.get_button()) {
                     (EventType::ButtonPress, 3) => {
-                        let scratch_results = scratch_results.borrow();
-                        let tree = upgrade_weak!(scratch_results.widgets.tree, Inhibit(false));
-                        let context_remove_item = upgrade_weak!(scratch_results.widgets.context_remove_item, Inhibit(false));
-                        let context_edit_item = upgrade_weak!(scratch_results.widgets.context_edit_item, Inhibit(false));
+                        let slf = slf.borrow();
+                        let tree = upgrade!(slf.widgets.tree, Inhibit(false));
+                        let remove_item = upgrade!(slf.widgets.remove_item, Inhibit(false));
+                        let edit_item = upgrade!(slf.widgets.edit_item, Inhibit(false));
+                        let pointer_scan_item = upgrade!(slf.widgets.pointer_scan_item, Inhibit(false));
 
-                        if tree.get_selection().count_selected_rows() == 0 {
-                            context_remove_item.set_sensitive(false);
-                            context_edit_item.set_sensitive(false);
-                        } else {
-                            context_remove_item.set_sensitive(true);
-                            context_edit_item.set_sensitive(true);
-                        }
+                        let any_selected = tree.get_selection().count_selected_rows() > 0;
+                        remove_item.set_sensitive(any_selected);
+                        edit_item.set_sensitive(any_selected);
+                        pointer_scan_item.set_sensitive(any_selected && slf.handle.is_some());
 
-                        scratch_results.context_menu.popup_at_pointer(Some(&e));
-                        scratch_results.context_menu.show();
+                        slf.context_menu.popup_at_pointer(Some(&e));
+                        slf.context_menu.show();
                         Inhibit(true)
                     }
                     _ => Inhibit(false),
@@ -252,19 +259,12 @@ impl ScratchResults {
             ..show_all();
         };
 
-        let scrolled_window = cascade! {
-            ScrolledWindow::new(gtk::NONE_ADJUSTMENT, gtk::NONE_ADJUSTMENT);
-            ..set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Automatic);
-            ..add(&tree);
-            ..show();
-        };
-
-        (scratch_results, scrolled_window)
+        slf
     }
 
     /// Refresh the current set of results.
-    pub fn refresh_current(scratch_results: &Rc<RefCell<Self>>) {
-        let mut slf = scratch_results.borrow_mut();
+    pub fn refresh_current(slf_rc: &Rc<RefCell<Self>>) {
+        let mut slf = slf_rc.borrow_mut();
 
         // waiting for refresh already in progress.
         if slf.refresh_task.is_some() {
@@ -278,26 +278,33 @@ impl ScratchResults {
 
         let handle = optional!(slf.handle.clone());
 
-        let mut new_results = slf.state.results.clone();
+        let mut results = slf.state.results.clone();
         let thread_pool = slf.thread_pool.clone();
         let results_generation = slf.results_generation;
 
         let task = cascade! {
-            task::Task::oneshot(scratch_results, move |c| {
+            task::Task::oneshot(slf_rc, move |c| {
+                let handle = match handle.try_read() {
+                    Some(handle) => handle,
+                    None => return Ok(None),
+                };
+
                 handle.refresh_values(
                     &*thread_pool,
-                    &mut new_results,
+                    &mut results,
                     Some(c.as_token()),
                     None,
                     NoopProgress,
                     &ValueExpr::Value,
                 )?;
 
-                Ok(new_results)
+                let values = results.into_iter().map(|r| r.last.unwrap_or(r.initial)).collect::<Vec<_>>();
+
+                Ok(Some(values))
             });
-            ..then(move |scratch_results, new_results| {
-                if let Ok(new_results) = new_results {
-                    scratch_results.refresh_visible_diff(results_generation, new_results);
+            ..then(move |scratch_results, values| {
+                if let Ok(Some(values)) = values {
+                    scratch_results.refresh_visible_diff(results_generation, values);
                 }
 
                 scratch_results.refresh_task = None;
@@ -309,7 +316,7 @@ impl ScratchResults {
 
     /// Refresh the collection of scan results being showed.
     pub fn add_result(&mut self, result: &Box<ScanResult>) {
-        let model = upgrade_weak!(self.widgets.model);
+        let model = upgrade!(self.widgets.model);
 
         let last = result.last();
         let ty = last.ty().to_string();
@@ -317,11 +324,7 @@ impl ScratchResults {
         let initial = result.initial.to_string();
         let last = result.last().to_string();
 
-        model.insert_with_values(
-            None,
-            &[0, 1, 2, 3, 4],
-            &[&ty, &pointer, &initial, &last, &last],
-        );
+        model.insert_with_values(None, &[0, 1, 2, 3], &[&ty, &pointer, &initial, &last]);
 
         self.state.results.push(result.clone());
         self.results_generation += 1;
@@ -338,7 +341,7 @@ impl ScratchResults {
             return;
         }
 
-        let model = upgrade_weak!(self.widgets.model);
+        let model = upgrade!(self.widgets.model);
 
         let last = result.last();
         let ty = last.ty().to_string();
@@ -347,11 +350,7 @@ impl ScratchResults {
         let last = result.last().to_string();
 
         if let Some(iter) = model.iter_nth_child(None, index as i32) {
-            model.set(
-                &iter,
-                &[0, 1, 2, 3, 4],
-                &[&ty, &pointer, &initial, &last, &last],
-            );
+            model.set(&iter, &[0, 1, 2, 3], &[&ty, &pointer, &initial, &last]);
         }
 
         if let Some(r) = self.state.results.get_mut(index) {
@@ -362,35 +361,28 @@ impl ScratchResults {
     }
 
     /// Refresh the visible results if the differ from the stored ones.
-    pub fn refresh_visible_diff(
-        &mut self,
-        results_generation: usize,
-        new_results: Vec<Box<ScanResult>>,
-    ) {
+    pub fn refresh_visible_diff(&mut self, results_generation: usize, values: Vec<Value>) {
         if self.results_generation != results_generation {
             return;
         }
 
-        let model = upgrade_weak!(self.widgets.model);
+        let model = upgrade!(self.widgets.model);
 
-        for (index, (current, update)) in self.state.results.iter_mut().zip(new_results).enumerate()
-        {
-            if current.last() == update.last() {
+        for (index, (result, update)) in self.state.results.iter_mut().zip(values).enumerate() {
+            if *result.last() == update {
                 continue;
             }
 
-            let value = update.last().to_string();
-
             if let Some(iter) = model.iter_nth_child(None, index as i32) {
-                model.set_value(&iter, 4, &value.to_value());
+                model.set_value(&iter, 3, &update.to_string().to_value());
             }
 
-            *current = update;
+            result.last = Some(update);
         }
     }
 
     /// Set the current process handle.
-    pub fn set_handle(&mut self, handle: Option<Arc<ProcessHandle>>) {
+    pub fn set_handle(&mut self, handle: Option<Arc<RwLock<ProcessHandle>>>) {
         self.handle = handle;
     }
 
@@ -412,9 +404,127 @@ impl ScratchResults {
             }));
         }
 
-        let scan_result_dialog_window = upgrade_weak!(slf.widgets.scan_result_dialog_window);
+        let scan_result_dialog_window = upgrade!(slf.widgets.scan_result_dialog_window);
         scan_result_dialog_window.show();
         scan_result_dialog_window.present();
+    }
+
+    /// Open the result editor for editing the result at the given location.
+    fn pointer_scan_for(slf_rc: &Rc<RefCell<Self>>, index: usize) {
+        let mut slf = slf_rc.borrow_mut();
+
+        if slf.pointer_scan_task.is_some() {
+            return;
+        }
+
+        let scan_progress_container = upgrade!(slf.widgets.scan_progress_container);
+
+        let handle = optional!(&slf.handle).clone();
+        let thread_pool = slf.thread_pool.clone();
+        let result = optional!(slf.state.results.get(index)).clone();
+
+        scan_progress_container.show();
+
+        let mut current = "";
+
+        let task = cascade! {
+            task::Task::new(slf_rc, move |c| {
+                let handle = handle.read();
+
+                let ty = result.initial.ty();
+                let needle = result.pointer.follow_default(&*handle)?
+                    .ok_or_else(|| anyhow!("illegal pointer for scan"))?;
+
+                let pointers = FilterExpr::pointer(ValueExpr::Value, &handle.process)?;
+
+                let mut scan = Scan::new();
+
+                let token = c.as_token();
+
+                scan.initial_scan(
+                    &*thread_pool,
+                    &*handle,
+                    &pointers,
+                    Type::Pointer,
+                    Some(token),
+                    PointerScanProgress::new(c, "Initial pointer scan"),
+                    Default::default(),
+                )?;
+
+                let mut pointer_scan = PointerScan::new(&*thread_pool, &*handle, token);
+                pointer_scan.max_depth = 7;
+                pointer_scan.max_offset = Size::new(0x1000);
+
+                pointer_scan.build_references(scan.iter())?;
+
+                if c.is_stopped() {
+                    return Err(anyhow!("pointer scan cancelled"));
+                }
+
+                let mut results = Vec::new();
+                pointer_scan.scan(ty, needle, &mut results, &mut InitialProgress::new(c, "Scanning for paths"))?;
+
+                if c.is_stopped() {
+                    return Err(anyhow!("pointer scan cancelled"));
+                }
+
+                pointer_scan.backreference_scan(
+                    ty,
+                    needle,
+                    &mut results,
+                    &mut BackreferenceProgress::new(c, "Picking up trailing backreferences"),
+                )?;
+
+                Ok(results)
+            });
+            ..emit(move |main, progress| {
+                match progress {
+                    Progress::StartTask { name, pulse } => {
+                        current = name;
+                        let progress = upgrade!(main.widgets.scan_progress);
+
+                        if pulse {
+                            progress.set_pulse_step(1.0);
+                        } else {
+                            progress.set_fraction(0.0);
+                        }
+                    }
+                    Progress::Tick { percentage, results } => {
+                        let progress = upgrade!(main.widgets.scan_progress);
+                        let fraction = (percentage as f64) / 100f64;
+                        progress.set_fraction(fraction);
+                        progress.set_text(Some(&format!("{}: Found {} pointer(s)", current, results)));
+                    }
+                    Progress::QueueTick { queue_len, results } => {
+                        let progress = upgrade!(main.widgets.scan_progress);
+                        progress.set_text(Some(&format!("{}: Queue length: {}, Results: {}", current, queue_len, results)));
+
+                        progress.pulse();
+                    }
+                    Progress::BackreferenceTick { remaining, results } => {
+                        let progress = upgrade!(main.widgets.scan_progress);
+                        progress.set_fraction(100.0);
+                        progress.set_text(Some(&format!("{}: Remaining: {}, Results: {}", current, remaining, results)));
+
+                        progress.pulse();
+                    }
+                }
+            });
+            ..then(|slf, results| {
+                let scan_progress_container = upgrade!(slf.widgets.scan_progress_container);
+                scan_progress_container.hide();
+
+                if let Ok(results) = results {
+                    for result in results.into_iter().take(10) {
+                        slf.add_result(&result);
+                    }
+                }
+
+                slf.pointer_scan_task = None;
+            });
+        };
+
+        slf.pointer_scan_task = Some(task.run());
     }
 }
 
@@ -426,6 +536,110 @@ impl ptscan::ScanProgress for NoopProgress {
     }
 
     fn report(&mut self, _: usize, _: u64) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+pub enum Progress {
+    StartTask { name: &'static str, pulse: bool },
+    Tick { percentage: usize, results: u64 },
+    QueueTick { queue_len: usize, results: usize },
+    BackreferenceTick { remaining: usize, results: usize },
+}
+
+struct PointerScanProgress<'a, T> {
+    context: &'a task::Context<Progress, T>,
+}
+
+impl<'a, T> PointerScanProgress<'a, T> {
+    pub fn new(context: &'a task::Context<Progress, T>, name: &'static str) -> Self {
+        let _ = context.emit(Progress::StartTask { name, pulse: false });
+        Self { context }
+    }
+}
+
+impl<'a, T> ptscan::ScanProgress for PointerScanProgress<'a, T> {
+    fn report_bytes(&mut self, _: ptscan::Size) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn report(&mut self, percentage: usize, results: u64) -> anyhow::Result<()> {
+        let _ = self.context.emit(Progress::Tick {
+            percentage,
+            results,
+        });
+        Ok(())
+    }
+}
+
+struct InitialProgress<'a, T> {
+    context: &'a task::Context<Progress, T>,
+    last: Instant,
+}
+
+impl<'a, T> InitialProgress<'a, T> {
+    pub fn new(context: &'a task::Context<Progress, T>, name: &'static str) -> Self {
+        let _ = context.emit(Progress::StartTask { name, pulse: true });
+        Self {
+            context,
+            last: Instant::now(),
+        }
+    }
+}
+
+impl<'a, T> PointerScanInitialProgress for InitialProgress<'a, T> {
+    fn report(&mut self, queue_len: usize, results: usize) -> anyhow::Result<()> {
+        if queue_len % 1000 != 0 {
+            return Ok(());
+        }
+
+        let now = Instant::now();
+
+        if now.duration_since(self.last) < SECOND {
+            return Ok(());
+        }
+
+        let _ = self
+            .context
+            .emit(Progress::QueueTick { queue_len, results });
+
+        self.last = now;
+        Ok(())
+    }
+}
+
+struct BackreferenceProgress<'a, T> {
+    context: &'a task::Context<Progress, T>,
+    last: Instant,
+}
+
+impl<'a, T> BackreferenceProgress<'a, T> {
+    pub fn new(context: &'a task::Context<Progress, T>, name: &'static str) -> Self {
+        let _ = context.emit(Progress::StartTask { name, pulse: true });
+        Self {
+            context,
+            last: Instant::now(),
+        }
+    }
+}
+
+impl<'a, T> PointerScanBackreferenceProgress for BackreferenceProgress<'a, T> {
+    fn report(&mut self, remaining: usize, results: usize) -> anyhow::Result<()> {
+        if remaining % 1000 != 0 {
+            return Ok(());
+        }
+
+        let now = Instant::now();
+
+        if now.duration_since(self.last) < SECOND {
+            return Ok(());
+        }
+
+        let _ = self
+            .context
+            .emit(Progress::BackreferenceTick { remaining, results });
+
+        self.last = now;
         Ok(())
     }
 }

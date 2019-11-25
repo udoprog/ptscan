@@ -645,7 +645,7 @@ impl Application {
                     if index < scan.len() {
                         let result = scan.results.swap_remove(index);
                         writeln!(self.term, "deleted:")?;
-                        writeln!(self.term, "{} = {}", result.pointer, result.last())?;
+                        writeln!(self.term, "{} = {}", result.pointer.fancy(), result.last())?;
                     }
                 }
             }
@@ -1919,7 +1919,7 @@ impl Application {
 
                 buf.clear();
 
-                write!(buf, "{:>03} : {}", index, result.pointer)?;
+                write!(buf, "{:>03} : {}", index, result.pointer.fancy())?;
 
                 if let Some(comment) = comments.get(result.pointer.raw()) {
                     write!(buf, " /* {} */", comment)?;

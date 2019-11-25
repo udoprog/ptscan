@@ -1,5 +1,6 @@
+use cascade::cascade;
 use gio::prelude::*;
-use pts_gui::MainWindow;
+use pts_gui::{MainWindow, Settings};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -35,11 +36,31 @@ fn main() -> anyhow::Result<()> {
             .build()?,
     );
 
+    let settings = Arc::new(Settings {
+        highlight_color: cascade! {
+            pango::AttrList::new();
+            ..insert(pango::Attribute::new_foreground(0, 41984, 0).unwrap());
+            ..insert(pango::Attribute::new_weight(pango::Weight::Bold).unwrap());
+        },
+        highlight_cell_background: gdk::RGBA {
+            red: 0.69,
+            green: 0.90,
+            blue: 0.69,
+            alpha: 1.0,
+        },
+        default_cell_background: gdk::RGBA {
+            red: 0.0,
+            green: 0.0,
+            blue: 0.0,
+            alpha: 0.0,
+        },
+    });
+
     let application = gtk::Application::new(Some("com.github.udoprog.ptscan"), Default::default())?;
 
     application.connect_activate(move |app| {
         let error = ErrorHandler;
-        MainWindow::build(thread_pool.clone(), app, error);
+        MainWindow::build(settings.clone(), thread_pool.clone(), app, error);
     });
 
     application.run(&std::env::args().collect::<Vec<_>>());

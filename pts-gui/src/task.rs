@@ -82,7 +82,7 @@ pub struct Task<C, Y, U> {
     cancel: Arc<AtomicBool>,
     context: Rc<RefCell<C>>,
     task: Box<dyn FnOnce(&Context<Y, U>) -> anyhow::Result<U> + Send>,
-    emit: Option<Box<dyn Fn(&mut C, Y)>>,
+    emit: Option<Box<dyn FnMut(&mut C, Y)>>,
     then: Option<Box<dyn Fn(&mut C, anyhow::Result<U>)>>,
 }
 
@@ -126,7 +126,7 @@ where
     /// Register a handler to be fired when the oneshot is done.
     pub fn emit<Callback>(&mut self, emit: Callback)
     where
-        Callback: 'static + Fn(&mut C, Y),
+        Callback: 'static + FnMut(&mut C, Y),
     {
         self.emit = Some(Box::new(emit));
     }
@@ -145,7 +145,7 @@ where
             cancel,
             context,
             task,
-            emit,
+            mut emit,
             then,
         } = self;
 
@@ -167,7 +167,7 @@ where
 
             let result = match result {
                 Progress::Emit(result) => {
-                    if let Some(emit) = &emit {
+                    if let Some(emit) = &mut emit {
                         emit(&mut *context, result);
                     }
 

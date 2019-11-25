@@ -37,6 +37,12 @@ pub enum Endianness {
     BigEndian,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum Cached<T> {
+    Some(T),
+    None,
+}
+
 pub use self::address::Address;
 pub use self::address_range::AddressRange;
 pub use self::encoding::Encoding;

@@ -1,4 +1,8 @@
-pub use crate::{error_handler::ErrorHandler, signal::BlockExt as _, task, Block, Settings};
+pub use crate::{
+    error_handler::ErrorHandler,
+    signal::{Block, BlockExt as _},
+    task, ui, Settings,
+};
 pub use cascade::cascade;
 pub use gdk::EventType;
 pub use gio::prelude::*;

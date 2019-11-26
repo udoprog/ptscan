@@ -1,4 +1,4 @@
-use crate::{prelude::*, EditScanResultDialog};
+use crate::{prelude::*, ui::EditScanResultDialog};
 use anyhow::anyhow;
 use parking_lot::RwLock;
 use ptscan::{

@@ -1,6 +1,6 @@
 use cascade::cascade;
 use gio::prelude::*;
-use pts_gui::{MainWindow, Settings};
+use pts_gui::{ui, Settings};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -60,7 +60,7 @@ fn main() -> anyhow::Result<()> {
 
     application.connect_activate(move |app| {
         let error = ErrorHandler;
-        MainWindow::build(settings.clone(), thread_pool.clone(), app, error);
+        ui::MainWindow::build(settings.clone(), thread_pool.clone(), app, error);
     });
 
     application.run(&std::env::args().collect::<Vec<_>>());

@@ -1,4 +1,4 @@
-use crate::{prelude::*, ShowScanResultDialog};
+use crate::prelude::*;
 use gdk::RGBA;
 use parking_lot::RwLock;
 use ptscan::{ProcessHandle, Scan, ScanResult, Value, ValueExpr};
@@ -33,7 +33,7 @@ pub struct ScanResults {
     /// Handler to call when it is requested that we add a result.
     on_add_results: Option<Box<dyn Fn(&Self, &Box<ScanResult>)>>,
     /// Menu for editing scan results.
-    show_scan_result_dialog: Rc<RefCell<ShowScanResultDialog>>,
+    show_scan_result_dialog: Rc<RefCell<ui::ShowScanResultDialog>>,
     /// Current value expression in use.
     value_expr: ValueExpr,
 }
@@ -53,7 +53,7 @@ impl ScanResults {
         tree: &TreeView,
         scan: Arc<RwLock<Scan>>,
         thread_pool: Arc<rayon::ThreadPool>,
-        show_scan_result_dialog: Rc<RefCell<ShowScanResultDialog>>,
+        show_scan_result_dialog: Rc<RefCell<ui::ShowScanResultDialog>>,
         show_scan_result_dialog_window: glib::WeakRef<Window>,
     ) -> Rc<RefCell<Self>> {
         let builder = resource("scan_results.glade").into_builder();

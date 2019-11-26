@@ -1,7 +1,4 @@
-use crate::{
-    prelude::*, ConnectDialog, EditScanResultDialog, ErrorDialog, FilterOptions, MainMenu,
-    ScanResults, ScratchResults, ShowScanResultDialog,
-};
+use crate::prelude::*;
 use parking_lot::RwLock;
 use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 
@@ -33,14 +30,14 @@ pub struct MainWindow {
     widgets: Widgets,
     handle: Option<Arc<RwLock<ptscan::ProcessHandle>>>,
     open_process_task: Option<task::Handle>,
-    filter_options: Rc<RefCell<FilterOptions>>,
+    filter_options: Rc<RefCell<ui::FilterOptions>>,
     current_major_task: Option<task::Handle>,
-    error_dialog: Rc<RefCell<ErrorDialog>>,
-    scan_results: Rc<RefCell<ScanResults>>,
-    scratch_results: Rc<RefCell<ScratchResults>>,
-    edit_scan_result_dialog: Rc<RefCell<EditScanResultDialog>>,
-    show_scan_result_dialog: Rc<RefCell<ShowScanResultDialog>>,
-    main_menu: Rc<RefCell<MainMenu>>,
+    error_dialog: Rc<RefCell<ui::ErrorDialog>>,
+    scan_results: Rc<RefCell<ui::ScanResults>>,
+    scratch_results: Rc<RefCell<ui::ScratchResults>>,
+    edit_scan_result_dialog: Rc<RefCell<ui::EditScanResultDialog>>,
+    show_scan_result_dialog: Rc<RefCell<ui::ShowScanResultDialog>>,
+    main_menu: Rc<RefCell<ui::MainMenu>>,
 }
 
 impl MainWindow {
@@ -82,13 +79,13 @@ impl MainWindow {
 
         let scan = Arc::new(RwLock::new(Scan::new()));
 
-        let (error_dialog, error_dialog_window) = ErrorDialog::new();
-        let (connect_dialog, connect_dialog_window) = ConnectDialog::new(error);
+        let (error_dialog, error_dialog_window) = ui::ErrorDialog::new();
+        let (connect_dialog, connect_dialog_window) = ui::ConnectDialog::new(error);
 
         let (show_scan_result_dialog, show_scan_result_dialog_window) =
-            ShowScanResultDialog::new(settings.clone());
+            ui::ShowScanResultDialog::new(settings.clone());
 
-        let scan_results = ScanResults::new(
+        let scan_results = ui::ScanResults::new(
             settings.clone(),
             &scan_results_tree,
             scan.clone(),
@@ -98,18 +95,18 @@ impl MainWindow {
         );
 
         let (edit_scan_result_dialog, edit_scan_result_dialog_window) =
-            EditScanResultDialog::new(settings.clone());
+            ui::EditScanResultDialog::new(settings.clone());
 
-        let scratch_results = ScratchResults::new(
+        let scratch_results = ui::ScratchResults::new(
             &builder,
             thread_pool.clone(),
             edit_scan_result_dialog.clone(),
             edit_scan_result_dialog_window.downgrade(),
         );
 
-        let filter_options = FilterOptions::new(&filter_options_container);
+        let filter_options = ui::FilterOptions::new(&filter_options_container);
 
-        let main_menu = MainMenu::new(
+        let main_menu = ui::MainMenu::new(
             &builder,
             window.downgrade(),
             &accel_group,

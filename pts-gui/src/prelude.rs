@@ -10,8 +10,8 @@ pub use gtk::prelude::*;
 pub use gtk::{
     AboutDialog, AccelFlags, AccelGroup, Align, ApplicationWindow, Button, CellRendererText,
     CheckButton, Entry, Frame, IconSize, Image, Label, ListStore, Menu, MenuBar, MenuItem,
-    Orientation, ProgressBar, ScrolledWindow, SelectionMode, Spinner, Statusbar, TreeView,
-    TreeViewColumn, Viewport, Window, WindowPosition, WindowType,
+    Orientation, ProgressBar, ScrolledWindow, SelectionMode, Spinner, Statusbar, TreeModelFilter,
+    TreeView, TreeViewColumn, Viewport, Window, WindowPosition, WindowType,
 };
 pub use pango::prelude::*;
 

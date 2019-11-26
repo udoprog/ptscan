@@ -1,11 +1,12 @@
 use self::Orientation::*;
 use crate::prelude::*;
 use chrono::{DateTime, Utc};
-use std::{cell::RefCell, rc::Rc};
+use std::{backtrace::BacktraceStatus, cell::RefCell, rc::Rc};
 
 struct ErrorInfo {
     created_at: DateTime<Utc>,
     error_text: String,
+    backtrace: Option<String>,
 }
 
 #[derive(Default)]
@@ -100,15 +101,24 @@ impl ErrorDialog {
 
         let mut error_text = String::new();
 
-        writeln!(error_text, "{}", error).unwrap();
+        write!(error_text, "{}", error).unwrap();
 
         for e in error.chain().skip(1) {
-            writeln!(error_text, "caused by: {}", e).unwrap();
+            writeln!(error_text).unwrap();
+            write!(error_text, "caused by: {}", e).unwrap();
         }
+
+        let backtrace = error.backtrace();
+
+        let backtrace = match backtrace.status() {
+            BacktraceStatus::Captured => Some(backtrace.to_string()),
+            _ => None,
+        };
 
         let info = ErrorInfo {
             created_at,
             error_text,
+            backtrace,
         };
 
         {
@@ -135,10 +145,11 @@ impl ErrorDialog {
 
     /// Render a single error into the container.
     fn render_error(container: &impl gtk::ContainerExt, info: &ErrorInfo) {
-        container.add(&cascade! {
-            gtk::Box::new(Vertical, 0);
+        let inner = cascade! {
+            gtk::Box::new(Vertical, 5);
             ..pack_start(&cascade! {
                 Label::new(None);
+                ..set_selectable(true);
                 ..set_halign(Align::Start);
                 ..set_valign(Align::Start);
                 ..set_markup(&format!("<b>{}:</b>", info.created_at));
@@ -146,13 +157,61 @@ impl ErrorDialog {
             }, false, false, 0);
             ..pack_start(&cascade! {
                 Label::new(None);
+                ..set_selectable(true);
                 ..set_halign(Align::Start);
                 ..set_valign(Align::Start);
                 ..set_markup(&info.error_text);
                 ..show();
             }, false, false, 0);
             ..show();
-        });
+        };
+
+        if let Some(backtrace) = &info.backtrace {
+            let label = cascade! {
+                Label::new(None);
+                ..set_selectable(true);
+                ..set_halign(Align::Start);
+                ..set_valign(Align::Start);
+                ..set_text(backtrace);
+            };
+
+            let toggle = cascade! {
+                Button::new();
+                ..set_halign(Align::Start);
+                ..set_valign(Align::Start);
+                ..set_label("Show Backtrace");
+                ..show();
+            };
+
+            let weak_label = label.downgrade();
+
+            toggle.connect_clicked(clone!(weak_label => move |toggle| {
+                let label = upgrade!(weak_label);
+                label.set_visible(!label.get_visible());
+
+                if label.get_visible() {
+                    toggle.set_label("Hide Backtrace");
+                } else {
+                    toggle.set_label("Show Backtrace");
+                }
+            }));
+
+            inner.pack_start(&toggle, false, false, 0);
+            inner.pack_start(&label, false, false, 0);
+        } else {
+            let label = cascade! {
+                Label::new(None);
+                ..set_selectable(true);
+                ..set_halign(Align::Start);
+                ..set_valign(Align::Start);
+                ..set_markup("Backtrace unavailable (enable with <b>RUST_BACKTRACE=1</b>)");
+                ..show();
+            };
+
+            inner.pack_start(&label, false, false, 0);
+        };
+
+        container.add(&inner);
     }
 
     /// Destroy all errors in the container.

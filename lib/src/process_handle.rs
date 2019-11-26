@@ -9,14 +9,13 @@ use crate::{
     scan::ScanProgress,
     system,
     thread::Thread,
-    Address, AddressRange, Pointer, PointerBase, Process, ProcessId, ProcessInfo as _, ScanResult,
-    Size, Test, Token, Type, TypeHint, Value, ValueExpr,
-    Cached,
+    Address, AddressRange, Cached, Pointer, PointerBase, Process, ProcessId, ProcessInfo as _,
+    ScanResult, Size, Test, Token, Type, TypeHint, Value, ValueExpr,
 };
 use anyhow::{bail, Context as _};
 use hashbrown::HashMap;
 use parking_lot::RwLock;
-use std::{convert::TryFrom, fmt, iter};
+use std::{convert::TryFrom, ffi::OsString, fmt, iter};
 use winapi::shared::winerror;
 
 /// A handle for a process.
@@ -24,16 +23,26 @@ use winapi::shared::winerror;
 pub struct ProcessHandle {
     /// Name of the process (if present).
     pub name: String,
+    /// The file name of the process.
+    pub file_name: Option<OsString>,
     /// Handle to the process.
     pub process: Process,
     /// Information about all loaded modules.
     pub modules: Vec<ModuleInfo>,
     /// Module address by name.
-    pub modules_address: HashMap<String, Address>,
+    pub modules_address: HashMap<OsString, Address>,
     /// The range at which we have found kernel32.dll (if present).
     kernel32: Option<AddressRange>,
     /// Threads.
     pub threads: Vec<ProcessThread>,
+}
+
+pub struct ModulesState {
+    pub process_name: Option<String>,
+    pub process_file_name: Option<OsString>,
+    pub modules: Vec<ModuleInfo>,
+    pub modules_address: HashMap<OsString, Address>,
+    pub kernel32: Option<AddressRange>,
 }
 
 impl ProcessHandle {
@@ -65,6 +74,7 @@ impl ProcessHandle {
 
         Ok(Some(ProcessHandle {
             name,
+            file_name: None,
             process,
             modules: Vec::new(),
             modules_address: HashMap::new(),
@@ -100,58 +110,124 @@ impl ProcessHandle {
         }
     }
 
-    /// Refresh all available modules.
-    ///
-    /// If kernel32 is found, extract its range separately.
-    pub fn refresh_modules(&mut self) -> Result<(), Error> {
+    /// Get the current module state for the process.
+    pub fn get_modules(&self) -> anyhow::Result<ModulesState> {
         use std::ffi::OsStr;
 
-        let mut name = None;
+        let mut process_name = None;
+        let mut process_file_name = None;
         let mut modules = Vec::with_capacity(self.modules.len());
         let mut modules_address = HashMap::new();
+        let mut kernel32 = None;
 
         for module in self.process.modules()? {
-            let module_name = module.name()?;
+            let name = module
+                .name(&self.process)
+                .with_context(|| "failed to get module name")?;
 
-            if name.is_none() {
-                name = Some(module_name.to_string_lossy().to_string());
+            let file_name = module.file_name().ok();
+
+            if process_name.is_none() {
+                process_name = Some(name.to_string_lossy().to_string());
+                process_file_name = file_name.clone();
             }
 
-            let info = module.info()?;
+            let info = module
+                .info(&self.process)
+                .with_context(|| "failed to get module info")?;
 
             let range = AddressRange {
                 base: info.base_of_dll,
                 size: info.size_of_image,
             };
 
-            if module_name.as_os_str() == OsStr::new("KERNEL32.DLL") {
-                self.kernel32 = Some(range);
+            if name.as_os_str() == OsStr::new("KERNEL32.DLL") {
+                kernel32 = Some(range);
             }
 
-            let name = module_name.to_string_lossy().to_string();
+            let lossy_name = name.to_string_lossy().to_string();
 
-            modules_address.insert(name.to_string(), range.base);
-
-            modules.push(ModuleInfo { name, range });
+            modules_address.insert(name.clone(), range.base);
+            modules.push(ModuleInfo {
+                name,
+                file_name,
+                lossy_name,
+                range,
+            });
         }
 
         modules.sort_by_key(|m| m.range.base);
 
-        if let Some(name) = name {
+        Ok(ModulesState {
+            process_name,
+            process_file_name,
+            modules,
+            modules_address,
+            kernel32,
+        })
+    }
+
+    /// Update modules with the result from a get_modules call.
+    pub fn update_modules(&mut self, modules: ModulesState) {
+        if let Some(name) = modules.process_name {
             self.name = name;
         }
 
-        self.modules = modules;
-        self.modules_address = modules_address;
+        self.file_name = modules.process_file_name;
+
+        self.modules = modules.modules;
+        self.modules_address = modules.modules_address;
+        self.kernel32 = modules.kernel32;
+    }
+
+    /// Refresh module state in-place.
+    ///
+    /// This is a combination of `get_modules` and `update_modules` for,
+    /// convenience, but requires extended exclusive access which might not be
+    /// desirable.
+    pub fn refresh_modules(&mut self) -> anyhow::Result<()> {
+        let update = self.get_modules()?;
+        self.update_modules(update);
         Ok(())
     }
 
-    /// Refresh information about known threads.
+    /// Get information on threads.
+    pub fn get_threads(&self) -> anyhow::Result<Vec<ProcessThread>> {
+        let mut threads = Vec::new();
+        Self::load_threads_into(&self.process, &mut threads, self.kernel32.as_ref())?;
+        Ok(threads)
+    }
+
+    /// Get threads with custom modules state.
+    pub fn get_threads_with_modules(
+        &self,
+        modules: &ModulesState,
+    ) -> anyhow::Result<Vec<ProcessThread>> {
+        let mut threads = Vec::new();
+        Self::load_threads_into(&self.process, &mut threads, modules.kernel32.as_ref())?;
+        Ok(threads)
+    }
+
+    /// Update thread information..
+    pub fn update_threads(&mut self, threads: Vec<ProcessThread>) {
+        self.threads = threads;
+    }
+
+    /// Refresh the known threads in place.
     pub fn refresh_threads(&mut self) -> anyhow::Result<()> {
-        self.threads.clear();
+        Self::load_threads_into(&self.process, &mut self.threads, self.kernel32.as_ref())
+    }
+
+    /// Refresh information about known threads.
+    pub fn load_threads_into(
+        process: &Process,
+        threads: &mut Vec<ProcessThread>,
+        kernel32: Option<&AddressRange>,
+    ) -> anyhow::Result<()> {
+        threads.clear();
 
         for (id, t) in system::threads()?.enumerate() {
-            if t.process_id() != self.process.process_id() {
+            if t.process_id() != process.process_id() {
                 continue;
             }
 
@@ -162,15 +238,14 @@ impl ProcessHandle {
                 .build(t.thread_id())
                 .with_context(|| Error::BuildThread(t.thread_id()))?;
 
-            let stack = self
-                .thread_stack(&thread)
+            let stack = thread
+                .thread_stack(process)
                 .with_context(|| Error::ThreadStack(thread.thread_id()))?;
 
-            let stack_exit = self
-                .scan_for_exit(stack)
+            let stack_exit = Self::scan_for_exit(process, stack, kernel32)
                 .with_context(|| Error::ScanForExit)?;
 
-            self.threads.push(ProcessThread {
+            threads.push(ProcessThread {
                 id,
                 stack,
                 thread,
@@ -178,7 +253,7 @@ impl ProcessHandle {
             });
         }
 
-        self.threads.sort_by_key(|t| t.stack.base);
+        threads.sort_by_key(|t| t.stack.base);
         Ok(())
     }
 
@@ -202,7 +277,7 @@ impl ProcessHandle {
             Location::Module(module) => {
                 let offset = address.offset_of(module.range.base);
                 PointerBase::Module {
-                    name: module.name.to_string(),
+                    name: module.lossy_name.to_string(),
                     offset,
                 }
             }
@@ -220,12 +295,6 @@ impl ProcessHandle {
         AddressRange::find_in_range(&self.threads, |m| &m.stack, address)
     }
 
-    /// Access the address of the stack for the given thread.
-    pub fn thread_stack(&self, thread: &Thread) -> anyhow::Result<AddressRange> {
-        // NB: if ptscan is running in 32-bit mode this might have to be different.
-        thread.thread_stack(&self.process)
-    }
-
     /// Scan for the base of the stack.
     ///
     /// TODO: look into using VirtualQueryEx to get the range of the stack.
@@ -233,12 +302,16 @@ impl ProcessHandle {
     ///
     /// Ported from:
     /// https://github.com/cheat-engine/cheat-engine/blob/0d9d35183d0dcd9eeed4b4d0004fa3a1981b018a/Cheat%20Engine/CEFuncProc.pas
-    pub fn scan_for_exit(&self, stack: AddressRange) -> anyhow::Result<Option<Address>> {
+    pub fn scan_for_exit(
+        process: &Process,
+        stack: AddressRange,
+        kernel32: Option<&AddressRange>,
+    ) -> anyhow::Result<Option<Address>> {
         use byteorder::{ByteOrder, LittleEndian};
 
-        let ptr_width = Size::new(self.process.pointer_width as u64);
+        let ptr_width = Size::new(process.pointer_width as u64);
         let mut buf = vec![0u8; stack.size.as_usize()];
-        self.process.read_process_memory(stack.base, &mut buf)?;
+        process.read_process_memory(stack.base, &mut buf)?;
 
         if !stack.base.is_aligned(ptr_width) {
             bail!(
@@ -248,7 +321,7 @@ impl ProcessHandle {
             );
         }
 
-        let kernel32 = match self.kernel32.as_ref() {
+        let kernel32 = match kernel32 {
             Some(kernel32) => kernel32,
             None => return Ok(None),
         };
@@ -768,7 +841,9 @@ impl iter::FromIterator<MemoryInformation> for Regions {
 
 #[derive(Debug, Clone)]
 pub struct ModuleInfo {
-    pub name: String,
+    pub name: OsString,
+    pub file_name: Option<OsString>,
+    pub lossy_name: String,
     pub range: AddressRange,
 }
 

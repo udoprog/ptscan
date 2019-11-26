@@ -27,8 +27,15 @@
     <property name="can_focus">False</property>
     <property name="stock">gtk-dialog-error</property>
   </object>
+  <object class="GtkImage" id="process_information_image">
+    <property name="visible">True</property>
+    <property name="can_focus">False</property>
+    <property name="stock">gtk-help</property>
+  </object>
   <object class="GtkApplicationWindow" id="window">
     <property name="can_focus">False</property>
+    <property name="default_width">800</property>
+    <property name="default_height">600</property>
     <child>
       <placeholder/>
     </child>
@@ -109,6 +116,16 @@
                         <property name="visible">True</property>
                         <property name="can_focus">False</property>
                         <property name="image">error_dialog_item_image</property>
+                        <property name="use_stock">False</property>
+                        <property name="always_show_image">True</property>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkImageMenuItem" id="process_information_item">
+                        <property name="label" translatable="yes">Process Information</property>
+                        <property name="visible">True</property>
+                        <property name="can_focus">False</property>
+                        <property name="image">process_information_image</property>
                         <property name="use_stock">False</property>
                         <property name="always_show_image">True</property>
                       </object>
@@ -441,6 +458,11 @@
       </object>
     </child>
   </object>
+  <object class="GtkImage" id="scratch_pointer_scan_image">
+    <property name="visible">True</property>
+    <property name="can_focus">False</property>
+    <property name="stock">gtk-jump-to</property>
+  </object>
   <object class="GtkMenu" id="scratch_context_menu">
     <property name="visible">True</property>
     <property name="can_focus">False</property>
@@ -484,10 +506,5 @@
         <property name="always_show_image">True</property>
       </object>
     </child>
-  </object>
-  <object class="GtkImage" id="scratch_pointer_scan_image">
-    <property name="visible">True</property>
-    <property name="can_focus">False</property>
-    <property name="stock">gtk-jump-to</property>
   </object>
 </interface>

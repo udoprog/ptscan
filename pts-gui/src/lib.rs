@@ -1,4 +1,4 @@
-#![feature(try_trait)]
+#![feature(backtrace)]
 
 #[macro_use]
 mod macros;

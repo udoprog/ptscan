@@ -1,4 +1,4 @@
-use std::{convert::TryFrom, ffi, fmt, ptr, slice, sync::Arc};
+use std::{convert::TryFrom, ffi::OsString, fmt, io, ptr, slice, sync::Arc};
 
 use crate::{error::Error, module, utils, Address, AddressRange, Endianness, ProcessId, Size};
 
@@ -88,8 +88,8 @@ impl Process {
     }
 
     /// Get the name of the process.
-    pub fn module_base_name(&self) -> Result<ffi::OsString, Error> {
-        crate::utils::string(|buf, len| unsafe {
+    pub fn module_base_name(&self) -> io::Result<OsString> {
+        crate::utils::fixed_string(|buf, len| unsafe {
             psapi::GetModuleBaseNameW(**self.handle, ptr::null_mut(), buf, len)
         })
     }
@@ -100,7 +100,7 @@ impl Process {
     }
 
     /// Enumerate all modules.
-    pub fn modules<'a>(&'a self) -> Result<Vec<module::Module<'a>>, Error> {
+    pub fn modules<'a>(&'a self) -> Result<Vec<module::Module>, Error> {
         let modules = utils::array(0x400, |buf, size, needed| unsafe {
             psapi::EnumProcessModules(**self.handle, buf, size, needed)
         })?;
@@ -108,7 +108,7 @@ impl Process {
         let mut out = Vec::new();
 
         for module in modules {
-            out.push(module::Module::new(self, module))
+            out.push(module::Module::new(module))
         }
 
         Ok(out)
@@ -371,6 +371,14 @@ impl MemoryState {
             _ => false,
         }
     }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Commit => "MEM_COMMIT",
+            Self::Free => "MEM_FREE",
+            Self::Reserve => "MEM_RESERVE",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -406,6 +414,14 @@ macro_rules! protect_bits {
     }
 }
 
+macro_rules! as_str {
+    ($slf:expr, {$($flag_from:ident => $flag_to:ident,)*}) => {
+        match $slf {
+            $(Self::$flag_from => stringify!($flag_to),)*
+        }
+    }
+}
+
 impl MemoryProtect {
     fn decode(protect: DWORD, set: &mut fixed_map::Set<MemoryProtect>) {
         protect_bits!(protect, set, {
@@ -415,14 +431,33 @@ impl MemoryProtect {
             PAGE_EXECUTE_WRITECOPY => ExecuteWriteCopy,
             PAGE_NOACCESS => NoAccess,
             PAGE_READONLY => ReadOnly,
-            PAGE_READWRITE => WriteCopy,
-            PAGE_WRITECOPY => NoAccess,
+            PAGE_READWRITE => ReadWrite,
+            PAGE_WRITECOPY => WriteCopy,
             PAGE_TARGETS_INVALID => TargetsInvalid,
             PAGE_TARGETS_NO_UPDATE => TargetsNoUpdate,
             PAGE_GUARD => Guard,
             PAGE_NOCACHE => NoCache,
             PAGE_WRITECOMBINE => WriteCombine,
         });
+    }
+
+    /// Get the string representation of this proection mode.
+    pub fn as_str(self) -> &'static str {
+        as_str!(self, {
+            Execute => PAGE_EXECUTE,
+            ExecuteRead => PAGE_EXECUTE_READ,
+            ExecuteReadWrite => PAGE_EXECUTE_READWRITE,
+            ExecuteWriteCopy => PAGE_EXECUTE_WRITECOPY,
+            NoAccess => PAGE_NOACCESS,
+            ReadOnly => PAGE_READONLY,
+            ReadWrite => PAGE_READWRITE,
+            WriteCopy => PAGE_WRITECOPY,
+            TargetsInvalid => PAGE_TARGETS_INVALID,
+            TargetsNoUpdate => PAGE_TARGETS_NO_UPDATE,
+            Guard => PAGE_GUARD,
+            NoCache => PAGE_NOCACHE,
+            WriteCombine => PAGE_WRITECOMBINE,
+        })
     }
 }
 
@@ -436,21 +471,31 @@ pub struct MemoryInformation {
 
 impl MemoryInformation {
     /// Test if region is writable.
+    pub fn is_readable(&self) -> bool {
+        use self::MemoryProtect::*;
+
+        self.state == MemoryState::Commit
+            && !self.is_protect_any(&[NoAccess, TargetsInvalid, TargetsNoUpdate, Guard, NoCache])
+    }
+
+    /// Test if region is writable.
     pub fn is_writable(&self) -> bool {
         use self::MemoryProtect::*;
-        self.is_protect_any(&[ReadWrite, WriteCopy, ExecuteReadWrite, ExecuteWriteCopy])
+        self.state == MemoryState::Commit
+            && self.is_protect_any(&[ReadWrite, WriteCopy, ExecuteReadWrite, ExecuteWriteCopy])
     }
 
     /// Test if region is executable.
     pub fn is_executable(&self) -> bool {
         use self::MemoryProtect::*;
-        self.is_protect_any(&[Execute, ExecuteRead, ExecuteReadWrite, ExecuteWriteCopy])
+        self.state == MemoryState::Commit
+            && self.is_protect_any(&[Execute, ExecuteRead, ExecuteReadWrite, ExecuteWriteCopy])
     }
 
     /// Test if region is executable.
     pub fn is_copy_on_write(&self) -> bool {
         use self::MemoryProtect::*;
-        self.is_protect_any(&[WriteCopy, ExecuteWriteCopy])
+        self.state == MemoryState::Commit && self.is_protect_any(&[WriteCopy, ExecuteWriteCopy])
     }
 
     /// Test if protection contains any of the specified elements.

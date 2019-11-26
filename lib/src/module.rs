@@ -1,55 +1,69 @@
-use std::{convert::TryFrom, ffi::OsString, fmt};
+use std::{convert::TryFrom, ffi::OsString, fmt, io};
 
-use crate::{error::Error, process, Address, Size};
+use crate::{Address, Process, Size};
 
 use winapi::{
     shared::minwindef::{DWORD, HMODULE},
-    um::psapi,
+    um::{libloaderapi, psapi},
 };
 
-pub struct Module<'a> {
-    process: &'a process::Process,
+pub struct Module {
     module: HMODULE,
 }
 
-impl fmt::Debug for Module<'_> {
+impl fmt::Debug for Module {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("Module").finish()
     }
 }
 
-impl<'a> Module<'a> {
+impl Module {
     /// Construct a new module.
     ///
     /// This constructor is internal, and is used by `Process`.
-    pub(crate) fn new(process: &'a process::Process, module: HMODULE) -> Self {
-        Self { process, module }
+    pub(crate) fn new(module: HMODULE) -> Self {
+        Self { module }
     }
 
     /// Get the name of the module.
-    pub fn name(&self) -> Result<OsString, Error> {
-        crate::utils::string(|buf, len| unsafe {
-            psapi::GetModuleBaseNameW(**self.process.handle, self.module, buf, len)
+    pub fn name(&self, process: &Process) -> io::Result<OsString> {
+        crate::utils::fixed_string(|buf, len| unsafe {
+            psapi::GetModuleBaseNameW(**process.handle, self.module, buf, len)
+        })
+    }
+
+    /// Get the file name corresponding to the module.
+    pub fn file_name(&self) -> io::Result<OsString> {
+        crate::utils::growable_string(|buf, len| unsafe {
+            libloaderapi::GetModuleFileNameW(self.module, buf, len)
         })
     }
 
     /// Get the information about the module.
-    pub fn info(&self) -> Result<ModuleInfo, Error> {
+    pub fn info(&self, process: &Process) -> io::Result<ModuleInfo> {
         use std::mem;
 
         let mut out: psapi::MODULEINFO = unsafe { mem::zeroed() };
 
-        checked!(psapi::GetModuleInformation(
-            **self.process.handle,
-            self.module,
-            &mut out as psapi::LPMODULEINFO,
-            mem::size_of::<psapi::MODULEINFO>() as DWORD,
-        ))?;
+        let result = unsafe {
+            psapi::GetModuleInformation(
+                **process.handle,
+                self.module,
+                &mut out as psapi::LPMODULEINFO,
+                mem::size_of::<psapi::MODULEINFO>() as DWORD,
+            )
+        };
+
+        if result == 0 {
+            return Err(io::Error::last_os_error());
+        }
 
         Ok(ModuleInfo {
-            base_of_dll: Address::try_from(out.lpBaseOfDll)?,
+            base_of_dll: Address::try_from(out.lpBaseOfDll)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
             size_of_image: Size::from(out.SizeOfImage),
-            entry_point: Address::try_from(out.EntryPoint)?,
+            entry_point: Address::try_from(out.EntryPoint)
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
         })
     }
 }

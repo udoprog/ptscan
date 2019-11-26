@@ -18,6 +18,7 @@ impl MainMenu {
         accel_group: &AccelGroup,
         connect_dialog_window: glib::WeakRef<Window>,
         error_dialog_window: glib::WeakRef<Window>,
+        process_information_window: glib::WeakRef<Window>,
     ) -> Rc<RefCell<Self>> {
         cascade! {
             builder.get_object::<MenuItem>("attach_item");
@@ -35,9 +36,18 @@ impl MainMenu {
         cascade! {
             builder.get_object::<MenuItem>("error_dialog_item");
             ..connect_activate(clone!(error_dialog_window => move |_| {
-                let error_dialog_window = upgrade!(error_dialog_window);
-                error_dialog_window.show();
-                error_dialog_window.present();
+                let w = upgrade!(error_dialog_window);
+                w.show();
+                w.present();
+            }));
+        }
+
+        cascade! {
+            builder.get_object::<MenuItem>("process_information_item");
+            ..connect_activate(clone!(process_information_window => move |_| {
+                let w = upgrade!(process_information_window);
+                w.show();
+                w.present();
             }));
         }
 

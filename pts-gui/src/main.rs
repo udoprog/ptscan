@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use cascade::cascade;
 use gio::prelude::*;
 use pts_gui::{ui, Settings};

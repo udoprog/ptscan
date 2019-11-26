@@ -1,5 +1,5 @@
 use crate::prelude::*;
-use parking_lot::RwLock;
+use parking_lot::{RwLock, RwLockUpgradableReadGuard, RwLockWriteGuard};
 use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 
 use anyhow::{anyhow, Context as _};
@@ -15,6 +15,8 @@ struct Widgets {
     edit_scan_result_dialog_window: Window,
     #[allow(unused)]
     show_scan_result_dialog_window: Window,
+    #[allow(unused)]
+    process_information_window: Window,
     attached_label: glib::WeakRef<Label>,
     scan_progress: glib::WeakRef<ProgressBar>,
     scan_progress_container: glib::WeakRef<gtk::Box>,
@@ -37,6 +39,7 @@ pub struct MainWindow {
     scratch_results: Rc<RefCell<ui::ScratchResults>>,
     edit_scan_result_dialog: Rc<RefCell<ui::EditScanResultDialog>>,
     show_scan_result_dialog: Rc<RefCell<ui::ShowScanResultDialog>>,
+    process_information: Rc<RefCell<ui::ProcessInformation>>,
     main_menu: Rc<RefCell<ui::MainMenu>>,
 }
 
@@ -85,6 +88,8 @@ impl MainWindow {
         let (show_scan_result_dialog, show_scan_result_dialog_window) =
             ui::ShowScanResultDialog::new(settings.clone());
 
+        let (process_information, process_information_window) = ui::ProcessInformation::new();
+
         let scan_results = ui::ScanResults::new(
             settings.clone(),
             &scan_results_tree,
@@ -112,6 +117,7 @@ impl MainWindow {
             &accel_group,
             connect_dialog_window.downgrade(),
             error_dialog_window.downgrade(),
+            process_information_window.downgrade(),
         );
 
         let slf = Rc::new(RefCell::new(MainWindow {
@@ -122,6 +128,7 @@ impl MainWindow {
                 connect_dialog_window,
                 edit_scan_result_dialog_window,
                 show_scan_result_dialog_window,
+                process_information_window,
                 attached_label: attached_label.downgrade(),
                 scan_progress: scan_progress.downgrade(),
                 scan_progress_container: scan_progress_container.downgrade(),
@@ -139,6 +146,7 @@ impl MainWindow {
             scratch_results: scratch_results.clone(),
             edit_scan_result_dialog,
             show_scan_result_dialog,
+            process_information,
             main_menu: main_menu.clone(),
         }));
 
@@ -158,6 +166,10 @@ impl MainWindow {
             .on_attach(clone!(slf => move |_, process_id| {
                 Self::attach_process_id(&slf, process_id);
             }));
+
+        attached_label.connect_activate_link(clone!(slf => move |_, link| {
+            slf.borrow_mut().handle_link(link)
+        }));
 
         status_label.connect_activate_link(clone!(slf => move |_, link| {
             slf.borrow_mut().handle_link(link)
@@ -257,17 +269,21 @@ impl MainWindow {
                     .unwrap_or(filter_expr.value_type_of(TypeHint::NoHint)?)
                     .ok_or_else(|| anyhow!("cannot determine type of value"))?;
 
-                {
-                    let mut handle = handle.write();
-                    handle
-                        .refresh_threads()
-                        .context("error when refreshing threads")?;
-                    handle
-                        .refresh_modules()
-                        .context("error when refreshing modules")?;
-                }
+                let handle = RwLockWriteGuard::downgrade_to_upgradable(handle.write());
 
-                let handle = handle.read();
+                let threads = handle
+                    .get_threads()
+                    .context("error when refreshing threads")?;
+
+                let modules = handle
+                    .get_modules()
+                    .context("error when refreshing modules")?;
+
+                let mut handle = RwLockUpgradableReadGuard::upgrade(handle);
+                handle.update_modules(modules);
+                handle.update_threads(threads);
+                let handle = RwLockWriteGuard::downgrade(handle);
+
                 let mut scan = scan.write();
 
                 let result = scan.initial_scan(
@@ -327,14 +343,14 @@ impl MainWindow {
                 let (text, error) = match cancelled {
                     Err(e) => (
                         format!(
-                            "Scan failed after {:.3?} (<a href=\"#last-error\">show error</a>)",
+                            "Scan failed after {:.3?} (<a href=\"#last-error\">error details</a>)",
                             diff
                         ),
                         Some(e),
                     ),
                     Ok(true) => (
                         format!(
-                            "Scan cancelled after {:.3?} (<a href=\"#last-error\">show error</a>)",
+                            "Scan cancelled after {:.3?} (<a href=\"#last-error\">error details</a>)",
                             diff
                         ),
                         Some(anyhow!("task was cancelled")),
@@ -413,14 +429,14 @@ impl MainWindow {
                 let (text, error) = match cancelled {
                     Err(e) => (
                         format!(
-                            "Refresh failed after {:.3?} (<a href=\"#last-error\">show error</a>)",
+                            "Refresh failed after {:.3?} (<a href=\"#last-error\">error details</a>)",
                             diff
                         ),
                         Some(e),
                     ),
                     Ok(true) => (
                         format!(
-                            "Refresh cancelled after {:.3?} (<a href=\"#last-error\">show error</a>)",
+                            "Refresh cancelled after {:.3?} (<a href=\"#last-error\">error details</a>)",
                             diff
                         ),
                         Some(anyhow!("task was cancelled")),
@@ -497,7 +513,8 @@ impl MainWindow {
                     }
                     Err(e) => {
                         if let Some(label) = main.widgets.attached_label.upgrade() {
-                            label.set_text(&format!("Failed to attach: {}", e));
+                            label.set_markup(&format!("Failed to attach: {} (<a href=\"#last-error\">error details</a>)", e));
+                            main.error_dialog.borrow_mut().add_error(Utc::now(), e);
                         }
                     }
                 }
@@ -562,6 +579,8 @@ impl MainWindow {
         self.main_menu
             .borrow_mut()
             .set_attached(self.handle.is_some());
+
+        ui::ProcessInformation::set_handle(&self.process_information, self.handle.clone());
     }
 }
 

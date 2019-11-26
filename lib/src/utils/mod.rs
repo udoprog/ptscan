@@ -1,6 +1,6 @@
 mod words;
 
-use std::{ffi::OsString, fmt, ops};
+use std::{ffi::OsString, fmt, io, ops};
 
 use crate::{
     error::Error,
@@ -11,8 +11,11 @@ use crate::{
 pub use self::words::Words;
 
 use winapi::{
-    shared::minwindef::{BOOL, DWORD, FALSE, LPDWORD, PBOOL, TRUE},
-    um::{winnt, wow64apiset},
+    shared::{
+        minwindef::{BOOL, DWORD, FALSE, LPDWORD, PBOOL, TRUE},
+        winerror,
+    },
+    um::{errhandlingapi, winnt, wow64apiset},
 };
 
 /// Evaluate the checked expression.
@@ -35,8 +38,8 @@ macro_rules! try_iter {
     };
 }
 
-/// Call a function that returns a string.
-pub fn string(cb: impl Fn(winnt::LPWSTR, DWORD) -> DWORD) -> Result<OsString, Error> {
+/// Fixed string length.
+pub fn fixed_string(cb: impl Fn(winnt::LPWSTR, DWORD) -> DWORD) -> io::Result<OsString> {
     use std::os::windows::ffi::OsStringExt;
 
     let mut buf: [winnt::WCHAR; 1024] = [0u16; 1024];
@@ -44,10 +47,40 @@ pub fn string(cb: impl Fn(winnt::LPWSTR, DWORD) -> DWORD) -> Result<OsString, Er
     let out = cb(buf.as_mut_ptr(), buf.len() as DWORD);
 
     if out == 0 {
-        return Err(Error::last_system_error());
+        return Err(io::Error::last_os_error());
     }
 
     Ok(OsString::from_wide(&buf[..(out as usize)]))
+}
+
+/// Call a function that returns a string, indicating with error code if it is
+/// longer than the default buffer and grow it appropriately.
+pub fn growable_string(cb: impl Fn(winnt::LPWSTR, DWORD) -> DWORD) -> io::Result<OsString> {
+    use std::os::windows::ffi::OsStringExt;
+
+    let mut buf = vec![0u16; 64];
+
+    let len = loop {
+        let len = cb(buf.as_mut_ptr(), buf.len() as DWORD);
+
+        let last_error = unsafe { errhandlingapi::GetLastError() };
+
+        match last_error {
+            winerror::ERROR_INSUFFICIENT_BUFFER => {
+                buf.extend(std::iter::repeat(0u16).take(64));
+                continue;
+            }
+            winerror::ERROR_ACCESS_DENIED => {
+                return Err(io::Error::last_os_error());
+            }
+            winerror::ERROR_SUCCESS => break len as usize,
+            _ => {
+                return Err(io::Error::last_os_error());
+            }
+        }
+    };
+
+    Ok(OsString::from_wide(&buf[..len]))
 }
 
 /// Call a function that returns an array.

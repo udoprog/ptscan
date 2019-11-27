@@ -197,7 +197,7 @@ impl ProcessInformation {
             refresh_task: None,
         }));
 
-        let paste = Rc::new(RefCell::new(ClipboardHandle::default()));
+        let clip = clipboard.handle();
 
         memory_readable_check.connect_toggled(clone!(slf => move |btn| {
             Self::memory_refilter(&slf, move |state| state.memory_readable = btn.get_active());
@@ -239,86 +239,68 @@ impl ProcessInformation {
             }));
         }
 
-        cascade! {
-            builder.get_object::<TreeView>("modules_tree").get_selection();
-            ..connect_changed(clone!(paste, clipboard, slf => move |selection| {
-                *paste.borrow_mut() = clipboard.from_selection(selection, clone!(slf => move |selection| {
-                    let slf = slf.borrow();
-                    let modules = slf.modules.as_ref()?;
+        clip.hook_tree(
+            &builder.get_object("modules_tree"),
+            clone!(slf => move |selection| {
+                let slf = slf.borrow();
+                let modules = slf.modules.as_ref()?;
 
-                    let (paths, model) = selection.get_selected_rows();
+                let (paths, model) = selection.get_selected_rows();
 
-                    let mut modules_list = Vec::new();
+                let mut modules_list = Vec::new();
 
-                    for path in paths {
-                        let iter = model.get_iter(&path)?;
-                        let index = model.get_value(&iter, 0).get::<u64>().ok()?? as usize;
-                        modules_list.extend(modules.modules.get(index).cloned());
-                    }
+                for path in paths {
+                    let iter = model.get_iter(&path)?;
+                    let index = model.get_value(&iter, 0).get::<u64>().ok()?? as usize;
+                    modules_list.extend(modules.modules.get(index).cloned());
+                }
 
-                    if modules_list.len() <= 1 {
-                        return modules_list.into_iter().next().map(ClipboardBuffer::Module);
-                    }
+                Some(ClipboardBuffer::Modules(modules_list))
+            }),
+        );
 
-                    Some(ClipboardBuffer::Modules(modules_list))
-                }));
-            }));
-        }
+        clip.hook_tree(
+            &builder.get_object("threads_tree"),
+            clone!(slf => move |selection| {
+                let slf = slf.borrow();
+                let (paths, model) = selection.get_selected_rows();
 
-        cascade! {
-            builder.get_object::<TreeView>("threads_tree").get_selection();
-            ..connect_changed(clone!(paste, clipboard, slf => move |selection| {
-                *paste.borrow_mut() = clipboard.from_selection(selection, clone!(slf => move |selection| {
-                    let slf = slf.borrow();
-                    let (paths, model) = selection.get_selected_rows();
+                let mut threads = Vec::new();
 
-                    let mut threads = Vec::new();
+                for path in paths {
+                    let iter = model.get_iter(&path)?;
+                    let index = model.get_value(&iter, 0).get::<u64>().ok()?? as usize;
+                    threads.extend(slf.threads.get(index).cloned());
+                }
 
-                    for path in paths {
-                        let iter = model.get_iter(&path)?;
-                        let index = model.get_value(&iter, 0).get::<u64>().ok()?? as usize;
-                        threads.extend(slf.threads.get(index).cloned());
-                    }
+                Some(ClipboardBuffer::Threads(threads))
+            }),
+        );
 
-                    if threads.len() <= 1 {
-                        return threads.into_iter().next().map(ClipboardBuffer::Thread);
-                    }
+        clip.hook_tree(
+            &builder.get_object("memory_tree"),
+            clone!(slf => move |selection| {
+                let slf = slf.borrow();
+                let (paths, model) = selection.get_selected_rows();
 
-                    Some(ClipboardBuffer::Threads(threads))
-                }));
-            }));
-        }
+                let mut memory = Vec::new();
 
-        cascade! {
-            builder.get_object::<TreeView>("memory_tree").get_selection();
-            ..connect_changed(clone!(paste, clipboard, slf => move |selection| {
-                *paste.borrow_mut() = clipboard.from_selection(selection, clone!(slf => move |selection| {
-                    let slf = slf.borrow();
-                    let (paths, model) = selection.get_selected_rows();
+                for path in paths {
+                    let iter = model.get_iter(&path)?;
+                    let index = model.get_value(&iter, 0).get::<u64>().ok()?? as usize;
+                    memory.extend(slf.memory.get(index).cloned());
+                }
 
-                    let mut memory = Vec::new();
-
-                    for path in paths {
-                        let iter = model.get_iter(&path)?;
-                        let index = model.get_value(&iter, 0).get::<u64>().ok()?? as usize;
-                        memory.extend(slf.memory.get(index).cloned());
-                    }
-
-                    if memory.len() <= 1 {
-                        return memory.into_iter().next().map(ClipboardBuffer::Memory);
-                    }
-
-                    Some(ClipboardBuffer::MemoryList(memory))
-                }));
-            }));
-        }
+                Some(ClipboardBuffer::MemoryList(memory))
+            }),
+        );
 
         window.connect_show(clone!(slf => move |_| {
             Self::refresh(&slf);
         }));
 
-        window.connect_hide(clone!(paste, slf => move |_| {
-            paste.borrow_mut().clear();
+        window.connect_hide(clone!(clip, slf => move |_| {
+            clip.clear();
 
             let mut slf = slf.borrow_mut();
             slf.modules = None;

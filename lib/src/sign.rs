@@ -7,12 +7,18 @@ pub enum Sign {
 }
 
 impl Sign {
-    /// Test if the sign is something other than `NoSign`.
-    pub fn is_some(&self) -> bool {
+    /// Test if the sign is not defined.
+    pub fn is_none(&self) -> bool {
         match self {
-            Self::NoSign => false,
-            _ => true,
+            Self::NoSign => true,
+            _ => false,
         }
+    }
+}
+
+impl Default for Sign {
+    fn default() -> Self {
+        Self::NoSign
     }
 }
 

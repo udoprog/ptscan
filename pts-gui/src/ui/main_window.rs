@@ -113,7 +113,7 @@ impl MainWindow {
             edit_scan_result_dialog_window.downgrade(),
         );
 
-        let filter_options = ui::FilterOptions::new(&filter_options_container);
+        let filter_options = ui::FilterOptions::new(clipboard.clone(), &filter_options_container);
 
         let main_menu = ui::MainMenu::new(
             &builder,

@@ -96,36 +96,12 @@ impl Address {
 
     /// Add an offset in a checked manner.
     pub fn checked_offset(self, offset: Offset) -> Option<Address> {
-        Some(match offset {
-            Offset {
-                sign: Sign::NoSign, ..
-            } => self,
-            Offset {
-                sign: Sign::Plus,
-                offset: o,
-            } => Address(self.0.checked_add(o.0)?),
-            Offset {
-                sign: Sign::Minus,
-                offset: o,
-            } => Address(self.0.checked_sub(o.0)?),
-        })
+        offset.checked_apply(self)
     }
 
     /// Add an offset in a saturating manner.
     pub fn saturating_offset(self, offset: Offset) -> Address {
-        match offset {
-            Offset {
-                sign: Sign::NoSign, ..
-            } => self,
-            Offset {
-                sign: Sign::Plus,
-                offset: o,
-            } => Address(self.0.saturating_add(o.0)),
-            Offset {
-                sign: Sign::Minus,
-                offset: o,
-            } => Address(self.0.saturating_sub(o.0)),
-        }
+        offset.saturating_apply(self)
     }
 
     /// Add the given size in a checked manner.

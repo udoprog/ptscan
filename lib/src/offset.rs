@@ -1,12 +1,12 @@
-use crate::{Sign, Size};
+use crate::{Address, Sign, Size};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Offset {
-    #[serde(skip_serializing_if = "Sign::is_some")]
-    pub(crate) sign: Sign,
-    pub(crate) offset: Size,
+    #[serde(default, skip_serializing_if = "Sign::is_none")]
+    sign: Sign,
+    offset: Size,
 }
 
 impl Offset {
@@ -14,7 +14,14 @@ impl Offset {
     /// If `sign` is true, the offset is positive. Otherwise it is negative.
     #[inline]
     pub fn new(sign: Sign, offset: Size) -> Self {
-        assert!(sign != Sign::NoSign || offset != 0u64.into());
+        #[cfg(debug_assertions)]
+        {
+            match sign {
+                Sign::NoSign => assert_eq!(offset, 0u64.into()),
+                _ => assert_ne!(offset, 0u64.into()),
+            }
+        }
+
         Offset { sign, offset }
     }
 
@@ -24,6 +31,34 @@ impl Offset {
         Offset {
             sign: Sign::NoSign,
             offset: Size::new(0),
+        }
+    }
+
+    /// Apply to the specified address in a checked manner.
+    pub fn checked_apply(self, address: Address) -> Option<Address> {
+        use self::Sign::*;
+
+        Some(match self {
+            Offset { sign: NoSign, .. } => address,
+            Offset { sign: Plus, offset } => Address(address.0.checked_add(offset.0)?),
+            Offset {
+                sign: Minus,
+                offset,
+            } => Address(address.0.checked_sub(offset.0)?),
+        })
+    }
+
+    /// Apply to the specified address.
+    pub fn saturating_apply(self, address: Address) -> Address {
+        use self::Sign::*;
+
+        match self {
+            Offset { sign: NoSign, .. } => address,
+            Offset { sign: Plus, offset } => Address(address.0.saturating_add(offset.0)),
+            Offset {
+                sign: Minus,
+                offset,
+            } => Address(address.0.saturating_sub(offset.0)),
         }
     }
 

@@ -69,6 +69,7 @@ pub struct RawPointer {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Pointer {
     /// The underlying raw pointer.
+    #[serde(flatten)]
     raw: RawPointer,
     /// The cached last address of the pointer.
     last_address: Option<Address>,

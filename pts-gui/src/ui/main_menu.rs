@@ -85,10 +85,11 @@ impl MainMenu {
         cascade! {
             builder.get_object::<MenuItem>("copy_item");
             ..connect_activate(clone!(clipboard => move |_| {
-                let buffer = optional!(clipboard.get());
-                let data = optional!(serde_json::to_string_pretty(&buffer).ok());
-                let clipboard = gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD);
-                clipboard.set_text(&data);
+                if let Some(buffer) = &*clipboard.get() {
+                    let data = optional!(serde_json::to_string_pretty(buffer).ok());
+                    let c = gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD);
+                    c.set_text(&data);
+                }
             }));
             ..add_accelerator("activate", accel_group, key, modifier, AccelFlags::VISIBLE);
         };
@@ -97,9 +98,19 @@ impl MainMenu {
 
         cascade! {
             builder.get_object::<MenuItem>("paste_item");
-            ..connect_activate(|_| {
-                println!("PASTE");
-            });
+            ..connect_activate(clone!(clipboard => move |_| {
+                gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).request_text(clone!(clipboard => move |_, text| {
+                    let buffer = match text {
+                        Some(text) => Some(match serde_json::from_str::<ClipboardBuffer>(text) {
+                            Ok(buffer) => buffer,
+                            Err(..) => ClipboardBuffer::String(text.to_string()),
+                        }),
+                        None => None,
+                    };
+
+                    clipboard.paste(buffer.as_ref());
+                }));
+            }));
             ..add_accelerator("activate", accel_group, key, modifier, AccelFlags::VISIBLE);
         };
 

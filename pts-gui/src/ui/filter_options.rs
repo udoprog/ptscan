@@ -40,7 +40,7 @@ pub struct FilterOptions {
 
 impl FilterOptions {
     /// Construct a widget representing the current state.
-    pub fn new(frame: &gtk::Box) -> Rc<RefCell<Self>> {
+    pub fn new(clipboard: Rc<Clipboard>, frame: &gtk::Box) -> Rc<RefCell<Self>> {
         let builder = resource("filter_options.glade").into_builder();
 
         // TODO: make serializable.
@@ -102,6 +102,8 @@ impl FilterOptions {
             has_results: false,
         }));
 
+        let clip = clipboard.handle();
+
         scan_button.connect_clicked(clone!(slf => move |_| {
             let on_scan = optional!(slf.borrow_mut().on_scan.take());
             on_scan();
@@ -131,6 +133,8 @@ impl FilterOptions {
             slf.state.filter_expr_text = expr.get_buffer().get_text();
             slf.parse_filter_expr();
         }));
+
+        clip.hook_entry(&filter_expr_text);
 
         value_expr_text.connect_changed(clone!(slf => move |expr| {
             let mut slf = slf.borrow_mut();

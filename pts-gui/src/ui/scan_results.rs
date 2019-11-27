@@ -85,7 +85,7 @@ impl ScanResults {
             value_expr: ValueExpr::Value,
         }));
 
-        let paste = Rc::new(RefCell::new(ClipboardHandle::default()));
+        let clip = clipboard.handle();
 
         add_item.connect_activate(clone!(slf => move |_| {
             let slf = slf.borrow();
@@ -129,7 +129,7 @@ impl ScanResults {
             }),
         ));
 
-        cascade! {
+        let tree = cascade! {
             tree;
             ..connect_row_activated(clone!(slf => move |_, path, _| {
                 let slf = slf.borrow();
@@ -161,31 +161,29 @@ impl ScanResults {
                     _ => Inhibit(false),
                 }
             }));
-            ..get_selection().connect_changed(clone!(paste, clipboard, slf => move |selection| {
-                *paste.borrow_mut() = clipboard.from_selection(selection, clone!(slf => move |selection| {
-                    let slf = slf.borrow();
-                    let visible = slf.visible.as_ref()?;
-
-                    let (paths, model) = selection.get_selected_rows();
-
-                    let mut results = Vec::new();
-
-                    for path in paths {
-                        let iter = model.get_iter(&path)?;
-                        let index = model.get_value(&iter, 0).get::<u64>().ok()?? as usize;
-                        let mut result = visible.results.get(index)?.clone();
-                        result.last = visible.values.get(index).cloned();
-                        results.push(result);
-                    }
-
-                    if results.len() <= 1 {
-                        return results.into_iter().next().map(ClipboardBuffer::Result);
-                    }
-
-                    Some(ClipboardBuffer::Results(results))
-                }));
-            }));
         };
+
+        clip.hook_tree(
+            &tree,
+            clone!(slf => move |selection| {
+                let slf = slf.borrow();
+                let visible = slf.visible.as_ref()?;
+
+                let (paths, model) = selection.get_selected_rows();
+
+                let mut results = Vec::new();
+
+                for path in paths {
+                    let iter = model.get_iter(&path)?;
+                    let index = model.get_value(&iter, 0).get::<u64>().ok()?? as usize;
+                    let mut result = visible.results.get(index)?.clone();
+                    result.last = visible.values.get(index).cloned();
+                    results.push(result);
+                }
+
+                Some(ClipboardBuffer::Results(results))
+            }),
+        );
 
         slf
     }

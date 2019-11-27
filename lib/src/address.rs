@@ -12,6 +12,7 @@ use std::{
 pub struct ParseError;
 
 #[derive(Clone, Default, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
+#[repr(transparent)]
 pub struct Address(pub(crate) u64);
 
 impl Address {
@@ -96,18 +97,34 @@ impl Address {
     /// Add an offset in a checked manner.
     pub fn checked_offset(self, offset: Offset) -> Option<Address> {
         Some(match offset {
-            Offset(Sign::NoSign, _) => self,
-            Offset(Sign::Plus, o) => Address(self.0.checked_add(o)?),
-            Offset(Sign::Minus, o) => Address(self.0.checked_sub(o)?),
+            Offset {
+                sign: Sign::NoSign, ..
+            } => self,
+            Offset {
+                sign: Sign::Plus,
+                offset: o,
+            } => Address(self.0.checked_add(o.0)?),
+            Offset {
+                sign: Sign::Minus,
+                offset: o,
+            } => Address(self.0.checked_sub(o.0)?),
         })
     }
 
     /// Add an offset in a saturating manner.
     pub fn saturating_offset(self, offset: Offset) -> Address {
         match offset {
-            Offset(Sign::NoSign, _) => self,
-            Offset(Sign::Plus, o) => Address(self.0.saturating_add(o)),
-            Offset(Sign::Minus, o) => Address(self.0.saturating_sub(o)),
+            Offset {
+                sign: Sign::NoSign, ..
+            } => self,
+            Offset {
+                sign: Sign::Plus,
+                offset: o,
+            } => Address(self.0.saturating_add(o.0)),
+            Offset {
+                sign: Sign::Minus,
+                offset: o,
+            } => Address(self.0.saturating_sub(o.0)),
         }
     }
 
@@ -135,11 +152,11 @@ impl Address {
     /// Find how far this address offsets another one.
     pub fn offset_of(self, base: Address) -> Offset {
         if self.0 > base.0 {
-            Offset(Sign::Plus, self.0.saturating_sub(base.0))
+            Offset::new(Sign::Plus, self.0.saturating_sub(base.0).into())
         } else if self.0 < base.0 {
-            Offset(Sign::Minus, base.0.saturating_sub(self.0))
+            Offset::new(Sign::Minus, base.0.saturating_sub(self.0).into())
         } else {
-            Offset(Sign::NoSign, 0)
+            Offset::zero()
         }
     }
 
@@ -377,7 +394,7 @@ impl<T> TryFrom<*const T> for Address {
 impl serde::ser::Serialize for Address {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::ser::Serializer
+        S: serde::ser::Serializer,
     {
         serializer.collect_str(self)
     }
@@ -386,7 +403,7 @@ impl serde::ser::Serialize for Address {
 impl<'de> serde::de::Deserialize<'de> for Address {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::de::Deserializer<'de>
+        D: serde::de::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
         str::parse::<Address>(&s).map_err(serde::de::Error::custom)

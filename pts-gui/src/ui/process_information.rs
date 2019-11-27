@@ -125,10 +125,7 @@ pub struct ProcessInformation {
 }
 
 impl ProcessInformation {
-    pub fn new(
-        accel_group: &AccelGroup,
-        paste_manager: Rc<PasteManager>,
-    ) -> (Rc<RefCell<Self>>, Window) {
+    pub fn new(accel_group: &AccelGroup, clipboard: Rc<Clipboard>) -> (Rc<RefCell<Self>>, Window) {
         let builder = resource("process_information.glade").into_builder();
 
         let window = cascade! {
@@ -200,7 +197,7 @@ impl ProcessInformation {
             refresh_task: None,
         }));
 
-        let paste = Rc::new(RefCell::new(PasteHandle::default()));
+        let paste = Rc::new(RefCell::new(ClipboardHandle::default()));
 
         memory_readable_check.connect_toggled(clone!(slf => move |btn| {
             Self::memory_refilter(&slf, move |state| state.memory_readable = btn.get_active());
@@ -244,8 +241,8 @@ impl ProcessInformation {
 
         cascade! {
             builder.get_object::<TreeView>("modules_tree").get_selection();
-            ..connect_changed(clone!(paste, paste_manager, slf => move |selection| {
-                *paste.borrow_mut() = paste_manager.from_selection(selection, clone!(slf => move |selection| {
+            ..connect_changed(clone!(paste, clipboard, slf => move |selection| {
+                *paste.borrow_mut() = clipboard.from_selection(selection, clone!(slf => move |selection| {
                     let slf = slf.borrow();
                     let modules = slf.modules.as_ref()?;
 
@@ -260,18 +257,18 @@ impl ProcessInformation {
                     }
 
                     if modules_list.len() <= 1 {
-                        return modules_list.into_iter().next().map(PasteBuffer::Module);
+                        return modules_list.into_iter().next().map(ClipboardBuffer::Module);
                     }
 
-                    Some(PasteBuffer::Modules(modules_list))
+                    Some(ClipboardBuffer::Modules(modules_list))
                 }));
             }));
         }
 
         cascade! {
             builder.get_object::<TreeView>("threads_tree").get_selection();
-            ..connect_changed(clone!(paste, paste_manager, slf => move |selection| {
-                *paste.borrow_mut() = paste_manager.from_selection(selection, clone!(slf => move |selection| {
+            ..connect_changed(clone!(paste, clipboard, slf => move |selection| {
+                *paste.borrow_mut() = clipboard.from_selection(selection, clone!(slf => move |selection| {
                     let slf = slf.borrow();
                     let (paths, model) = selection.get_selected_rows();
 
@@ -284,18 +281,18 @@ impl ProcessInformation {
                     }
 
                     if threads.len() <= 1 {
-                        return threads.into_iter().next().map(PasteBuffer::Thread);
+                        return threads.into_iter().next().map(ClipboardBuffer::Thread);
                     }
 
-                    Some(PasteBuffer::Threads(threads))
+                    Some(ClipboardBuffer::Threads(threads))
                 }));
             }));
         }
 
         cascade! {
             builder.get_object::<TreeView>("memory_tree").get_selection();
-            ..connect_changed(clone!(paste, paste_manager, slf => move |selection| {
-                *paste.borrow_mut() = paste_manager.from_selection(selection, clone!(slf => move |selection| {
+            ..connect_changed(clone!(paste, clipboard, slf => move |selection| {
+                *paste.borrow_mut() = clipboard.from_selection(selection, clone!(slf => move |selection| {
                     let slf = slf.borrow();
                     let (paths, model) = selection.get_selected_rows();
 
@@ -308,10 +305,10 @@ impl ProcessInformation {
                     }
 
                     if memory.len() <= 1 {
-                        return memory.into_iter().next().map(PasteBuffer::Memory);
+                        return memory.into_iter().next().map(ClipboardBuffer::Memory);
                     }
 
-                    Some(PasteBuffer::MemoryList(memory))
+                    Some(ClipboardBuffer::MemoryList(memory))
                 }));
             }));
         }

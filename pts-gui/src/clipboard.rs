@@ -1,7 +1,7 @@
 use crate::MemoryInfo;
 use glib::ObjectExt as _;
 use gtk::TreeSelection;
-use ptscan::{ModuleInfo, ProcessThread};
+use ptscan::{ModuleInfo, ProcessThread, ScanResult};
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
@@ -10,26 +10,28 @@ use std::{
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
-pub enum PasteBuffer {
+pub enum ClipboardBuffer {
     Module(ModuleInfo),
     Modules(Vec<ModuleInfo>),
     Thread(ProcessThread),
     Threads(Vec<ProcessThread>),
     Memory(MemoryInfo),
     MemoryList(Vec<MemoryInfo>),
+    Result(Box<ScanResult>),
+    Results(Vec<Box<ScanResult>>),
 }
 
 struct Provider {
     id: usize,
-    callback: Box<dyn Fn() -> Option<PasteBuffer>>,
+    callback: Box<dyn Fn() -> Option<ClipboardBuffer>>,
 }
 
-struct InnerPasteHandle {
+struct InnerClipboardHandle {
     id: usize,
     current: Weak<RefCell<Option<Provider>>>,
 }
 
-impl Drop for InnerPasteHandle {
+impl Drop for InnerClipboardHandle {
     fn drop(&mut self) {
         let current = match self.current.upgrade() {
             Some(current) => current,
@@ -48,27 +50,27 @@ impl Drop for InnerPasteHandle {
     }
 }
 
-pub struct PasteHandle(Option<InnerPasteHandle>);
+pub struct ClipboardHandle(Option<InnerClipboardHandle>);
 
-impl PasteHandle {
+impl ClipboardHandle {
     /// Clear the current handle.
     pub fn clear(&mut self) {
         let _ = self.0.take();
     }
 }
 
-impl Default for PasteHandle {
+impl Default for ClipboardHandle {
     fn default() -> Self {
-        PasteHandle(None)
+        ClipboardHandle(None)
     }
 }
 
-pub struct PasteManager {
+pub struct Clipboard {
     alloc: RefCell<usize>,
     provider: Rc<RefCell<Option<Provider>>>,
 }
 
-impl PasteManager {
+impl Clipboard {
     pub fn new() -> Self {
         Self {
             alloc: RefCell::new(0),
@@ -77,9 +79,9 @@ impl PasteManager {
     }
 
     /// Create a selection manager from a selection.
-    pub fn from_selection<T>(&self, selection: &TreeSelection, callback: T) -> PasteHandle
+    pub fn from_selection<T>(&self, selection: &TreeSelection, callback: T) -> ClipboardHandle
     where
-        T: 'static + Fn(&TreeSelection) -> Option<PasteBuffer>,
+        T: 'static + Fn(&TreeSelection) -> Option<ClipboardBuffer>,
     {
         let selection = selection.downgrade();
 
@@ -94,9 +96,9 @@ impl PasteManager {
     }
 
     /// Set the paste provider.
-    pub fn set<T>(&self, provider: T) -> PasteHandle
+    pub fn set<T>(&self, provider: T) -> ClipboardHandle
     where
-        T: 'static + Fn() -> Option<PasteBuffer>,
+        T: 'static + Fn() -> Option<ClipboardBuffer>,
     {
         let id = {
             let mut alloc = self.alloc.borrow_mut();
@@ -110,14 +112,14 @@ impl PasteManager {
             callback: Box::new(provider),
         });
 
-        PasteHandle(Some(InnerPasteHandle {
+        ClipboardHandle(Some(InnerClipboardHandle {
             id,
             current: Rc::downgrade(&self.provider),
         }))
     }
 
     /// Get the current data for the paste provider.
-    pub fn get(&self) -> Option<PasteBuffer> {
+    pub fn get(&self) -> Option<ClipboardBuffer> {
         let provider = self.provider.borrow();
 
         match &*provider {

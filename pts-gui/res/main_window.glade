@@ -32,6 +32,62 @@
     <property name="can_focus">False</property>
     <property name="stock">gtk-help</property>
   </object>
+  <object class="GtkMenu" id="scan_results_context_menu">
+    <property name="visible">True</property>
+    <property name="can_focus">False</property>
+    <child>
+      <object class="GtkImageMenuItem" id="scan_results_add_item">
+        <property name="label">gtk-add</property>
+        <property name="visible">True</property>
+        <property name="can_focus">False</property>
+        <property name="use_underline">True</property>
+        <property name="use_stock">True</property>
+        <property name="always_show_image">True</property>
+      </object>
+    </child>
+    <child>
+      <object class="GtkImageMenuItem" id="scan_results_info_item">
+        <property name="label">gtk-info</property>
+        <property name="visible">True</property>
+        <property name="can_focus">False</property>
+        <property name="use_underline">True</property>
+        <property name="use_stock">True</property>
+        <property name="always_show_image">True</property>
+      </object>
+    </child>
+  </object>
+  <object class="GtkListStore" id="scan_results_model">
+    <columns>
+      <!-- column-name index -->
+      <column type="guint64"/>
+      <!-- column-name type -->
+      <column type="gchararray"/>
+      <!-- column-name address -->
+      <column type="gchararray"/>
+      <!-- column-name initial -->
+      <column type="gchararray"/>
+      <!-- column-name last -->
+      <column type="gchararray"/>
+      <!-- column-name current -->
+      <column type="gchararray"/>
+      <!-- column-name background_color -->
+      <column type="GdkRGBA"/>
+    </columns>
+  </object>
+  <object class="GtkListStore" id="scratch_model">
+    <columns>
+      <!-- column-name index -->
+      <column type="guint64"/>
+      <!-- column-name type -->
+      <column type="gchararray"/>
+      <!-- column-name address -->
+      <column type="gchararray"/>
+      <!-- column-name initial -->
+      <column type="gchararray"/>
+      <!-- column-name last -->
+      <column type="gchararray"/>
+    </columns>
+  </object>
   <object class="GtkApplicationWindow" id="window">
     <property name="can_focus">False</property>
     <property name="default_width">800</property>
@@ -106,6 +162,7 @@
                         <property name="label">gtk-copy</property>
                         <property name="visible">True</property>
                         <property name="can_focus">False</property>
+                        <property name="use_underline">True</property>
                         <property name="use_stock">True</property>
                         <property name="always_show_image">True</property>
                       </object>
@@ -115,6 +172,7 @@
                         <property name="label">gtk-paste</property>
                         <property name="visible">True</property>
                         <property name="can_focus">False</property>
+                        <property name="use_underline">True</property>
                         <property name="use_stock">True</property>
                         <property name="always_show_image">True</property>
                       </object>
@@ -296,8 +354,76 @@
                                 <property name="visible">True</property>
                                 <property name="can_focus">True</property>
                                 <property name="hexpand">True</property>
+                                <property name="model">scan_results_model</property>
                                 <child internal-child="selection">
-                                  <object class="GtkTreeSelection"/>
+                                  <object class="GtkTreeSelection">
+                                    <property name="mode">multiple</property>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkTreeViewColumn">
+                                    <property name="min_width">20</property>
+                                    <property name="max_width">100</property>
+                                    <property name="title" translatable="yes">type</property>
+                                    <child>
+                                      <object class="GtkCellRendererText"/>
+                                      <attributes>
+                                        <attribute name="text">1</attribute>
+                                      </attributes>
+                                    </child>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkTreeViewColumn">
+                                    <property name="min_width">100</property>
+                                    <property name="title" translatable="yes">address</property>
+                                    <child>
+                                      <object class="GtkCellRendererText"/>
+                                      <attributes>
+                                        <attribute name="text">2</attribute>
+                                      </attributes>
+                                    </child>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkTreeViewColumn">
+                                    <property name="min_width">20</property>
+                                    <property name="max_width">100</property>
+                                    <property name="title" translatable="yes">initial</property>
+                                    <child>
+                                      <object class="GtkCellRendererText"/>
+                                      <attributes>
+                                        <attribute name="text">3</attribute>
+                                      </attributes>
+                                    </child>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkTreeViewColumn">
+                                    <property name="min_width">20</property>
+                                    <property name="max_width">100</property>
+                                    <property name="title" translatable="yes">last</property>
+                                    <child>
+                                      <object class="GtkCellRendererText"/>
+                                      <attributes>
+                                        <attribute name="text">4</attribute>
+                                      </attributes>
+                                    </child>
+                                  </object>
+                                </child>
+                                <child>
+                                  <object class="GtkTreeViewColumn">
+                                    <property name="min_width">20</property>
+                                    <property name="max_width">100</property>
+                                    <property name="title" translatable="yes">current</property>
+                                    <child>
+                                      <object class="GtkCellRendererText"/>
+                                      <attributes>
+                                        <attribute name="text">5</attribute>
+                                        <attribute name="background-rgba">6</attribute>
+                                      </attributes>
+                                    </child>
+                                  </object>
                                 </child>
                               </object>
                             </child>
@@ -402,8 +528,63 @@
                           <object class="GtkTreeView" id="scratch_tree">
                             <property name="visible">True</property>
                             <property name="can_focus">True</property>
+                            <property name="model">scratch_model</property>
+                            <property name="enable_search">False</property>
                             <child internal-child="selection">
-                              <object class="GtkTreeSelection"/>
+                              <object class="GtkTreeSelection">
+                                <property name="mode">multiple</property>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="GtkTreeViewColumn">
+                                <property name="min_width">20</property>
+                                <property name="max_width">100</property>
+                                <property name="title" translatable="yes">type</property>
+                                <child>
+                                  <object class="GtkCellRendererText"/>
+                                  <attributes>
+                                    <attribute name="text">1</attribute>
+                                  </attributes>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="GtkTreeViewColumn">
+                                <property name="min_width">100</property>
+                                <property name="title" translatable="yes">address</property>
+                                <child>
+                                  <object class="GtkCellRendererText"/>
+                                  <attributes>
+                                    <attribute name="text">2</attribute>
+                                  </attributes>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="GtkTreeViewColumn">
+                                <property name="min_width">20</property>
+                                <property name="max_width">100</property>
+                                <property name="title" translatable="yes">initial</property>
+                                <child>
+                                  <object class="GtkCellRendererText"/>
+                                  <attributes>
+                                    <attribute name="text">3</attribute>
+                                  </attributes>
+                                </child>
+                              </object>
+                            </child>
+                            <child>
+                              <object class="GtkTreeViewColumn">
+                                <property name="min_width">20</property>
+                                <property name="max_width">100</property>
+                                <property name="title" translatable="yes">last</property>
+                                <child>
+                                  <object class="GtkCellRendererText"/>
+                                  <attributes>
+                                    <attribute name="text">4</attribute>
+                                  </attributes>
+                                </child>
+                              </object>
                             </child>
                           </object>
                         </child>

@@ -1,6 +1,7 @@
 use std::{convert::TryFrom, fmt, num, str};
 
 #[derive(Clone, Copy, Default, PartialOrd, Ord, PartialEq, Eq, Hash)]
+#[repr(transparent)]
 pub struct Size(pub(crate) u64);
 
 impl Size {
@@ -32,6 +33,16 @@ impl Size {
     /// Performed a checked add with two sizes.
     pub fn checked_sub(self, rhs: Size) -> Option<Size> {
         Some(Size(self.0.checked_sub(rhs.0)?))
+    }
+
+    /// Perform a saturating add on two sizes.
+    pub fn saturating_add(self, rhs: Size) -> Size {
+        Size(self.0.saturating_add(rhs.0))
+    }
+
+    /// Perform a saturating sub on two sizes.
+    pub fn saturating_sub(self, rhs: Size) -> Size {
+        Size(self.0.saturating_sub(rhs.0))
     }
 
     pub fn add_assign(&mut self, rhs: Size) -> bool {
@@ -104,7 +115,7 @@ impl TryFrom<Size> for u64 {
 impl serde::ser::Serialize for Size {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::ser::Serializer
+        S: serde::ser::Serializer,
     {
         serializer.collect_str(self)
     }
@@ -113,7 +124,7 @@ impl serde::ser::Serialize for Size {
 impl<'de> serde::de::Deserialize<'de> for Size {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::de::Deserializer<'de>
+        D: serde::de::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
         str::parse::<Size>(&s).map_err(serde::de::Error::custom)

@@ -5,7 +5,7 @@ lalrpop_util::lalrpop_mod!(
     "/pointer/parser.rs"
 );
 
-use crate::{process_handle::ProcessHandle, utils::EscapeString, Address, Offset, Sign};
+use crate::{process_handle::ProcessHandle, utils::EscapeString, Address, Offset, Sign, Size};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -29,8 +29,7 @@ impl PointerBase {
     /// Evaluate a pointer base, trying to translate it into an address.
     pub fn eval(&self, handle: &ProcessHandle) -> anyhow::Result<Option<Address>> {
         match self {
-            Self::Module { name, offset, .. } => match handle.modules_address.get(name)
-            {
+            Self::Module { name, offset, .. } => match handle.modules_address.get(name) {
                 Some(address) => Ok(Some(address.saturating_offset(*offset))),
                 None => Ok(None),
             },
@@ -46,7 +45,7 @@ impl fmt::Display for PointerBase {
             PointerBase::Module { name, offset } => {
                 write!(fmt, "{}", EscapeString(name))?;
 
-                if offset.abs() > 0 {
+                if offset.abs() > Size::new(0) {
                     match offset.sign() {
                         Sign::Plus | Sign::NoSign => write!(fmt, " + {}", offset)?,
                         Sign::Minus => write!(fmt, " - {}", offset.abs())?,

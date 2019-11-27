@@ -16,7 +16,7 @@ impl MainMenu {
         builder: &Builder,
         window: glib::WeakRef<ApplicationWindow>,
         accel_group: &AccelGroup,
-        paste_manager: Rc<PasteManager>,
+        clipboard: Rc<Clipboard>,
         connect_dialog_window: glib::WeakRef<Window>,
         error_dialog_window: glib::WeakRef<Window>,
         process_information_window: glib::WeakRef<Window>,
@@ -84,8 +84,8 @@ impl MainMenu {
 
         cascade! {
             builder.get_object::<MenuItem>("copy_item");
-            ..connect_activate(clone!(paste_manager => move |_| {
-                let buffer = optional!(paste_manager.get());
+            ..connect_activate(clone!(clipboard => move |_| {
+                let buffer = optional!(clipboard.get());
                 let data = optional!(serde_json::to_string_pretty(&buffer).ok());
                 let clipboard = gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD);
                 clipboard.set_text(&data);

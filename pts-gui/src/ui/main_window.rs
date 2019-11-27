@@ -53,7 +53,7 @@ impl MainWindow {
     ) {
         let builder = resource("main_window.glade").into_builder();
 
-        let paste_manager = Rc::new(PasteManager::new());
+        let clipboard = Rc::new(Clipboard::new());
 
         let accel_group = AccelGroup::new();
 
@@ -68,7 +68,6 @@ impl MainWindow {
         let scan_progress = builder.get_object::<ProgressBar>("scan_progress");
         let scan_cancel = builder.get_object::<Button>("scan_cancel");
         let scan_progress_container = builder.get_object::<gtk::Box>("scan_progress_container");
-        let scan_results_tree = builder.get_object::<TreeView>("scan_results_tree");
         let filter_options_container = builder.get_object::<gtk::Box>("filter_options_container");
         let scan_results_status = builder.get_object::<Label>("scan_results_status");
 
@@ -91,11 +90,12 @@ impl MainWindow {
             ui::ShowScanResultDialog::new(settings.clone());
 
         let (process_information, process_information_window) =
-            ui::ProcessInformation::new(&accel_group, paste_manager.clone());
+            ui::ProcessInformation::new(&accel_group, clipboard.clone());
 
         let scan_results = ui::ScanResults::new(
+            &builder,
+            clipboard.clone(),
             settings.clone(),
-            &scan_results_tree,
             scan.clone(),
             thread_pool.clone(),
             show_scan_result_dialog.clone(),
@@ -107,6 +107,7 @@ impl MainWindow {
 
         let scratch_results = ui::ScratchResults::new(
             &builder,
+            clipboard.clone(),
             thread_pool.clone(),
             edit_scan_result_dialog.clone(),
             edit_scan_result_dialog_window.downgrade(),
@@ -118,7 +119,7 @@ impl MainWindow {
             &builder,
             window.downgrade(),
             &accel_group,
-            paste_manager.clone(),
+            clipboard.clone(),
             connect_dialog_window.downgrade(),
             error_dialog_window.downgrade(),
             process_information_window.downgrade(),

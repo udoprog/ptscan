@@ -10,14 +10,14 @@ use crate::{
     system,
     thread::Thread,
     Address, AddressRange, Cached, Pointer, PointerBase, Process, ProcessId, ProcessInfo as _,
-    ScanResult, Size, Test, Token, Type, TypeHint, Value, ValueExpr, ThreadId,
+    ScanResult, Size, Test, ThreadId, Token, Type, TypeHint, Value, ValueExpr,
 };
 use anyhow::{bail, Context as _};
 use hashbrown::HashMap;
 use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
 use std::{convert::TryFrom, ffi::OsString, fmt, iter};
 use winapi::shared::winerror;
-use serde::{Serialize, Deserialize};
 
 /// A handle for a process.
 #[derive(Debug)]
@@ -231,7 +231,7 @@ impl ProcessHandle {
             if t.process_id() != process.process_id() {
                 continue;
             }
-            
+
             let id = t.thread_id();
 
             let thread = Thread::builder()

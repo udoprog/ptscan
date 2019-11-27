@@ -1,4 +1,4 @@
-use crate::{Address, Offset, Sign};
+use crate::{Address, Offset, Sign, Size};
 use std::{borrow::Cow, fmt, str};
 use thiserror::Error;
 
@@ -23,9 +23,9 @@ impl Hex {
     /// Forcibly convert into an offset.
     pub fn into_offset(self) -> Offset {
         if self.0 < 0 {
-            Offset::new(Sign::Minus, (-self.0) as u64)
+            Offset::new(Sign::Minus, Size::new((-self.0) as u64))
         } else if self.0 > 0 {
-            Offset::new(Sign::Plus, self.0 as u64)
+            Offset::new(Sign::Plus, Size::new(self.0 as u64))
         } else {
             Offset::zero()
         }

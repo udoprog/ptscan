@@ -1,5 +1,4 @@
 use crate::prelude::*;
-use gdk::RGBA;
 use parking_lot::RwLock;
 use ptscan::{ProcessHandle, Scan, ScanResult, Value, ValueExpr};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
@@ -49,27 +48,20 @@ impl Drop for ScanResults {
 impl ScanResults {
     /// Construct a new container for scan results.
     pub fn new(
+        builder: &Builder,
+        clipboard: Rc<Clipboard>,
         settings: Arc<Settings>,
-        tree: &TreeView,
         scan: Arc<RwLock<Scan>>,
         thread_pool: Arc<rayon::ThreadPool>,
         show_scan_result_dialog: Rc<RefCell<ui::ShowScanResultDialog>>,
         show_scan_result_dialog_window: glib::WeakRef<Window>,
     ) -> Rc<RefCell<Self>> {
-        let builder = resource("scan_results.glade").into_builder();
+        let model = builder.get_object::<ListStore>("scan_results_model");
+        let tree = builder.get_object::<TreeView>("scan_results_tree");
 
-        let model = ListStore::new(&[
-            String::static_type(),
-            String::static_type(),
-            String::static_type(),
-            String::static_type(),
-            String::static_type(),
-            RGBA::static_type(),
-        ]);
-
-        let context_menu = builder.get_object::<Menu>("context_menu");
-        let add_item = builder.get_object::<MenuItem>("add_item");
-        let info_item = builder.get_object::<MenuItem>("info_item");
+        let context_menu = builder.get_object::<Menu>("scan_results_context_menu");
+        let add_item = builder.get_object::<MenuItem>("scan_results_add_item");
+        let info_item = builder.get_object::<MenuItem>("scan_results_info_item");
 
         let slf = Rc::new(RefCell::new(Self {
             scan,
@@ -92,6 +84,8 @@ impl ScanResults {
             show_scan_result_dialog,
             value_expr: ValueExpr::Value,
         }));
+
+        let paste = Rc::new(RefCell::new(ClipboardHandle::default()));
 
         add_item.connect_activate(clone!(slf => move |_| {
             let slf = slf.borrow();
@@ -135,60 +129,8 @@ impl ScanResults {
             }),
         ));
 
-        let type_cell = CellRendererText::new();
-        let pointer_cell = CellRendererText::new();
-        let value_cell = CellRendererText::new();
-        let last_cell = CellRendererText::new();
-        let current_cell = CellRendererText::new();
-
         cascade! {
             tree;
-            ..set_enable_search(true);
-            ..set_headers_visible(true);
-            ..append_column(&cascade! {
-                TreeViewColumn::new();
-                ..set_title("type");
-                ..pack_start(&type_cell, true);
-                ..add_attribute(&type_cell, "text", 0);
-                ..set_resizable(true);
-                ..set_min_width(20);
-                ..set_max_width(100);
-            });
-            ..append_column(&cascade! {
-                TreeViewColumn::new();
-                ..set_title("address");
-                ..pack_start(&pointer_cell, false);
-                ..add_attribute(&pointer_cell, "text", 1);
-                ..set_resizable(true);
-                ..set_min_width(100);
-            });
-            ..append_column(&cascade! {
-                TreeViewColumn::new();
-                ..set_title("initial");
-                ..pack_start(&value_cell, true);
-                ..add_attribute(&value_cell, "text", 2);
-                ..set_resizable(true);
-                ..set_min_width(20);
-                ..set_max_width(100);
-            });
-            ..append_column(&cascade! {
-                TreeViewColumn::new();
-                ..set_title("last");
-                ..pack_start(&last_cell, true);
-                ..add_attribute(&last_cell, "text", 3);
-                ..set_resizable(true);
-                ..set_min_width(20);
-                ..set_max_width(100);
-            });
-            ..append_column(&cascade! {
-                TreeViewColumn::new();
-                ..set_title("current");
-                ..pack_start(&current_cell, true);
-                ..add_attribute(&current_cell, "text", 4);
-                ..add_attribute(&current_cell, "background-rgba", 5);
-                ..set_resizable(true);
-                ..set_min_width(20);
-            });
             ..connect_row_activated(clone!(slf => move |_, path, _| {
                 let slf = slf.borrow();
 
@@ -219,9 +161,30 @@ impl ScanResults {
                     _ => Inhibit(false),
                 }
             }));
-            ..get_selection().set_mode(SelectionMode::Multiple);
-            ..set_model(Some(&model));
-            ..show_all();
+            ..get_selection().connect_changed(clone!(paste, clipboard, slf => move |selection| {
+                *paste.borrow_mut() = clipboard.from_selection(selection, clone!(slf => move |selection| {
+                    let slf = slf.borrow();
+                    let visible = slf.visible.as_ref()?;
+
+                    let (paths, model) = selection.get_selected_rows();
+
+                    let mut results = Vec::new();
+
+                    for path in paths {
+                        let iter = model.get_iter(&path)?;
+                        let index = model.get_value(&iter, 0).get::<u64>().ok()?? as usize;
+                        let mut result = visible.results.get(index)?.clone();
+                        result.last = visible.values.get(index).cloned();
+                        results.push(result);
+                    }
+
+                    if results.len() <= 1 {
+                        return results.into_iter().next().map(ClipboardBuffer::Result);
+                    }
+
+                    Some(ClipboardBuffer::Results(results))
+                }));
+            }));
         };
 
         slf
@@ -249,16 +212,16 @@ impl ScanResults {
 
         let results = scan.results.iter().take(1000).cloned().collect::<Vec<_>>();
 
-        for result in &results {
+        for (index, result) in results.iter().enumerate() {
             let last = result.last();
             let ty = last.ty().to_string();
             let pointer = result.pointer.to_string();
             let initial = result.initial.to_string();
             let last = result.last().to_string();
 
-            model.insert_with_values(
+            let iter = model.insert_with_values(
                 None,
-                &[0, 1, 2, 3, 4, 5],
+                &[1, 2, 3, 4, 5, 6],
                 &[
                     &ty,
                     &pointer,
@@ -268,6 +231,8 @@ impl ScanResults {
                     &self.settings.default_cell_background.to_value(),
                 ],
             );
+
+            model.set_value(&iter, 0, &(index as u64).to_value());
         }
 
         let values = results.iter().map(|r| r.last().clone()).collect();
@@ -343,7 +308,7 @@ impl ScanResults {
             }
 
             if let Some(iter) = model.iter_nth_child(None, index as i32) {
-                model.set_value(&iter, 4, &update.to_string().to_value());
+                model.set_value(&iter, 5, &update.to_string().to_value());
 
                 let background = if *result.last() == update {
                     &self.settings.default_cell_background
@@ -351,7 +316,7 @@ impl ScanResults {
                     &self.settings.highlight_cell_background
                 };
 
-                model.set_value(&iter, 5, &background.to_value());
+                model.set_value(&iter, 6, &background.to_value());
             }
 
             *current = update;

@@ -60,16 +60,12 @@ impl ScratchResults {
     /// Construct a new container for scan results.
     pub fn new(
         builder: &Builder,
+        clipboard: Rc<Clipboard>,
         thread_pool: Arc<rayon::ThreadPool>,
         scan_result_dialog: Rc<RefCell<EditScanResultDialog>>,
         scan_result_dialog_window: glib::WeakRef<Window>,
     ) -> Rc<RefCell<Self>> {
-        let model = ListStore::new(&[
-            String::static_type(),
-            String::static_type(),
-            String::static_type(),
-            String::static_type(),
-        ]);
+        let model = builder.get_object::<ListStore>("scratch_model");
 
         let tree = builder.get_object::<TreeView>("scratch_tree");
         let remove_item = builder.get_object::<MenuItem>("scratch_remove_item");
@@ -103,6 +99,8 @@ impl ScratchResults {
             scan_result_dialog,
             pointer_scan_task: None,
         }));
+
+        let paste = Rc::new(RefCell::new(ClipboardHandle::default()));
 
         remove_item.connect_activate(clone!(slf => move |_| {
             let mut slf = slf.borrow_mut();
@@ -185,52 +183,8 @@ impl ScratchResults {
             }),
         ));
 
-        let type_cell = CellRendererText::new();
-        let pointer_cell = CellRendererText::new();
-        let initial_cell = CellRendererText::new();
-        let last_cell = CellRendererText::new();
-
         cascade! {
-            tree;
-            ..set_enable_search(true);
-            ..set_headers_visible(true);
-            ..append_column(&cascade! {
-                TreeViewColumn::new();
-                ..set_title("type");
-                ..pack_start(&type_cell, true);
-                ..add_attribute(&type_cell, "text", 0);
-                ..set_resizable(true);
-                ..set_min_width(20);
-                ..set_max_width(100);
-            });
-            ..append_column(&cascade! {
-                TreeViewColumn::new();
-                ..set_title("address");
-                ..pack_start(&pointer_cell, false);
-                ..add_attribute(&pointer_cell, "text", 1);
-                ..set_resizable(true);
-                ..set_min_width(100);
-            });
-            ..append_column(&cascade! {
-                TreeViewColumn::new();
-                ..set_title("initial");
-                ..pack_start(&initial_cell, true);
-                ..add_attribute(&initial_cell, "text", 2);
-                ..set_resizable(true);
-                ..set_min_width(20);
-                ..set_max_width(100);
-            });
-            ..append_column(&cascade! {
-                TreeViewColumn::new();
-                ..set_title("last");
-                ..pack_start(&last_cell, true);
-                ..add_attribute(&last_cell, "text", 3);
-                ..set_resizable(true);
-                ..set_min_width(20);
-                ..set_max_width(100);
-            });
-            ..set_model(Some(&model));
-            ..get_selection().set_mode(SelectionMode::Multiple);
+            builder.get_object::<TreeView>("scratch_tree");
             ..connect_row_activated(clone!(slf => move |_, path, _| {
                 let index = optional!(path.get_indices().into_iter().next()) as usize;
                 Self::open_result_editor(&slf, index);
@@ -256,7 +210,28 @@ impl ScratchResults {
                     _ => Inhibit(false),
                 }
             }));
-            ..show_all();
+            ..get_selection().connect_changed(clone!(paste, clipboard, slf => move |selection| {
+                *paste.borrow_mut() = clipboard.from_selection(selection, clone!(slf => move |selection| {
+                    let slf = slf.borrow();
+
+                    let (paths, model) = selection.get_selected_rows();
+
+                    let mut results = Vec::new();
+
+                    for path in paths {
+                        let iter = model.get_iter(&path)?;
+                        let index = model.get_value(&iter, 0).get::<u64>().ok()?? as usize;
+                        let result = slf.state.results.get(index)?.clone();
+                        results.push(result);
+                    }
+
+                    if results.len() <= 1 {
+                        return results.into_iter().next().map(ClipboardBuffer::Result);
+                    }
+
+                    Some(ClipboardBuffer::Results(results))
+                }));
+            }));
         };
 
         slf
@@ -324,7 +299,8 @@ impl ScratchResults {
         let initial = result.initial.to_string();
         let last = result.last().to_string();
 
-        model.insert_with_values(None, &[0, 1, 2, 3], &[&ty, &pointer, &initial, &last]);
+        let iter = model.insert_with_values(None, &[1, 2, 3, 4], &[&ty, &pointer, &initial, &last]);
+        model.set_value(&iter, 0, &(self.state.results.len() as u64).to_value());
 
         self.state.results.push(result.clone());
         self.results_generation += 1;
@@ -350,7 +326,7 @@ impl ScratchResults {
         let last = result.last().to_string();
 
         if let Some(iter) = model.iter_nth_child(None, index as i32) {
-            model.set(&iter, &[0, 1, 2, 3], &[&ty, &pointer, &initial, &last]);
+            model.set(&iter, &[1, 2, 3, 4], &[&ty, &pointer, &initial, &last]);
         }
 
         if let Some(r) = self.state.results.get_mut(index) {
@@ -374,7 +350,7 @@ impl ScratchResults {
             }
 
             if let Some(iter) = model.iter_nth_child(None, index as i32) {
-                model.set_value(&iter, 3, &update.to_string().to_value());
+                model.set_value(&iter, 4, &update.to_string().to_value());
             }
 
             result.last = Some(update);

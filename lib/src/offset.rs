@@ -3,18 +3,28 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct Offset(pub(crate) Sign, pub(crate) u64);
+pub struct Offset {
+    #[serde(skip_serializing_if = "Sign::is_some")]
+    pub(crate) sign: Sign,
+    pub(crate) offset: Size,
+}
 
 impl Offset {
     /// Construct a new offset.
     /// If `sign` is true, the offset is positive. Otherwise it is negative.
-    pub fn new(sign: Sign, offset: u64) -> Self {
-        Offset(sign, offset)
+    #[inline]
+    pub fn new(sign: Sign, offset: Size) -> Self {
+        assert!(sign != Sign::NoSign || offset != 0u64.into());
+        Offset { sign, offset }
     }
 
     /// Construct a zero offset.
+    #[inline]
     pub fn zero() -> Self {
-        Offset(Sign::NoSign, 0)
+        Offset {
+            sign: Sign::NoSign,
+            offset: Size::new(0),
+        }
     }
 
     /// Add two offsets together in a saturating manner.
@@ -22,56 +32,120 @@ impl Offset {
         use self::Sign::*;
 
         match (self, offset) {
-            (other, Offset(NoSign, _)) | (Offset(NoSign, _), other) => other,
-            (Offset(Plus, a), Offset(Plus, b)) => Offset(Plus, a.saturating_add(b)),
-            (Offset(Plus, a), Offset(Minus, b)) => {
+            (other, Offset { sign: NoSign, .. }) | (Offset { sign: NoSign, .. }, other) => other,
+            (
+                Offset {
+                    sign: Plus,
+                    offset: a,
+                },
+                Offset {
+                    sign: Plus,
+                    offset: b,
+                },
+            ) => Offset {
+                sign: Plus,
+                offset: a.saturating_add(b),
+            },
+            (
+                Offset {
+                    sign: Plus,
+                    offset: a,
+                },
+                Offset {
+                    sign: Minus,
+                    offset: b,
+                },
+            ) => {
                 if a > b {
-                    Offset(Plus, a.saturating_sub(b))
+                    Offset {
+                        sign: Plus,
+                        offset: a.saturating_sub(b),
+                    }
                 } else if a < b {
-                    Offset(Minus, b.saturating_sub(a))
+                    Offset {
+                        sign: Minus,
+                        offset: b.saturating_sub(a),
+                    }
                 } else {
                     Offset::zero()
                 }
             }
-            (Offset(Minus, a), Offset(Plus, b)) => {
+            (
+                Offset {
+                    sign: Minus,
+                    offset: a,
+                },
+                Offset {
+                    sign: Plus,
+                    offset: b,
+                },
+            ) => {
                 if a > b {
-                    Offset(Minus, a.saturating_sub(b))
+                    Offset {
+                        sign: Minus,
+                        offset: a.saturating_sub(b),
+                    }
                 } else if a < b {
-                    Offset(Plus, b.saturating_sub(a))
+                    Offset {
+                        sign: Plus,
+                        offset: b.saturating_sub(a),
+                    }
                 } else {
                     Offset::zero()
                 }
             }
-            (Offset(Minus, a), Offset(Minus, b)) => Offset(Minus, a.saturating_add(b)),
+            (
+                Offset {
+                    sign: Minus,
+                    offset: a,
+                },
+                Offset {
+                    sign: Minus,
+                    offset: b,
+                },
+            ) => Offset {
+                sign: Minus,
+                offset: a.saturating_add(b),
+            },
         }
     }
 
     /// Return the sign which is `true` for positive, `false` for negative.
     pub fn sign(self) -> Sign {
-        self.0
+        self.sign
     }
 
     /// Return the absolute offset of this offset.
-    pub fn abs(self) -> u64 {
-        self.1
+    pub fn abs(self) -> Size {
+        self.offset
     }
 
     /// Check if the offset is within the given size.
     pub fn is_within(self, size: Size) -> bool {
-        self.1 <= size.0
+        self.offset <= size
     }
 
     /// Convert into an absolute distance.
-    pub fn distance(self) -> u64 {
-        self.1
+    pub fn distance(self) -> Size {
+        self.offset
     }
 }
 
 impl fmt::Display for Offset {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Offset(Sign::Plus, o) | Offset(Sign::NoSign, o) => write!(fmt, "0x{:X}", o),
-            Offset(Sign::Minus, o) => write!(fmt, "-0x{:X}", o),
+            Offset {
+                sign: Sign::Plus,
+                offset,
+            }
+            | Offset {
+                sign: Sign::NoSign,
+                offset,
+            } => write!(fmt, "{}", offset),
+            Offset {
+                sign: Sign::Minus,
+                offset,
+            } => write!(fmt, "-{}", offset),
         }
     }
 }

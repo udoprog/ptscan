@@ -10,16 +10,18 @@ pub struct ScanResult {
     /// The initial value in the scan. Is not rotated out.
     pub initial: Value,
     /// Subsequent values. Might be rotated out in length sequence.
-    pub last: Option<Value>,
+    pub last: Value,
 }
 
 impl ScanResult {
     /// Construct a new scan result where the last value is specified.
     pub fn new(pointer: Pointer, value: Value) -> Self {
+        let last = Value::None(value.ty());
+
         Self {
             pointer,
             initial: value,
-            last: None,
+            last,
         }
     }
 
@@ -30,7 +32,10 @@ impl ScanResult {
 
     /// Access the last value of the scan.
     pub fn last(&self) -> &Value {
-        self.last.as_ref().unwrap_or(&self.initial)
+        match &self.last {
+            Value::None(..) => &self.initial,
+            other => other,
+        }
     }
 }
 
@@ -38,15 +43,13 @@ impl fmt::Display for ScanResult {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             fmt,
-            "{} {} {}",
+            "{} {} {} {} {}",
             self.pointer.fancy(),
             self.initial.ty(),
-            self.initial
+            self.initial,
+            self.last.ty(),
+            self.last,
         )?;
-
-        if let Some(last) = &self.last {
-            write!(fmt, " {} {}", last.ty(), last)?;
-        }
 
         Ok(())
     }

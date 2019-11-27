@@ -145,7 +145,7 @@ impl EditScanResultDialog {
                     }
 
                     result.initial = ty.default_value();
-                    result.last = None;
+                    result.last = Value::None(ty);
                 }
 
                 Self::refresh_value(&slf);

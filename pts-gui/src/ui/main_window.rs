@@ -55,11 +55,10 @@ impl MainWindow {
 
         let clipboard = Rc::new(Clipboard::new());
 
-        let accel_group = AccelGroup::new();
+        let accel_group = builder.get_object::<AccelGroup>("accel_group");
 
         let window = cascade! {
             builder.get_object::<ApplicationWindow>("window");
-            ..add_accel_group(&accel_group);
         };
 
         let attached_label = builder.get_object::<Label>("attached_label");
@@ -118,7 +117,6 @@ impl MainWindow {
         let main_menu = ui::MainMenu::new(
             &builder,
             window.downgrade(),
-            &accel_group,
             clipboard.clone(),
             connect_dialog_window.downgrade(),
             error_dialog_window.downgrade(),
@@ -456,15 +454,18 @@ impl MainWindow {
                 }
             }
 
-            slf.scan_results.borrow_mut().refresh();
+            cascade! {
+                slf.scan_results.borrow_mut();
+                ..set_value_expr(value_expr);
+                ..refresh();
+            };
+
             slf.filter_options.borrow_mut().has_results(true);
             slf.end_major_task();
             slf.update_components();
         });
 
         slf.start_major_task(task.run());
-
-        slf.scan_results.borrow_mut().set_value_expr(value_expr);
     }
 
     /// Start the current major task.

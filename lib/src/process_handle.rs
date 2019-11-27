@@ -447,7 +447,7 @@ impl ProcessHandle {
                                     &mut proxy,
                                 )? {
                                     let (value, _) = proxy.eval(value_type)?;
-                                    result.last = Some(value);
+                                    result.last = value;
                                     *result.pointer.last_address_mut() = proxy.follow_default()?;
                                     return Ok(Task::Accepted);
                                 }
@@ -603,8 +603,8 @@ impl ProcessHandle {
                                     .type_check(initial_type, last_type, value_type, expr_type)?
                                     .eval(&initial, &last, &mut proxy)?;
 
+                                result.last = Value::None(value.ty());
                                 result.initial = value;
-                                result.last = None;
                                 *result.pointer.last_address_mut() = proxy.follow_default()?;
                                 Ok(false)
                             };

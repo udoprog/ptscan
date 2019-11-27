@@ -351,7 +351,7 @@ impl ScratchResults {
                 model.set_value(&iter, 4, &update.to_string().to_value());
             }
 
-            result.last = Some(update);
+            result.last = update;
         }
     }
 

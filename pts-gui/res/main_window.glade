@@ -2,6 +2,7 @@
 <!-- Generated with glade 3.22.1 -->
 <interface>
   <requires lib="gtk+" version="3.20"/>
+  <object class="GtkAccelGroup" id="accel_group"/>
   <object class="GtkImage" id="attach_image">
     <property name="visible">True</property>
     <property name="can_focus">False</property>
@@ -16,6 +17,11 @@
     <property name="visible">True</property>
     <property name="can_focus">False</property>
     <property name="stock">gtk-close</property>
+  </object>
+  <object class="GtkImage" id="copy_as_json_image">
+    <property name="visible">True</property>
+    <property name="can_focus">False</property>
+    <property name="stock">gtk-copy</property>
   </object>
   <object class="GtkImage" id="detach_image">
     <property name="visible">True</property>
@@ -92,6 +98,9 @@
     <property name="can_focus">False</property>
     <property name="default_width">800</property>
     <property name="default_height">600</property>
+    <accel-groups>
+      <group name="accel_group"/>
+    </accel-groups>
     <child>
       <placeholder/>
     </child>
@@ -104,11 +113,16 @@
           <object class="GtkMenuBar" id="menu_bar">
             <property name="visible">True</property>
             <property name="can_focus">False</property>
+            <property name="margin_left">5</property>
+            <property name="margin_right">5</property>
+            <property name="margin_top">5</property>
+            <property name="margin_bottom">5</property>
             <child>
-              <object class="GtkMenuItem">
+              <object class="GtkImageMenuItem">
+                <property name="label">gtk-file</property>
                 <property name="visible">True</property>
                 <property name="can_focus">False</property>
-                <property name="label" translatable="yes">File</property>
+                <property name="use_stock">True</property>
                 <child type="submenu">
                   <object class="GtkMenu">
                     <property name="visible">True</property>
@@ -140,7 +154,9 @@
                         <property name="can_focus">False</property>
                         <property name="use_underline">True</property>
                         <property name="use_stock">True</property>
+                        <property name="accel_group">accel_group</property>
                         <property name="always_show_image">True</property>
+                        <accelerator key="q" signal="activate" modifiers="GDK_CONTROL_MASK"/>
                       </object>
                     </child>
                   </object>
@@ -148,11 +164,11 @@
               </object>
             </child>
             <child>
-              <object class="GtkMenuItem">
+              <object class="GtkImageMenuItem">
+                <property name="label">gtk-edit</property>
                 <property name="visible">True</property>
                 <property name="can_focus">False</property>
-                <property name="label" translatable="yes">File</property>
-                <property name="use_underline">True</property>
+                <property name="use_stock">True</property>
                 <child type="submenu">
                   <object class="GtkMenu">
                     <property name="visible">True</property>
@@ -164,7 +180,20 @@
                         <property name="can_focus">False</property>
                         <property name="use_underline">True</property>
                         <property name="use_stock">True</property>
+                        <property name="accel_group">accel_group</property>
                         <property name="always_show_image">True</property>
+                        <accelerator key="c" signal="activate" modifiers="GDK_CONTROL_MASK"/>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkImageMenuItem" id="copy_as_json_item">
+                        <property name="label" translatable="yes">Copy as JSON</property>
+                        <property name="visible">True</property>
+                        <property name="can_focus">False</property>
+                        <property name="image">copy_as_json_image</property>
+                        <property name="use_stock">False</property>
+                        <property name="always_show_image">True</property>
+                        <accelerator key="c" signal="activate" modifiers="GDK_SHIFT_MASK | GDK_CONTROL_MASK"/>
                       </object>
                     </child>
                     <child>
@@ -174,7 +203,9 @@
                         <property name="can_focus">False</property>
                         <property name="use_underline">True</property>
                         <property name="use_stock">True</property>
+                        <property name="accel_group">accel_group</property>
                         <property name="always_show_image">True</property>
+                        <accelerator key="v" signal="activate" modifiers="GDK_CONTROL_MASK"/>
                       </object>
                     </child>
                   </object>
@@ -185,21 +216,11 @@
               <object class="GtkMenuItem">
                 <property name="visible">True</property>
                 <property name="can_focus">False</property>
-                <property name="label" translatable="yes">About</property>
+                <property name="label" translatable="yes">View</property>
                 <child type="submenu">
                   <object class="GtkMenu">
                     <property name="visible">True</property>
                     <property name="can_focus">False</property>
-                    <child>
-                      <object class="GtkImageMenuItem" id="about_item">
-                        <property name="label">gtk-about</property>
-                        <property name="visible">True</property>
-                        <property name="can_focus">False</property>
-                        <property name="use_underline">True</property>
-                        <property name="use_stock">True</property>
-                        <property name="always_show_image">True</property>
-                      </object>
-                    </child>
                     <child>
                       <object class="GtkImageMenuItem" id="error_dialog_item">
                         <property name="label">Error Information</property>
@@ -217,6 +238,30 @@
                         <property name="can_focus">False</property>
                         <property name="image">process_information_image</property>
                         <property name="use_stock">False</property>
+                        <property name="always_show_image">True</property>
+                      </object>
+                    </child>
+                  </object>
+                </child>
+              </object>
+            </child>
+            <child>
+              <object class="GtkImageMenuItem">
+                <property name="label">gtk-help</property>
+                <property name="visible">True</property>
+                <property name="can_focus">False</property>
+                <property name="use_stock">True</property>
+                <child type="submenu">
+                  <object class="GtkMenu">
+                    <property name="visible">True</property>
+                    <property name="can_focus">False</property>
+                    <child>
+                      <object class="GtkImageMenuItem" id="about_item">
+                        <property name="label">gtk-about</property>
+                        <property name="visible">True</property>
+                        <property name="can_focus">False</property>
+                        <property name="use_underline">True</property>
+                        <property name="use_stock">True</property>
                         <property name="always_show_image">True</property>
                       </object>
                     </child>

@@ -193,6 +193,11 @@ impl ScanResults {
         self.value_expr = value_expr;
     }
 
+    /// Clear the current value expression.
+    pub fn clear_value_expr(&mut self) {
+        self.value_expr = ValueExpr::Value;
+    }
+
     /// Request when the component wants a result to be added to the scratch pad.
     pub fn on_add_results<T>(&mut self, on_add_results: T)
     where
@@ -208,7 +213,7 @@ impl ScanResults {
 
         model.clear();
 
-        let results = scan.results.iter().take(1000).cloned().collect::<Vec<_>>();
+        let results = scan.results.iter().take(100).cloned().collect::<Vec<_>>();
 
         for (index, result) in results.iter().enumerate() {
             let last = result.last();

@@ -96,6 +96,14 @@ impl Value {
         }
     }
 
+    /// Unwrap the current value, or return an alternative if this is None.
+    pub fn unwrap_or(self, other: Value) -> Self {
+        match self {
+            Value::None(..) => other,
+            value => value,
+        }
+    }
+
     pub fn is_zero(&self) -> Option<bool> {
         Some(match *self {
             Self::None(..) => return None,

@@ -15,7 +15,6 @@ impl MainMenu {
     pub fn new(
         builder: &Builder,
         window: glib::WeakRef<ApplicationWindow>,
-        accel_group: &AccelGroup,
         clipboard: Rc<Clipboard>,
         connect_dialog_window: glib::WeakRef<Window>,
         error_dialog_window: glib::WeakRef<Window>,
@@ -69,23 +68,18 @@ impl MainMenu {
             }));
         }
 
-        let (key, modifier) = gtk::accelerator_parse("<Primary>Q");
-
         cascade! {
             builder.get_object::<MenuItem>("quit_item");
             ..connect_activate(clone!(window => move |_| {
                 let window = upgrade!(window);
                 window.destroy();
             }));
-            ..add_accelerator("activate", accel_group, key, modifier, AccelFlags::VISIBLE);
         };
 
         let json = gdk::Atom::intern("application/json");
 
         let json_clipboard = gtk::Clipboard::get(&json);
         let text_clipboard = gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD);
-
-        let (key, modifier) = gtk::accelerator_parse("<Ctrl>C");
 
         cascade! {
             builder.get_object::<MenuItem>("copy_item");
@@ -113,10 +107,25 @@ impl MainMenu {
                     clipboard::Copied::None => (),
                 }
             }));
-            ..add_accelerator("activate", accel_group, key, modifier, AccelFlags::VISIBLE);
         };
 
-        let (key, modifier) = gtk::accelerator_parse("<Ctrl>V");
+        cascade! {
+            builder.get_object::<MenuItem>("copy_as_json_item");
+            ..connect_activate(clone!(clipboard, json_clipboard, text_clipboard => move |_| {
+                let json = match clipboard.copy() {
+                    clipboard::Copied::Rich(buffer) => {
+                        optional!(serde_json::to_string_pretty(&buffer).ok())
+                    }
+                    clipboard::Copied::Text(text) => {
+                        optional!(serde_json::to_string_pretty(&ClipboardBufferRef::String(&text)).ok())
+                    }
+                    clipboard::Copied::None => return,
+                };
+
+                text_clipboard.set_text(&json);
+                json_clipboard.set_text(&json);
+            }));
+        };
 
         let paster = clipboard::Paster {
             rich: clone!(json_clipboard => move |cb| {
@@ -141,7 +150,6 @@ impl MainMenu {
             ..connect_activate(clone!(clipboard => move |_| {
                 clipboard.paste(&paster);
             }));
-            ..add_accelerator("activate", accel_group, key, modifier, AccelFlags::VISIBLE);
         };
 
         let slf = Rc::new(RefCell::new(Self {

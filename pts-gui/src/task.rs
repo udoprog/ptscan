@@ -83,7 +83,7 @@ pub struct Task<C, Y, U> {
     context: Rc<RefCell<C>>,
     task: Box<dyn FnOnce(&Context<Y, U>) -> anyhow::Result<U> + Send>,
     emit: Option<Box<dyn FnMut(&mut C, Y)>>,
-    then: Option<Box<dyn Fn(&mut C, anyhow::Result<U>)>>,
+    then: Option<Box<dyn FnOnce(&mut C, anyhow::Result<U>)>>,
 }
 
 impl<C, U> Task<C, (), U>
@@ -134,7 +134,7 @@ where
     /// Register a handler to be fired when the oneshot is done.
     pub fn then<Callback>(&mut self, then: Callback)
     where
-        Callback: 'static + Fn(&mut C, anyhow::Result<U>),
+        Callback: 'static + FnOnce(&mut C, anyhow::Result<U>),
     {
         self.then = Some(Box::new(then));
     }
@@ -146,7 +146,7 @@ where
             context,
             task,
             mut emit,
-            then,
+            mut then,
         } = self;
 
         let (tx, rx) = glib::MainContext::channel::<Progress<Y, U>>(glib::PRIORITY_DEFAULT);
@@ -176,7 +176,7 @@ where
                 Progress::Result(result) => result,
             };
 
-            if let Some(then) = &then {
+            if let Some(then) = then.take() {
                 then(&mut *context, result);
             }
 

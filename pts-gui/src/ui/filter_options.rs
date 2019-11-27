@@ -102,7 +102,7 @@ impl FilterOptions {
             has_results: false,
         }));
 
-        let clip = clipboard.handle();
+        let clip = clipboard.handle("filter_options");
 
         scan_button.connect_clicked(clone!(slf => move |_| {
             let on_scan = optional!(slf.borrow_mut().on_scan.take());

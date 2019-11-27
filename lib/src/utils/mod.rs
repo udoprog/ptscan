@@ -223,7 +223,7 @@ where
             };
 
             match (memory_info.state, memory_info.ty) {
-                (_, MemoryType::Mapped) => continue,
+                (_, Some(MemoryType::Mapped)) => continue,
                 (MemoryState::Commit, _) => {
                     if memory_info.protect.contains(MemoryProtect::NoAccess) {
                         continue;

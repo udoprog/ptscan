@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{prelude::*, CurrentScanResult};
 use parking_lot::RwLock;
 use ptscan::{ProcessHandle, Scan, ScanResult, Value, ValueExpr};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
@@ -85,7 +85,7 @@ impl ScanResults {
             value_expr: ValueExpr::Value,
         }));
 
-        let clip = clipboard.handle();
+        let clip = clipboard.handle("scan");
 
         add_item.connect_activate(clone!(slf => move |_| {
             let slf = slf.borrow();
@@ -176,12 +176,12 @@ impl ScanResults {
                 for path in paths {
                     let iter = model.get_iter(&path)?;
                     let index = model.get_value(&iter, 0).get::<u64>().ok()?? as usize;
-                    let mut result = visible.results.get(index)?.clone();
-                    result.last = visible.values.get(index).cloned();
-                    results.push(result);
+                    let result = visible.results.get(index)?.clone();
+                    let current = visible.values.get(index).cloned();
+                    results.push(CurrentScanResult { result, current });
                 }
 
-                Some(ClipboardBuffer::Results(results))
+                Some(ClipboardBuffer::CurrentResults(results))
             }),
         );
 

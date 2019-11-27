@@ -1,5 +1,6 @@
 use crate::{Pointer, Value};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// A single scan result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,5 +31,23 @@ impl ScanResult {
     /// Access the last value of the scan.
     pub fn last(&self) -> &Value {
         self.last.as_ref().unwrap_or(&self.initial)
+    }
+}
+
+impl fmt::Display for ScanResult {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            fmt,
+            "{} {} {}",
+            self.pointer.fancy(),
+            self.initial.ty(),
+            self.initial
+        )?;
+
+        if let Some(last) = &self.last {
+            write!(fmt, " {} {}", last.ty(), last)?;
+        }
+
+        Ok(())
     }
 }

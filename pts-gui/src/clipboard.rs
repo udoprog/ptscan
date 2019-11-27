@@ -1,8 +1,9 @@
-use crate::MemoryInfo;
+use crate::{CurrentScanResult, MemoryInfo};
 use ptscan::{ModuleInfo, ProcessThread, ScanResult};
 use serde::{Deserialize, Serialize};
 use std::{
-    cell::{Ref, RefCell},
+    cell::RefCell,
+    fmt,
     rc::{Rc, Weak},
 };
 
@@ -14,18 +15,88 @@ pub enum ClipboardBuffer {
     Threads(Vec<ProcessThread>),
     MemoryList(Vec<MemoryInfo>),
     Results(Vec<Box<ScanResult>>),
+    CurrentResults(Vec<CurrentScanResult>),
+}
+
+impl fmt::Display for ClipboardBuffer {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::String(string) => string.fmt(fmt)?,
+            Self::Modules(modules) => {
+                for module in modules {
+                    writeln!(fmt, "{}", module)?;
+                }
+            }
+            Self::Threads(threads) => {
+                for thread in threads {
+                    writeln!(fmt, "{}", thread)?;
+                }
+            }
+            Self::MemoryList(list) => {
+                for m in list {
+                    writeln!(fmt, "{}", m)?;
+                }
+            }
+            Self::Results(results) => {
+                for result in results {
+                    writeln!(fmt, "{}", result)?;
+                }
+            }
+            Self::CurrentResults(results) => {
+                for result in results {
+                    writeln!(fmt, "{}", result)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// Serialization structure for ClipboardBuffer which can serialize while borrowing.
+#[derive(Debug, Serialize)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum ClipboardBufferRef<'a> {
+    String(&'a str),
+}
+
+pub enum OnCopy {
+    None,
+    Rich(Box<dyn Fn() -> Option<ClipboardBuffer>>),
+    Text(Box<dyn Fn() -> Option<String>>),
+}
+
+pub enum Copied {
+    None,
+    Rich(ClipboardBuffer),
+    Text(String),
+}
+
+pub enum OnPaste {
+    None,
+    Rich(Rc<dyn Fn(&ClipboardBuffer)>),
+    Text(Rc<dyn Fn(&str)>),
+}
+
+pub struct Paster<Rich, Text>
+where
+    Rich: 'static + Fn(Weak<dyn Fn(&ClipboardBuffer)>),
+    Text: 'static + Fn(Weak<dyn Fn(&str)>),
+{
+    pub rich: Rich,
+    pub text: Text,
 }
 
 struct Provider {
-    id: usize,
+    name: &'static str,
     /// Callback to get a clipboard value from the widget.
-    get: Box<dyn Fn() -> Option<ClipboardBuffer>>,
+    on_copy: OnCopy,
     /// Callback to set a value from the clipboard buffer to the widget.
-    set: Box<dyn Fn(Option<&ClipboardBuffer>)>,
+    on_paste: OnPaste,
 }
 
 struct InnerClipboardHandle {
-    id: usize,
+    name: &'static str,
     current: Weak<RefCell<Option<Provider>>>,
 }
 
@@ -39,7 +110,8 @@ impl Drop for InnerClipboardHandle {
         let mut current = current.borrow_mut();
 
         if let Some(current) = &*current {
-            if current.id != self.id {
+            // NB: only deallocate on drop of the current provider is the one that was dropped.
+            if current.name != self.name {
                 return;
             }
         }
@@ -48,43 +120,76 @@ impl Drop for InnerClipboardHandle {
     }
 }
 
+pub struct ProviderBuilder {
+    provider: Rc<RefCell<Option<Provider>>>,
+}
+
+impl ProviderBuilder {
+    /// Set the callback to use to copy a value into the clipboard.
+    pub fn on_copy_rich<T>(&mut self, on_copy: T)
+    where
+        T: 'static + Fn() -> Option<ClipboardBuffer>,
+    {
+        if let Some(provider) = &mut *self.provider.borrow_mut() {
+            provider.on_copy = OnCopy::Rich(Box::new(on_copy));
+        }
+    }
+
+    /// Set the callback to use to copy a value into the clipboard.
+    pub fn on_copy_text<T>(&mut self, on_copy: T)
+    where
+        T: 'static + Fn() -> Option<String>,
+    {
+        if let Some(provider) = &mut *self.provider.borrow_mut() {
+            provider.on_copy = OnCopy::Text(Box::new(on_copy));
+        }
+    }
+
+    /// Set the callback to call when the clipboard value is pasted.
+    pub fn on_paste_rich<T>(&mut self, on_paste: T)
+    where
+        T: 'static + Fn(&ClipboardBuffer),
+    {
+        if let Some(provider) = &mut *self.provider.borrow_mut() {
+            provider.on_paste = OnPaste::Rich(Rc::new(on_paste));
+        }
+    }
+
+    /// Set the callback to call when the clipboard value is pasted.
+    pub fn on_paste_text<T>(&mut self, on_paste: T)
+    where
+        T: 'static + Fn(&str),
+    {
+        if let Some(provider) = &mut *self.provider.borrow_mut() {
+            provider.on_paste = OnPaste::Text(Rc::new(on_paste));
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct ClipboardHandle {
-    alloc: Rc<RefCell<usize>>,
-    current: Rc<RefCell<Option<ClipboardBuffer>>>,
+    name: &'static str,
     provider: Weak<RefCell<Option<Provider>>>,
     inner: Rc<RefCell<Option<InnerClipboardHandle>>>,
 }
 
 impl ClipboardHandle {
     /// Set the paste provider.
-    pub fn set<G, S>(&self, get: G, set: S)
-    where
-        G: 'static + Fn() -> Option<ClipboardBuffer>,
-        S: 'static + Fn(Option<&ClipboardBuffer>),
-    {
-        let id = {
-            let mut alloc = self.alloc.borrow_mut();
-            let id = *alloc;
-            *alloc += 1;
-            id
-        };
-
-        let provider = match self.provider.upgrade() {
-            Some(provider) => provider,
-            None => return,
-        };
-
-        *provider.borrow_mut() = Some(Provider {
-            id,
-            get: Box::new(get),
-            set: Box::new(set),
-        });
+    pub fn new(&self) -> Option<ProviderBuilder> {
+        let provider = self.provider.upgrade()?;
 
         *self.inner.borrow_mut() = Some(InnerClipboardHandle {
-            id,
+            name: self.name,
             current: Rc::downgrade(&provider),
         });
+
+        *provider.borrow_mut() = Some(Provider {
+            name: self.name,
+            on_copy: OnCopy::None,
+            on_paste: OnPaste::None,
+        });
+
+        Some(ProviderBuilder { provider })
     }
 
     /// Hook up the specified tree.
@@ -99,15 +204,14 @@ impl ClipboardHandle {
         tree.connect_focus_in_event(clone!(handle => move |tree, _| {
             let tree = tree.downgrade();
 
-            handle.set(
+            let mut p = optional!(handle.new(), Inhibit(false));
+
+            p.on_copy_rich(
                 clone!(grab, tree => move || {
                     let tree = tree.upgrade()?;
                     let selection = tree.get_selection();
                     grab(&selection)
-                }),
-                move |_| {
-
-                },
+                })
             );
 
             Inhibit(false)
@@ -123,29 +227,25 @@ impl ClipboardHandle {
         entry.connect_focus_in_event(clone!(handle => move |entry, _| {
             let entry = entry.downgrade();
 
-            handle.set(
-                clone!(entry => move || {
-                    let entry = entry.upgrade()?;
-                    let (start, end) = entry.get_selection_bounds()?;
-                    let text = entry.get_chars(start, end)?;
-                    Some(ClipboardBuffer::String(text.as_str().to_string()))
-                }),
-                clone!(entry => move |buffer| {
-                    let entry = upgrade!(entry);
-                    entry.delete_selection();
+            let mut p = optional!(handle.new(), Inhibit(false));
 
-                    if let Some(ClipboardBuffer::String(string)) = buffer {
-                        let mut pos = entry.get_position();
-                        entry.insert_text(string, &mut pos);
-                        entry.set_position(pos);
-                    }
-                }),
-            );
+            p.on_copy_text(clone!(entry => move || {
+                let entry = entry.upgrade()?;
+                let (start, end) = entry.get_selection_bounds()?;
+                let text = entry.get_chars(start, end)?;
+                Some(text.as_str().to_string())
+            }));
+
+            p.on_paste_text(clone!(entry => move |text| {
+                let entry = upgrade!(entry);
+                entry.delete_selection();
+                let mut pos = entry.get_position();
+                entry.insert_text(text, &mut pos);
+                entry.set_position(pos);
+            }));
 
             Inhibit(false)
         }));
-
-        // entry.get_selection()
     }
 
     /// Clear the current handle.
@@ -155,49 +255,65 @@ impl ClipboardHandle {
 }
 
 pub struct Clipboard {
-    alloc: Rc<RefCell<usize>>,
-    current: Rc<RefCell<Option<ClipboardBuffer>>>,
     provider: Rc<RefCell<Option<Provider>>>,
 }
 
 impl Clipboard {
     pub fn new() -> Self {
         Self {
-            alloc: Rc::new(RefCell::new(0)),
-            current: Rc::new(RefCell::new(None)),
             provider: Rc::new(RefCell::new(None)),
         }
     }
 
     /// Build a new clipboard handle.
-    pub fn handle(&self) -> ClipboardHandle {
+    pub fn handle(&self, name: &'static str) -> ClipboardHandle {
         ClipboardHandle {
-            alloc: self.alloc.clone(),
-            current: self.current.clone(),
+            name,
             provider: Rc::downgrade(&self.provider),
             inner: Default::default(),
         }
     }
 
     /// Get the current data for the paste provider.
-    pub fn get(&self) -> Ref<'_, Option<ClipboardBuffer>> {
-        let provider = self.provider.borrow();
-
-        let buffer = match &*provider {
-            Some(provider) => (provider.get)(),
-            None => None,
-        };
-
-        *self.current.borrow_mut() = buffer;
-        self.current.borrow()
-    }
-
-    /// Call the current paste handler.
-    pub fn paste(&self, buffer: Option<&ClipboardBuffer>) {
+    pub fn copy(&self) -> Copied {
         let provider = self.provider.borrow();
 
         if let Some(provider) = &*provider {
-            (provider.set)(buffer);
+            match &provider.on_copy {
+                OnCopy::None => (),
+                OnCopy::Rich(rich) => {
+                    return Copied::Rich(optional!(rich(), Copied::None));
+                }
+                OnCopy::Text(text) => {
+                    return Copied::Text(optional!(text(), Copied::None));
+                }
+            }
+        }
+
+        Copied::None
+    }
+
+    /// Call the current paste handler.
+    pub fn paste<Rich, Text>(&self, paster: &Paster<Rich, Text>)
+    where
+        Rich: 'static + Fn(Weak<dyn Fn(&ClipboardBuffer)>),
+        Text: 'static + Fn(Weak<dyn Fn(&str)>),
+    {
+        let provider = self.provider.borrow();
+
+        let provider = match provider.as_ref() {
+            Some(provider) => provider,
+            None => return,
         };
+
+        match &provider.on_paste {
+            OnPaste::None => (),
+            OnPaste::Rich(cb) => {
+                (paster.rich)(Rc::downgrade(cb));
+            }
+            OnPaste::Text(cb) => {
+                (paster.text)(Rc::downgrade(cb));
+            }
+        }
     }
 }

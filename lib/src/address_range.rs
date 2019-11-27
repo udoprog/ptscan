@@ -1,5 +1,6 @@
 use crate::{Address, Size};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 /// A helper structure to define a range of addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -58,6 +59,13 @@ impl AddressRange {
         }
 
         None
+    }
+}
+
+impl fmt::Display for AddressRange {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "{} {}", self.base, self.size)?;
+        Ok(())
     }
 }
 

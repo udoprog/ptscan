@@ -197,7 +197,7 @@ impl ProcessInformation {
             refresh_task: None,
         }));
 
-        let clip = clipboard.handle();
+        let clip = clipboard.handle("process_information");
 
         memory_readable_check.connect_toggled(clone!(slf => move |btn| {
             Self::memory_refilter(&slf, move |state| state.memory_readable = btn.get_active());

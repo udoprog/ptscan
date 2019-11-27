@@ -100,7 +100,7 @@ impl ScratchResults {
             pointer_scan_task: None,
         }));
 
-        let clip = clipboard.handle();
+        let clip = clipboard.handle("scratch");
 
         remove_item.connect_activate(clone!(slf => move |_| {
             let mut slf = slf.borrow_mut();

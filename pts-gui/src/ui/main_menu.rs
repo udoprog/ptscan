@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{clipboard, prelude::*};
 use std::{cell::RefCell, rc::Rc};
 
 struct Widgets {
@@ -80,15 +80,37 @@ impl MainMenu {
             ..add_accelerator("activate", accel_group, key, modifier, AccelFlags::VISIBLE);
         };
 
+        let json = gdk::Atom::intern("application/json");
+
+        let json_clipboard = gtk::Clipboard::get(&json);
+        let text_clipboard = gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD);
+
         let (key, modifier) = gtk::accelerator_parse("<Ctrl>C");
 
         cascade! {
             builder.get_object::<MenuItem>("copy_item");
-            ..connect_activate(clone!(clipboard => move |_| {
-                if let Some(buffer) = &*clipboard.get() {
-                    let data = optional!(serde_json::to_string_pretty(buffer).ok());
-                    let c = gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD);
-                    c.set_text(&data);
+            ..connect_activate(clone!(clipboard, json_clipboard, text_clipboard => move |_| {
+                match clipboard.copy() {
+                    clipboard::Copied::Rich(buffer) => {
+                        let json = optional!(serde_json::to_string_pretty(&buffer).ok());
+
+                        match &buffer {
+                            ClipboardBuffer::String(ref text) => {
+                                text_clipboard.set_text(text);
+                            }
+                            other => {
+                                text_clipboard.set_text(&other.to_string());
+                            }
+                        }
+
+                        json_clipboard.set_text(&json);
+                    }
+                    clipboard::Copied::Text(text) => {
+                        let json = optional!(serde_json::to_string_pretty(&ClipboardBufferRef::String(&text)).ok());
+                        json_clipboard.set_text(&json);
+                        text_clipboard.set_text(&text);
+                    }
+                    clipboard::Copied::None => (),
                 }
             }));
             ..add_accelerator("activate", accel_group, key, modifier, AccelFlags::VISIBLE);
@@ -96,20 +118,28 @@ impl MainMenu {
 
         let (key, modifier) = gtk::accelerator_parse("<Ctrl>V");
 
+        let paster = clipboard::Paster {
+            rich: clone!(json_clipboard => move |cb| {
+                json_clipboard.request_text(move |_, text| {
+                    let cb = upgrade!(cb);
+                    let text = optional!(text);
+                    let buffer = optional!(serde_json::from_str::<ClipboardBuffer>(text).ok());
+                    cb(&buffer);
+                });
+            }),
+            text: clone!(text_clipboard => move |cb| {
+                text_clipboard.request_text(move |_, text| {
+                    let cb = upgrade!(cb);
+                    let text = optional!(text);
+                    cb(&text);
+                });
+            }),
+        };
+
         cascade! {
             builder.get_object::<MenuItem>("paste_item");
             ..connect_activate(clone!(clipboard => move |_| {
-                gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD).request_text(clone!(clipboard => move |_, text| {
-                    let buffer = match text {
-                        Some(text) => Some(match serde_json::from_str::<ClipboardBuffer>(text) {
-                            Ok(buffer) => buffer,
-                            Err(..) => ClipboardBuffer::String(text.to_string()),
-                        }),
-                        None => None,
-                    };
-
-                    clipboard.paste(buffer.as_ref());
-                }));
+                clipboard.paste(&paster);
             }));
             ..add_accelerator("activate", accel_group, key, modifier, AccelFlags::VISIBLE);
         };

@@ -221,10 +221,10 @@ impl Process {
         };
 
         let ty = match (state, mbi.Type) {
-            (MemoryState::Free, _) => MemoryType::None,
-            (_, winnt::MEM_IMAGE) => MemoryType::Image,
-            (_, winnt::MEM_MAPPED) => MemoryType::Mapped,
-            (_, winnt::MEM_PRIVATE) => MemoryType::Private,
+            (MemoryState::Free, _) => None,
+            (_, winnt::MEM_IMAGE) => Some(MemoryType::Image),
+            (_, winnt::MEM_MAPPED) => Some(MemoryType::Mapped),
+            (_, winnt::MEM_PRIVATE) => Some(MemoryType::Private),
             (_, ty) => {
                 return Err(Error::BadRegionType(ty).into());
             }
@@ -383,13 +383,34 @@ impl MemoryState {
     }
 }
 
+impl fmt::Display for MemoryState {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_str().fmt(fmt)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryType {
-    None,
     Image,
     Mapped,
     Private,
+}
+
+impl MemoryType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Image => "MEM_IMAGE",
+            Self::Mapped => "MEM_MAPPED",
+            Self::Private => "MEM_PRIVATE",
+        }
+    }
+}
+
+impl fmt::Display for MemoryType {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.as_str().fmt(fmt)
+    }
 }
 
 #[derive(fixed_map::Key, Debug, Clone, Copy, Serialize, Deserialize)]
@@ -469,8 +490,8 @@ impl MemoryProtect {
 pub struct MemoryInformation {
     pub range: AddressRange,
     pub state: MemoryState,
-    #[serde(rename = "type")]
-    pub ty: MemoryType,
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub ty: Option<MemoryType>,
     pub protect: fixed_map::Set<MemoryProtect>,
 }
 
@@ -504,6 +525,24 @@ impl MemoryInformation {
     /// Test if protection contains any of the specified elements.
     fn is_protect_any<'a>(&self, it: impl IntoIterator<Item = &'a MemoryProtect>) -> bool {
         it.into_iter().any(|p| self.protect.contains(*p))
+    }
+}
+
+impl fmt::Display for MemoryInformation {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "{} {}", self.range, self.state)?;
+
+        if let Some(ty) = self.ty {
+            write!(fmt, " {}", ty)?;
+        }
+
+        let protect = self.protect.iter().map(|p| p.as_str()).collect::<Vec<_>>();
+
+        if !protect.is_empty() {
+            write!(fmt, "{}", protect.join(","))?;
+        }
+
+        Ok(())
     }
 }
 

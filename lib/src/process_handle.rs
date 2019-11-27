@@ -848,6 +848,19 @@ pub struct ModuleInfo {
     pub range: AddressRange,
 }
 
+impl fmt::Display for ModuleInfo {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "{} ", self.name)?;
+
+        if let Some(file_name) = &self.file_name {
+            write!(fmt, "{} ", file_name)?;
+        }
+
+        write!(fmt, "{}", self.range)?;
+        Ok(())
+    }
+}
+
 /// A helper struct to give a name to a process.
 #[derive(Debug)]
 pub struct ProcessName {
@@ -876,6 +889,18 @@ pub struct ProcessThread {
     pub id: ThreadId,
     pub stack: AddressRange,
     pub stack_exit: Option<Address>,
+}
+
+impl fmt::Display for ProcessThread {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "{} {}", self.id, self.stack)?;
+
+        if let Some(stack_exit) = self.stack_exit {
+            write!(fmt, " {}", stack_exit)?;
+        }
+
+        Ok(())
+    }
 }
 
 pub trait Decode: Sized {

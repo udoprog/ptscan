@@ -3,6 +3,7 @@ use std::{convert::TryFrom, ffi::OsString, fmt, io, ptr, slice, sync::Arc};
 use crate::{error::Error, module, utils, Address, AddressRange, Endianness, ProcessId, Size};
 
 use ntapi::ntpsapi;
+use serde::{Deserialize, Serialize};
 use winapi::{
     shared::{
         basetsd::SIZE_T,
@@ -356,7 +357,8 @@ impl OpenProcessBuilder {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MemoryState {
     Commit,
     Free,
@@ -381,7 +383,8 @@ impl MemoryState {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MemoryType {
     None,
     Image,
@@ -389,7 +392,8 @@ pub enum MemoryType {
     Private,
 }
 
-#[derive(fixed_map::Key, Debug, Clone, Copy)]
+#[derive(fixed_map::Key, Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MemoryProtect {
     Execute,
     ExecuteRead,
@@ -461,10 +465,11 @@ impl MemoryProtect {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryInformation {
     pub range: AddressRange,
     pub state: MemoryState,
+    #[serde(rename = "type")]
     pub ty: MemoryType,
     pub protect: fixed_map::Set<MemoryProtect>,
 }
@@ -481,15 +486,13 @@ impl MemoryInformation {
     /// Test if region is writable.
     pub fn is_writable(&self) -> bool {
         use self::MemoryProtect::*;
-        self.state == MemoryState::Commit
-            && self.is_protect_any(&[ReadWrite, WriteCopy, ExecuteReadWrite, ExecuteWriteCopy])
+        self.is_protect_any(&[ReadWrite, WriteCopy, ExecuteReadWrite, ExecuteWriteCopy])
     }
 
     /// Test if region is executable.
     pub fn is_executable(&self) -> bool {
         use self::MemoryProtect::*;
-        self.state == MemoryState::Commit
-            && self.is_protect_any(&[Execute, ExecuteRead, ExecuteReadWrite, ExecuteWriteCopy])
+        self.is_protect_any(&[Execute, ExecuteRead, ExecuteReadWrite, ExecuteWriteCopy])
     }
 
     /// Test if region is executable.

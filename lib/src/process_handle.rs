@@ -10,13 +10,14 @@ use crate::{
     system,
     thread::Thread,
     Address, AddressRange, Cached, Pointer, PointerBase, Process, ProcessId, ProcessInfo as _,
-    ScanResult, Size, Test, Token, Type, TypeHint, Value, ValueExpr,
+    ScanResult, Size, Test, Token, Type, TypeHint, Value, ValueExpr, ThreadId,
 };
 use anyhow::{bail, Context as _};
 use hashbrown::HashMap;
 use parking_lot::RwLock;
 use std::{convert::TryFrom, ffi::OsString, fmt, iter};
 use winapi::shared::winerror;
+use serde::{Serialize, Deserialize};
 
 /// A handle for a process.
 #[derive(Debug)]
@@ -30,7 +31,7 @@ pub struct ProcessHandle {
     /// Information about all loaded modules.
     pub modules: Vec<ModuleInfo>,
     /// Module address by name.
-    pub modules_address: HashMap<OsString, Address>,
+    pub modules_address: HashMap<String, Address>,
     /// The range at which we have found kernel32.dll (if present).
     kernel32: Option<AddressRange>,
     /// Threads.
@@ -41,7 +42,7 @@ pub struct ModulesState {
     pub process_name: Option<String>,
     pub process_file_name: Option<OsString>,
     pub modules: Vec<ModuleInfo>,
-    pub modules_address: HashMap<OsString, Address>,
+    pub modules_address: HashMap<String, Address>,
     pub kernel32: Option<AddressRange>,
 }
 
@@ -145,13 +146,13 @@ impl ProcessHandle {
                 kernel32 = Some(range);
             }
 
-            let lossy_name = name.to_string_lossy().to_string();
+            let name = name.to_string_lossy().to_string();
+            let file_name = file_name.map(|n| n.to_string_lossy().to_string());
 
             modules_address.insert(name.clone(), range.base);
             modules.push(ModuleInfo {
                 name,
                 file_name,
-                lossy_name,
                 range,
             });
         }
@@ -226,17 +227,19 @@ impl ProcessHandle {
     ) -> anyhow::Result<()> {
         threads.clear();
 
-        for (id, t) in system::threads()?.enumerate() {
+        for t in system::threads()? {
             if t.process_id() != process.process_id() {
                 continue;
             }
+            
+            let id = t.thread_id();
 
             let thread = Thread::builder()
                 .all_access()
                 .query_information()
                 .get_context()
-                .build(t.thread_id())
-                .with_context(|| Error::BuildThread(t.thread_id()))?;
+                .build(id)
+                .with_context(|| Error::BuildThread(id))?;
 
             let stack = thread
                 .thread_stack(process)
@@ -248,7 +251,6 @@ impl ProcessHandle {
             threads.push(ProcessThread {
                 id,
                 stack,
-                thread,
                 stack_exit,
             });
         }
@@ -277,7 +279,7 @@ impl ProcessHandle {
             Location::Module(module) => {
                 let offset = address.offset_of(module.range.base);
                 PointerBase::Module {
-                    name: module.lossy_name.to_string(),
+                    name: module.name.to_string(),
                     offset,
                 }
             }
@@ -839,11 +841,10 @@ impl iter::FromIterator<MemoryInformation> for Regions {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleInfo {
-    pub name: OsString,
-    pub file_name: Option<OsString>,
-    pub lossy_name: String,
+    pub name: String,
+    pub file_name: Option<String>,
     pub range: AddressRange,
 }
 
@@ -870,11 +871,10 @@ pub enum Location<'a> {
     None,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessThread {
-    pub id: usize,
+    pub id: ThreadId,
     pub stack: AddressRange,
-    pub thread: Thread,
     pub stack_exit: Option<Address>,
 }
 

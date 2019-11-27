@@ -1,7 +1,8 @@
 use crate::{Address, Size};
+use serde::{Deserialize, Serialize};
 
 /// A helper structure to define a range of addresses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct AddressRange {
     pub base: Address,
     pub size: Size,
@@ -11,6 +12,12 @@ impl AddressRange {
     /// Check if the range contains the given address.
     pub fn contains(&self, value: Address) -> bool {
         self.base.0 <= value.0 && value.0 <= self.base.0.saturating_add(self.size.0)
+    }
+
+    /// Check if the range contains another range.
+    pub fn contains_range(&self, other: &AddressRange) -> bool {
+        self.base.0 <= other.base.0
+            && other.base.0.saturating_add(other.size.0) <= self.base.0.saturating_add(self.size.0)
     }
 
     /// Helper function to find which memory region a given address is contained in.
@@ -28,6 +35,25 @@ impl AddressRange {
         };
 
         if accessor(thing).contains(address) {
+            return Some(thing);
+        }
+
+        None
+    }
+
+    /// Perform a binary search to check if `things` contains the given range.
+    pub fn find_range_in_range<'a, T>(
+        things: &'a [T],
+        accessor: impl Fn(&T) -> &AddressRange,
+        needle: &AddressRange,
+    ) -> Option<&'a T> {
+        let thing = match things.binary_search_by(|m| accessor(m).base.cmp(&needle.base)) {
+            Ok(exact) => &things[exact],
+            Err(0) => return None,
+            Err(n) => &things[n - 1],
+        };
+
+        if accessor(thing).contains_range(needle) {
             return Some(thing);
         }
 

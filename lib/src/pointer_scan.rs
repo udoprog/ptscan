@@ -141,7 +141,7 @@ impl<'a> PointerScan<'a> {
 
                         let pointer = Pointer::new(
                             PointerBase::Module {
-                                name: module.lossy_name.to_string(),
+                                name: module.name.to_string(),
                                 offset,
                             },
                             path.clone(),

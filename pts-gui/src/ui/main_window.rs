@@ -53,6 +53,8 @@ impl MainWindow {
     ) {
         let builder = resource("main_window.glade").into_builder();
 
+        let paste_manager = Rc::new(PasteManager::new());
+
         let accel_group = AccelGroup::new();
 
         let window = cascade! {
@@ -88,7 +90,8 @@ impl MainWindow {
         let (show_scan_result_dialog, show_scan_result_dialog_window) =
             ui::ShowScanResultDialog::new(settings.clone());
 
-        let (process_information, process_information_window) = ui::ProcessInformation::new();
+        let (process_information, process_information_window) =
+            ui::ProcessInformation::new(&accel_group, paste_manager.clone());
 
         let scan_results = ui::ScanResults::new(
             settings.clone(),
@@ -115,6 +118,7 @@ impl MainWindow {
             &builder,
             window.downgrade(),
             &accel_group,
+            paste_manager.clone(),
             connect_dialog_window.downgrade(),
             error_dialog_window.downgrade(),
             process_information_window.downgrade(),

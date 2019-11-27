@@ -5,6 +5,8 @@
   <object class="GtkAccelGroup" id="accel_group"/>
   <object class="GtkListStore" id="memory_model">
     <columns>
+      <!-- column-name index -->
+      <column type="guint64"/>
       <!-- column-name base -->
       <column type="gchararray"/>
       <!-- column-name size -->
@@ -13,20 +15,34 @@
       <column type="gchararray"/>
       <!-- column-name protection -->
       <column type="gchararray"/>
+      <!-- column-name note -->
+      <column type="gchararray"/>
+      <!-- column-name base_sort -->
+      <column type="guint64"/>
+      <!-- column-name size_sort -->
+      <column type="guint64"/>
     </columns>
   </object>
   <object class="GtkListStore" id="modules_model">
     <columns>
+      <!-- column-name index -->
+      <column type="guint64"/>
       <!-- column-name name -->
       <column type="gchararray"/>
       <!-- column-name base -->
       <column type="gchararray"/>
       <!-- column-name size -->
       <column type="gchararray"/>
+      <!-- column-name base_sort -->
+      <column type="guint64"/>
+      <!-- column-name size_sort -->
+      <column type="guint64"/>
     </columns>
   </object>
   <object class="GtkListStore" id="threads_model">
     <columns>
+      <!-- column-name index -->
+      <column type="guint64"/>
       <!-- column-name id -->
       <column type="guint64"/>
       <!-- column-name start -->
@@ -35,6 +51,12 @@
       <column type="gchararray"/>
       <!-- column-name stack_exit -->
       <column type="gchararray"/>
+      <!-- column-name start_sort -->
+      <column type="guint64"/>
+      <!-- column-name size_sort -->
+      <column type="guint64"/>
+      <!-- column-name stack_exit_sort -->
+      <column type="guint64"/>
     </columns>
   </object>
   <object class="GtkWindow" id="window">
@@ -166,7 +188,7 @@
                 <property name="vexpand">True</property>
                 <property name="shadow_type">in</property>
                 <child>
-                  <object class="GtkTreeView">
+                  <object class="GtkTreeView" id="modules_tree">
                     <property name="visible">True</property>
                     <property name="can_focus">True</property>
                     <property name="model">modules_model</property>
@@ -186,24 +208,6 @@
                         <property name="clickable">True</property>
                         <property name="reorderable">True</property>
                         <property name="sort_indicator">True</property>
-                        <property name="sort_column_id">0</property>
-                        <child>
-                          <object class="GtkCellRendererText"/>
-                          <attributes>
-                            <attribute name="text">0</attribute>
-                          </attributes>
-                        </child>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkTreeViewColumn">
-                        <property name="resizable">True</property>
-                        <property name="spacing">10</property>
-                        <property name="min_width">20</property>
-                        <property name="title" translatable="yes">base</property>
-                        <property name="clickable">True</property>
-                        <property name="reorderable">True</property>
-                        <property name="sort_indicator">True</property>
                         <property name="sort_column_id">1</property>
                         <child>
                           <object class="GtkCellRendererText"/>
@@ -218,15 +222,33 @@
                         <property name="resizable">True</property>
                         <property name="spacing">10</property>
                         <property name="min_width">20</property>
-                        <property name="title" translatable="yes">size</property>
+                        <property name="title" translatable="yes">base</property>
                         <property name="clickable">True</property>
                         <property name="reorderable">True</property>
                         <property name="sort_indicator">True</property>
-                        <property name="sort_column_id">2</property>
+                        <property name="sort_column_id">4</property>
                         <child>
                           <object class="GtkCellRendererText"/>
                           <attributes>
                             <attribute name="text">2</attribute>
+                          </attributes>
+                        </child>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkTreeViewColumn">
+                        <property name="resizable">True</property>
+                        <property name="spacing">10</property>
+                        <property name="min_width">20</property>
+                        <property name="title" translatable="yes">size</property>
+                        <property name="clickable">True</property>
+                        <property name="reorderable">True</property>
+                        <property name="sort_indicator">True</property>
+                        <property name="sort_column_id">5</property>
+                        <child>
+                          <object class="GtkCellRendererText"/>
+                          <attributes>
+                            <attribute name="text">3</attribute>
                           </attributes>
                         </child>
                       </object>
@@ -264,7 +286,7 @@
                 <property name="vexpand">True</property>
                 <property name="shadow_type">in</property>
                 <child>
-                  <object class="GtkTreeView">
+                  <object class="GtkTreeView" id="threads_tree">
                     <property name="visible">True</property>
                     <property name="can_focus">True</property>
                     <property name="model">threads_model</property>
@@ -284,24 +306,6 @@
                         <property name="clickable">True</property>
                         <property name="reorderable">True</property>
                         <property name="sort_indicator">True</property>
-                        <property name="sort_column_id">0</property>
-                        <child>
-                          <object class="GtkCellRendererText"/>
-                          <attributes>
-                            <attribute name="text">0</attribute>
-                          </attributes>
-                        </child>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkTreeViewColumn">
-                        <property name="resizable">True</property>
-                        <property name="spacing">10</property>
-                        <property name="min_width">20</property>
-                        <property name="title" translatable="yes">base</property>
-                        <property name="clickable">True</property>
-                        <property name="reorderable">True</property>
-                        <property name="sort_indicator">True</property>
                         <property name="sort_column_id">1</property>
                         <child>
                           <object class="GtkCellRendererText"/>
@@ -316,11 +320,11 @@
                         <property name="resizable">True</property>
                         <property name="spacing">10</property>
                         <property name="min_width">20</property>
-                        <property name="title" translatable="yes">size</property>
+                        <property name="title" translatable="yes">stack base</property>
                         <property name="clickable">True</property>
                         <property name="reorderable">True</property>
                         <property name="sort_indicator">True</property>
-                        <property name="sort_column_id">2</property>
+                        <property name="sort_column_id">5</property>
                         <child>
                           <object class="GtkCellRendererText"/>
                           <attributes>
@@ -334,15 +338,33 @@
                         <property name="resizable">True</property>
                         <property name="spacing">10</property>
                         <property name="min_width">20</property>
-                        <property name="title" translatable="yes">stack exit</property>
+                        <property name="title" translatable="yes">stack size</property>
                         <property name="clickable">True</property>
                         <property name="reorderable">True</property>
                         <property name="sort_indicator">True</property>
-                        <property name="sort_column_id">3</property>
+                        <property name="sort_column_id">6</property>
                         <child>
                           <object class="GtkCellRendererText"/>
                           <attributes>
                             <attribute name="text">3</attribute>
+                          </attributes>
+                        </child>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkTreeViewColumn">
+                        <property name="resizable">True</property>
+                        <property name="spacing">10</property>
+                        <property name="min_width">20</property>
+                        <property name="title" translatable="yes">stack exit</property>
+                        <property name="clickable">True</property>
+                        <property name="reorderable">True</property>
+                        <property name="sort_indicator">True</property>
+                        <property name="sort_column_id">7</property>
+                        <child>
+                          <object class="GtkCellRendererText"/>
+                          <attributes>
+                            <attribute name="text">4</attribute>
                           </attributes>
                         </child>
                       </object>
@@ -391,7 +413,7 @@
                 </child>
                 <child>
                   <object class="GtkCheckButton" id="memory_readable_check">
-                    <property name="label" translatable="yes">readable</property>
+                    <property name="label" translatable="yes">Readable</property>
                     <property name="visible">True</property>
                     <property name="can_focus">True</property>
                     <property name="receives_default">False</property>
@@ -405,7 +427,7 @@
                 </child>
                 <child>
                   <object class="GtkCheckButton" id="memory_writable_check">
-                    <property name="label" translatable="yes">writable</property>
+                    <property name="label" translatable="yes">Writable</property>
                     <property name="visible">True</property>
                     <property name="can_focus">True</property>
                     <property name="receives_default">False</property>
@@ -419,7 +441,7 @@
                 </child>
                 <child>
                   <object class="GtkCheckButton" id="memory_executable_check">
-                    <property name="label" translatable="yes">executable</property>
+                    <property name="label" translatable="yes">Executable</property>
                     <property name="visible">True</property>
                     <property name="can_focus">True</property>
                     <property name="receives_default">False</property>
@@ -432,8 +454,8 @@
                   </packing>
                 </child>
                 <child>
-                  <object class="GtkCheckButton" id="memory_other_check">
-                    <property name="label" translatable="yes">other</property>
+                  <object class="GtkCheckButton" id="memory_modules_check">
+                    <property name="label" translatable="yes">Modules</property>
                     <property name="visible">True</property>
                     <property name="can_focus">True</property>
                     <property name="receives_default">False</property>
@@ -443,6 +465,34 @@
                     <property name="expand">False</property>
                     <property name="fill">True</property>
                     <property name="position">4</property>
+                  </packing>
+                </child>
+                <child>
+                  <object class="GtkCheckButton" id="memory_threadstacks_check">
+                    <property name="label" translatable="yes">Thread Stacks</property>
+                    <property name="visible">True</property>
+                    <property name="can_focus">True</property>
+                    <property name="receives_default">False</property>
+                    <property name="draw_indicator">True</property>
+                  </object>
+                  <packing>
+                    <property name="expand">False</property>
+                    <property name="fill">True</property>
+                    <property name="position">5</property>
+                  </packing>
+                </child>
+                <child>
+                  <object class="GtkCheckButton" id="memory_other_check">
+                    <property name="label" translatable="yes">Other</property>
+                    <property name="visible">True</property>
+                    <property name="can_focus">True</property>
+                    <property name="receives_default">False</property>
+                    <property name="draw_indicator">True</property>
+                  </object>
+                  <packing>
+                    <property name="expand">False</property>
+                    <property name="fill">True</property>
+                    <property name="position">6</property>
                   </packing>
                 </child>
               </object>
@@ -460,7 +510,7 @@
                 <property name="vexpand">True</property>
                 <property name="shadow_type">in</property>
                 <child>
-                  <object class="GtkTreeView">
+                  <object class="GtkTreeView" id="memory_tree">
                     <property name="visible">True</property>
                     <property name="can_focus">True</property>
                     <property name="model">memory_model</property>
@@ -480,25 +530,7 @@
                         <property name="clickable">True</property>
                         <property name="reorderable">True</property>
                         <property name="sort_indicator">True</property>
-                        <property name="sort_column_id">0</property>
-                        <child>
-                          <object class="GtkCellRendererText"/>
-                          <attributes>
-                            <attribute name="text">0</attribute>
-                          </attributes>
-                        </child>
-                      </object>
-                    </child>
-                    <child>
-                      <object class="GtkTreeViewColumn">
-                        <property name="resizable">True</property>
-                        <property name="spacing">10</property>
-                        <property name="min_width">20</property>
-                        <property name="title" translatable="yes">size</property>
-                        <property name="clickable">True</property>
-                        <property name="reorderable">True</property>
-                        <property name="sort_indicator">True</property>
-                        <property name="sort_column_id">1</property>
+                        <property name="sort_column_id">6</property>
                         <child>
                           <object class="GtkCellRendererText"/>
                           <attributes>
@@ -512,11 +544,11 @@
                         <property name="resizable">True</property>
                         <property name="spacing">10</property>
                         <property name="min_width">20</property>
-                        <property name="title" translatable="yes">state</property>
+                        <property name="title" translatable="yes">size</property>
                         <property name="clickable">True</property>
                         <property name="reorderable">True</property>
                         <property name="sort_indicator">True</property>
-                        <property name="sort_column_id">2</property>
+                        <property name="sort_column_id">7</property>
                         <child>
                           <object class="GtkCellRendererText"/>
                           <attributes>
@@ -530,7 +562,7 @@
                         <property name="resizable">True</property>
                         <property name="spacing">10</property>
                         <property name="min_width">20</property>
-                        <property name="title" translatable="yes">protection</property>
+                        <property name="title" translatable="yes">state</property>
                         <property name="clickable">True</property>
                         <property name="reorderable">True</property>
                         <property name="sort_indicator">True</property>
@@ -539,6 +571,42 @@
                           <object class="GtkCellRendererText"/>
                           <attributes>
                             <attribute name="text">3</attribute>
+                          </attributes>
+                        </child>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkTreeViewColumn">
+                        <property name="resizable">True</property>
+                        <property name="spacing">10</property>
+                        <property name="min_width">20</property>
+                        <property name="title" translatable="yes">protection</property>
+                        <property name="clickable">True</property>
+                        <property name="reorderable">True</property>
+                        <property name="sort_indicator">True</property>
+                        <property name="sort_column_id">4</property>
+                        <child>
+                          <object class="GtkCellRendererText"/>
+                          <attributes>
+                            <attribute name="text">4</attribute>
+                          </attributes>
+                        </child>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="GtkTreeViewColumn">
+                        <property name="resizable">True</property>
+                        <property name="spacing">10</property>
+                        <property name="min_width">20</property>
+                        <property name="title" translatable="yes">note</property>
+                        <property name="clickable">True</property>
+                        <property name="reorderable">True</property>
+                        <property name="sort_indicator">True</property>
+                        <property name="sort_column_id">5</property>
+                        <child>
+                          <object class="GtkCellRendererText"/>
+                          <attributes>
+                            <attribute name="text">5</attribute>
                           </attributes>
                         </child>
                       </object>

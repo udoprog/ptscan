@@ -56,7 +56,7 @@ pub use self::pointer_scan::{
 };
 pub use self::process::{MemoryInformation, MemoryState, MemoryType, Process, ProcessInfo};
 pub use self::process_handle::{
-    AddressProxy, Location, ModulesState, ProcessHandle, ProcessName, ProcessThread,
+    AddressProxy, Location, ModuleInfo, ModulesState, ProcessHandle, ProcessName, ProcessThread,
 };
 pub use self::scan::{InitialScanConfig, Scan, ScanProgress};
 pub use self::scan_result::ScanResult;

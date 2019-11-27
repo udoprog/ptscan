@@ -16,6 +16,7 @@ impl MainMenu {
         builder: &Builder,
         window: glib::WeakRef<ApplicationWindow>,
         accel_group: &AccelGroup,
+        paste_manager: Rc<PasteManager>,
         connect_dialog_window: glib::WeakRef<Window>,
         error_dialog_window: glib::WeakRef<Window>,
         process_information_window: glib::WeakRef<Window>,
@@ -68,9 +69,6 @@ impl MainMenu {
             }));
         }
 
-        // `Primary` is `Ctrl` on Windows and Linux, and `command` on macOS
-        // It isn't available directly through gdk::ModifierType, since it has
-        // different values on different platforms.
         let (key, modifier) = gtk::accelerator_parse("<Primary>Q");
 
         cascade! {
@@ -79,6 +77,29 @@ impl MainMenu {
                 let window = upgrade!(window);
                 window.destroy();
             }));
+            ..add_accelerator("activate", accel_group, key, modifier, AccelFlags::VISIBLE);
+        };
+
+        let (key, modifier) = gtk::accelerator_parse("<Ctrl>C");
+
+        cascade! {
+            builder.get_object::<MenuItem>("copy_item");
+            ..connect_activate(clone!(paste_manager => move |_| {
+                let buffer = optional!(paste_manager.get());
+                let data = optional!(serde_json::to_string_pretty(&buffer).ok());
+                let clipboard = gtk::Clipboard::get(&gdk::SELECTION_CLIPBOARD);
+                clipboard.set_text(&data);
+            }));
+            ..add_accelerator("activate", accel_group, key, modifier, AccelFlags::VISIBLE);
+        };
+
+        let (key, modifier) = gtk::accelerator_parse("<Ctrl>V");
+
+        cascade! {
+            builder.get_object::<MenuItem>("paste_item");
+            ..connect_activate(|_| {
+                println!("PASTE");
+            });
             ..add_accelerator("activate", accel_group, key, modifier, AccelFlags::VISIBLE);
         };
 

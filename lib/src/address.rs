@@ -7,13 +7,11 @@ use std::{
     fmt, num, str,
 };
 
-use serde::{Deserialize, Serialize};
-
 #[derive(Debug, thiserror::Error)]
 #[error("failed to parse address")]
 pub struct ParseError;
 
-#[derive(Clone, Default, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Default, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct Address(pub(crate) u64);
 
 impl Address {
@@ -373,5 +371,24 @@ impl<T> TryFrom<*const T> for Address {
                 .try_into()
                 .map_err(|_| Error::AddressConversion)?,
         ))
+    }
+}
+
+impl serde::ser::Serialize for Address {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::ser::Serializer
+    {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> serde::de::Deserialize<'de> for Address {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::de::Deserializer<'de>
+    {
+        let s = String::deserialize(deserializer)?;
+        str::parse::<Address>(&s).map_err(serde::de::Error::custom)
     }
 }

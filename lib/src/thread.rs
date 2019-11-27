@@ -1,6 +1,6 @@
 use std::{convert::TryFrom, fmt, io, mem, sync::Arc};
 
-use crate::{error::Error, process, utils, Address, AddressRange};
+use crate::{error::Error, process, utils, Address, AddressRange, ThreadId};
 
 use anyhow::bail;
 use winapi::{
@@ -10,8 +10,6 @@ use winapi::{
     },
     um::{processthreadsapi, winbase, winnt},
 };
-
-pub type ThreadId = DWORD;
 
 /// A thread in the system.
 #[derive(Clone)]

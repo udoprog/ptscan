@@ -7,7 +7,7 @@ lalrpop_util::lalrpop_mod!(
 
 use crate::{process_handle::ProcessHandle, utils::EscapeString, Address, Offset, Sign};
 use serde::{Deserialize, Serialize};
-use std::{ffi::OsStr, fmt};
+use std::fmt;
 
 pub static NULL_POINTER: Pointer = Pointer::null();
 
@@ -29,7 +29,7 @@ impl PointerBase {
     /// Evaluate a pointer base, trying to translate it into an address.
     pub fn eval(&self, handle: &ProcessHandle) -> anyhow::Result<Option<Address>> {
         match self {
-            Self::Module { name, offset, .. } => match handle.modules_address.get(OsStr::new(name))
+            Self::Module { name, offset, .. } => match handle.modules_address.get(name)
             {
                 Some(address) => Ok(Some(address.saturating_offset(*offset))),
                 None => Ok(None),

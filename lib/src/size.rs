@@ -72,6 +72,12 @@ impl str::FromStr for Size {
     }
 }
 
+impl From<Size> for u64 {
+    fn from(size: Size) -> Self {
+        size.0
+    }
+}
+
 impl From<u32> for Size {
     fn from(value: u32) -> Self {
         Self(value as u64)
@@ -101,14 +107,6 @@ impl TryFrom<usize> for Size {
 
     fn try_from(value: usize) -> Result<Self, Self::Error> {
         Ok(Size(u64::try_from(value)?))
-    }
-}
-
-impl TryFrom<Size> for u64 {
-    type Error = num::TryFromIntError;
-
-    fn try_from(value: Size) -> Result<Self, Self::Error> {
-        Ok(u64::try_from(value.0)?)
     }
 }
 

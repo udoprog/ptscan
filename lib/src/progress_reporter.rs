@@ -1,4 +1,4 @@
-use crate::{scan::ScanProgress, Size, Token};
+use crate::{ScanProgress, Size, Token};
 
 pub(crate) struct ProgressReporter<'token, 'err, P> {
     progress: P,

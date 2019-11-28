@@ -4,7 +4,7 @@ use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 
 use anyhow::{anyhow, Context as _};
 use chrono::Utc;
-use ptscan::{InitialScanConfig, ProcessId, Scan, TypeHint};
+use ptscan::{InitialScanConfig, ProcessId, TypeHint, Values};
 
 struct Widgets {
     #[allow(unused)]
@@ -28,7 +28,7 @@ struct Widgets {
 
 pub struct MainWindow {
     thread_pool: Arc<rayon::ThreadPool>,
-    scan: Arc<RwLock<Scan>>,
+    scan: Arc<RwLock<Option<Scan>>>,
     widgets: Widgets,
     handle: Option<Arc<RwLock<ptscan::ProcessHandle>>>,
     open_process_task: Option<task::Handle>,
@@ -80,7 +80,7 @@ impl MainWindow {
             ..add(&status_label);
         };
 
-        let scan = Arc::new(RwLock::new(Scan::new()));
+        let scan = Arc::new(RwLock::new(None));
 
         let (error_dialog, error_dialog_window) = ui::ErrorDialog::new();
         let (connect_dialog, connect_dialog_window) = ui::ConnectDialog::new(error);
@@ -234,7 +234,7 @@ impl MainWindow {
 
         let task = cascade! {
             task::Task::oneshot(main, move |_| {
-                scan.write().clear();
+                *scan.write() = None;
                 Ok(())
             });
             ..then(|main, _| {
@@ -261,77 +261,78 @@ impl MainWindow {
         let thread_pool = slf.thread_pool.clone();
         let started = Instant::now();
 
-        let mut task = if scan.read().initial {
+        let (value_expr, filter_expr, config) = {
             let filter_options = slf.filter_options.borrow();
             let value_expr = filter_options.state.value_expr.clone();
             let filter_expr = optional!(&filter_options.state.filter_expr).clone();
             let mut config = InitialScanConfig::default();
             config.modules_only = filter_options.state.modules_only;
-
-            task::Task::new(main, move |s| {
-                let value_type = value_expr
-                    .value_type_of(TypeHint::NoHint)?
-                    .unwrap_or(filter_expr.value_type_of(TypeHint::NoHint)?)
-                    .ok_or_else(|| anyhow!("cannot determine type of value"))?;
-
-                let handle = RwLockWriteGuard::downgrade_to_upgradable(handle.write());
-
-                let threads = handle
-                    .get_threads()
-                    .context("error when refreshing threads")?;
-
-                let modules = handle
-                    .get_modules()
-                    .context("error when refreshing modules")?;
-
-                let mut handle = RwLockUpgradableReadGuard::upgrade(handle);
-                handle.update_modules(modules);
-                handle.update_threads(threads);
-                let handle = RwLockWriteGuard::downgrade(handle);
-
-                let mut scan = scan.write();
-
-                let result = scan.initial_scan(
-                    &*thread_pool,
-                    &*handle,
-                    &filter_expr,
-                    value_type,
-                    Some(s.as_token()),
-                    ContextProgress::new(s),
-                    config,
-                );
-
-                scan.initial = false;
-                result?;
-                Ok(s.is_stopped())
-            })
-        } else {
-            let filter_options = slf.filter_options.borrow();
-            let value_expr = filter_options.state.value_expr.clone();
-            let filter_expr = optional!(&filter_options.state.filter_expr).clone();
-
-            task::Task::new(main, move |s| {
-                let value_type = value_expr
-                    .value_type_of(TypeHint::NoHint)?
-                    .unwrap_or(filter_expr.value_type_of(TypeHint::NoHint)?)
-                    .option();
-
-                let mut scan = scan.write();
-
-                let handle = handle.read();
-
-                scan.scan(
-                    &*thread_pool,
-                    &*handle,
-                    value_type,
-                    Some(s.as_token()),
-                    ContextProgress::new(s),
-                    &filter_expr,
-                )?;
-
-                Ok(s.is_stopped())
-            })
+            (value_expr, filter_expr, config)
         };
+
+        let mut task = task::Task::new(main, move |s| {
+            {
+                let mut scan = scan.write();
+
+                if let Some(scan) = &mut *scan {
+                    let handle = handle.read();
+
+                    handle.rescan_values(
+                        &*thread_pool,
+                        &mut scan.addresses,
+                        &mut scan.initial,
+                        &mut scan.last,
+                        Some(s.as_token()),
+                        ContextProgress::new(s),
+                        &filter_expr,
+                    )?;
+
+                    return Ok(s.is_stopped());
+                }
+            }
+
+            let value_type = value_expr
+                .value_type_of(TypeHint::NoHint)?
+                .unwrap_or(filter_expr.value_type_of(TypeHint::NoHint)?)
+                .ok_or_else(|| anyhow!("cannot determine type of value"))?;
+
+            let handle = RwLockWriteGuard::downgrade_to_upgradable(handle.write());
+
+            let threads = handle
+                .get_threads()
+                .context("error when refreshing threads")?;
+
+            let modules = handle
+                .get_modules()
+                .context("error when refreshing modules")?;
+
+            let mut handle = RwLockUpgradableReadGuard::upgrade(handle);
+            handle.update_modules(modules);
+            handle.update_threads(threads);
+            let handle = RwLockWriteGuard::downgrade(handle);
+
+            let mut addresses = Vec::new();
+            let mut values = Values::new(value_type, handle.process.pointer_width);
+
+            let result = handle.initial_scan(
+                &*thread_pool,
+                &filter_expr,
+                &mut addresses,
+                &mut values,
+                Some(s.as_token()),
+                ContextProgress::new(s),
+                config,
+            );
+
+            *scan.write() = Some(Scan {
+                addresses,
+                initial: values.clone(),
+                last: values,
+            });
+
+            result?;
+            Ok(s.is_stopped())
+        });
 
         task.emit(|main, (percentage, results)| {
             if let Some(progress) = main.widgets.scan_progress.upgrade() {
@@ -396,20 +397,21 @@ impl MainWindow {
 
         let task = cascade! {
             task::Task::new(main, move |s| {
-                let value_type = value_expr.value_type_of(TypeHint::NoHint)?.option();
                 let handle = handle.read();
                 let mut scan = scan.write();
+                let scan = optional!(&mut *scan, Ok(None));
 
                 handle.refresh_values(
                     &*thread_pool,
-                    &mut scan.results,
+                    &scan.addresses,
+                    &scan.initial,
+                    &mut scan.last,
                     Some(s.as_token()),
-                    value_type,
                     ContextProgress::new(s),
                     &value_expr,
                 )?;
 
-                Ok(s.is_stopped())
+                Ok(Some(s.is_stopped()))
             });
             ..emit(|slf, (percentage, results)| {
                 if let Some(progress) = slf.widgets.scan_progress.upgrade() {
@@ -430,14 +432,15 @@ impl MainWindow {
                             ),
                             Some(e),
                         ),
-                        Ok(true) => (
+                        Ok(Some(true)) => (
                             format!(
                                 "Refresh cancelled after {:.3?} (<a href=\"#last-error\">error details</a>)",
                                 diff
                             ),
                             Some(anyhow!("task was cancelled")),
                         ),
-                        Ok(false) => (format!("Refresh completed in {:.3?}", diff), None),
+                        Ok(Some(false)) => (format!("Refresh completed in {:.3?}", diff), None),
+                        Ok(None) => (String::from("Scan could not be performed (missing values)"), None),
                     };
 
                     status_label.set_markup(&text);
@@ -534,11 +537,13 @@ impl MainWindow {
         let scan_results_status = upgrade!(self.widgets.scan_results_status);
 
         if let Some(scan) = self.scan.try_read() {
-            if scan.initial {
-                scan_results_status.set_text("No scan in progress");
-            } else {
-                scan_results_status
-                    .set_text(&format!("Scan with {} result(s)", scan.results.len()));
+            match scan.as_ref() {
+                Some(scan) => {
+                    scan_results_status.set_text(&format!("Scan with {} result(s)", scan.len()));
+                }
+                None => {
+                    scan_results_status.set_text("No scan in progress");
+                }
             }
         } else {
             scan_results_status.set_text("Failed to lock scan");

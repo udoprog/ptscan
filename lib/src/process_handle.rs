@@ -3,21 +3,60 @@
 use crate::{
     error::Error,
     filter_expr::FilterExpr,
-    pointer,
     process::{MemoryInformation, MemoryReader},
     progress_reporter::ProgressReporter,
-    scan::ScanProgress,
     system,
     thread::Thread,
-    Address, AddressRange, Cached, Pointer, PointerBase, Process, ProcessId, ProcessInfo as _,
-    ScanResult, Size, Test, ThreadId, Token, Type, TypeHint, Value, ValueExpr,
+    values, Address, AddressRange, Cached, Pointer, PointerBase, Process, ProcessId,
+    ProcessInfo as _, Size, Special, Test, ThreadId, Token, Type, TypeHint, Value, ValueExpr,
+    ValueInfo, Values,
 };
-use anyhow::{bail, Context as _};
-use hashbrown::HashMap;
+use anyhow::{anyhow, bail, Context as _};
+use crossbeam_queue::SegQueue;
+use hashbrown::{HashMap, HashSet};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::{convert::TryFrom, ffi::OsString, fmt, iter};
+use std::{
+    convert::{TryFrom as _, TryInto as _},
+    ffi::OsString,
+    fmt, iter,
+    sync::mpsc,
+    time::{Duration, Instant},
+};
+
 use winapi::shared::winerror;
+
+#[derive(Debug, Clone, Default)]
+pub struct InitialScanConfig {
+    pub modules_only: bool,
+    pub tasks: Option<usize>,
+    pub buffer_size: Option<usize>,
+    pub alignment: Option<usize>,
+    pub aligned: Option<bool>,
+}
+
+/// Trait used for interfacing with dynamic values in a scan.
+pub trait ValueHolder {
+    /// Access the address of the value.
+    fn pointer(&self) -> &Pointer;
+
+    /// Access the initial value for the holder
+    fn initial_info(&self) -> ValueInfo<'_>;
+
+    /// Get information on last value.
+    fn last_info(&self) -> ValueInfo<'_>;
+
+    /// Insert an updated value into the holder.
+    fn insert(&mut self, value: Value);
+}
+
+pub trait ScanProgress {
+    /// Report the total number of bytes to process.
+    fn report_bytes(&mut self, bytes: Size) -> anyhow::Result<()>;
+
+    /// Report that the process has progresses to the given percentage.
+    fn report(&mut self, percentage: usize, results: u64) -> anyhow::Result<()>;
+}
 
 /// A handle for a process.
 #[derive(Debug)]
@@ -274,8 +313,8 @@ impl ProcessHandle {
     }
 
     /// Convert an address into a pointer base.
-    pub fn address_to_pointer_base(&self, address: Address) -> anyhow::Result<PointerBase> {
-        Ok(match self.find_location(address) {
+    pub fn address_to_pointer_base(&self, address: Address) -> PointerBase {
+        match self.find_location(address) {
             Location::Module(module) => {
                 let offset = address.offset_of(module.range.base);
                 PointerBase::Module {
@@ -284,7 +323,7 @@ impl ProcessHandle {
                 }
             }
             _ => PointerBase::Address { address },
-        })
+        }
     }
 
     /// Find if address is contained in a module.
@@ -330,7 +369,7 @@ impl ProcessHandle {
 
         for (n, w) in buf.chunks(ptr_width.as_usize()).enumerate().rev() {
             // TODO: make independent of host architecture (use u64).
-            let ptr = Address::try_from(LittleEndian::read_u64(w))?;
+            let ptr = Address::from(LittleEndian::read_u64(w));
 
             if kernel32.contains(ptr) {
                 let stack_offset = Size::try_from(n * ptr_width.as_usize())?;
@@ -354,7 +393,7 @@ impl ProcessHandle {
     pub fn null_address_proxy(&self) -> AddressProxy<'_> {
         AddressProxy {
             ty: Type::None,
-            pointer: &pointer::NULL_POINTER,
+            pointer: Pointer::null_ref(),
             handle: self,
             memory_cache: None,
             followed: Cached::None,
@@ -394,14 +433,13 @@ impl ProcessHandle {
     pub fn rescan_values(
         &self,
         thread_pool: &rayon::ThreadPool,
-        results: &mut Vec<Box<ScanResult>>,
-        new_type: Option<Type>,
+        addresses: &mut Vec<Address>,
+        initial: &mut Values,
+        values: &mut Values,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
         filter: &FilterExpr,
     ) -> anyhow::Result<()> {
-        use std::sync::mpsc;
-
         let mut local_cancel = None;
 
         let cancel = match cancel {
@@ -409,12 +447,20 @@ impl ProcessHandle {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        if results.is_empty() {
+        if addresses.is_empty() {
             return Ok(());
         }
 
+        if addresses.len() != values.len() {
+            return Err(anyhow!(
+                "argument length mismatch, addresses ({}) != values ({})",
+                addresses.len(),
+                values.len()
+            ));
+        }
+
         let mut last_error = None;
-        let mut reporter = ProgressReporter::new(progress, results.len(), cancel, &mut last_error);
+        let mut reporter = ProgressReporter::new(progress, values.len(), cancel, &mut last_error);
 
         // how many tasks to run in parallel.
         let mut tasks = thread_pool.current_num_threads();
@@ -424,8 +470,9 @@ impl ProcessHandle {
         thread_pool.install(|| {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<Task>>();
-                let (p_tx, p_rx) =
-                    crossbeam_channel::unbounded::<Option<(usize, &mut ScanResult)>>();
+                let (p_tx, p_rx) = crossbeam_channel::unbounded::<
+                    Option<(usize, Address, values::Accessor<'_>, values::Mutator<'_>)>,
+                >();
 
                 for _ in 0..tasks {
                     let tx = tx.clone();
@@ -433,23 +480,32 @@ impl ProcessHandle {
 
                     s.spawn(move |_| {
                         while !cancel.test() {
-                            let (index, result) = match p_rx.recv().expect("failed to receive") {
-                                Some(task) => task,
-                                None => break,
-                            };
+                            let (index, address, initial, mut value) =
+                                match p_rx.recv().expect("failed to receive") {
+                                    Some(task) => task,
+                                    None => break,
+                                };
 
                             let mut work = || {
-                                let value_type = new_type.unwrap_or_else(|| result.last_type());
-                                let mut proxy = self.address_proxy(&result.pointer, value_type);
+                                let pointer = Pointer::from(address);
+                                let mut proxy = self.address_proxy(&pointer, value.ty);
 
-                                if let Test::True = filter.test(
-                                    result.initial_info(),
-                                    result.last_info(),
-                                    &mut proxy,
-                                )? {
-                                    let (value, _) = proxy.eval()?;
-                                    result.last = value;
-                                    *result.pointer.last_address_mut() = proxy.follow_default()?;
+                                let initial_info = initial.read();
+                                let initial_info = ValueInfo {
+                                    ty: initial.ty,
+                                    value: &initial_info,
+                                };
+
+                                let last_info = value.read();
+                                let last_info = ValueInfo {
+                                    ty: value.ty,
+                                    value: &last_info,
+                                };
+
+                                if let Test::True =
+                                    filter.test(initial_info, last_info, &mut proxy)?
+                                {
+                                    value.write(proxy.eval()?.0);
                                     return Ok(Task::Accepted);
                                 }
 
@@ -463,10 +519,14 @@ impl ProcessHandle {
                     });
                 }
 
-                let mut it = results.iter_mut().enumerate();
+                let mut it = addresses
+                    .iter()
+                    .copied()
+                    .zip(initial.iter().zip(values.iter_mut()))
+                    .enumerate();
 
-                for (index, result) in (&mut it).take(tasks) {
-                    p_tx.send(Some((index, &mut *result)))
+                for (index, (address, (initial, value))) in (&mut it).take(tasks) {
+                    p_tx.send(Some((index, address, initial, value)))
                         .expect("failed to send");
                 }
 
@@ -475,8 +535,8 @@ impl ProcessHandle {
                 while tasks > 0 {
                     let result = rx.recv().expect("closed");
 
-                    if let Some((index, result)) = it.next() {
-                        p_tx.send(Some((index, &mut **result)))
+                    if let Some((index, (address, (initial, value)))) = it.next() {
+                        p_tx.send(Some((index, address, initial, value)))
                             .expect("failed to send");
                     } else {
                         p_tx.send(None).expect("failed to send");
@@ -508,7 +568,9 @@ impl ProcessHandle {
         to_remove.sort_by(|a, b| b.cmp(a));
 
         for index in to_remove {
-            results.swap_remove(index);
+            initial.swap_remove(index);
+            values.swap_remove(index);
+            addresses.swap_remove(index);
         }
 
         if let Some(e) = last_error {
@@ -531,14 +593,13 @@ impl ProcessHandle {
     pub fn refresh_values(
         &self,
         thread_pool: &rayon::ThreadPool,
-        results: &mut [Box<ScanResult>],
+        addresses: &[Address],
+        initial: &Values,
+        values: &mut Values,
         cancel: Option<&Token>,
-        new_type: Option<Type>,
         progress: (impl ScanProgress + Send),
         expr: &ValueExpr,
     ) -> anyhow::Result<()> {
-        use std::sync::mpsc;
-
         let mut local_cancel = None;
 
         let cancel = match cancel {
@@ -546,26 +607,24 @@ impl ProcessHandle {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        if results.is_empty() {
+        if addresses.is_empty() {
             return Ok(());
         }
 
         let mut last_error = None;
-        let mut reporter = ProgressReporter::new(progress, results.len(), cancel, &mut last_error);
+        let mut reporter =
+            ProgressReporter::new(progress, addresses.len(), cancel, &mut last_error);
 
         // how many tasks to run in parallel.
         let mut tasks = thread_pool.current_num_threads();
         let cancel = &cancel;
 
-        let new_type = match new_type {
-            Some(new_type) => Some(new_type),
-            None => expr.value_type_of(TypeHint::NoHint)?.option(),
-        };
-
         thread_pool.install(|| {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<bool>>();
-                let (p_tx, p_rx) = crossbeam_channel::unbounded::<Option<&mut ScanResult>>();
+                let (p_tx, p_rx) = crossbeam_channel::unbounded::<
+                    Option<(Address, values::Accessor<'_>, values::Mutator<'_>)>,
+                >();
 
                 for _ in 0..tasks {
                     let tx = tx.clone();
@@ -573,37 +632,43 @@ impl ProcessHandle {
 
                     s.spawn(move |_| {
                         while !cancel.test() {
-                            let result = match p_rx.recv().expect("closed") {
+                            let (address, initial, mut value) = match p_rx.recv().expect("closed") {
                                 Some(task) => task,
                                 None => {
                                     break;
                                 }
                             };
 
-                            let value_type = new_type.unwrap_or_else(|| result.last_type());
-
                             let mut work = move || {
-                                let mut proxy = self.address_proxy(&result.pointer, value_type);
+                                let pointer = Pointer::from(address);
+                                let mut proxy = self.address_proxy(&pointer, value.ty);
 
-                                let initial = result.initial_info();
-                                let last = result.last_info();
+                                let initial_info = initial.read();
+                                let initial_info = ValueInfo {
+                                    ty: initial.ty,
+                                    value: &initial_info,
+                                };
+
+                                let last_info = value.read();
+                                let last_info = ValueInfo {
+                                    ty: value.ty,
+                                    value: &last_info,
+                                };
 
                                 let expr_type = expr
                                     .type_of(
                                         TypeHint::Explicit(initial.ty),
-                                        TypeHint::Explicit(last.ty),
-                                        TypeHint::Explicit(value_type),
+                                        TypeHint::Explicit(value.ty),
+                                        TypeHint::Explicit(value.ty),
                                         TypeHint::NoHint,
                                     )?
                                     .ok_or_else(|| Error::TypeInference(expr.clone()))?;
 
-                                let value = expr
-                                    .type_check(initial.ty, last.ty, value_type, expr_type)?
-                                    .eval(initial, last, &mut proxy)?;
+                                let new_value = expr
+                                    .type_check(initial.ty, value.ty, value.ty, expr_type)?
+                                    .eval(initial_info, last_info, &mut proxy)?;
 
-                                result.initial = value;
-                                result.last = Value::None;
-                                *result.pointer.last_address_mut() = proxy.follow_default()?;
+                                value.write(new_value);
                                 Ok(false)
                             };
 
@@ -614,10 +679,13 @@ impl ProcessHandle {
                     });
                 }
 
-                let mut it = results.iter_mut();
+                let mut it = addresses
+                    .iter()
+                    .copied()
+                    .zip(initial.iter().zip(values.iter_mut()));
 
-                for result in (&mut it).take(tasks) {
-                    p_tx.send(Some(&mut **result)).expect("closed");
+                for (address, (initial, value)) in (&mut it).take(tasks) {
+                    p_tx.send(Some((address, initial, value))).expect("closed");
                 }
 
                 let mut count = 0u64;
@@ -625,8 +693,8 @@ impl ProcessHandle {
                 while tasks > 0 {
                     let res = rx.recv().expect("failed to receive on channel");
 
-                    if let Some(result) = it.next() {
-                        p_tx.send(Some(&mut **result))
+                    if let Some((address, (initial, value))) = it.next() {
+                        p_tx.send(Some((address, initial, value)))
                             .expect("failed to send on channel");
                     } else {
                         p_tx.send(None).expect("failed to send on channel");
@@ -649,12 +717,536 @@ impl ProcessHandle {
 
         Ok(())
     }
+
+    /// Refresh a dynamic collection of values in-place.
+    pub fn refresh_dynamic_values<V>(
+        &self,
+        thread_pool: &rayon::ThreadPool,
+        values: &mut [V],
+        cancel: Option<&Token>,
+        progress: (impl ScanProgress + Send),
+        expr: &ValueExpr,
+    ) -> anyhow::Result<()>
+    where
+        V: Send + ValueHolder,
+    {
+        let mut local_cancel = None;
+
+        let cancel = match cancel {
+            Some(cancel) => cancel,
+            None => local_cancel.get_or_insert(Token::new()),
+        };
+
+        if values.is_empty() {
+            return Ok(());
+        }
+
+        let mut last_error = None;
+        let mut reporter = ProgressReporter::new(progress, values.len(), cancel, &mut last_error);
+
+        // how many tasks to run in parallel.
+        let mut tasks = thread_pool.current_num_threads();
+        let cancel = &cancel;
+
+        thread_pool.install(|| {
+            rayon::scope(|s| {
+                let (tx, rx) = mpsc::channel::<anyhow::Result<bool>>();
+                let (p_tx, p_rx) = crossbeam_channel::unbounded::<Option<&mut V>>();
+
+                for _ in 0..tasks {
+                    let tx = tx.clone();
+                    let p_rx = p_rx.clone();
+
+                    s.spawn(move |_| {
+                        while !cancel.test() {
+                            let value = match p_rx.recv().expect("closed") {
+                                Some(task) => task,
+                                None => {
+                                    break;
+                                }
+                            };
+
+                            let mut work = move || {
+                                let new_value = {
+                                    let initial_info = value.initial_info();
+                                    let last_info = value.last_info();
+
+                                    let pointer = value.pointer();
+                                    let mut proxy = self.address_proxy(pointer, last_info.ty);
+
+                                    let expr_type = expr
+                                        .type_of(
+                                            TypeHint::Explicit(initial_info.ty),
+                                            TypeHint::Explicit(last_info.ty),
+                                            TypeHint::Explicit(last_info.ty),
+                                            TypeHint::NoHint,
+                                        )?
+                                        .ok_or_else(|| Error::TypeInference(expr.clone()))?;
+
+                                    expr.type_check(
+                                        initial_info.ty,
+                                        last_info.ty,
+                                        last_info.ty,
+                                        expr_type,
+                                    )?
+                                    .eval(
+                                        initial_info,
+                                        last_info,
+                                        &mut proxy,
+                                    )?
+                                };
+
+                                value.insert(new_value);
+                                Ok(false)
+                            };
+
+                            tx.send(work()).expect("failed to send");
+                        }
+
+                        tx.send(Ok(true)).expect("failed to send");
+                    });
+                }
+
+                let mut it = values.iter_mut();
+
+                for value in (&mut it).take(tasks) {
+                    p_tx.send(Some(value)).expect("closed");
+                }
+
+                let mut count = 0u64;
+
+                while tasks > 0 {
+                    let res = rx.recv().expect("failed to receive on channel");
+
+                    if let Some(value) = it.next() {
+                        p_tx.send(Some(value)).expect("failed to send on channel");
+                    } else {
+                        p_tx.send(None).expect("failed to send on channel");
+                    }
+
+                    if reporter.eval(res).unwrap_or_default() {
+                        tasks -= 1;
+                        continue;
+                    }
+
+                    count += 1;
+                    reporter.tick(count);
+                }
+            });
+        });
+
+        if let Some(e) = last_error {
+            return Err(e);
+        }
+
+        Ok(())
+    }
+
+    /// Scan for the given value in memory.
+    ///
+    /// # What happens on errors
+    ///
+    /// Errors raised in worker threads will be collected, and the last error
+    /// propagated to the user. Any error causes the processing to cancel.
+    /// We can't just ignore errors raised by a scan, since these might be
+    /// important to the processing at hand.
+    ///
+    /// Therefore, any error raised by ScanProgress will be treated as any error
+    /// raised from a worker thread. Only the last error will be propagated to
+    /// the user. Modifications to the provided buffers will be applied even if
+    /// an error happens.
+    pub fn initial_scan(
+        &self,
+        thread_pool: &rayon::ThreadPool,
+        filter: &FilterExpr,
+        addresses: &mut Vec<Address>,
+        values: &mut Values,
+        cancel: Option<&Token>,
+        progress: (impl ScanProgress + Send),
+        config: InitialScanConfig,
+    ) -> anyhow::Result<()> {
+        const DEFAULT_BUFFER_SIZE: usize = 0x100_000;
+
+        let handle = self;
+
+        use crate::utils::IteratorExtension;
+
+        let mut local_cancel = None;
+
+        let cancel = match cancel {
+            Some(cancel) => cancel,
+            None => local_cancel.get_or_insert(Token::new()),
+        };
+
+        let mut last_error = None;
+
+        let value_type = values.ty;
+        let aligned = config
+            .aligned
+            .unwrap_or_else(|| values.ty.is_default_aligned());
+        let alignment = values
+            .ty
+            .alignment(&handle.process)
+            .ok_or_else(|| anyhow!("cannot scan for none"))?;
+        let step_size = if aligned { alignment } else { 1 };
+        let alignment = config
+            .alignment
+            .or_else(|| if aligned { Some(alignment) } else { None });
+
+        let special = filter.special(&handle.process, values.ty)?;
+        let special = special.as_ref();
+
+        let tasks = config
+            .tasks
+            .unwrap_or_else(|| thread_pool.current_num_threads());
+
+        let buffer_size = config.buffer_size.unwrap_or(DEFAULT_BUFFER_SIZE);
+
+        let mut bytes = Size::zero();
+
+        let mut ranges = Vec::new();
+
+        {
+            let thread_stacks = handle
+                .threads
+                .iter()
+                .map(|t| t.stack.clone())
+                .collect::<HashSet<_>>();
+
+            if config.modules_only {
+                ranges.extend(handle.modules.iter().map(|m| m.range));
+            } else {
+                for m in handle.process.virtual_memory_regions().only_relevant() {
+                    let m = m?;
+
+                    if !thread_stacks.contains(&m.range) {
+                        ranges.push(m.range);
+                    }
+                }
+
+                ranges.extend(handle.modules.iter().map(|m| m.range));
+            }
+        }
+
+        let mut total = 0;
+
+        let queue = SegQueue::new();
+
+        for range in &ranges {
+            if let Some(alignment) = alignment {
+                if usize::try_from(range.base)? % alignment != 0 {
+                    bail!(
+                        "range {:?} is not supported with alignment `{}`",
+                        range,
+                        alignment
+                    );
+                }
+            }
+
+            if !bytes.add_assign(range.size) {
+                bail!("bytes `{}` + range size `{}` overflowed", bytes, range.size);
+            }
+
+            total += range.size.as_usize();
+
+            let mut offset = 0usize;
+            let range_size = range.size.as_usize();
+
+            while offset < range_size && !cancel.test() {
+                let len = usize::min(buffer_size, range_size - offset);
+
+                let address = match range.base.checked_add(offset.try_into()?) {
+                    Some(address) => address,
+                    None => bail!("base `{}` + offset `{}` out of range", range.base, offset),
+                };
+
+                queue.push((address, len));
+                offset += len;
+            }
+        }
+
+        let queue = &queue;
+
+        thread_pool.install(|| {
+            rayon::scope(|s| {
+                let (tx, rx) = mpsc::channel::<Task>();
+
+                for _ in 0..tasks {
+                    let tx = tx.clone();
+
+                    s.spawn(move |_| {
+                        let start = Instant::now();
+                        let result = work(Work {
+                            handle,
+                            tx: &tx,
+                            queue,
+                            filter,
+                            value_type,
+                            special,
+                            alignment,
+                            step_size,
+                            buffer_size,
+                            cancel,
+                        });
+
+                        let now = Instant::now();
+                        let duration = now.duration_since(start);
+
+                        tx.send(Task::Done(result, duration, now))
+                            .expect("send done failed");
+                    });
+                }
+
+                let mut reporter = ProgressReporter::new(progress, total, cancel, &mut last_error);
+
+                reporter.report_bytes(bytes);
+
+                let mut hits = 0u64;
+
+                let mut task_count = tasks;
+
+                while task_count > 0 {
+                    match rx.recv().expect("channel closed") {
+                        Task::Done(result, ..) => {
+                            if let Some((mut a, mut r)) = reporter.eval(result) {
+                                addresses.append(&mut a);
+                                values.append(&mut r);
+                            }
+
+                            task_count -= 1;
+
+                            if task_count == 0 {
+                                break;
+                            }
+                        }
+                        Task::Tick(bytes, c, ..) => {
+                            hits += c;
+                            reporter.tick_n(bytes, hits);
+                        }
+                    }
+                }
+
+                Ok::<(), anyhow::Error>(())
+            })
+        })?;
+
+        if let Some(e) = last_error {
+            return Err(e);
+        }
+
+        return Ok(());
+
+        enum Task {
+            Done(anyhow::Result<(Vec<Address>, Values)>, Duration, Instant),
+            Tick(usize, u64, Duration, Instant),
+        }
+
+        struct Work<'a> {
+            handle: &'a ProcessHandle,
+            tx: &'a mpsc::Sender<Task>,
+            queue: &'a SegQueue<(Address, usize)>,
+            filter: &'a FilterExpr,
+            value_type: Type,
+            special: Option<&'a Special>,
+            alignment: Option<usize>,
+            step_size: usize,
+            buffer_size: usize,
+            cancel: &'a Token,
+        }
+
+        #[inline(always)]
+        fn work(work: Work<'_>) -> anyhow::Result<(Vec<Address>, Values)> {
+            let Work {
+                handle,
+                tx,
+                queue,
+                filter,
+                value_type,
+                special,
+                alignment,
+                step_size,
+                buffer_size,
+                cancel,
+            } = work;
+
+            let mut addresses = Vec::new();
+            let mut values = Values::new(value_type, handle.process.pointer_width);
+
+            let mut buffer = vec![0u8; buffer_size];
+
+            let none_value = Value::None;
+
+            let none = ValueInfo {
+                ty: Type::None,
+                value: &none_value,
+            };
+
+            while let Ok((address, len)) = queue.pop() {
+                if cancel.test() {
+                    return Ok((addresses, values));
+                }
+
+                let len = usize::min(buffer.len(), len);
+                let data = &mut buffer[..len];
+
+                let start = Instant::now();
+                let mut hits = 0;
+
+                let len = handle.process.read_process_memory(address, data)?;
+
+                if len == 0 {
+                    continue;
+                }
+
+                let data = &data[..len];
+
+                process_one(ProcessOne {
+                    handle,
+                    filter,
+                    value_type,
+                    addresses: &mut addresses,
+                    values: &mut values,
+                    hits: &mut hits,
+                    base: address,
+                    data,
+                    step_size,
+                    none,
+                    alignment,
+                    special,
+                    cancel,
+                })?;
+
+                let duration = Instant::now().duration_since(start);
+                tx.send(Task::Tick(data.len(), hits, duration, Instant::now()))
+                    .expect("send tick failed");
+            }
+
+            Ok((addresses, values))
+        };
+
+        struct ProcessOne<'a> {
+            handle: &'a ProcessHandle,
+            filter: &'a FilterExpr,
+            value_type: Type,
+            addresses: &'a mut Vec<Address>,
+            values: &'a mut Values,
+            hits: &'a mut u64,
+            base: Address,
+            data: &'a [u8],
+            step_size: usize,
+            none: ValueInfo<'a>,
+            alignment: Option<usize>,
+            special: Option<&'a Special>,
+            cancel: &'a Token,
+        }
+
+        #[inline(always)]
+        fn process_one(process_one: ProcessOne<'_>) -> anyhow::Result<()> {
+            let ProcessOne {
+                handle,
+                filter,
+                value_type,
+                addresses,
+                values,
+                hits,
+                base,
+                data,
+                step_size,
+                none,
+                alignment,
+                special,
+                cancel,
+                ..
+            } = process_one;
+
+            let mut offset = match special {
+                Some(special) => match special.test(data) {
+                    Some(offset) => offset,
+                    None => return Ok(()),
+                },
+                None => 0usize,
+            };
+
+            if let Some(size) = alignment {
+                align(&mut offset, size);
+            }
+
+            let mut last_address = None;
+
+            while offset < data.len() && !cancel.test() {
+                let address = match base.checked_add(offset.try_into()?) {
+                    Some(address) => address,
+                    None => bail!("base `{}` + offset `{}` out of range", base, offset),
+                };
+
+                let pointer = Pointer::from(address);
+                let mut proxy = handle.address_proxy(&pointer, value_type);
+
+                // sanity check
+                if let Some(last_address) = last_address {
+                    if last_address >= address {
+                        bail!(
+                            "BUG: address did not increase during scan: {} -> {}",
+                            last_address,
+                            address
+                        )
+                    }
+                }
+
+                last_address = Some(address);
+
+                if let Test::True = filter.test(none, none, &mut proxy)? {
+                    *hits += 1;
+                    let (value, advance) = proxy.eval()?;
+                    addresses.push(address);
+                    values.push(value);
+
+                    if let Some(advance) = advance {
+                        if advance == 0 {
+                            bail!("BUG: attempt to advance by 0 bytes");
+                        }
+
+                        offset += advance;
+                    } else {
+                        offset += step_size;
+                    }
+                } else {
+                    offset += step_size;
+                }
+
+                if offset >= data.len() {
+                    break;
+                }
+
+                if let Some(special) = special {
+                    offset += match special.test(&data[offset..]) {
+                        Some(o) => o,
+                        None => return Ok(()),
+                    };
+
+                    if let Some(size) = alignment {
+                        align(&mut offset, size);
+                    }
+                }
+            }
+
+            Ok(())
+        }
+
+        fn align(to_align: &mut usize, alignment: usize) {
+            let rem = *to_align % alignment;
+
+            if rem > 0 {
+                *to_align += alignment - rem;
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct AddressProxy<'a> {
     pub(crate) ty: Type,
-    pointer: &'a Pointer,
+    pub pointer: &'a Pointer,
     pub(crate) handle: &'a ProcessHandle,
     memory_cache: Option<&'a MemoryCache>,
     /// cached, followed address.
@@ -663,14 +1255,9 @@ pub struct AddressProxy<'a> {
 }
 
 impl AddressProxy<'_> {
-    /// Evaluate the pointer of the proxy.
-    pub fn eval(&mut self) -> anyhow::Result<(Value, Option<usize>)> {
-        if let Cached::Some(result) = &self.evaled {
-            return Ok(result.clone());
-        }
-
-        if let Some(memory_cache) = self.memory_cache {
-            let address = match self.followed {
+    pub fn address(&mut self) -> anyhow::Result<Option<Address>> {
+        Ok(if let Some(memory_cache) = self.memory_cache {
+            match self.followed {
                 Cached::Some(address) => address,
                 Cached::None => {
                     let address = self.pointer.follow(self.handle, |a, buf| {
@@ -680,13 +1267,34 @@ impl AddressProxy<'_> {
                     self.followed = Cached::Some(address);
                     address
                 }
-            };
+            }
+        } else {
+            match self.followed {
+                Cached::Some(address) => address,
+                Cached::None => {
+                    let address = self.pointer.follow_default(self.handle)?;
+                    self.followed = Cached::Some(address);
+                    address
+                }
+            }
+        })
+    }
 
-            let address = match address {
-                Some(address) => address,
-                None => return Ok((Value::None, None)),
-            };
+    /// Evaluate the pointer of the proxy.
+    pub fn eval(&mut self) -> anyhow::Result<(Value, Option<usize>)> {
+        if let Cached::Some(result) = &self.evaled {
+            return Ok(result.clone());
+        }
 
+        let address = match self.address()? {
+            Some(address) => address,
+            None => {
+                self.evaled = Cached::Some((Value::None, None));
+                return Ok((Value::None, None));
+            }
+        };
+
+        if let Some(memory_cache) = self.memory_cache {
             let result = match self
                 .ty
                 .decode(&(memory_cache, &self.handle.process), address)
@@ -698,20 +1306,6 @@ impl AddressProxy<'_> {
             self.evaled = Cached::Some(result.clone());
             Ok(result)
         } else {
-            let address = match self.followed {
-                Cached::Some(address) => address,
-                Cached::None => {
-                    let address = self.pointer.follow_default(self.handle)?;
-                    self.followed = Cached::Some(address);
-                    address
-                }
-            };
-
-            let address = match address {
-                Some(address) => address,
-                None => return Ok((Value::None, None)),
-            };
-
             let result = match self.ty.decode(&self.handle.process, address) {
                 Ok(value) => value,
                 Err(..) => (Value::None, None),
@@ -720,24 +1314,6 @@ impl AddressProxy<'_> {
             self.evaled = Cached::Some(result.clone());
             Ok(result)
         }
-    }
-
-    /// Follow the address this proxy refers to.
-    pub fn follow_default(&mut self) -> anyhow::Result<Option<Address>> {
-        if let Cached::Some(address) = self.followed {
-            return Ok(address);
-        }
-
-        let address = if let Some(memory_cache) = self.memory_cache {
-            self.pointer.follow(self.handle, |a, buf| {
-                memory_cache.read_process_memory(&self.handle.process, a, buf)
-            })?
-        } else {
-            self.pointer.follow_default(self.handle)?
-        };
-
-        self.followed = Cached::Some(address);
-        Ok(address)
     }
 }
 

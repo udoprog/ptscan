@@ -237,8 +237,6 @@ try_from_int!(
     num::TryFromIntError,
     i32,
     num::TryFromIntError,
-    u64,
-    convert::Infallible,
     i64,
     num::TryFromIntError,
     u128,
@@ -340,6 +338,12 @@ impl TryFrom<i8> for Address {
         Ok(Address(
             value.try_into().map_err(|_| Error::AddressConversion)?,
         ))
+    }
+}
+
+impl From<Address> for u64 {
+    fn from(address: Address) -> Self {
+        address.0
     }
 }
 

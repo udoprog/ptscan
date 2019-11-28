@@ -1,7 +1,8 @@
 pub use crate::{
     error_handler::ErrorHandler,
     signal::{Block, BlockExt as _},
-    task, ui, Clipboard, ClipboardBuffer, ClipboardBufferRef, ClipboardHandle, Settings,
+    task, ui, Clipboard, ClipboardBuffer, ClipboardBufferRef, ClipboardHandle, Scan, ScanResult,
+    Settings,
 };
 pub use cascade::cascade;
 pub use gdk::EventType;

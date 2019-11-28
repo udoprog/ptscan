@@ -6,7 +6,7 @@ use crate::{
 use anyhow::bail;
 use num_bigint::Sign;
 use serde::{Deserialize, Serialize};
-use std::{fmt, mem, str};
+use std::{cmp, fmt, mem, str};
 
 macro_rules! numeric_op {
     ($a:ident $op:tt $b:ident, $checked_op:ident) => {
@@ -387,22 +387,90 @@ impl str::FromStr for Value {
 impl fmt::Display for Value {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Value::None => write!(fmt, "none"),
-            Value::Pointer(address) => write!(fmt, "{}", address),
-            Value::U8(value) => write!(fmt, "{}", value),
-            Value::I8(value) => write!(fmt, "{}", value),
-            Value::U16(value) => write!(fmt, "{}", value),
-            Value::I16(value) => write!(fmt, "{}", value),
-            Value::U32(value) => write!(fmt, "{}", value),
-            Value::I32(value) => write!(fmt, "{}", value),
-            Value::U64(value) => write!(fmt, "{}", value),
-            Value::I64(value) => write!(fmt, "{}", value),
-            Value::U128(value) => write!(fmt, "{}", value),
-            Value::I128(value) => write!(fmt, "{}", value),
-            Value::F32(value) => write!(fmt, "{}", value),
-            Value::F64(value) => write!(fmt, "{}", value),
-            Value::String(string) => write!(fmt, "{}", EscapeString(&*string)),
-            Value::Bytes(bytes) => write!(fmt, "{{{}}}", Hex(&*bytes)),
+            Self::None => write!(fmt, "none"),
+            Self::Pointer(address) => write!(fmt, "{}", address),
+            Self::U8(value) => write!(fmt, "{}", value),
+            Self::I8(value) => write!(fmt, "{}", value),
+            Self::U16(value) => write!(fmt, "{}", value),
+            Self::I16(value) => write!(fmt, "{}", value),
+            Self::U32(value) => write!(fmt, "{}", value),
+            Self::I32(value) => write!(fmt, "{}", value),
+            Self::U64(value) => write!(fmt, "{}", value),
+            Self::I64(value) => write!(fmt, "{}", value),
+            Self::U128(value) => write!(fmt, "{}", value),
+            Self::I128(value) => write!(fmt, "{}", value),
+            Self::F32(value) => write!(fmt, "{}", value),
+            Self::F64(value) => write!(fmt, "{}", value),
+            Self::String(string) => write!(fmt, "{}", EscapeString(&*string)),
+            Self::Bytes(bytes) => write!(fmt, "{{{}}}", Hex(&*bytes)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "type", content = "value")]
+pub enum ValueRef<'a> {
+    None,
+    Pointer(Address),
+    U8(u8),
+    I8(i8),
+    U16(u16),
+    I16(i16),
+    U32(u32),
+    I32(i32),
+    U64(u64),
+    I64(i64),
+    U128(u128),
+    I128(i128),
+    F32(f32),
+    F64(f64),
+    String(&'a str),
+    Bytes(&'a [u8]),
+}
+
+impl fmt::Display for ValueRef<'_> {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => write!(fmt, "none"),
+            Self::Pointer(address) => write!(fmt, "{}", address),
+            Self::U8(value) => write!(fmt, "{}", value),
+            Self::I8(value) => write!(fmt, "{}", value),
+            Self::U16(value) => write!(fmt, "{}", value),
+            Self::I16(value) => write!(fmt, "{}", value),
+            Self::U32(value) => write!(fmt, "{}", value),
+            Self::I32(value) => write!(fmt, "{}", value),
+            Self::U64(value) => write!(fmt, "{}", value),
+            Self::I64(value) => write!(fmt, "{}", value),
+            Self::U128(value) => write!(fmt, "{}", value),
+            Self::I128(value) => write!(fmt, "{}", value),
+            Self::F32(value) => write!(fmt, "{}", value),
+            Self::F64(value) => write!(fmt, "{}", value),
+            Self::String(string) => write!(fmt, "{}", EscapeString(&*string)),
+            Self::Bytes(bytes) => write!(fmt, "{{{}}}", Hex(&*bytes)),
+        }
+    }
+}
+
+impl cmp::PartialEq<Value> for ValueRef<'_> {
+    fn eq(&self, other: &Value) -> bool {
+        match (self, other) {
+            (Self::None, Value::None) => true,
+            (Self::Pointer(lhs), Value::Pointer(rhs)) => lhs == rhs,
+            (Self::U8(lhs), Value::U8(rhs)) => lhs == rhs,
+            (Self::I8(lhs), Value::I8(rhs)) => lhs == rhs,
+            (Self::U16(lhs), Value::U16(rhs)) => lhs == rhs,
+            (Self::I16(lhs), Value::I16(rhs)) => lhs == rhs,
+            (Self::U32(lhs), Value::U32(rhs)) => lhs == rhs,
+            (Self::I32(lhs), Value::I32(rhs)) => lhs == rhs,
+            (Self::U64(lhs), Value::U64(rhs)) => lhs == rhs,
+            (Self::I64(lhs), Value::I64(rhs)) => lhs == rhs,
+            (Self::U128(lhs), Value::U128(rhs)) => lhs == rhs,
+            (Self::I128(lhs), Value::I128(rhs)) => lhs == rhs,
+            (Self::F32(lhs), Value::F32(rhs)) => lhs == rhs,
+            (Self::F64(lhs), Value::F64(rhs)) => lhs == rhs,
+            (Self::String(lhs), Value::String(rhs)) => *lhs == rhs.as_str(),
+            (Self::Bytes(lhs), Value::Bytes(rhs)) => *lhs == rhs.as_slice(),
+            _ => false,
         }
     }
 }

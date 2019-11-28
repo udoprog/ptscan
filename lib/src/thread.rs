@@ -54,8 +54,8 @@ impl Thread {
     pub fn thread_stack(&self, process: &process::Process) -> anyhow::Result<AddressRange> {
         let tib = self.thread_teb::<winnt::NT_TIB64>(process)?;
 
-        let stack_base = Address::try_from(tib.StackBase)?;
-        let stack_limit = Address::try_from(tib.StackLimit)?;
+        let stack_base = Address::from(tib.StackBase);
+        let stack_limit = Address::from(tib.StackLimit);
 
         let size = match stack_base.size_from(stack_limit) {
             Some(size) => size,
@@ -136,16 +136,16 @@ impl ThreadContext<'_> {
             .thread
             .thread_selector_entry(self.context.SegFs as DWORD)?;
 
-        let address = Address::try_from(unsafe {
+        let address = Address::from(unsafe {
             let bytes = entry.HighWord.Bytes();
             entry.BaseLow as u32
                 + ((bytes.BaseMid as u32) << 0x10)
                 + ((bytes.BaseHi as u32) << 0x18)
-        })?;
+        });
 
         let tib = unsafe { process.read::<winnt::NT_TIB32>(address)? };
-        let stack_base = Address::try_from(tib.StackBase)?;
-        let stack_limit = Address::try_from(tib.StackLimit)?;
+        let stack_base = Address::from(tib.StackBase);
+        let stack_limit = Address::from(tib.StackLimit);
 
         let size = match stack_base.size_from(stack_limit) {
             Some(size) => size,
@@ -157,7 +157,7 @@ impl ThreadContext<'_> {
         };
 
         Ok(AddressRange {
-            base: Address::try_from(tib.StackLimit)?,
+            base: Address::from(tib.StackLimit),
             size,
         })
     }

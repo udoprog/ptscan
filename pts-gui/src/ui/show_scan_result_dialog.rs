@@ -1,6 +1,6 @@
 use crate::prelude::*;
 use parking_lot::RwLock;
-use ptscan::{Address, Cached, ProcessHandle, ScanResult, Value};
+use ptscan::{Address, Cached, ProcessHandle, Value};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 struct Widgets {
@@ -17,7 +17,7 @@ pub struct ShowScanResultDialog {
     settings: Arc<Settings>,
     handle: Option<Arc<RwLock<ProcessHandle>>>,
     /// The result being edited.
-    result: Option<Box<ScanResult>>,
+    result: Option<ScanResult>,
     refresh_timer: Option<glib::SourceId>,
     refresh_value_task: Option<task::Handle>,
     value: Option<Value>,
@@ -100,16 +100,16 @@ impl ShowScanResultDialog {
     }
 
     /// Set the scan result being edited.
-    pub fn set_result(&mut self, result: Box<ScanResult>) {
+    pub fn set_result(&mut self, result: ScanResult) {
         let address_label = upgrade!(self.widgets.address_label);
         let type_label = upgrade!(self.widgets.type_label);
 
         address_label.set_text(&result.pointer.to_string());
-        type_label.set_text(&result.last_type().to_string());
+        type_label.set_text(&result.last_type.to_string());
 
         upgrade!(self.widgets.initial_label).set_text(&result.initial.to_string());
-        upgrade!(self.widgets.last_label).set_text(&result.last().to_string());
-        upgrade!(self.widgets.value_label).set_text(&result.last().to_string());
+        upgrade!(self.widgets.last_label).set_text(&result.last.to_string());
+        upgrade!(self.widgets.value_label).set_text(&result.last.to_string());
         self.result = Some(result);
     }
 
@@ -122,11 +122,8 @@ impl ShowScanResultDialog {
             return;
         }
 
-        let result = optional!(&slf.result);
-        let handle = optional!(slf.handle.clone());
-
-        let pointer = result.pointer.clone();
-        let ty = result.initial_type();
+        let result = optional!(&slf.result).clone();
+        let handle = optional!(&slf.handle).clone();
 
         let task = cascade! {
             task::Task::oneshot(dialog, move |_| {
@@ -135,7 +132,7 @@ impl ShowScanResultDialog {
                     None => return Ok(None),
                 };
 
-                let mut proxy = handle.address_proxy(&pointer, ty);
+                let mut proxy = handle.address_proxy(&result.pointer, result.last_type);
                 let value = proxy.eval()?.0;
                 Ok(Some((value, proxy.followed)))
             });
@@ -176,7 +173,7 @@ impl ShowScanResultDialog {
 
         if let Some(value) = &self.value {
             let differ = match &self.result {
-                Some(result) => result.last() != value,
+                Some(result) => result.last != *value,
                 _ => false,
             };
 
@@ -196,7 +193,7 @@ impl ShowScanResultDialog {
 
         if let Some(result) = &self.result {
             initial_label.set_text(&result.initial.to_string());
-            last_label.set_text(&result.last().to_string());
+            last_label.set_text(&result.last.to_string());
         } else {
             initial_label.set_text("");
             last_label.set_text("");

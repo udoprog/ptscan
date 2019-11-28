@@ -1,4 +1,5 @@
-use ptscan::{MemoryInformation, ScanResult, ThreadId, Value};
+use crate::ScanResult;
+use ptscan::{MemoryInformation, ThreadId, Value};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -39,7 +40,7 @@ impl fmt::Display for MemoryInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CurrentScanResult {
     #[serde(flatten)]
-    pub result: Box<ScanResult>,
+    pub result: ScanResult,
     pub current: Option<Value>,
 }
 

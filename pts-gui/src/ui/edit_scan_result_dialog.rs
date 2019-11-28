@@ -1,7 +1,7 @@
 use crate::prelude::*;
 use glib::signal::SignalHandlerId;
 use parking_lot::RwLock;
-use ptscan::{Address, Cached, Pointer, ProcessHandle, ScanResult, Type, Value};
+use ptscan::{Address, Cached, Pointer, ProcessHandle, Type, Value};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 struct Widgets {
@@ -26,9 +26,9 @@ pub struct EditScanResultDialog {
     signals: Option<Signals>,
     handle: Option<Arc<RwLock<ProcessHandle>>>,
     /// The result being edited.
-    result: Option<Box<ScanResult>>,
+    result: Option<ScanResult>,
     /// Save callback.
-    on_save: Option<Box<dyn Fn(&Self, Box<ScanResult>)>>,
+    on_save: Option<Box<dyn Fn(&Self, ScanResult)>>,
     refresh_timer: Option<glib::SourceId>,
     refresh_value_task: Option<task::Handle>,
     value: Option<Value>,
@@ -198,7 +198,7 @@ impl EditScanResultDialog {
     /// Set callback to call when the window is saved.
     pub fn on_save<T>(&mut self, on_save: T)
     where
-        T: 'static + Fn(&Self, Box<ScanResult>),
+        T: 'static + Fn(&Self, ScanResult),
     {
         self.on_save = Some(Box::new(on_save));
     }
@@ -209,19 +209,19 @@ impl EditScanResultDialog {
     }
 
     /// Set the scan result being edited.
-    pub fn set_result(&mut self, result: Box<ScanResult>) {
+    pub fn set_result(&mut self, result: ScanResult) {
         {
             let signals = optional!(&self.signals);
 
             let address_entry = upgrade!(self.widgets.address_entry).block(&signals.address_entry);
             let type_entry = upgrade!(self.widgets.type_entry).block(&signals.type_entry);
 
-            address_entry.set_text(&result.pointer.to_string());
-            type_entry.set_text(&result.last_type().to_string());
+            address_entry.set_text(&result.address.to_string());
+            type_entry.set_text(&result.last_type.to_string());
         }
 
-        self.last_address = result.pointer.address();
-        self.value = Some(result.last().clone());
+        self.last_address = Some(result.address);
+        self.value = Some(result.last.clone());
         self.result = Some(result);
         self.update_components();
     }
@@ -235,11 +235,8 @@ impl EditScanResultDialog {
             return;
         }
 
-        let result = optional!(&slf.result);
+        let result = optional!(&slf.result).clone();
         let handle = optional!(slf.handle.clone());
-
-        let pointer = result.pointer.clone();
-        let ty = result.initial_type();
 
         let task = cascade! {
             task::Task::oneshot(dialog, move |_| {
@@ -248,7 +245,7 @@ impl EditScanResultDialog {
                     None => return Ok(None),
                 };
 
-                let mut proxy = handle.address_proxy(&pointer, ty);
+                let mut proxy = handle.address_proxy(&result.pointer, result.last_type);
                 let value = proxy.eval()?.0;
                 Ok(Some((value, proxy.followed)))
             });
@@ -292,7 +289,7 @@ impl EditScanResultDialog {
 
         if let Some(value) = &self.value {
             let differ = match &self.result {
-                Some(result) => result.last() != value,
+                Some(result) => result.last != *value,
                 _ => false,
             };
 
@@ -312,7 +309,7 @@ impl EditScanResultDialog {
 
         if let Some(result) = &self.result {
             initial_label.set_text(&result.initial.to_string());
-            last_label.set_text(&result.last().to_string());
+            last_label.set_text(&result.last.to_string());
         } else {
             initial_label.set_text("");
             last_label.set_text("");

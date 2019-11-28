@@ -1,5 +1,5 @@
-use crate::{CurrentScanResult, MemoryInfo};
-use ptscan::{ModuleInfo, ProcessThread, ScanResult};
+use crate::{CurrentScanResult, MemoryInfo, ScanResult};
+use ptscan::{ModuleInfo, ProcessThread};
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
@@ -14,7 +14,7 @@ pub enum ClipboardBuffer {
     Modules(Vec<ModuleInfo>),
     Threads(Vec<ProcessThread>),
     MemoryList(Vec<MemoryInfo>),
-    Results(Vec<Box<ScanResult>>),
+    Results(Vec<ScanResult>),
     CurrentResults(Vec<CurrentScanResult>),
 }
 

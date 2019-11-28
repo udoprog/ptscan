@@ -411,20 +411,9 @@ impl ProcessInformation {
                 None => "n/a".to_string(),
             };
 
-            let base_sort = match u64::try_from(thread.stack.base) {
-                Ok(n) => n,
-                Err(..) => continue,
-            };
-
-            let size_sort = match u64::try_from(thread.stack.size) {
-                Ok(n) => n,
-                Err(..) => continue,
-            };
-
-            let stack_exit_sort = match thread.stack_exit.map(|n| u64::try_from(n).ok()) {
-                Some(n) => n,
-                None => continue,
-            };
+            let base_sort = u64::from(thread.stack.base);
+            let size_sort = u64::from(thread.stack.size);
+            let stack_exit_sort = thread.stack_exit.map(u64::from);
 
             let iter = threads_model.insert_with_values(
                 None,
@@ -449,15 +438,8 @@ impl ProcessInformation {
         memory_model.clear();
 
         for (index, m) in self.memory.iter().enumerate() {
-            let base_sort = match u64::try_from(m.base.range.base) {
-                Ok(n) => n,
-                Err(..) => continue,
-            };
-
-            let size_sort = match u64::try_from(m.base.range.size) {
-                Ok(n) => n,
-                Err(..) => continue,
-            };
+            let base_sort = u64::from(m.base.range.base);
+            let size_sort = u64::from(m.base.range.size);
 
             let protection = m
                 .base

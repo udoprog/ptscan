@@ -313,15 +313,14 @@ impl Binary {
         };
 
         if let Some(value) = exact {
-            if let Some(width) = value.size(process) {
-                let mut buf = vec![0u8; width];
-                value.encode(process, &mut buf)?;
+            let width = value.size(process).unwrap_or(16);
+            let mut buf = vec![0u8; width];
+            value.encode(process, &mut buf)?;
 
-                if buf.iter().all(|c| *c == 0) {
-                    return Ok(Some(Special::Zero(width)));
-                } else {
-                    return Ok(Some(Special::Bytes(buf)));
-                }
+            if buf.iter().all(|c| *c == 0) {
+                return Ok(Some(Special::Zero(width)));
+            } else {
+                return Ok(Some(Special::Bytes(buf)));
             }
         }
 
@@ -970,22 +969,22 @@ mod tests {
     fn test_regex() -> anyhow::Result<()> {
         test! {
             "value ~ \"foobar\"",
-            expr = F::Regex(V::Value, V::String(Default::default(), "foobar".into())),
+            expr = F::Regex(V::Value, V::String("foobar".into())),
             special = (Some(Special::Regex(..)), Type::String(Default::default()))
         };
         test! {
             "value ~ \"^foobar\"",
-            expr = F::Regex(V::Value, V::String(Default::default(), "^foobar".into())),
+            expr = F::Regex(V::Value, V::String("^foobar".into())),
             special = (Some(Special::Regex(..)), Type::String(Default::default()))
         };
         test! {
             "value ~ \"^foobar\\\\$\"",
-            expr = F::Regex(V::Value, V::String(Default::default(), "^foobar\\$".into())),
+            expr = F::Regex(V::Value, V::String("^foobar\\$".into())),
             special = (Some(Special::Regex(..)), Type::String(Default::default()))
         };
         test! {
             "value !~ \"foobar\"",
-            expr = F::Not(Box::new(F::Regex(V::Value, V::String(Default::default(), "foobar".into())))),
+            expr = F::Not(Box::new(F::Regex(V::Value, V::String("foobar".into())))),
             special = (None, Type::String(Default::default()))
         };
         Ok(())

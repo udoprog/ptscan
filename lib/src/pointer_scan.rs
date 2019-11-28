@@ -1,7 +1,4 @@
-use crate::{
-    Address, Location, Offset, Pointer, PointerBase, ProcessHandle, ScanResult, Size, Token, Type,
-    Value,
-};
+use crate::{values, Address, Location, Offset, Pointer, PointerBase, ProcessHandle, Size, Token};
 use anyhow::anyhow;
 use hashbrown::{hash_map, HashMap};
 use std::collections::{BTreeMap, VecDeque};
@@ -61,17 +58,13 @@ impl<'a> PointerScan<'a> {
     }
 
     /// Build forward and backward references.
-    pub fn build_references<'it, I>(&mut self, results: I) -> anyhow::Result<()>
+    pub fn build_references<'v, A, V>(&mut self, addresses: A, values: V) -> anyhow::Result<()>
     where
-        I: IntoIterator<Item = &'it Box<ScanResult>>,
+        A: IntoIterator<Item = Address>,
+        V: IntoIterator<Item = values::Accessor<'v>>,
     {
-        for result in results {
-            let to = match result.last().as_address() {
-                Some(address) => address,
-                None => continue,
-            };
-
-            let from = match result.pointer.follow_default(self.handle)? {
+        for (from, value) in addresses.into_iter().zip(values.into_iter()) {
+            let to = match value.read().as_address() {
                 Some(address) => address,
                 None => continue,
             };
@@ -87,7 +80,7 @@ impl<'a> PointerScan<'a> {
     pub fn scan(
         &mut self,
         needle: Address,
-        results: &mut Vec<Box<ScanResult>>,
+        pointers: &mut Vec<Pointer>,
         progress: &mut impl PointerScanInitialProgress,
     ) -> anyhow::Result<()> {
         let Self {
@@ -144,10 +137,9 @@ impl<'a> PointerScan<'a> {
                                 offset,
                             },
                             path.clone(),
-                            Some(needle),
                         );
 
-                        results.push(Box::new(ScanResult::new(pointer, Type::None, Value::None)));
+                        pointers.push(pointer);
                     }
                     // ignore thread stacks
                     Location::Thread(..) => {
@@ -163,7 +155,7 @@ impl<'a> PointerScan<'a> {
                 }
             }
 
-            progress.report(queue.len(), results.len())?;
+            progress.report(queue.len(), pointers.len())?;
         }
 
         Ok(())
@@ -177,27 +169,23 @@ impl<'a> PointerScan<'a> {
     /// in the first step.
     pub fn backreference_scan(
         &mut self,
-        ty: Type,
-        needle: Address,
-        results: &mut Vec<Box<ScanResult>>,
+        pointers: &mut Vec<Pointer>,
         progress: &mut impl PointerScanBackreferenceProgress,
     ) -> anyhow::Result<()> {
         // add all tailing pointers.
         let mut additions = Vec::new();
 
-        for (i, result) in results.iter().enumerate() {
+        for (i, pointer) in pointers.iter().enumerate() {
             if self.cancel.test() {
                 break;
             }
 
-            let mut address = result
-                .pointer
-                .base()
-                .eval(self.handle)?
-                .ok_or_else(|| anyhow!("should resolve to address"))?;
+            let mut address = pointer
+                .follow_default(self.handle)?
+                .ok_or_else(|| anyhow!("could not resolve pointer to address"))?;
 
             let mut path = SVec::new();
-            let mut it = result.pointer.offsets().iter().copied();
+            let mut it = pointer.offsets.iter().copied();
 
             while !self.cancel.test() {
                 if let Some(extra) = self.visited.get(&address) {
@@ -205,10 +193,8 @@ impl<'a> PointerScan<'a> {
                         let mut path = path.clone();
                         path.extend(p.iter().rev().cloned());
 
-                        let pointer =
-                            Pointer::new(result.pointer.base().clone(), path, Some(needle));
-
-                        additions.push(Box::new(ScanResult::new(pointer, ty, Value::None)));
+                        let pointer = Pointer::new(pointer.base.clone(), path);
+                        additions.push(pointer);
                     }
                 }
 
@@ -223,10 +209,10 @@ impl<'a> PointerScan<'a> {
                 break;
             }
 
-            progress.report(results.len() - (i + 1), results.len() + additions.len())?;
+            progress.report(pointers.len() - (i + 1), pointers.len() + additions.len())?;
         }
 
-        results.append(&mut additions);
+        pointers.append(&mut additions);
         Ok(())
     }
 }

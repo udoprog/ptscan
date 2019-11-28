@@ -5,9 +5,9 @@ use hashbrown::HashMap;
 use ptscan::{
     Address, FilterExpr, InitialScanConfig, MemoryInformation, Pointer, PointerBase, PointerScan,
     PointerScanBackreferenceProgress, PointerScanInitialProgress, ProcessHandle, ProcessId,
-    ProcessInfo as _, RawPointer, Scan, ScanProgress, ScanResult, Size, Test, Token, Type,
-    TypeHint, Value, ValueExpr, ValueInfo,
+    ProcessInfo as _, ScanProgress, Size, Test, Token, Type, TypeHint, Value, ValueExpr, ValueInfo,
 };
+use ptscan_tui::{Scan, ScanResult};
 use std::{
     collections::{BTreeMap, VecDeque},
     fmt,
@@ -1406,7 +1406,7 @@ impl Application {
             term: &mut Term,
             pointers: &[Pointer],
             states: &mut [State],
-            comments: &HashMap<RawPointer, String>,
+            comments: &HashMap<Pointer, String>,
         ) -> anyhow::Result<()> {
             use std::fmt::Write as _;
 
@@ -1609,7 +1609,6 @@ impl Application {
             writeln!(term.output, "Adding trailing backreferences")?;
             pointer_scan.backreference_scan(
                 ty,
-                needle,
                 &mut results,
                 &mut BackreferenceProgress::new(term),
             )?;
@@ -1920,7 +1919,7 @@ impl Application {
         term: &mut Term,
         len: usize,
         results: impl IntoIterator<Item = (usize, &'a ScanResult)> + Send,
-        comments: &HashMap<RawPointer, String>,
+        comments: &HashMap<Pointer, String>,
         value_expr: &ValueExpr,
         verbose: bool,
     ) -> anyhow::Result<()> {
@@ -2817,7 +2816,7 @@ fn custom_write_to<W: std::io::Write>(
         #[serde(skip_serializing_if = "ValueExpr::is_default")]
         pub value_expr: &'a ValueExpr,
         #[serde(skip_serializing_if = "HashMap::is_empty")]
-        pub comments: &'a HashMap<RawPointer, String>,
+        pub comments: &'a HashMap<Pointer, String>,
         pub results_len: usize,
     }
 }
@@ -2882,7 +2881,7 @@ fn custom_read_from<R: std::io::Read>(
         #[serde(default)]
         pub value_expr: ValueExpr,
         #[serde(default)]
-        pub comments: HashMap<RawPointer, String>,
+        pub comments: HashMap<Pointer, String>,
         pub results_len: usize,
     }
 }

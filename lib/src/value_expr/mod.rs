@@ -1,10 +1,9 @@
 use crate::{
     filter_expr::{ast::ValueTrait, lexer, parser},
-    pointer,
     process::Process,
     utils::{EscapeString, Hex},
     value::Value,
-    Address, AddressProxy, Sign, Type, TypeHint, ValueInfo,
+    Address, AddressProxy, Pointer, Sign, Type, TypeHint, ValueInfo,
 };
 use anyhow::{anyhow, bail};
 use bigdecimal::BigDecimal;
@@ -62,7 +61,7 @@ impl TypedValueExpr<'_> {
                     None => return Ok(Value::None),
                 };
 
-                let pointer = pointer::Pointer::from_address(address);
+                let pointer = Pointer::from(address);
                 let (value, _) = proxy.handle.address_proxy(&pointer, expr_type).eval()?;
                 expr_type.convert(value)
             }
@@ -110,7 +109,7 @@ impl TypedValueExpr<'_> {
     ) -> anyhow::Result<()> {
         match self {
             Self::Value(..) => {
-                stack.push(proxy.follow_default()?);
+                stack.push(proxy.address()?);
             }
             Self::Deref(_, value) => {
                 let value = value.eval(initial, last, proxy)?;

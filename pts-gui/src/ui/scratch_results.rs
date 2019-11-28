@@ -2,8 +2,8 @@ use crate::{prelude::*, ui::EditScanResultDialog};
 use anyhow::anyhow;
 use parking_lot::RwLock;
 use ptscan::{
-    FilterExpr, Pointer, PointerScan, PointerScanBackreferenceProgress, PointerScanInitialProgress,
-    ProcessHandle, Scan, ScanResult, Size, Type, Value, ValueExpr,
+    Address, FilterExpr, Pointer, PointerScan, PointerScanBackreferenceProgress,
+    PointerScanInitialProgress, ProcessHandle, Size, Type, Value, ValueExpr, Values,
 };
 use std::{
     cell::RefCell,
@@ -27,7 +27,7 @@ struct Widgets {
 
 #[derive(Default)]
 struct State {
-    results: Vec<Box<ScanResult>>,
+    results: Vec<ScanResult>,
 }
 
 pub struct ScratchResults {
@@ -161,11 +161,18 @@ impl ScratchResults {
                 {
                     let mut scan_result_dialog = s.scan_result_dialog.borrow_mut();
 
-                    scan_result_dialog.set_result(Box::new(ScanResult::new(Pointer::null(), Type::default(), Value::default())));
+                    scan_result_dialog.set_result(ScanResult {
+                        address: Address::null(),
+                        pointer: Pointer::null(),
+                        initial_type: Type::default(),
+                        initial: Value::default(),
+                        last_type: Type::default(),
+                        last: Value::default(),
+                    });
 
                     scan_result_dialog.on_save(clone!(slf => move |_, result| {
                         let mut s = slf.borrow_mut();
-                        s.add_result(&result);
+                        s.add_result(result);
                     }));
                 }
 
@@ -262,11 +269,10 @@ impl ScratchResults {
                     None => return Ok(None),
                 };
 
-                handle.refresh_values(
+                handle.refresh_dynamic_values(
                     &*thread_pool,
                     &mut results,
                     Some(c.as_token()),
-                    None,
                     NoopProgress,
                     &ValueExpr::Value,
                 )?;
@@ -288,41 +294,36 @@ impl ScratchResults {
     }
 
     /// Refresh the collection of scan results being showed.
-    pub fn add_result(&mut self, result: &Box<ScanResult>) {
+    pub fn add_result(&mut self, result: ScanResult) {
         let model = upgrade!(self.widgets.model);
 
-        let ty = result.last_type().to_string();
-        let pointer = result.pointer.to_string();
+        let ty = result.last_type.to_string();
+        let address = result.address.to_string();
         let initial = result.initial.to_string();
-        let last = result.last().to_string();
+        let last = result.last.to_string();
 
-        let iter = model.insert_with_values(None, &[1, 2, 3, 4], &[&ty, &pointer, &initial, &last]);
+        let iter = model.insert_with_values(None, &[1, 2, 3, 4], &[&ty, &address, &initial, &last]);
         model.set_value(&iter, 0, &(self.state.results.len() as u64).to_value());
 
-        self.state.results.push(result.clone());
+        self.state.results.push(result);
         self.results_generation += 1;
     }
 
     /// Refresh the collection of scan results being showed.
-    pub fn edit_result(
-        &mut self,
-        results_generation: usize,
-        index: usize,
-        result: Box<ScanResult>,
-    ) {
+    pub fn edit_result(&mut self, results_generation: usize, index: usize, result: ScanResult) {
         if self.results_generation != results_generation {
             return;
         }
 
         let model = upgrade!(self.widgets.model);
 
-        let ty = result.last_type().to_string();
-        let pointer = result.pointer.to_string();
+        let ty = result.last_type.to_string();
+        let address = result.address.to_string();
         let initial = result.initial.to_string();
-        let last = result.last().to_string();
+        let last = result.last.to_string();
 
         if let Some(iter) = model.iter_nth_child(None, index as i32) {
-            model.set(&iter, &[1, 2, 3, 4], &[&ty, &pointer, &initial, &last]);
+            model.set(&iter, &[1, 2, 3, 4], &[&ty, &address, &initial, &last]);
         }
 
         if let Some(r) = self.state.results.get_mut(index) {
@@ -341,7 +342,7 @@ impl ScratchResults {
         let model = upgrade!(self.widgets.model);
 
         for (index, (result, update)) in self.state.results.iter_mut().zip(values).enumerate() {
-            if *result.last() == update {
+            if result.last == update {
                 continue;
             }
 
@@ -403,21 +404,19 @@ impl ScratchResults {
             task::Task::new(slf_rc, move |c| {
                 let handle = handle.read();
 
-                let ty = result.initial_type();
-                let needle = result.pointer.follow_default(&*handle)?
-                    .ok_or_else(|| anyhow!("illegal pointer for scan"))?;
-
-                let pointers = FilterExpr::pointer(ValueExpr::Value, &handle.process)?;
-
-                let mut scan = Scan::new();
+                let needle = result.address;
+                let pointer_filter = FilterExpr::pointer(ValueExpr::Value, &handle.process)?;
 
                 let token = c.as_token();
 
-                scan.initial_scan(
+                let mut addresses = Vec::new();
+                let mut values = Values::new(Type::Pointer, handle.process.pointer_width);
+
+                handle.initial_scan(
                     &*thread_pool,
-                    &*handle,
-                    &pointers,
-                    Type::Pointer,
+                    &pointer_filter,
+                    &mut addresses,
+                    &mut values,
                     Some(token),
                     PointerScanProgress::new(c, "Initial pointer scan"),
                     Default::default(),
@@ -427,7 +426,7 @@ impl ScratchResults {
                 pointer_scan.max_depth = 7;
                 pointer_scan.max_offset = Size::new(0x1000);
 
-                pointer_scan.build_references(scan.iter())?;
+                pointer_scan.build_references(addresses.into_iter(), values.iter())?;
 
                 if c.is_stopped() {
                     return Err(anyhow!("pointer scan cancelled"));
@@ -441,8 +440,6 @@ impl ScratchResults {
                 }
 
                 pointer_scan.backreference_scan(
-                    ty,
-                    needle,
                     &mut results,
                     &mut BackreferenceProgress::new(c, "Picking up trailing backreferences"),
                 )?;
@@ -486,10 +483,8 @@ impl ScratchResults {
                 let scan_progress_container = upgrade!(slf.widgets.scan_progress_container);
                 scan_progress_container.hide();
 
-                if let Ok(results) = results {
-                    for result in results.into_iter().take(10) {
-                        slf.add_result(&result);
-                    }
+                if let Ok(_results) = results {
+                    /* ignore */
                 }
 
                 slf.pointer_scan_task = None;

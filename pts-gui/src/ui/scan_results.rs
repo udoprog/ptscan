@@ -1,6 +1,6 @@
 use crate::{prelude::*, CurrentScanResult};
 use parking_lot::RwLock;
-use ptscan::{ProcessHandle, Scan, ScanResult, Value, ValueExpr};
+use ptscan::{ProcessHandle, ValueExpr, Values};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 struct Widgets {
@@ -13,12 +13,12 @@ struct Widgets {
 }
 
 struct Visible {
-    results: Vec<Box<ScanResult>>,
-    values: Vec<Value>,
+    scan: Scan,
+    current: Values,
 }
 
 pub struct ScanResults {
-    scan: Arc<RwLock<Scan>>,
+    scan: Arc<RwLock<Option<Scan>>>,
     thread_pool: Arc<rayon::ThreadPool>,
     widgets: Widgets,
     settings: Arc<Settings>,
@@ -30,7 +30,7 @@ pub struct ScanResults {
     /// during a refresh.
     results_generation: usize,
     /// Handler to call when it is requested that we add a result.
-    on_add_results: Option<Box<dyn Fn(&Self, &Box<ScanResult>)>>,
+    on_add_results: Option<Box<dyn Fn(&Self, ScanResult)>>,
     /// Menu for editing scan results.
     show_scan_result_dialog: Rc<RefCell<ui::ShowScanResultDialog>>,
     /// Current value expression in use.
@@ -51,7 +51,7 @@ impl ScanResults {
         builder: &Builder,
         clipboard: Rc<Clipboard>,
         settings: Arc<Settings>,
-        scan: Arc<RwLock<Scan>>,
+        scan: Arc<RwLock<Option<Scan>>>,
         thread_pool: Arc<rayon::ThreadPool>,
         show_scan_result_dialog: Rc<RefCell<ui::ShowScanResultDialog>>,
         show_scan_result_dialog_window: glib::WeakRef<Window>,
@@ -90,6 +90,7 @@ impl ScanResults {
         add_item.connect_activate(clone!(slf => move |_| {
             let slf = slf.borrow();
             let tree = upgrade!(slf.widgets.tree);
+            let handle = optional!(optional!(slf.handle.as_ref()).try_read());
 
             let on_add_results = optional!(&slf.on_add_results);
             let visible = optional!(&slf.visible);
@@ -102,7 +103,7 @@ impl ScanResults {
                     None => continue,
                 };
 
-                if let Some(result) = visible.results.get(index) {
+                if let Some(result) = visible.scan.get(&*handle, index) {
                     on_add_results(&*slf, result);
                 }
             }
@@ -111,10 +112,11 @@ impl ScanResults {
         info_item.connect_activate(clone!(slf => move |_| {
             let slf = slf.borrow();
             let visible = optional!(&slf.visible);
+            let handle = optional!(optional!(slf.handle.as_ref()).try_read());
             let tree = upgrade!(slf.widgets.tree);
             let path = optional!(tree.get_selection().get_selected_rows().0.into_iter().next());
             let index = optional!(path.get_indices().into_iter().next());
-            let result = optional!(visible.results.get(index as usize)).clone();
+            let result = optional!(visible.scan.get(&*handle, index as usize)).clone();
             let window = upgrade!(slf.widgets.show_scan_result_dialog_window);
             slf.show_scan_result_dialog.borrow_mut().set_result(result);
             window.show();
@@ -134,10 +136,11 @@ impl ScanResults {
             ..connect_row_activated(clone!(slf => move |_, path, _| {
                 let slf = slf.borrow();
 
+                let handle = optional!(optional!(slf.handle.as_ref()).try_read());
                 let on_add_results = optional!(&slf.on_add_results);
                 let visible = optional!(&slf.visible);
                 let index = optional!(path.get_indices().into_iter().next());
-                let result = optional!(visible.results.get(index as usize));
+                let result = optional!(visible.scan.get(&*handle, index as usize));
 
                 on_add_results(&*slf, result);
             }));
@@ -168,6 +171,7 @@ impl ScanResults {
             clone!(slf => move |selection| {
                 let slf = slf.borrow();
                 let visible = slf.visible.as_ref()?;
+                let handle = slf.handle.as_ref()?.try_read()?;
 
                 let (paths, model) = selection.get_selected_rows();
 
@@ -176,8 +180,8 @@ impl ScanResults {
                 for path in paths {
                     let iter = model.get_iter(&path)?;
                     let index = model.get_value(&iter, 0).get::<u64>().ok()?? as usize;
-                    let result = visible.results.get(index)?.clone();
-                    let current = visible.values.get(index).cloned();
+                    let result = visible.scan.get(&*handle, index)?.clone();
+                    let current = visible.current.get(index).clone();
                     results.push(CurrentScanResult { result, current });
                 }
 
@@ -201,7 +205,7 @@ impl ScanResults {
     /// Request when the component wants a result to be added to the scratch pad.
     pub fn on_add_results<T>(&mut self, on_add_results: T)
     where
-        T: 'static + Fn(&Self, &Box<ScanResult>),
+        T: 'static + Fn(&Self, ScanResult),
     {
         self.on_add_results = Some(Box::new(on_add_results));
     }
@@ -213,13 +217,26 @@ impl ScanResults {
 
         model.clear();
 
-        let results = scan.results.iter().take(100).cloned().collect::<Vec<_>>();
+        let scan = optional!(&*scan);
 
-        for (index, result) in results.iter().enumerate() {
-            let ty = result.last_type().to_string();
-            let pointer = result.pointer.to_string();
-            let initial = result.initial.to_string();
-            let last = result.last().to_string();
+        let mut initial = Values::new_of(&scan.initial);
+        initial.extend(scan.initial.iter().take(100));
+
+        let mut last = Values::new_of(&scan.last);
+        last.extend(scan.last.iter().take(100));
+
+        let addresses = scan.addresses.iter().copied().take(100).collect::<Vec<_>>();
+
+        let it = addresses
+            .iter()
+            .copied()
+            .zip(initial.iter().zip(last.iter()));
+
+        for (index, (address, (initial, last))) in it.enumerate() {
+            let ty = scan.initial.ty.to_string();
+            let pointer = address.to_string();
+            let initial = initial.as_ref().to_string();
+            let last = last.as_ref().to_string();
 
             let iter = model.insert_with_values(
                 None,
@@ -228,7 +245,7 @@ impl ScanResults {
                     &ty,
                     &pointer,
                     &initial,
-                    &last,
+                    &last.to_string(),
                     &last,
                     &self.settings.default_cell_background.to_value(),
                 ],
@@ -237,8 +254,15 @@ impl ScanResults {
             model.set_value(&iter, 0, &(index as u64).to_value());
         }
 
-        let values = results.iter().map(|r| r.last().clone()).collect();
-        self.visible = Some(Visible { results, values });
+        self.visible = Some(Visible {
+            scan: Scan {
+                addresses,
+                initial,
+                last: last.clone(),
+            },
+            current: last,
+        });
+
         self.results_generation += 1;
     }
 
@@ -252,7 +276,10 @@ impl ScanResults {
         }
 
         let handle = optional!(slf.handle.clone());
-        let mut results = optional!(&slf.visible).results.clone();
+        let visible = optional!(&slf.visible);
+        let initial = visible.scan.initial.clone();
+        let addresses = visible.scan.addresses.clone();
+        let mut current = visible.current.clone();
         let thread_pool = slf.thread_pool.clone();
         let results_generation = slf.results_generation;
         let value_expr = slf.value_expr.clone();
@@ -266,16 +293,15 @@ impl ScanResults {
 
                 handle.refresh_values(
                     &*thread_pool,
-                    &mut results,
+                    &addresses,
+                    &initial,
+                    &mut current,
                     Some(c.as_token()),
-                    None,
                     NoopProgress,
                     &value_expr,
                 )?;
 
-                let values = results.into_iter().map(|result| result.last.unwrap_or(result.initial)).collect::<Vec<_>>();
-
-                Ok(Some(values))
+                Ok(Some(current))
             });
             ..then(move |slf, values| {
                 if let Ok(Some(values)) = values {
@@ -290,7 +316,7 @@ impl ScanResults {
     }
 
     /// Refresh the visible results if the differ from the stored ones.
-    fn refresh_visible_diff(&mut self, results_generation: usize, values: Vec<Value>) {
+    fn refresh_visible_diff(&mut self, results_generation: usize, values: Values) {
         if self.results_generation != results_generation {
             return;
         }
@@ -299,29 +325,35 @@ impl ScanResults {
 
         let visible = optional!(&mut self.visible);
 
-        for (index, (current, (result, update))) in visible
-            .values
-            .iter_mut()
-            .zip(visible.results.iter().zip(values))
+        for (index, (last, (mut prev, new))) in visible
+            .scan
+            .last
+            .iter()
+            .zip(visible.current.iter_mut().zip(values.iter()))
             .enumerate()
         {
-            if *current == update {
-                continue;
+            {
+                let prev = prev.as_ref();
+                let new = new.as_ref();
+
+                if prev == new {
+                    continue;
+                }
+
+                if let Some(iter) = model.iter_nth_child(None, index as i32) {
+                    model.set_value(&iter, 5, &new.to_string().to_value());
+
+                    let background = if new == last.as_ref() {
+                        &self.settings.default_cell_background
+                    } else {
+                        &self.settings.highlight_cell_background
+                    };
+
+                    model.set_value(&iter, 6, &background.to_value());
+                }
             }
 
-            if let Some(iter) = model.iter_nth_child(None, index as i32) {
-                model.set_value(&iter, 5, &update.to_string().to_value());
-
-                let background = if *result.last() == update {
-                    &self.settings.default_cell_background
-                } else {
-                    &self.settings.highlight_cell_background
-                };
-
-                model.set_value(&iter, 6, &background.to_value());
-            }
-
-            *current = update;
+            prev.write(new.read());
         }
     }
 

@@ -85,7 +85,7 @@ macro_rules! convert {
                     F64
                 }),
             )*
-            _ => Value::None($type_to),
+            _ => Value::None,
         }
     };
 
@@ -94,10 +94,10 @@ macro_rules! convert {
         match $value_from {
             $(
                 Value::$variant(value) => {
-                    return <$ty>::try_from(value).map(Value::$into).unwrap_or_else(|_| Value::None($type_to));
+                    return <$ty>::try_from(value).map(Value::$into).unwrap_or_else(|_| Value::None);
                 },
             )*
-            _ => Value::None($type_to),
+            _ => Value::None,
         }
     };
 
@@ -112,46 +112,30 @@ macro_rules! convert {
             Value::Pointer(address) => {
                 return Value::$into(address.0 as $ty);
             }
-            _ => Value::None($type_to),
+            _ => Value::None,
         }
     };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(tag = "type", content = "value")]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum Type {
-    #[serde(rename = "none")]
     None,
-    #[serde(rename = "pointer")]
     Pointer,
-    #[serde(rename = "u8")]
     U8,
-    #[serde(rename = "i8")]
     I8,
-    #[serde(rename = "u16")]
     U16,
-    #[serde(rename = "i16")]
     I16,
-    #[serde(rename = "u32")]
     U32,
-    #[serde(rename = "i32")]
     I32,
-    #[serde(rename = "u64")]
     U64,
-    #[serde(rename = "i64")]
     I64,
-    #[serde(rename = "u128")]
     U128,
-    #[serde(rename = "i128")]
     I128,
-    #[serde(rename = "f32")]
     F32,
-    #[serde(rename = "f64")]
     F64,
-    #[serde(rename = "string")]
     String(Encoding),
-    #[serde(rename = "bytes")]
-    Bytes(Option<usize>),
+    Bytes(usize),
 }
 
 impl Type {
@@ -159,7 +143,6 @@ impl Type {
     pub fn is_default_aligned(&self) -> bool {
         match self {
             Self::String(..) => false,
-            Self::Bytes(..) => false,
             _ => true,
         }
     }
@@ -167,7 +150,7 @@ impl Type {
     /// Convert one value into the given type.
     pub fn convert(self, other: Value) -> Value {
         match (self, other) {
-            (Self::None, Value::None(..)) => Value::None(Self::None),
+            (Self::None, Value::None) => Value::None,
             (Self::Pointer, other @ Value::Pointer(..)) => other,
             (Self::U8, other @ Value::U8(..)) => other,
             (Self::I8, other @ Value::I8(..)) => other,
@@ -181,17 +164,11 @@ impl Type {
             (Self::I128, other @ Value::I128(..)) => other,
             (Self::F32, other @ Value::F32(..)) => other,
             (Self::F64, other @ Value::F64(..)) => other,
-            (Self::String(a), Value::String(_, string)) => Value::String(a, string),
+            (Self::String(..), Value::String(string)) => Value::String(string),
             (Self::Bytes(..), other @ Value::Bytes(..)) => other,
-            (Self::Bytes(None), Value::String(encoding, string)) => {
-                let mut buf = Vec::new();
+            (Self::Bytes(len), Value::String(string)) => {
+                let encoding = Encoding::default();
 
-                match encoding.stream_encode(&mut buf, string.as_str()) {
-                    Ok(()) => Value::Bytes(buf),
-                    Err(..) => Value::None(self),
-                }
-            }
-            (Self::Bytes(Some(len)), Value::String(encoding, string)) => {
                 let mut buf = Vec::new();
 
                 match encoding.stream_encode(&mut buf, string.as_str()) {
@@ -199,7 +176,7 @@ impl Type {
                         buf.resize_with(usize::min(len, buf.len()), u8::default);
                         Value::Bytes(buf)
                     }
-                    Err(..) => Value::None(self),
+                    Err(..) => Value::None,
                 }
             }
             (_, other) => convert!(self, other),
@@ -209,7 +186,7 @@ impl Type {
     /// Initialize a default value of the given type.
     pub fn default_value(&self) -> Value {
         match *self {
-            Self::None => Value::None(Type::None),
+            Self::None => Value::None,
             Self::Pointer => Value::Pointer(Default::default()),
             Self::U8 => Value::U8(Default::default()),
             Self::I8 => Value::I8(Default::default()),
@@ -223,9 +200,8 @@ impl Type {
             Self::I128 => Value::I128(Default::default()),
             Self::F32 => Value::F32(Default::default()),
             Self::F64 => Value::F64(Default::default()),
-            Self::String(encoding) => Value::String(encoding, Default::default()),
-            Self::Bytes(Some(len)) => Value::Bytes(vec![0u8; len]),
-            Self::Bytes(None) => Value::Bytes(vec![0u8; 32]),
+            Self::String(..) => Value::String(Default::default()),
+            Self::Bytes(len) => Value::Bytes(vec![0u8; len]),
         }
     }
 
@@ -310,17 +286,14 @@ impl Type {
             Self::I128 => mem::size_of::<i128>(),
             Self::F32 => mem::size_of::<f32>(),
             Self::F64 => mem::size_of::<f64>(),
-            Self::Bytes(_) => 1,
+            Self::Bytes(..) => process.pointer_width(),
             Self::String(encoding) => encoding.alignment(),
         })
     }
 
     /// The known in-memory size that a type has.
     #[inline]
-    pub fn size<P>(&self, process: &P) -> Option<usize>
-    where
-        P: ProcessInfo,
-    {
+    pub fn size(&self, process: &impl ProcessInfo) -> Option<usize> {
         Some(match *self {
             Self::None => 0,
             Self::Pointer => process.pointer_width(),
@@ -336,9 +309,32 @@ impl Type {
             Self::I128 => mem::size_of::<i128>(),
             Self::F32 => mem::size_of::<f32>(),
             Self::F64 => mem::size_of::<f64>(),
-            Self::Bytes(len) => return len,
+            Self::Bytes(len) => len,
             Self::String(..) => return None,
         })
+    }
+
+    /// The known in-memory size that a type has.
+    #[inline]
+    pub fn element_size(&self, pointer_width: usize) -> usize {
+        match *self {
+            Self::None => 0,
+            Self::Pointer => pointer_width,
+            Self::U8 => mem::size_of::<u8>(),
+            Self::I8 => mem::size_of::<i8>(),
+            Self::U16 => mem::size_of::<u16>(),
+            Self::I16 => mem::size_of::<i16>(),
+            Self::U32 => mem::size_of::<u32>(),
+            Self::I32 => mem::size_of::<i32>(),
+            Self::U64 => mem::size_of::<u64>(),
+            Self::I64 => mem::size_of::<i64>(),
+            Self::U128 => mem::size_of::<u128>(),
+            Self::I128 => mem::size_of::<i128>(),
+            Self::F32 => mem::size_of::<f32>(),
+            Self::F64 => mem::size_of::<f64>(),
+            Self::Bytes(len) => len,
+            Self::String(..) => std::mem::size_of::<String>(),
+        }
     }
 
     /// Decode the given buffer into a value.
@@ -375,13 +371,13 @@ impl Type {
             let len = reader.read_memory(address, &mut buf)?;
 
             if len != buf.len() {
-                return Ok((Value::None(self), None));
+                return Ok((Value::None, None));
             }
 
             let buf = &buf[..];
 
             let value = match self {
-                Self::None => Value::None(Type::None),
+                Self::None => Value::None,
                 Type::Pointer => Value::Pointer(Address::decode(reader.process(), buf)?),
                 Self::U8 => Value::U8(decode_byte!(buf, u8)),
                 Self::I8 => Value::I8(decode_byte!(buf, i8)),
@@ -438,8 +434,7 @@ impl fmt::Display for Type {
             Type::F32 => "f32",
             Type::F64 => "f64",
             Type::String(encoding) => return write!(fmt, "string/{}", encoding),
-            Type::Bytes(None) => "bytes",
-            Type::Bytes(Some(len)) => return write!(fmt, "bytes/{}", len),
+            Type::Bytes(len) => return write!(fmt, "bytes/{}", len),
         };
 
         o.fmt(fmt)
@@ -483,11 +478,9 @@ impl str::FromStr for Type {
             }
             ("bytes", size) => {
                 let size = match size {
-                    Some(size) => Some(
-                        str::parse::<usize>(size)
-                            .map_err(|e| ParseTypeError::InvalidSize(size.to_string(), e))?,
-                    ),
-                    None => None,
+                    Some(size) => str::parse::<usize>(size)
+                        .map_err(|e| ParseTypeError::InvalidSize(size.to_string(), e))?,
+                    None => 32,
                 };
 
                 Type::Bytes(size)
@@ -522,8 +515,7 @@ impl fmt::Display for HumanDisplay {
             Type::F32 => write!(fmt, "32-bit floating point number"),
             Type::F64 => write!(fmt, "64-bit floating point number"),
             Type::String(encoding) => write!(fmt, "{} string", encoding),
-            Type::Bytes(Some(len)) => write!(fmt, "a byte array of length {}", len),
-            Type::Bytes(None) => write!(fmt, "an unsized byte array"),
+            Type::Bytes(len) => write!(fmt, "a byte array of length {}", len),
         }
     }
 }

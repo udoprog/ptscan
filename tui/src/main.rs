@@ -6,7 +6,7 @@ use ptscan::{
     Address, FilterExpr, InitialScanConfig, MemoryInformation, Pointer, PointerBase, PointerScan,
     PointerScanBackreferenceProgress, PointerScanInitialProgress, ProcessHandle, ProcessId,
     ProcessInfo as _, RawPointer, Scan, ScanProgress, ScanResult, Size, Test, Token, Type,
-    TypeHint, Value, ValueExpr,
+    TypeHint, Value, ValueExpr, ValueInfo,
 };
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -592,18 +592,28 @@ impl Application {
                     )?
                     .ok_or_else(|| anyhow!("cannot determine type of expression"))?;
 
-                let initial = Value::None(Type::None);
-                let last = Value::None(Type::None);
+                let initial = Value::None;
+                let initial = ValueInfo {
+                    ty: Type::None,
+                    value: &initial,
+                };
+
+                let last = Value::None;
+                let last = ValueInfo {
+                    ty: Type::None,
+                    value: &last,
+                };
+
                 let mut proxy = handle.null_address_proxy();
 
                 let value = expr
                     .type_check(Type::None, Type::None, Type::None, expr_type)?
-                    .eval(&initial, &last, &mut proxy)?;
+                    .eval(initial, last, &mut proxy)?;
 
                 writeln!(
                     self.term,
                     " => {ty} : {value}",
-                    ty = value.ty(),
+                    ty = expr_type,
                     value = value
                 )?;
             }
@@ -673,7 +683,7 @@ impl Application {
                         let (value, _) = proxy.eval(ty)?;
                         (address, value)
                     }
-                    None => (None, Value::None(ty)),
+                    None => (None, Value::None),
                 };
 
                 *pointer.last_address_mut() = last_address;
@@ -693,7 +703,7 @@ impl Application {
                     scan.comments.insert(pointer.raw().clone(), comment);
                 }
 
-                scan.push(Box::new(ScanResult::new(pointer, value)));
+                scan.push(Box::new(ScanResult::new(pointer, ty, value)));
                 scan.initial = false;
             }
             Action::Scan {
@@ -788,7 +798,7 @@ impl Application {
                     Some(value_type) => value_type,
                     None => {
                         match self.scans.get(&self.current_scan).and_then(|s| s.find_result_by_address(address)) {
-                            Some(result) => result.last().ty(),
+                            Some(result) => result.last_type(),
                             None => bail!("Cannot determine type of destination. \
                             Either specify it using `--type` or use an address from the current scan."),
                         }
@@ -1117,6 +1127,7 @@ impl Application {
         return Ok(());
 
         struct State {
+            ty: Type,
             initial: Value,
             values: VecDeque<(Instant, Value)>,
             changed: bool,
@@ -1125,9 +1136,19 @@ impl Application {
         }
 
         impl State {
+            /// Get the initial value information.
+            pub fn initial_info(&self) -> ValueInfo<'_> {
+                ValueInfo {
+                    ty: self.ty,
+                    value: &self.initial,
+                }
+            }
+
             /// Get the last known value.
-            pub fn last(&self) -> &Value {
-                self.values.back().map(|v| &v.1).unwrap_or(&self.initial)
+            pub fn last_info(&self) -> ValueInfo<'_> {
+                let value = self.values.back().map(|v| &v.1).unwrap_or(&self.initial);
+
+                ValueInfo { ty: self.ty, value }
             }
         }
 
@@ -1143,7 +1164,6 @@ impl Application {
         ) -> anyhow::Result<usize> {
             use std::fmt::Write as _;
 
-            let mut previous = Vec::with_capacity(limit);
             let mut offset = 0;
             let mut to_remove = Vec::new();
             let mut buf = String::new();
@@ -1169,7 +1189,7 @@ impl Application {
                 let len = usize::min(scan.len().saturating_sub(offset), limit);
 
                 let mut results = &mut scan.results[..len];
-                previous.extend(results.iter().map(|v| v.last().clone()));
+                let previous = results.iter().cloned().collect::<Vec<_>>();
 
                 handle.refresh_values(
                     thread_pool,
@@ -1180,7 +1200,7 @@ impl Application {
                     &scan.value_expr,
                 )?;
 
-                for (o, (prev, result)) in previous.iter().zip(results).enumerate() {
+                for (o, (prev, result)) in previous.into_iter().zip(results).enumerate() {
                     if cancel.test() {
                         break;
                     }
@@ -1193,9 +1213,12 @@ impl Application {
                     if let Some(filter) = filter {
                         let mut proxy = handle.address_proxy(&result.pointer);
 
-                        if let Test::False =
-                            filter.test(result.initial(), prev, prev.ty(), &mut proxy)?
-                        {
+                        if let Test::False = filter.test(
+                            result.initial_info(),
+                            prev.last_info(),
+                            prev.last_type(),
+                            &mut proxy,
+                        )? {
                             to_remove.push(index);
                             removed = true;
                         } else {
@@ -1203,7 +1226,7 @@ impl Application {
                         }
                     }
 
-                    if prev != result.last() {
+                    if prev.last() != result.last() {
                         changed = true;
                     }
 
@@ -1251,7 +1274,6 @@ impl Application {
                     scan.results.swap_remove(*i);
                 }
 
-                previous.clear();
                 to_remove.clear();
                 offset += limit;
 
@@ -1286,6 +1308,7 @@ impl Application {
             let mut states = results
                 .iter()
                 .map(|r| State {
+                    ty: r.initial_type(),
                     initial: r.last().clone(),
                     values: VecDeque::new(),
                     changed: true,
@@ -1333,10 +1356,10 @@ impl Application {
 
                     if let Some(filter) = filter {
                         let mut proxy = handle.address_proxy(&result.pointer);
-                        let ty = result.last().ty();
+                        let ty = result.last_type();
 
                         if let Test::False =
-                            filter.test(&state.initial, state.last(), ty, &mut proxy)?
+                            filter.test(state.initial_info(), state.last_info(), ty, &mut proxy)?
                         {
                             any_changed = true;
                             state.removed = true;
@@ -1345,7 +1368,7 @@ impl Application {
                         }
                     }
 
-                    if result.last() != state.last() {
+                    if result.last() != state.last_info().value {
                         state.changed = true;
                         any_changed = true;
 
@@ -1583,7 +1606,7 @@ impl Application {
         writeln!(term.output, "Max Offset: 0x{}", pointer_scan.max_offset)?;
 
         let mut results = Vec::new();
-        pointer_scan.scan(ty, needle, &mut results, &mut InitialProgress::new(term))?;
+        pointer_scan.scan(needle, &mut results, &mut InitialProgress::new(term))?;
 
         if !token.test() {
             writeln!(term.output, "Adding trailing backreferences")?;
@@ -1933,7 +1956,7 @@ impl Application {
                 write!(buf, "{}", result.last())?;
 
                 if verbose {
-                    write!(buf, " as {}", result.last().ty())?;
+                    write!(buf, " as {}", result.last_type())?;
                 }
 
                 term.clear(ClearType::CurrentLine)?;

@@ -28,8 +28,8 @@ macro_rules! numeric_op {
     (@a $a:ident $op:tt $b:ident, $checked_op:ident, {$([$variant:ident, $ty:ty]),*}) => {
         match ($a, $b) {
             $((Self::$variant(lhs), Self::$variant(rhs)) => lhs.$checked_op(rhs).map(Self::$variant),)*
-            (Self::None(..), _) | (_, Self::None(..)) => None,
-            (lhs, rhs) => bail!("bad operation: {} {} {}", lhs.ty(), stringify!($op), rhs.ty()),
+            (Self::None, _) | (_, Self::None) => None,
+            (lhs, rhs) => bail!("bad operation: {} {} {}", lhs, stringify!($op), rhs),
         }
     };
 }
@@ -44,39 +44,23 @@ pub struct FromBigDecimalError(bigdecimal::BigDecimal, Type);
 
 /// A single dynamic literal value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", content = "value")]
+#[serde(rename_all = "snake_case", tag = "type", content = "value")]
 pub enum Value {
-    #[serde(rename = "none")]
-    None(Type),
-    #[serde(rename = "pointer")]
+    None,
     Pointer(Address),
-    #[serde(rename = "u8")]
     U8(u8),
-    #[serde(rename = "i8")]
     I8(i8),
-    #[serde(rename = "u16")]
     U16(u16),
-    #[serde(rename = "i16")]
     I16(i16),
-    #[serde(rename = "u32")]
     U32(u32),
-    #[serde(rename = "i32")]
     I32(i32),
-    #[serde(rename = "u64")]
     U64(u64),
-    #[serde(rename = "i64")]
     I64(i64),
-    #[serde(rename = "u128")]
     U128(u128),
-    #[serde(rename = "i128")]
     I128(i128),
-    #[serde(rename = "f32")]
     F32(f32),
-    #[serde(rename = "f64")]
     F64(f64),
-    #[serde(rename = "string")]
-    String(Encoding, String),
-    #[serde(rename = "bytes")]
+    String(String),
     Bytes(Vec<u8>),
 }
 
@@ -84,14 +68,37 @@ impl Value {
     /// Test if this value is something.
     pub fn is_some(&self) -> bool {
         match *self {
-            Value::None(..) => false,
+            Value::None => false,
             _ => true,
         }
     }
 
     pub fn is_none(&self) -> bool {
         match *self {
-            Value::None(..) => true,
+            Value::None => true,
+            _ => false,
+        }
+    }
+
+    /// Test if value is of the given type.
+    pub fn is(&self, ty: Type) -> bool {
+        match (self, ty) {
+            (Self::None, Type::None) => true,
+            (Self::Pointer(..), Type::Pointer) => true,
+            (Self::U8(..), Type::U8) => true,
+            (Self::I8(..), Type::I8) => true,
+            (Self::U16(..), Type::U16) => true,
+            (Self::I16(..), Type::I16) => true,
+            (Self::U32(..), Type::U32) => true,
+            (Self::I32(..), Type::I32) => true,
+            (Self::U64(..), Type::U64) => true,
+            (Self::I64(..), Type::I64) => true,
+            (Self::U128(..), Type::U128) => true,
+            (Self::I128(..), Type::I128) => true,
+            (Self::F32(..), Type::F32) => true,
+            (Self::F64(..), Type::F64) => true,
+            (Self::String(..), Type::String(..)) => true,
+            (Self::Bytes(..), Type::Bytes(..)) => true,
             _ => false,
         }
     }
@@ -99,7 +106,7 @@ impl Value {
     /// Unwrap the current value, or return an alternative if this is None.
     pub fn unwrap_or(self, other: Value) -> Self {
         match self {
-            Value::None(..) => other,
+            Value::None => other,
             value => value,
         }
     }
@@ -109,7 +116,7 @@ impl Value {
     /// This is used for optimizations.
     pub fn is_zero_bits(&self) -> Option<bool> {
         Some(match *self {
-            Self::None(..) => return None,
+            Self::None => return None,
             Self::Pointer(address) => address.is_null(),
             Self::U8(value) => value == 0,
             Self::I8(value) => value == 0,
@@ -123,7 +130,7 @@ impl Value {
             Self::I128(value) => value == 0,
             Self::F32(value) => value == 0f32,
             Self::F64(value) => value == 0f64,
-            Self::String(_, ref s) => s.as_bytes().iter().all(|c| *c == 0),
+            Self::String(ref s) => s.as_bytes().iter().all(|c| *c == 0),
             Self::Bytes(ref bytes) => bytes.iter().all(|c| *c == 0),
         })
     }
@@ -174,8 +181,8 @@ impl Value {
     /// Test if value is aligned by default or not.
     pub fn is_default_aligned(&self) -> bool {
         match self {
-            Self::None(Type::String(..)) | Self::String(..) => false,
-            Self::None(Type::Bytes(..)) | Self::Bytes(..) => false,
+            Self::String(..) => false,
+            Self::Bytes(..) => false,
             _ => true,
         }
     }
@@ -210,7 +217,7 @@ impl Value {
         use byteorder::ByteOrder as _;
 
         match *self {
-            Self::None(..) => (),
+            Self::None => (),
             Self::Pointer(address) => address.encode(process, buf)?,
             Self::U8(value) => {
                 buf[0] = value;
@@ -228,7 +235,8 @@ impl Value {
             Self::I128(value) => P::ByteOrder::write_u128(buf, value as u128),
             Self::F32(value) => P::ByteOrder::write_f32(buf, value),
             Self::F64(value) => P::ByteOrder::write_f64(buf, value),
-            Self::String(encoding, ref s) => encoding.encode(buf, s)?,
+            // TODO: use the proper encoding.
+            Self::String(ref s) => Encoding::default().encode(buf, s)?,
             Self::Bytes(ref bytes) => {
                 let len = usize::min(bytes.len(), buf.len());
                 buf[..len].clone_from_slice(&bytes[..len]);
@@ -258,32 +266,10 @@ impl Value {
         }
     }
 
-    /// Get the type of the value.
-    pub fn ty(&self) -> Type {
-        match *self {
-            Self::None(ty) => ty,
-            Self::Pointer(..) => Type::Pointer,
-            Self::U8(..) => Type::U8,
-            Self::I8(..) => Type::I8,
-            Self::U16(..) => Type::U16,
-            Self::I16(..) => Type::I16,
-            Self::U32(..) => Type::U32,
-            Self::I32(..) => Type::I32,
-            Self::U64(..) => Type::U64,
-            Self::I64(..) => Type::I64,
-            Self::U128(..) => Type::U128,
-            Self::I128(..) => Type::I128,
-            Self::F32(..) => Type::F32,
-            Self::F64(..) => Type::F64,
-            Self::String(encoding, ..) => Type::String(encoding),
-            Self::Bytes(ref bytes) => Type::Bytes(Some(bytes.len())),
-        }
-    }
-
     /// Get the size in bytes of this value.
     pub fn size(&self, process: &impl ProcessInfo) -> Option<usize> {
         Some(match self {
-            Self::None(ty) => return ty.size(process),
+            Self::None => return None,
             Self::Pointer(..) => process.pointer_width(),
             Self::U8(..) => mem::size_of::<u8>(),
             Self::I8(..) => mem::size_of::<i8>(),
@@ -297,7 +283,7 @@ impl Value {
             Self::I128(..) => mem::size_of::<i128>(),
             Self::F32(..) => mem::size_of::<f32>(),
             Self::F64(..) => mem::size_of::<f64>(),
-            Self::String(encoding, string) => return encoding.size(string),
+            Self::String(..) => return None,
             Self::Bytes(bytes) => bytes.len(),
         })
     }
@@ -320,7 +306,7 @@ impl Value {
             Type::I128 => value.to_i128().map(Value::I128),
             Type::F32 => value.to_f32().map(Value::F32),
             Type::F64 => value.to_f64().map(Value::F64),
-            _ => return Ok(Value::None(ty)),
+            _ => return Ok(Value::None),
         };
 
         let out = out.ok_or_else(|| FromBigIntError(value.clone(), ty))?;
@@ -337,7 +323,7 @@ impl Value {
         let out = match ty {
             Type::F32 => value.to_f32().map(Value::F32),
             Type::F64 => value.to_f64().map(Value::F64),
-            _ => return Ok(Value::None(ty)),
+            _ => return Ok(Value::None),
         };
 
         let out = out.ok_or_else(|| FromBigDecimalError(value.clone(), ty))?;
@@ -367,7 +353,7 @@ impl Value {
 
 impl Default for Value {
     fn default() -> Self {
-        Self::None(Type::default())
+        Self::None
     }
 }
 
@@ -401,7 +387,7 @@ impl str::FromStr for Value {
 impl fmt::Display for Value {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Value::None(ty) => write!(fmt, "none({})", ty),
+            Value::None => write!(fmt, "none"),
             Value::Pointer(address) => write!(fmt, "{}", address),
             Value::U8(value) => write!(fmt, "{}", value),
             Value::I8(value) => write!(fmt, "{}", value),
@@ -415,7 +401,7 @@ impl fmt::Display for Value {
             Value::I128(value) => write!(fmt, "{}", value),
             Value::F32(value) => write!(fmt, "{}", value),
             Value::F64(value) => write!(fmt, "{}", value),
-            Value::String(_, string) => write!(fmt, "{}", EscapeString(&*string)),
+            Value::String(string) => write!(fmt, "{}", EscapeString(&*string)),
             Value::Bytes(bytes) => write!(fmt, "{{{}}}", Hex(&*bytes)),
         }
     }

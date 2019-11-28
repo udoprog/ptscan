@@ -16,6 +16,12 @@ pub(crate) mod lexer;
 pub mod special;
 lalrpop_util::lalrpop_mod!(#[allow(clippy::all)] pub parser, "/filter_expr/parser.rs");
 
+#[derive(Clone, Copy)]
+pub struct ValueInfo<'a> {
+    pub ty: Type,
+    pub value: &'a Value,
+}
+
 /// The result of a filter test.
 #[derive(Debug, Clone, Copy)]
 pub enum Test {
@@ -84,8 +90,8 @@ impl FilterExpr {
     /// Test the specified memory region.
     pub fn test(
         &self,
-        initial: &Value,
-        last: &Value,
+        initial: ValueInfo<'_>,
+        last: ValueInfo<'_>,
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
@@ -180,8 +186,8 @@ impl Binary {
 
     fn test(
         &self,
-        initial: &Value,
-        last: &Value,
+        initial: ValueInfo<'_>,
+        last: ValueInfo<'_>,
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
@@ -191,8 +197,8 @@ impl Binary {
         macro_rules! binary {
             ($expr_a:expr, $expr_b:expr, $a:ident $op:tt $b:ident) => {
                 match ($expr_a, $expr_b) {
-                    (Value::None(..), _) => return Ok(Test::Undefined),
-                    (_, Value::None(..)) => return Ok(Test::Undefined),
+                    (Value::None, _) => return Ok(Test::Undefined),
+                    (_, Value::None) => return Ok(Test::Undefined),
                     (Value::Pointer($a), Value::Pointer($b)) => $a $op $b,
                     (Value::U8($a), Value::U8($b)) => $a $op $b,
                     (Value::I8($a), Value::I8($b)) => $a $op $b,
@@ -206,7 +212,7 @@ impl Binary {
                     (Value::I128($a), Value::I128($b)) => $a $op $b,
                     (Value::F32($a), Value::F32($b)) => $a $op $b,
                     (Value::F64($a), Value::F64($b)) => $a $op $b,
-                    (Value::String(_, $a), Value::String(_, $b)) => $a $op $b,
+                    (Value::String($a), Value::String($b)) => $a $op $b,
                     (Value::Bytes($a), Value::Bytes($b)) => $a $op $b,
                     _ => false,
                 }
@@ -215,19 +221,16 @@ impl Binary {
 
         let Binary(op, lhs, rhs) = self;
 
-        let initial_type = initial.ty();
-        let last_type = last.ty();
-
         let lhs_type = lhs.type_of(
-            Explicit(initial_type),
-            Explicit(last_type),
+            Explicit(initial.ty),
+            Explicit(last.ty),
             Explicit(value_type),
             TypeHint::NoHint,
         )?;
 
         let rhs_type = rhs.type_of(
-            Explicit(initial_type),
-            Explicit(last_type),
+            Explicit(initial.ty),
+            Explicit(last.ty),
             Explicit(value_type),
             TypeHint::NoHint,
         )?;
@@ -245,8 +248,8 @@ impl Binary {
             _ => return Err(Error::BinaryTypeInference(self.clone()).into()),
         };
 
-        let lhs = lhs.type_check(initial_type, last_type, value_type, expr_type)?;
-        let rhs = rhs.type_check(initial_type, last_type, value_type, expr_type)?;
+        let lhs = lhs.type_check(initial.ty, last.ty, value_type, expr_type)?;
+        let rhs = rhs.type_check(initial.ty, last.ty, value_type, expr_type)?;
 
         let lhs = lhs.eval(initial, last, proxy)?;
         let rhs = rhs.eval(initial, last, proxy)?;
@@ -261,19 +264,19 @@ impl Binary {
             Gt => binary!(lhs, rhs, a > b),
             Gte => binary!(lhs, rhs, a >= b),
             StartsWith => match lhs {
-                Value::String(_, lhs) => match rhs {
-                    Value::None(..) => return Ok(Test::Undefined),
-                    Value::String(_, rhs) => lhs.starts_with(&rhs),
+                Value::String(lhs) => match rhs {
+                    Value::None => return Ok(Test::Undefined),
+                    Value::String(rhs) => lhs.starts_with(&rhs),
                     Value::Bytes(rhs) => lhs.as_bytes().starts_with(&rhs),
                     _ => false,
                 },
                 Value::Bytes(lhs) => match rhs {
-                    Value::None(..) => return Ok(Test::Undefined),
-                    Value::String(_, rhs) => lhs.starts_with(rhs.as_bytes()),
+                    Value::None => return Ok(Test::Undefined),
+                    Value::String(rhs) => lhs.starts_with(rhs.as_bytes()),
                     Value::Bytes(rhs) => lhs.starts_with(&rhs),
                     _ => false,
                 },
-                Value::None(..) => return Ok(Test::Undefined),
+                Value::None => return Ok(Test::Undefined),
                 _ => false,
             },
         };
@@ -300,15 +303,13 @@ impl Binary {
             (Eq, Decimal { value, .. }, Value) | (Eq, Value, Decimal { value, .. }) => {
                 Some(value::Value::from_bigdecimal(value_type, value)?)
             }
-            (Eq, String { encoding, value }, Value) | (Eq, Value, String { encoding, value }) => {
-                Some(value::Value::String(*encoding, value.to_owned()))
+            (Eq, String { value }, Value) | (Eq, Value, String { value }) => {
+                Some(value::Value::String(value.to_owned()))
             }
             (Eq, Bytes { value }, Value) | (Eq, Value, Bytes { value }) => {
                 Some(value::Value::Bytes(value.clone()))
             }
-            (StartsWith, Value, String { encoding, value }) => {
-                Some(value::Value::String(*encoding, value.to_owned()))
-            }
+            (StartsWith, Value, String { value }) => Some(value::Value::String(value.to_owned())),
             (StartsWith, Value, Bytes { value }) => Some(value::Value::Bytes(value.clone())),
             _ => None,
         };
@@ -396,8 +397,8 @@ impl All {
 
     fn test(
         &self,
-        initial: &Value,
-        last: &Value,
+        initial: ValueInfo<'_>,
+        last: ValueInfo<'_>,
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
@@ -465,8 +466,8 @@ impl Any {
 
     fn test(
         &self,
-        initial: &Value,
-        last: &Value,
+        initial: ValueInfo<'_>,
+        last: ValueInfo<'_>,
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
@@ -528,19 +529,16 @@ impl IsPointer {
 
     pub fn test(
         &self,
-        initial: &Value,
-        last: &Value,
+        initial: ValueInfo<'_>,
+        last: ValueInfo<'_>,
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let initial_type = initial.ty();
-        let last_type = last.ty();
-
         let expr_type = self
             .expr
             .type_of(
-                TypeHint::Explicit(initial_type),
-                TypeHint::Explicit(last_type),
+                TypeHint::Explicit(initial.ty),
+                TypeHint::Explicit(last.ty),
                 TypeHint::Explicit(value_type),
                 TypeHint::NoHint,
             )?
@@ -548,7 +546,7 @@ impl IsPointer {
 
         let value = self
             .expr
-            .type_check(initial_type, last_type, value_type, expr_type)?
+            .type_check(initial.ty, last.ty, value_type, expr_type)?
             .eval(initial, last, proxy)?;
 
         let address = match value {
@@ -591,19 +589,16 @@ impl IsType {
 
     pub fn test(
         &self,
-        initial: &Value,
-        last: &Value,
+        initial: ValueInfo<'_>,
+        last: ValueInfo<'_>,
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let initial_type = initial.ty();
-        let last_type = last.ty();
-
         let expr_type = self
             .expr
             .type_of(
-                TypeHint::Explicit(initial_type),
-                TypeHint::Explicit(last_type),
+                TypeHint::Explicit(initial.ty),
+                TypeHint::Explicit(last.ty),
                 TypeHint::Explicit(value_type),
                 TypeHint::NoHint,
             )?
@@ -611,14 +606,14 @@ impl IsType {
 
         let value = self
             .expr
-            .type_check(initial_type, last_type, value_type, expr_type)?
+            .type_check(initial.ty, last.ty, value_type, expr_type)?
             .eval(initial, last, proxy)?;
 
         if value.is_none() {
             return Ok(Test::Undefined);
         }
 
-        Ok((value.ty() == self.ty).into())
+        Ok(value.is(self.ty).into())
     }
 }
 
@@ -652,19 +647,16 @@ impl IsNan {
 
     pub fn test(
         &self,
-        initial: &Value,
-        last: &Value,
+        initial: ValueInfo<'_>,
+        last: ValueInfo<'_>,
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let initial_type = initial.ty();
-        let last_type = last.ty();
-
         let expr_type = self
             .expr
             .type_of(
-                TypeHint::Explicit(initial_type),
-                TypeHint::Explicit(last_type),
+                TypeHint::Explicit(initial.ty),
+                TypeHint::Explicit(last.ty),
                 TypeHint::Explicit(value_type),
                 TypeHint::NoHint,
             )?
@@ -672,7 +664,7 @@ impl IsNan {
 
         let value = self
             .expr
-            .type_check(initial_type, last_type, value_type, expr_type)?
+            .type_check(initial.ty, last.ty, value_type, expr_type)?
             .eval(initial, last, proxy)?;
 
         let value = match value {
@@ -709,19 +701,16 @@ impl Regex {
 
     pub fn test(
         &self,
-        initial: &Value,
-        last: &Value,
+        initial: ValueInfo<'_>,
+        last: ValueInfo<'_>,
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let initial_type = initial.ty();
-        let last_type = last.ty();
-
         let expr_type = self
             .expr
             .type_of(
-                TypeHint::Explicit(initial_type),
-                TypeHint::Explicit(last_type),
+                TypeHint::Explicit(initial.ty),
+                TypeHint::Explicit(last.ty),
                 TypeHint::Explicit(value_type),
                 TypeHint::NoHint,
             )?
@@ -729,13 +718,13 @@ impl Regex {
 
         let value = self
             .expr
-            .type_check(initial_type, last_type, value_type, expr_type)?
+            .type_check(initial.ty, last.ty, value_type, expr_type)?
             .eval(initial, last, proxy)?;
 
         let bytes = match &value {
             Value::Bytes(bytes) => &bytes[..],
-            Value::String(_, s, ..) => s.as_bytes(),
-            Value::None(..) => return Ok(Test::Undefined),
+            Value::String(s, ..) => s.as_bytes(),
+            Value::None => return Ok(Test::Undefined),
             _ => return Ok(Test::False),
         };
 
@@ -782,8 +771,8 @@ pub struct Not {
 impl Not {
     fn test(
         &self,
-        initial: &Value,
-        last: &Value,
+        initial: ValueInfo<'_>,
+        last: ValueInfo<'_>,
         value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
@@ -883,8 +872,7 @@ fn collection_value_type_of(
 mod tests {
     use super::{ast::FilterExpr as F, lexer, parser, FilterOp, Special};
     use crate::{
-        error::Error, process::MemoryInformation, value_expr::ast::ValueExpr as V, Address,
-        ProcessInfo, Type,
+        process::MemoryInformation, value_expr::ast::ValueExpr as V, Address, ProcessInfo, Type,
     };
 
     struct FakeProcess {
@@ -904,7 +892,7 @@ mod tests {
             self.pointer_width
         }
 
-        fn virtual_query(&self, _: Address) -> Result<Option<MemoryInformation>, Error> {
+        fn virtual_query(&self, _: Address) -> anyhow::Result<Option<MemoryInformation>> {
             Ok(None)
         }
     }

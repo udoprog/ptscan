@@ -48,7 +48,7 @@ impl fmt::Display for CurrentScanResult {
         write!(fmt, "{}", self.result)?;
 
         if let Some(current) = &self.current {
-            write!(fmt, " {} {}", current.ty(), current)?;
+            write!(fmt, " {}", current)?;
         }
 
         Ok(())

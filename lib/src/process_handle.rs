@@ -438,11 +438,11 @@ impl ProcessHandle {
 
                             let mut work = || {
                                 let mut proxy = self.address_proxy(&result.pointer);
-                                let value_type = new_type.unwrap_or_else(|| result.last().ty());
+                                let value_type = new_type.unwrap_or_else(|| result.last_type());
 
                                 if let Test::True = filter.test(
-                                    result.initial(),
-                                    result.last(),
+                                    result.initial_info(),
+                                    result.last_info(),
                                     value_type,
                                     &mut proxy,
                                 )? {
@@ -579,32 +579,29 @@ impl ProcessHandle {
                                 }
                             };
 
-                            let value_type = new_type.unwrap_or_else(|| result.last().ty());
+                            let value_type = new_type.unwrap_or_else(|| result.last_type());
 
                             let mut work = move || {
                                 let mut proxy = self.address_proxy(&result.pointer);
 
-                                let initial = result.initial();
-                                let last = result.last();
-
-                                let initial_type = initial.ty();
-                                let last_type = last.ty();
+                                let initial = result.initial_info();
+                                let last = result.last_info();
 
                                 let expr_type = expr
                                     .type_of(
-                                        TypeHint::Explicit(initial_type),
-                                        TypeHint::Explicit(last_type),
+                                        TypeHint::Explicit(initial.ty),
+                                        TypeHint::Explicit(last.ty),
                                         TypeHint::Explicit(value_type),
                                         TypeHint::NoHint,
                                     )?
                                     .ok_or_else(|| Error::TypeInference(expr.clone()))?;
 
                                 let value = expr
-                                    .type_check(initial_type, last_type, value_type, expr_type)?
-                                    .eval(&initial, &last, &mut proxy)?;
+                                    .type_check(initial.ty, last.ty, value_type, expr_type)?
+                                    .eval(initial, last, &mut proxy)?;
 
-                                result.last = Value::None(value.ty());
                                 result.initial = value;
+                                result.last = Value::None;
                                 *result.pointer.last_address_mut() = proxy.follow_default()?;
                                 Ok(false)
                             };
@@ -685,12 +682,12 @@ impl AddressProxy<'_> {
 
             let address = match address {
                 Some(address) => address,
-                None => return Ok((Value::None(ty), None)),
+                None => return Ok((Value::None, None)),
             };
 
             let result = match ty.decode(&(memory_cache, &self.handle.process), address) {
                 Ok(value) => value,
-                Err(..) => (Value::None(ty), None),
+                Err(..) => (Value::None, None),
             };
 
             self.evaled = Cached::Some(result.clone());
@@ -707,12 +704,12 @@ impl AddressProxy<'_> {
 
             let address = match address {
                 Some(address) => address,
-                None => return Ok((Value::None(ty), None)),
+                None => return Ok((Value::None, None)),
             };
 
             let result = match ty.decode(&self.handle.process, address) {
                 Ok(value) => value,
-                Err(..) => (Value::None(ty), None),
+                Err(..) => (Value::None, None),
             };
 
             self.evaled = Cached::Some(result.clone());

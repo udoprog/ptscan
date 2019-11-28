@@ -194,44 +194,45 @@ impl fmt::Debug for Offset {
 #[cfg(test)]
 mod tests {
     use super::{Offset, Sign};
+    use crate::Size;
 
     #[test]
     fn test_offsets() {
         use self::Sign::*;
 
         assert_eq!(
-            Offset(NoSign, 0),
-            Offset(Minus, 0x10).saturating_add(Offset(Plus, 0x10))
+            Offset::new(NoSign, Size::new(0)),
+            Offset::new(Minus, Size::new(0x10)).saturating_add(Offset::new(Plus, Size::new(0x10)))
         );
         assert_eq!(
-            Offset(Plus, 0x10),
-            Offset(Minus, 0x10).saturating_add(Offset(Plus, 0x20))
+            Offset::new(Plus, Size::new(0x10)),
+            Offset::new(Minus, Size::new(0x10)).saturating_add(Offset::new(Plus, Size::new(0x20)))
         );
         assert_eq!(
-            Offset(Minus, 0x10),
-            Offset(Minus, 0x20).saturating_add(Offset(Plus, 0x10))
-        );
-
-        assert_eq!(
-            Offset(NoSign, 0),
-            Offset(Plus, 0x10).saturating_add(Offset(Minus, 0x10))
-        );
-        assert_eq!(
-            Offset(Minus, 0x10),
-            Offset(Plus, 0x10).saturating_add(Offset(Minus, 0x20))
-        );
-        assert_eq!(
-            Offset(Plus, 0x10),
-            Offset(Plus, 0x20).saturating_add(Offset(Minus, 0x10))
+            Offset::new(Minus, Size::new(0x10)),
+            Offset::new(Minus, Size::new(0x20)).saturating_add(Offset::new(Plus, Size::new(0x10)))
         );
 
         assert_eq!(
-            Offset(NoSign, 0),
-            Offset(NoSign, 0).saturating_add(Offset(NoSign, 0))
+            Offset::new(NoSign, Size::new(0)),
+            Offset::new(Plus, Size::new(0x10)).saturating_add(Offset::new(Minus, Size::new(0x10)))
         );
         assert_eq!(
-            Offset(Plus, 0x20),
-            Offset(Plus, 0x10).saturating_add(Offset(Plus, 0x10))
+            Offset::new(Minus, Size::new(0x10)),
+            Offset::new(Plus, Size::new(0x10)).saturating_add(Offset::new(Minus, Size::new(0x20)))
+        );
+        assert_eq!(
+            Offset::new(Plus, Size::new(0x10)),
+            Offset::new(Plus, Size::new(0x20)).saturating_add(Offset::new(Minus, Size::new(0x10)))
+        );
+
+        assert_eq!(
+            Offset::new(NoSign, Size::new(0)),
+            Offset::new(NoSign, Size::new(0)).saturating_add(Offset::new(NoSign, Size::new(0)))
+        );
+        assert_eq!(
+            Offset::new(Plus, Size::new(0x20)),
+            Offset::new(Plus, Size::new(0x10)).saturating_add(Offset::new(Plus, Size::new(0x10)))
         );
     }
 }

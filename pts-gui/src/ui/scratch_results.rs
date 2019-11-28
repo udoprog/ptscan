@@ -161,7 +161,7 @@ impl ScratchResults {
                 {
                     let mut scan_result_dialog = s.scan_result_dialog.borrow_mut();
 
-                    scan_result_dialog.set_result(Box::new(ScanResult::new(Pointer::null(), Value::default())));
+                    scan_result_dialog.set_result(Box::new(ScanResult::new(Pointer::null(), Type::default(), Value::default())));
 
                     scan_result_dialog.on_save(clone!(slf => move |_, result| {
                         let mut s = slf.borrow_mut();
@@ -291,8 +291,7 @@ impl ScratchResults {
     pub fn add_result(&mut self, result: &Box<ScanResult>) {
         let model = upgrade!(self.widgets.model);
 
-        let last = result.last();
-        let ty = last.ty().to_string();
+        let ty = result.last_type().to_string();
         let pointer = result.pointer.to_string();
         let initial = result.initial.to_string();
         let last = result.last().to_string();
@@ -317,8 +316,7 @@ impl ScratchResults {
 
         let model = upgrade!(self.widgets.model);
 
-        let last = result.last();
-        let ty = last.ty().to_string();
+        let ty = result.last_type().to_string();
         let pointer = result.pointer.to_string();
         let initial = result.initial.to_string();
         let last = result.last().to_string();
@@ -405,7 +403,7 @@ impl ScratchResults {
             task::Task::new(slf_rc, move |c| {
                 let handle = handle.read();
 
-                let ty = result.initial.ty();
+                let ty = result.initial_type();
                 let needle = result.pointer.follow_default(&*handle)?
                     .ok_or_else(|| anyhow!("illegal pointer for scan"))?;
 
@@ -436,7 +434,7 @@ impl ScratchResults {
                 }
 
                 let mut results = Vec::new();
-                pointer_scan.scan(ty, needle, &mut results, &mut InitialProgress::new(c, "Scanning for paths"))?;
+                pointer_scan.scan(needle, &mut results, &mut InitialProgress::new(c, "Scanning for paths"))?;
 
                 if c.is_stopped() {
                     return Err(anyhow!("pointer scan cancelled"));

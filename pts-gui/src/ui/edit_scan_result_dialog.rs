@@ -145,7 +145,7 @@ impl EditScanResultDialog {
                     }
 
                     result.initial = ty.default_value();
-                    result.last = Value::None(ty);
+                    result.last = Value::None;
                 }
 
                 Self::refresh_value(&slf);
@@ -216,9 +216,8 @@ impl EditScanResultDialog {
             let address_entry = upgrade!(self.widgets.address_entry).block(&signals.address_entry);
             let type_entry = upgrade!(self.widgets.type_entry).block(&signals.type_entry);
 
-            let last = result.last();
             address_entry.set_text(&result.pointer.to_string());
-            type_entry.set_text(&last.ty().to_string());
+            type_entry.set_text(&result.last_type().to_string());
         }
 
         self.last_address = result.pointer.address();
@@ -240,7 +239,7 @@ impl EditScanResultDialog {
         let handle = optional!(slf.handle.clone());
 
         let pointer = result.pointer.clone();
-        let ty = result.initial.ty();
+        let ty = result.initial_type();
 
         let task = cascade! {
             task::Task::oneshot(dialog, move |_| {

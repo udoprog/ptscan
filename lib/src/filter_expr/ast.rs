@@ -76,7 +76,7 @@ impl FilterExpr {
                 let expr = expr.eval(process)?;
 
                 let regex = match pattern {
-                    ValueExpr::String(_, s) => regex::bytes::Regex::new(&s)?,
+                    ValueExpr::String(s) => regex::bytes::Regex::new(&s)?,
                     other => bail!("cannot use expression {} as a regular expression", other),
                 };
 

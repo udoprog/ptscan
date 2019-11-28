@@ -216,8 +216,7 @@ impl ScanResults {
         let results = scan.results.iter().take(100).cloned().collect::<Vec<_>>();
 
         for (index, result) in results.iter().enumerate() {
-            let last = result.last();
-            let ty = last.ty().to_string();
+            let ty = result.last_type().to_string();
             let pointer = result.pointer.to_string();
             let initial = result.initial.to_string();
             let last = result.last().to_string();

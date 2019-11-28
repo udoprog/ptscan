@@ -1,5 +1,5 @@
 // vim: ft=rust
-use crate::{Encoding, Type, filter_expr::{FilterOp, lexer::Token, ast::*}, value_expr::{ValueOp, ast::*}};
+use crate::{Type, filter_expr::{FilterOp, lexer::Token, ast::*}, value_expr::{ValueOp, ast::*}};
 use num_bigint::BigInt;
 use bigdecimal::BigDecimal;
 
@@ -65,7 +65,7 @@ ValueTerm: ValueExpr = {
     initial => ValueExpr::Initial,
     <number:number> => ValueExpr::Number(number.0, number.1),
     <decimal:decimal> => ValueExpr::Decimal(decimal.0, decimal.1),
-    <string:"string"> => ValueExpr::String(Encoding::default(), string),
+    <string:"string"> => ValueExpr::String(string),
     <bytes:bytes> => ValueExpr::Bytes(bytes),
 };
 

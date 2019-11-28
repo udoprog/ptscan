@@ -105,7 +105,7 @@ impl ShowScanResultDialog {
         let type_label = upgrade!(self.widgets.type_label);
 
         address_label.set_text(&result.pointer.to_string());
-        type_label.set_text(&result.last().ty().to_string());
+        type_label.set_text(&result.last_type().to_string());
 
         upgrade!(self.widgets.initial_label).set_text(&result.initial.to_string());
         upgrade!(self.widgets.last_label).set_text(&result.last().to_string());
@@ -126,7 +126,7 @@ impl ShowScanResultDialog {
         let handle = optional!(slf.handle.clone());
 
         let pointer = result.pointer.clone();
-        let ty = result.initial.ty();
+        let ty = result.initial_type();
 
         let task = cascade! {
             task::Task::oneshot(dialog, move |_| {

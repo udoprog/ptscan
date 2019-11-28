@@ -4,7 +4,7 @@ use crate::{
     process::Process,
     utils::{EscapeString, Hex},
     value::Value,
-    Address, AddressProxy, Encoding, Sign, Type, TypeHint,
+    Address, AddressProxy, Sign, Type, TypeHint, ValueInfo,
 };
 use anyhow::{anyhow, bail};
 use bigdecimal::BigDecimal;
@@ -33,7 +33,7 @@ pub enum TypedValueExpr<'a> {
     ),
     Number(Type, &'a BigInt),
     Decimal(Type, &'a BigDecimal),
-    String(Type, Encoding, &'a String),
+    String(Type, &'a String),
     Bytes(Type, &'a Vec<u8>),
     Cast(Type, Box<TypedValueExpr<'a>>),
 }
@@ -42,26 +42,24 @@ impl TypedValueExpr<'_> {
     /// Evaluate the expression to return a value.
     pub fn eval(
         &self,
-        initial: &Value,
-        last: &Value,
+        initial: ValueInfo<'_>,
+        last: ValueInfo<'_>,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Value> {
         Ok(match *self {
             Self::Value(expr_type) => proxy.eval(expr_type)?.0,
-            Self::Initial(expr_type) => expr_type.convert(initial.clone()),
-            Self::Last(expr_type) => expr_type.convert(last.clone()),
+            Self::Initial(expr_type) => expr_type.convert(initial.value.clone()),
+            Self::Last(expr_type) => expr_type.convert(last.value.clone()),
             Self::Number(expr_type, value) => Value::from_bigint(expr_type, value)?,
             Self::Decimal(expr_type, value) => Value::from_bigdecimal(expr_type, value)?,
-            Self::String(expr_type, encoding, value) => {
-                expr_type.convert(Value::String(encoding, value.to_string()))
-            }
+            Self::String(expr_type, value) => expr_type.convert(Value::String(value.to_string())),
             Self::Bytes(expr_type, value) => expr_type.convert(Value::Bytes(value.clone())),
             Self::Deref(expr_type, ref value) => {
                 let value = Type::Pointer.convert(value.eval(initial, last, proxy)?);
 
                 let address = match value.as_address() {
                     Some(address) => address,
-                    None => return Ok(Value::None(expr_type)),
+                    None => return Ok(Value::None),
                 };
 
                 let pointer = pointer::Pointer::from_address(address);
@@ -72,7 +70,7 @@ impl TypedValueExpr<'_> {
             Self::AddressOf(expr_type, ref value) => {
                 let new_address = match value.address_of(initial, last, proxy)? {
                     Some(address) => address,
-                    None => return Ok(Value::None(expr_type)),
+                    None => return Ok(Value::None),
                 };
 
                 expr_type.convert(Value::Pointer(new_address))
@@ -84,7 +82,7 @@ impl TypedValueExpr<'_> {
 
                 let value = match op.apply(lhs, rhs)? {
                     Some(value) => value,
-                    None => return Ok(Value::None(expr_type)),
+                    None => return Ok(Value::None),
                 };
 
                 expr_type.convert(value)
@@ -94,8 +92,8 @@ impl TypedValueExpr<'_> {
 
     pub fn address_of(
         &self,
-        initial: &Value,
-        last: &Value,
+        initial: ValueInfo<'_>,
+        last: ValueInfo<'_>,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Option<Address>> {
         let mut stack = Vec::new();
@@ -107,8 +105,8 @@ impl TypedValueExpr<'_> {
     pub fn stacked_address_of(
         &self,
         stack: &mut Vec<Option<Address>>,
-        initial: &Value,
-        last: &Value,
+        initial: ValueInfo<'_>,
+        last: ValueInfo<'_>,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<()> {
         match self {
@@ -169,7 +167,7 @@ pub enum ValueExpr {
     },
     /// A string literal.
     #[serde(rename = "string")]
-    String { encoding: Encoding, value: String },
+    String { value: String },
     /// A number of raw bytes.
     #[serde(rename = "bytes")]
     Bytes { value: Vec<u8> },
@@ -301,8 +299,8 @@ impl ValueExpr {
             Self::Decimal {
                 type_hint: None, ..
             } => default_hint.or_implicit(Type::F32),
-            Self::String { encoding, .. } => default_hint.or_implicit(Type::String(encoding)),
-            Self::Bytes { ref value } => default_hint.or_implicit(Type::Bytes(Some(value.len()))),
+            Self::String { .. } => default_hint.or_implicit(Type::String(Default::default())),
+            Self::Bytes { ref value } => default_hint.or_implicit(Type::Bytes(value.len())),
         })
     }
 
@@ -370,10 +368,7 @@ impl ValueExpr {
             Self::Last => TypedValueExpr::Last(expr_type),
             Self::Number { ref value, .. } => TypedValueExpr::Number(expr_type, value),
             Self::Decimal { ref value, .. } => TypedValueExpr::Decimal(expr_type, value),
-            Self::String {
-                encoding,
-                ref value,
-            } => TypedValueExpr::String(expr_type, encoding, value),
+            Self::String { ref value } => TypedValueExpr::String(expr_type, value),
             Self::Bytes { ref value } => TypedValueExpr::Bytes(expr_type, value),
             Self::Deref { ref value } => {
                 let value = value.type_check(initial_type, last_type, value_type, Type::Pointer)?;

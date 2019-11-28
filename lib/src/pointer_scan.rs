@@ -86,7 +86,6 @@ impl<'a> PointerScan<'a> {
     /// Perform the initial backwards pointer scan.
     pub fn scan(
         &mut self,
-        ty: Type,
         needle: Address,
         results: &mut Vec<Box<ScanResult>>,
         progress: &mut impl PointerScanInitialProgress,
@@ -148,7 +147,7 @@ impl<'a> PointerScan<'a> {
                             Some(needle),
                         );
 
-                        results.push(Box::new(ScanResult::new(pointer, Value::None(ty))));
+                        results.push(Box::new(ScanResult::new(pointer, Type::None, Value::None)));
                     }
                     // ignore thread stacks
                     Location::Thread(..) => {
@@ -209,7 +208,7 @@ impl<'a> PointerScan<'a> {
                         let pointer =
                             Pointer::new(result.pointer.base().clone(), path, Some(needle));
 
-                        additions.push(Box::new(ScanResult::new(pointer, Value::None(ty))));
+                        additions.push(Box::new(ScanResult::new(pointer, ty, Value::None)));
                     }
                 }
 

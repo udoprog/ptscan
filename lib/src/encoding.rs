@@ -1,5 +1,5 @@
 use crate::{
-    filter_expr::special::find_first_nonzero, process::MemoryReader, Address, Size, Type, Value,
+    filter_expr::special::find_first_nonzero, process::MemoryReader, Address, Size, Value,
 };
 use anyhow::bail;
 use std::{convert::TryFrom as _, fmt, str};
@@ -147,15 +147,10 @@ impl Encoding {
                 match find_first_nonzero(input) {
                     Some(0) => (),
                     Some(other) => {
-                        return Ok((Value::None(Type::String(self)), Some(offset + other)));
+                        return Ok((Value::None, Some(offset + other)));
                     }
                     // NB: buffer is _all_ zeros.
-                    None => {
-                        return Ok((
-                            Value::None(Type::String(self)),
-                            Some(offset + input.len() + 1),
-                        ))
-                    }
+                    None => return Ok((Value::None, Some(offset + input.len() + 1))),
                 }
 
                 if let Some(index) = memchr::memchr(0x0, &input) {
@@ -186,7 +181,7 @@ impl Encoding {
                     }
                     DecoderResult::Malformed(..) => {
                         if output.is_empty() {
-                            return Ok((Value::None(Type::String(self)), Some(1)));
+                            return Ok((Value::None, Some(1)));
                         }
 
                         break 'outer;
@@ -196,7 +191,7 @@ impl Encoding {
         }
 
         let advance = output.len() + 1;
-        Ok((Value::String(self, output), Some(advance)))
+        Ok((Value::String(output), Some(advance)))
     }
 
     /// Default alignment for various encodings.

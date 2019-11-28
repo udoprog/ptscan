@@ -3,6 +3,7 @@
 use crate::{
     progress_reporter::ProgressReporter, Address, FilterExpr, Pointer, PointerBase, ProcessHandle,
     ProcessInfo as _, RawPointer, ScanResult, Size, Special, Test, Token, Type, Value, ValueExpr,
+    ValueInfo,
 };
 use anyhow::{anyhow, bail};
 use crossbeam_queue::SegQueue;
@@ -416,8 +417,13 @@ impl Scan {
             let mut results = Vec::new();
 
             let mut buffer = vec![0u8; buffer_size];
-            let none = Value::default();
-            let none = &none;
+
+            let none_value = Value::None;
+
+            let none = ValueInfo {
+                ty: Type::None,
+                value: &none_value,
+            };
 
             while let Ok((address, len)) = queue.pop() {
                 if cancel.test() {
@@ -470,7 +476,7 @@ impl Scan {
             base: Address,
             data: &'a [u8],
             step_size: usize,
-            none: &'a Value,
+            none: ValueInfo<'a>,
             alignment: Option<usize>,
             special: Option<&'a Special>,
             cancel: &'a Token,
@@ -536,7 +542,7 @@ impl Scan {
                     let (value, advance) = proxy.eval(value_type)?;
                     *pointer.base_mut() = handle.address_to_pointer_base(address)?;
                     *pointer.last_address_mut() = Some(address);
-                    results.push(Box::new(ScanResult::new(pointer, value)));
+                    results.push(Box::new(ScanResult::new(pointer, value_type, value)));
 
                     if let Some(advance) = advance {
                         if advance == 0 {

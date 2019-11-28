@@ -104,7 +104,10 @@ impl Value {
         }
     }
 
-    pub fn is_zero(&self) -> Option<bool> {
+    /// The currently assumed value is all zero bits in memory.
+    ///
+    /// This is used for optimizations.
+    pub fn is_zero_bits(&self) -> Option<bool> {
         Some(match *self {
             Self::None(..) => return None,
             Self::Pointer(address) => address.is_null(),

@@ -204,6 +204,8 @@ impl Binary {
                     (Value::I64($a), Value::I64($b)) => $a $op $b,
                     (Value::U128($a), Value::U128($b)) => $a $op $b,
                     (Value::I128($a), Value::I128($b)) => $a $op $b,
+                    (Value::F32($a), Value::F32($b)) => $a $op $b,
+                    (Value::F64($a), Value::F64($b)) => $a $op $b,
                     (Value::String(_, $a), Value::String(_, $b)) => $a $op $b,
                     (Value::Bytes($a), Value::Bytes($b)) => $a $op $b,
                     _ => false,

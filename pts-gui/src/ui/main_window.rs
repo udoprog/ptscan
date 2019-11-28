@@ -182,19 +182,21 @@ impl MainWindow {
             slf.borrow_mut().cancel_major_task();
         }));
 
-        filter_options.borrow_mut().on_scan(clone!(slf => move || {
-            Self::scan(&slf);
-        }));
-
-        filter_options
-            .borrow_mut()
-            .on_refresh(clone!(slf => move || {
+        cascade! {
+            filter_options.borrow_mut();
+            ..on_scan(clone!(slf => move || {
+                Self::scan(&slf);
+            }));
+            ..on_refresh(clone!(slf => move || {
                 Self::refresh(&slf);
             }));
-
-        filter_options.borrow_mut().on_reset(clone!(slf => move || {
-            Self::reset(&slf);
-        }));
+            ..on_reset(clone!(slf => move || {
+                Self::reset(&slf);
+            }));
+            ..on_value_expr_changed(clone!(slf => move |value_expr| {
+                slf.borrow().scan_results.borrow_mut().set_value_expr(value_expr);
+            }));
+        };
 
         slf.borrow_mut().update_components();
 
@@ -390,14 +392,10 @@ impl MainWindow {
         let scan = slf.scan.clone();
         let thread_pool = slf.thread_pool.clone();
         let started = Instant::now();
+        let value_expr = slf.filter_options.borrow().state.value_expr.clone();
 
-        let (mut task, value_expr) = {
-            let filter_options = slf.filter_options.borrow();
-            let value_expr = filter_options.state.value_expr.clone();
-
-            let value_expr2 = value_expr.clone();
-
-            let task = task::Task::new(main, move |s| {
+        let task = cascade! {
+            task::Task::new(main, move |s| {
                 let value_type = value_expr.value_type_of(TypeHint::NoHint)?.option();
                 let handle = handle.read();
                 let mut scan = scan.write();
@@ -413,57 +411,48 @@ impl MainWindow {
 
                 Ok(s.is_stopped())
             });
-
-            (task, value_expr2)
-        };
-
-        task.emit(|slf, (percentage, results)| {
-            if let Some(progress) = slf.widgets.scan_progress.upgrade() {
-                let fraction = (percentage as f64) / 100f64;
-                progress.set_fraction(fraction);
-                progress.set_text(Some(&format!("Refreshed {} result(s)", results)));
-            }
-        });
-
-        task.then(move |slf, cancelled| {
-            if let Some(status_label) = slf.widgets.status_label.upgrade() {
-                let diff = Instant::now().duration_since(started);
-
-                let (text, error) = match cancelled {
-                    Err(e) => (
-                        format!(
-                            "Refresh failed after {:.3?} (<a href=\"#last-error\">error details</a>)",
-                            diff
-                        ),
-                        Some(e),
-                    ),
-                    Ok(true) => (
-                        format!(
-                            "Refresh cancelled after {:.3?} (<a href=\"#last-error\">error details</a>)",
-                            diff
-                        ),
-                        Some(anyhow!("task was cancelled")),
-                    ),
-                    Ok(false) => (format!("Refresh completed in {:.3?}", diff), None),
-                };
-
-                status_label.set_markup(&text);
-
-                if let Some(error) = error {
-                    slf.error_dialog.borrow_mut().add_error(Utc::now(), error);
+            ..emit(|slf, (percentage, results)| {
+                if let Some(progress) = slf.widgets.scan_progress.upgrade() {
+                    let fraction = (percentage as f64) / 100f64;
+                    progress.set_fraction(fraction);
+                    progress.set_text(Some(&format!("Refreshed {} result(s)", results)));
                 }
-            }
+            });
+            ..then(move |slf, cancelled| {
+                if let Some(status_label) = slf.widgets.status_label.upgrade() {
+                    let diff = Instant::now().duration_since(started);
 
-            cascade! {
-                slf.scan_results.borrow_mut();
-                ..set_value_expr(value_expr);
-                ..refresh();
-            };
+                    let (text, error) = match cancelled {
+                        Err(e) => (
+                            format!(
+                                "Refresh failed after {:.3?} (<a href=\"#last-error\">error details</a>)",
+                                diff
+                            ),
+                            Some(e),
+                        ),
+                        Ok(true) => (
+                            format!(
+                                "Refresh cancelled after {:.3?} (<a href=\"#last-error\">error details</a>)",
+                                diff
+                            ),
+                            Some(anyhow!("task was cancelled")),
+                        ),
+                        Ok(false) => (format!("Refresh completed in {:.3?}", diff), None),
+                    };
 
-            slf.filter_options.borrow_mut().has_results(true);
-            slf.end_major_task();
-            slf.update_components();
-        });
+                    status_label.set_markup(&text);
+
+                    if let Some(error) = error {
+                        slf.error_dialog.borrow_mut().add_error(Utc::now(), error);
+                    }
+                }
+
+                slf.scan_results.borrow_mut().refresh();
+                slf.filter_options.borrow_mut().has_results(true);
+                slf.end_major_task();
+                slf.update_components();
+            });
+        };
 
         slf.start_major_task(task.run());
     }
@@ -567,9 +556,6 @@ impl MainWindow {
         attached.set_visible(self.handle.is_some());
         detached.set_visible(self.handle.is_none());
 
-        self.filter_options
-            .borrow_mut()
-            .set_handle(self.handle.clone());
         self.scan_results
             .borrow_mut()
             .set_handle(self.handle.clone());
@@ -586,7 +572,17 @@ impl MainWindow {
             .borrow_mut()
             .set_attached(self.handle.is_some());
 
-        ui::ProcessInformation::set_handle(&self.process_information, self.handle.clone());
+        let filter_options = &self.filter_options;
+        let process_information = &self.process_information;
+        let handle = &self.handle;
+
+        gtk::idle_add(
+            clone!(filter_options, process_information, handle => move || {
+                ui::FilterOptions::set_handle(&filter_options, handle.clone());
+                ui::ProcessInformation::set_handle(&process_information, handle.clone());
+                Continue(false)
+            }),
+        );
     }
 }
 

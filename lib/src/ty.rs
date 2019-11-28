@@ -29,26 +29,33 @@ pub enum ValueParseError {
 }
 
 macro_rules! convert {
-    ($a:ident, $b:ident) => {
-        convert!(@a $a, $b, {
-            [Pointer, Address],
-            [U8, u8],
-            [I8, i8],
-            [U16, u16],
-            [I16, i16],
-            [U32, u32],
-            [I32, i32],
-            [U64, u64],
-            [I64, i64],
-            [U128, u128],
-            [I128, i128]
-        })
+    ($type_to:ident, $value_from:ident) => {
+        convert!(
+            @a $type_to, $value_from,
+            {
+                [Pointer, Address],
+                [U8, u8],
+                [I8, i8],
+                [U16, u16],
+                [I16, i16],
+                [U32, u32],
+                [I32, i32],
+                [U64, u64],
+                [I64, i64],
+                [U128, u128],
+                [I128, i128]
+            },
+            {
+                [F32, f32],
+                [F64, f64]
+            }
+        )
     };
 
-    (@a $a:ident, $b:ident, {$([$variant:ident, $ty:ty]),*}) => {
-        match $a {
+    (@a $type_to:ident, $value_from:ident, {$([$variant:ident, $ty:ty]),*}, {$([$cast_variant:ident, $cast_ty:ty]),*}) => {
+        match $type_to {
             $(
-                Self::$variant => convert!(@b $a, $b, $variant, $ty, {
+                Self::$variant => convert!(@try_from $type_to, $value_from, $variant, $ty, {
                     Pointer,
                     U8,
                     I8,
@@ -62,18 +69,50 @@ macro_rules! convert {
                     I128
                 }),
             )*
-            _ => Value::None($a),
+            $(
+                Self::$cast_variant => convert!(@cast $type_to, $value_from, $cast_variant, $cast_ty, {
+                    U8,
+                    I8,
+                    U16,
+                    I16,
+                    U32,
+                    I32,
+                    U64,
+                    I64,
+                    U128,
+                    I128,
+                    F32,
+                    F64
+                }),
+            )*
+            _ => Value::None($type_to),
         }
     };
 
-    (@b $a:ident, $b:ident, $into:ident, $ty:ty, {$($variant:ident),*}) => {
-        match $b {
+    // Procedure used for conversion through using try_from.
+    (@try_from $type_to:ident, $value_from:ident, $into:ident, $ty:ty, {$($variant:ident),*}) => {
+        match $value_from {
             $(
                 Value::$variant(value) => {
-                    return <$ty>::try_from(value).map(Value::$into).unwrap_or_else(|_| Value::None($a));
+                    return <$ty>::try_from(value).map(Value::$into).unwrap_or_else(|_| Value::None($type_to));
                 },
             )*
-            _ => Value::None($a),
+            _ => Value::None($type_to),
+        }
+    };
+
+    // Procedure used for conversion through casting.
+    (@cast $type_to:ident, $value_from:ident, $into:ident, $ty:ty, {$($variant:ident),*}) => {
+        match $value_from {
+            $(
+                Value::$variant(value) => {
+                    return Value::$into(value as $ty);
+                },
+            )*
+            Value::Pointer(address) => {
+                return Value::$into(address.0 as $ty);
+            }
+            _ => Value::None($type_to),
         }
     };
 }
@@ -140,6 +179,8 @@ impl Type {
             (Self::I64, other @ Value::I64(..)) => other,
             (Self::U128, other @ Value::U128(..)) => other,
             (Self::I128, other @ Value::I128(..)) => other,
+            (Self::F32, other @ Value::F32(..)) => other,
+            (Self::F64, other @ Value::F64(..)) => other,
             (Self::String(a), Value::String(_, string)) => Value::String(a, string),
             (Self::Bytes(..), other @ Value::Bytes(..)) => other,
             (Self::Bytes(None), Value::String(encoding, string)) => {

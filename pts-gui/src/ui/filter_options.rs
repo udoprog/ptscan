@@ -33,6 +33,7 @@ pub struct FilterOptions {
     on_scan: Option<Box<dyn Fn()>>,
     on_reset: Option<Box<dyn Fn()>>,
     on_refresh: Option<Box<dyn Fn()>>,
+    on_value_expr_changed: Option<Box<dyn Fn(ValueExpr)>>,
     handle: Option<Arc<RwLock<ProcessHandle>>>,
     enabled: bool,
     has_results: bool,
@@ -95,8 +96,9 @@ impl FilterOptions {
                 modules_only: modules_only.downgrade(),
             },
             on_reset: None,
-            on_refresh: None,
             on_scan: None,
+            on_refresh: None,
+            on_value_expr_changed: None,
             handle: None,
             enabled: true,
             has_results: false,
@@ -129,17 +131,15 @@ impl FilterOptions {
         }));
 
         filter_expr_text.connect_changed(clone!(slf => move |expr| {
-            let mut slf = slf.borrow_mut();
-            slf.state.filter_expr_text = expr.get_buffer().get_text();
-            slf.parse_filter_expr();
+            slf.borrow_mut().state.filter_expr_text = expr.get_buffer().get_text();
+            Self::parse_filter_expr(&slf);
         }));
 
         clip.hook_entry(&filter_expr_text);
 
         value_expr_text.connect_changed(clone!(slf => move |expr| {
-            let mut slf = slf.borrow_mut();
-            slf.state.value_expr_text = expr.get_buffer().get_text();
-            slf.parse_value_expr();
+            slf.borrow_mut().state.value_expr_text = expr.get_buffer().get_text();
+            Self::parse_value_expr(&slf);
         }));
 
         modules_only.connect_toggled(clone!(slf => move |btn| {
@@ -173,6 +173,11 @@ impl FilterOptions {
         self.on_refresh = Some(Box::new(on_refresh));
     }
 
+    /// Handle to fire when value expression has successfully changed.
+    pub fn on_value_expr_changed(&mut self, on_value_expr_changed: (impl Fn(ValueExpr) + 'static)) {
+        self.on_value_expr_changed = Some(Box::new(on_value_expr_changed));
+    }
+
     pub fn sync_state(&mut self) {
         if let Some(entry) = self.widgets.filter_expr_text.upgrade() {
             entry.set_text(&self.state.filter_expr_text);
@@ -184,28 +189,34 @@ impl FilterOptions {
     }
 
     /// Parse the current filter expression.
-    pub fn parse_filter_expr(&mut self) {
-        let handle = optional!(&self.handle);
-        let handle = optional!(handle.try_read());
+    pub fn parse_filter_expr(slf_rc: &Rc<RefCell<Self>>) {
+        let mut slf = slf_rc.borrow_mut();
 
-        if self.state.filter_expr_text.is_empty() {
-            if let Some(error) = self.widgets.filter_expr_error.upgrade() {
-                error.hide();
+        let result = {
+            let handle = optional!(&slf.handle);
+            let handle = optional!(handle.try_read());
+
+            if slf.state.filter_expr_text.is_empty() {
+                if let Some(error) = slf.widgets.filter_expr_error.upgrade() {
+                    error.hide();
+                }
+
+                return;
             }
 
-            return;
-        }
+            FilterExpr::parse(&slf.state.filter_expr_text, &handle.process)
+        };
 
-        match FilterExpr::parse(&self.state.filter_expr_text, &handle.process) {
+        match result {
             Ok(filter_expr) => {
-                self.state.filter_expr = Some(filter_expr);
+                slf.state.filter_expr = Some(filter_expr);
 
-                if let Some(error) = self.widgets.filter_expr_error.upgrade() {
+                if let Some(error) = slf.widgets.filter_expr_error.upgrade() {
                     error.hide();
                 }
             }
             Err(..) => {
-                if let Some(error) = self.widgets.filter_expr_error.upgrade() {
+                if let Some(error) = slf.widgets.filter_expr_error.upgrade() {
                     error.show();
                 }
             }
@@ -213,38 +224,57 @@ impl FilterOptions {
     }
 
     /// Parse the current global value expression.
-    pub fn parse_value_expr(&mut self) {
-        let handle = optional!(&self.handle);
-        let handle = optional!(handle.try_read());
+    ///
+    /// Note: we take some care not to hold a RefCell when invoking the
+    /// on_value_expr_changed callback to avoid potential kerfuffles.
+    pub fn parse_value_expr(slf: &Rc<RefCell<Self>>) {
+        let (cb, update) = {
+            let mut slf = slf.borrow_mut();
 
-        if self.state.value_expr_text.is_empty() {
-            if let Some(error) = self.widgets.value_expr_error.upgrade() {
-                error.hide();
-            }
-        }
+            let result = {
+                let handle = optional!(&slf.handle);
+                let handle = optional!(handle.try_read());
 
-        match ValueExpr::parse(&self.state.value_expr_text, &handle.process) {
-            Ok(value_expr) => {
-                self.state.value_expr = value_expr;
+                if slf.state.value_expr_text.is_empty() {
+                    if let Some(error) = slf.widgets.value_expr_error.upgrade() {
+                        error.hide();
+                    }
+                }
 
-                if let Some(error) = self.widgets.value_expr_error.upgrade() {
-                    error.hide();
+                ValueExpr::parse(&slf.state.value_expr_text, &handle.process)
+            };
+
+            match result {
+                Ok(value_expr) => {
+                    slf.state.value_expr = value_expr.clone();
+
+                    if let Some(error) = slf.widgets.value_expr_error.upgrade() {
+                        error.hide();
+                    }
+
+                    (slf.on_value_expr_changed.take(), value_expr)
+                }
+                Err(..) => {
+                    if let Some(error) = slf.widgets.value_expr_error.upgrade() {
+                        error.show();
+                    }
+
+                    return;
                 }
             }
-            Err(..) => {
-                if let Some(error) = self.widgets.value_expr_error.upgrade() {
-                    error.show();
-                }
-            }
-        }
+        };
+
+        let cb = optional!(cb);
+        cb(update);
+        slf.borrow_mut().on_value_expr_changed = Some(cb);
     }
 
     /// Update the current process.
-    pub fn set_handle(&mut self, handle: Option<Arc<RwLock<ProcessHandle>>>) {
-        self.handle = handle;
-        self.parse_filter_expr();
-        self.parse_value_expr();
-        self.update_components();
+    pub fn set_handle(slf: &Rc<RefCell<Self>>, handle: Option<Arc<RwLock<ProcessHandle>>>) {
+        slf.borrow_mut().handle = handle;
+        Self::parse_filter_expr(slf);
+        Self::parse_value_expr(slf);
+        slf.borrow_mut().update_components();
     }
 
     /// Indicate if there are results, so that the appropriate buttons and

@@ -678,9 +678,9 @@ impl Application {
 
                 let (last_address, value) = match self.handle.as_ref() {
                     Some(handle) => {
-                        let mut proxy = handle.address_proxy(&pointer);
+                        let mut proxy = handle.address_proxy(&pointer, ty);
                         let address = proxy.follow_default()?;
-                        let (value, _) = proxy.eval(ty)?;
+                        let (value, _) = proxy.eval()?;
                         (address, value)
                     }
                     None => (None, Value::None),
@@ -1211,14 +1211,11 @@ impl Application {
                     let mut changed = false;
 
                     if let Some(filter) = filter {
-                        let mut proxy = handle.address_proxy(&result.pointer);
+                        let mut proxy = handle.address_proxy(&result.pointer, prev.last_type());
 
-                        if let Test::False = filter.test(
-                            result.initial_info(),
-                            prev.last_info(),
-                            prev.last_type(),
-                            &mut proxy,
-                        )? {
+                        if let Test::False =
+                            filter.test(result.initial_info(), prev.last_info(), &mut proxy)?
+                        {
                             to_remove.push(index);
                             removed = true;
                         } else {
@@ -1355,11 +1352,11 @@ impl Application {
                     }
 
                     if let Some(filter) = filter {
-                        let mut proxy = handle.address_proxy(&result.pointer);
                         let ty = result.last_type();
+                        let mut proxy = handle.address_proxy(&result.pointer, ty);
 
                         if let Test::False =
-                            filter.test(state.initial_info(), state.last_info(), ty, &mut proxy)?
+                            filter.test(state.initial_info(), state.last_info(), &mut proxy)?
                         {
                             any_changed = true;
                             state.removed = true;

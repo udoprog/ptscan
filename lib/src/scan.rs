@@ -522,7 +522,7 @@ impl Scan {
 
                 let mut pointer =
                     Pointer::new(PointerBase::Address { address }, vec![], Some(address));
-                let mut proxy = handle.address_proxy(&pointer);
+                let mut proxy = handle.address_proxy(&pointer, value_type);
 
                 // sanity check
                 if let Some(last_address) = last_address {
@@ -537,9 +537,9 @@ impl Scan {
 
                 last_address = Some(address);
 
-                if let Test::True = filter.test(none, none, value_type, &mut proxy)? {
+                if let Test::True = filter.test(none, none, &mut proxy)? {
                     *hits += 1;
-                    let (value, advance) = proxy.eval(value_type)?;
+                    let (value, advance) = proxy.eval()?;
                     *pointer.base_mut() = handle.address_to_pointer_base(address)?;
                     *pointer.last_address_mut() = Some(address);
                     results.push(Box::new(ScanResult::new(pointer, value_type, value)));

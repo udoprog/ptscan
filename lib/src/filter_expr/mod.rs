@@ -92,18 +92,17 @@ impl FilterExpr {
         &self,
         initial: ValueInfo<'_>,
         last: ValueInfo<'_>,
-        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         match self {
-            Self::Binary(m) => m.test(initial, last, value_type, proxy),
-            Self::All(m) => m.test(initial, last, value_type, proxy),
-            Self::Any(m) => m.test(initial, last, value_type, proxy),
-            Self::IsPointer(m) => m.test(initial, last, value_type, proxy),
-            Self::IsType(m) => m.test(initial, last, value_type, proxy),
-            Self::IsNan(m) => m.test(initial, last, value_type, proxy),
-            Self::Not(m) => m.test(initial, last, value_type, proxy),
-            Self::Regex(m) => m.test(initial, last, value_type, proxy),
+            Self::Binary(m) => m.test(initial, last, proxy),
+            Self::All(m) => m.test(initial, last, proxy),
+            Self::Any(m) => m.test(initial, last, proxy),
+            Self::IsPointer(m) => m.test(initial, last, proxy),
+            Self::IsType(m) => m.test(initial, last, proxy),
+            Self::IsNan(m) => m.test(initial, last, proxy),
+            Self::Not(m) => m.test(initial, last, proxy),
+            Self::Regex(m) => m.test(initial, last, proxy),
         }
     }
 
@@ -188,7 +187,6 @@ impl Binary {
         &self,
         initial: ValueInfo<'_>,
         last: ValueInfo<'_>,
-        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         use self::FilterOp::*;
@@ -224,14 +222,14 @@ impl Binary {
         let lhs_type = lhs.type_of(
             Explicit(initial.ty),
             Explicit(last.ty),
-            Explicit(value_type),
+            Explicit(proxy.ty),
             TypeHint::NoHint,
         )?;
 
         let rhs_type = rhs.type_of(
             Explicit(initial.ty),
             Explicit(last.ty),
-            Explicit(value_type),
+            Explicit(proxy.ty),
             TypeHint::NoHint,
         )?;
 
@@ -248,8 +246,8 @@ impl Binary {
             _ => return Err(Error::BinaryTypeInference(self.clone()).into()),
         };
 
-        let lhs = lhs.type_check(initial.ty, last.ty, value_type, expr_type)?;
-        let rhs = rhs.type_check(initial.ty, last.ty, value_type, expr_type)?;
+        let lhs = lhs.type_check(initial.ty, last.ty, proxy.ty, expr_type)?;
+        let rhs = rhs.type_check(initial.ty, last.ty, proxy.ty, expr_type)?;
 
         let lhs = lhs.eval(initial, last, proxy)?;
         let rhs = rhs.eval(initial, last, proxy)?;
@@ -399,11 +397,10 @@ impl All {
         &self,
         initial: ValueInfo<'_>,
         last: ValueInfo<'_>,
-        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         for m in &self.0 {
-            match m.test(initial, last, value_type, proxy)? {
+            match m.test(initial, last, proxy)? {
                 Test::False => return Ok(Test::False),
                 Test::Undefined => return Ok(Test::Undefined),
                 _ => (),
@@ -468,11 +465,10 @@ impl Any {
         &self,
         initial: ValueInfo<'_>,
         last: ValueInfo<'_>,
-        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         for m in &self.0 {
-            match m.test(initial, last, value_type, proxy)? {
+            match m.test(initial, last, proxy)? {
                 Test::True => return Ok(Test::True),
                 Test::Undefined => return Ok(Test::Undefined),
                 _ => (),
@@ -531,7 +527,6 @@ impl IsPointer {
         &self,
         initial: ValueInfo<'_>,
         last: ValueInfo<'_>,
-        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         let expr_type = self
@@ -539,14 +534,14 @@ impl IsPointer {
             .type_of(
                 TypeHint::Explicit(initial.ty),
                 TypeHint::Explicit(last.ty),
-                TypeHint::Explicit(value_type),
+                TypeHint::Explicit(proxy.ty),
                 TypeHint::NoHint,
             )?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
 
         let value = self
             .expr
-            .type_check(initial.ty, last.ty, value_type, expr_type)?
+            .type_check(initial.ty, last.ty, proxy.ty, expr_type)?
             .eval(initial, last, proxy)?;
 
         let address = match value {
@@ -591,7 +586,6 @@ impl IsType {
         &self,
         initial: ValueInfo<'_>,
         last: ValueInfo<'_>,
-        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         let expr_type = self
@@ -599,14 +593,14 @@ impl IsType {
             .type_of(
                 TypeHint::Explicit(initial.ty),
                 TypeHint::Explicit(last.ty),
-                TypeHint::Explicit(value_type),
+                TypeHint::Explicit(proxy.ty),
                 TypeHint::NoHint,
             )?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
 
         let value = self
             .expr
-            .type_check(initial.ty, last.ty, value_type, expr_type)?
+            .type_check(initial.ty, last.ty, proxy.ty, expr_type)?
             .eval(initial, last, proxy)?;
 
         if value.is_none() {
@@ -649,7 +643,6 @@ impl IsNan {
         &self,
         initial: ValueInfo<'_>,
         last: ValueInfo<'_>,
-        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         let expr_type = self
@@ -657,14 +650,14 @@ impl IsNan {
             .type_of(
                 TypeHint::Explicit(initial.ty),
                 TypeHint::Explicit(last.ty),
-                TypeHint::Explicit(value_type),
+                TypeHint::Explicit(proxy.ty),
                 TypeHint::NoHint,
             )?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
 
         let value = self
             .expr
-            .type_check(initial.ty, last.ty, value_type, expr_type)?
+            .type_check(initial.ty, last.ty, proxy.ty, expr_type)?
             .eval(initial, last, proxy)?;
 
         let value = match value {
@@ -703,7 +696,6 @@ impl Regex {
         &self,
         initial: ValueInfo<'_>,
         last: ValueInfo<'_>,
-        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
         let expr_type = self
@@ -711,14 +703,14 @@ impl Regex {
             .type_of(
                 TypeHint::Explicit(initial.ty),
                 TypeHint::Explicit(last.ty),
-                TypeHint::Explicit(value_type),
+                TypeHint::Explicit(proxy.ty),
                 TypeHint::NoHint,
             )?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
 
         let value = self
             .expr
-            .type_check(initial.ty, last.ty, value_type, expr_type)?
+            .type_check(initial.ty, last.ty, proxy.ty, expr_type)?
             .eval(initial, last, proxy)?;
 
         let bytes = match &value {
@@ -773,10 +765,9 @@ impl Not {
         &self,
         initial: ValueInfo<'_>,
         last: ValueInfo<'_>,
-        value_type: Type,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        Ok(self.filter.test(initial, last, value_type, proxy)?.invert())
+        Ok(self.filter.test(initial, last, proxy)?.invert())
     }
 
     fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {

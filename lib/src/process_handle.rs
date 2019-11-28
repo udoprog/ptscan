@@ -353,6 +353,7 @@ impl ProcessHandle {
 
     pub fn null_address_proxy(&self) -> AddressProxy<'_> {
         AddressProxy {
+            ty: Type::None,
             pointer: &pointer::NULL_POINTER,
             handle: self,
             memory_cache: None,
@@ -362,8 +363,9 @@ impl ProcessHandle {
     }
 
     /// Construct an address proxy for the given address.
-    pub fn address_proxy<'a>(&'a self, pointer: &'a Pointer) -> AddressProxy<'a> {
+    pub fn address_proxy<'a>(&'a self, pointer: &'a Pointer, ty: Type) -> AddressProxy<'a> {
         AddressProxy {
+            ty,
             pointer,
             handle: self,
             memory_cache: None,
@@ -437,16 +439,15 @@ impl ProcessHandle {
                             };
 
                             let mut work = || {
-                                let mut proxy = self.address_proxy(&result.pointer);
                                 let value_type = new_type.unwrap_or_else(|| result.last_type());
+                                let mut proxy = self.address_proxy(&result.pointer, value_type);
 
                                 if let Test::True = filter.test(
                                     result.initial_info(),
                                     result.last_info(),
-                                    value_type,
                                     &mut proxy,
                                 )? {
-                                    let (value, _) = proxy.eval(value_type)?;
+                                    let (value, _) = proxy.eval()?;
                                     result.last = value;
                                     *result.pointer.last_address_mut() = proxy.follow_default()?;
                                     return Ok(Task::Accepted);
@@ -582,7 +583,7 @@ impl ProcessHandle {
                             let value_type = new_type.unwrap_or_else(|| result.last_type());
 
                             let mut work = move || {
-                                let mut proxy = self.address_proxy(&result.pointer);
+                                let mut proxy = self.address_proxy(&result.pointer, value_type);
 
                                 let initial = result.initial_info();
                                 let last = result.last_info();
@@ -652,6 +653,7 @@ impl ProcessHandle {
 
 #[derive(Debug, Clone)]
 pub struct AddressProxy<'a> {
+    pub(crate) ty: Type,
     pointer: &'a Pointer,
     pub(crate) handle: &'a ProcessHandle,
     memory_cache: Option<&'a MemoryCache>,
@@ -662,7 +664,7 @@ pub struct AddressProxy<'a> {
 
 impl AddressProxy<'_> {
     /// Evaluate the pointer of the proxy.
-    pub fn eval(&mut self, ty: Type) -> anyhow::Result<(Value, Option<usize>)> {
+    pub fn eval(&mut self) -> anyhow::Result<(Value, Option<usize>)> {
         if let Cached::Some(result) = &self.evaled {
             return Ok(result.clone());
         }
@@ -685,7 +687,10 @@ impl AddressProxy<'_> {
                 None => return Ok((Value::None, None)),
             };
 
-            let result = match ty.decode(&(memory_cache, &self.handle.process), address) {
+            let result = match self
+                .ty
+                .decode(&(memory_cache, &self.handle.process), address)
+            {
                 Ok(value) => value,
                 Err(..) => (Value::None, None),
             };
@@ -707,7 +712,7 @@ impl AddressProxy<'_> {
                 None => return Ok((Value::None, None)),
             };
 
-            let result = match ty.decode(&self.handle.process, address) {
+            let result = match self.ty.decode(&self.handle.process, address) {
                 Ok(value) => value,
                 Err(..) => (Value::None, None),
             };
@@ -925,8 +930,9 @@ pub struct Session<'a> {
 
 impl<'a> Session<'a> {
     /// Construct an address proxy for the given address.
-    pub fn address_proxy(&'a self, pointer: &'a Pointer) -> AddressProxy<'a> {
+    pub fn address_proxy(&'a self, pointer: &'a Pointer, ty: Type) -> AddressProxy<'a> {
         AddressProxy {
+            ty,
             pointer,
             handle: self.handle,
             memory_cache: Some(&self.memory_cache),

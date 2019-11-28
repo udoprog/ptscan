@@ -47,7 +47,7 @@ impl TypedValueExpr<'_> {
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Value> {
         Ok(match *self {
-            Self::Value(expr_type) => proxy.eval(expr_type)?.0,
+            Self::Value(expr_type) => expr_type.convert(proxy.eval()?.0),
             Self::Initial(expr_type) => expr_type.convert(initial.value.clone()),
             Self::Last(expr_type) => expr_type.convert(last.value.clone()),
             Self::Number(expr_type, value) => Value::from_bigint(expr_type, value)?,
@@ -63,8 +63,7 @@ impl TypedValueExpr<'_> {
                 };
 
                 let pointer = pointer::Pointer::from_address(address);
-                let mut proxy = proxy.handle.address_proxy(&pointer);
-                let (value, _) = proxy.eval(expr_type)?;
+                let (value, _) = proxy.handle.address_proxy(&pointer, expr_type).eval()?;
                 expr_type.convert(value)
             }
             Self::AddressOf(expr_type, ref value) => {

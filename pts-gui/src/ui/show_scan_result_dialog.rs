@@ -135,8 +135,8 @@ impl ShowScanResultDialog {
                     None => return Ok(None),
                 };
 
-                let mut proxy = handle.address_proxy(&pointer);
-                let value = proxy.eval(ty)?.0;
+                let mut proxy = handle.address_proxy(&pointer, ty);
+                let value = proxy.eval()?.0;
                 Ok(Some((value, proxy.followed)))
             });
             ..then(move |slf, value| {

@@ -1,6 +1,6 @@
 //! Abstraction to help deal with virtual addresses.
 
-use crate::{error::Error, Offset, ProcessInfo, Sign, Size};
+use crate::{error::Error, Offset, Sign, Size};
 
 use std::{
     convert::{self, TryFrom, TryInto},
@@ -29,35 +29,6 @@ impl Address {
     /// If the address is null.
     pub fn is_null(self) -> bool {
         self.0 == 0
-    }
-
-    pub fn decode<P>(process: &P, buf: &[u8]) -> Result<Self, Error>
-    where
-        P: ProcessInfo,
-    {
-        assert!(
-            buf.len() == process.pointer_width(),
-            "{} (buffer length) != {} (pointer width)",
-            buf.len(),
-            process.pointer_width()
-        );
-
-        match process.pointer_width() {
-            8 => {
-                let address = <P::ByteOrder as byteorder::ByteOrder>::read_u64(buf);
-                Ok(Address(address))
-            }
-            4 => {
-                let address = <P::ByteOrder as byteorder::ByteOrder>::read_u32(buf);
-                Ok(Address(address as u64))
-            }
-            n => Err(Error::UnsupportedPointerWidth(n)),
-        }
-    }
-
-    /// Encode the address in a process-dependent manner.
-    pub fn encode(self, process: &impl ProcessInfo, buf: &mut [u8]) -> anyhow::Result<(), Error> {
-        Ok(process.encode_pointer(buf, self.0)?)
     }
 
     /// Try to add one address to another.

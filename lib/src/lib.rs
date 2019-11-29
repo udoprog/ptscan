@@ -55,7 +55,9 @@ pub use self::pointer::{Pointer, PointerBase, PointerInfo};
 pub use self::pointer_scan::{
     PointerScan, PointerScanBackreferenceProgress, PointerScanInitialProgress,
 };
-pub use self::process::{MemoryInformation, MemoryState, MemoryType, Process, ProcessInfo};
+pub use self::process::{
+    MemoryInformation, MemoryState, MemoryType, PointerWidth, Process, ProcessInfo,
+};
 pub use self::process_handle::{
     AddressProxy, InitialScanConfig, Location, ModuleInfo, ModulesState, ProcessHandle,
     ProcessName, ProcessThread, ScanProgress, ValueHolder,
@@ -66,7 +68,7 @@ pub use self::system::processes;
 pub use self::thread::Thread;
 pub use self::token::Token;
 pub use self::ty::Type;
-pub use self::type_hint::TypeHint;
+pub use self::type_hint::{TypeHint, TypeSolveError};
 pub use self::utils::IteratorExtension;
 pub use self::value::{Value, ValueRef};
 pub use self::value_expr::ValueExpr;

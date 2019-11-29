@@ -3,8 +3,13 @@ use crate::{
 };
 use anyhow::bail;
 use std::{convert::TryFrom as _, fmt, str};
+use thiserror::Error;
 
 const READ_BUFFER_SIZE: usize = 0x100;
+
+#[derive(Debug, Error)]
+#[error("encountered character in target encoding: {0:?}")]
+pub struct UnmappableCharacter(char);
 
 #[derive(Debug, thiserror::Error)]
 #[error("bad encoding: {0}")]
@@ -65,13 +70,15 @@ impl Encoding {
     }
 
     /// Stream encode.
-    pub fn stream_encode(self, buf: &mut Vec<u8>, mut s: &str) -> anyhow::Result<()> {
+    pub fn stream_encode(self, buf: &mut Vec<u8>, mut s: &str) -> Result<(), UnmappableCharacter> {
         use encoding_rs::{EncoderResult, UTF_16BE, UTF_16LE};
 
         if self.0 == UTF_16LE {
-            return Self::encode_utf16::<byteorder::LittleEndian>(buf, s);
+            Self::encode_utf16::<byteorder::LittleEndian>(buf, s);
+            return Ok(());
         } else if self.0 == UTF_16BE {
-            return Self::encode_utf16::<byteorder::BigEndian>(buf, s);
+            Self::encode_utf16::<byteorder::BigEndian>(buf, s);
+            return Ok(());
         }
 
         loop {
@@ -84,7 +91,7 @@ impl Encoding {
                 EncoderResult::OutputFull => {
                     buf.reserve(READ_BUFFER_SIZE);
                 }
-                EncoderResult::Unmappable(c) => bail!("encountered unmappable character: {}", c),
+                EncoderResult::Unmappable(c) => return Err(UnmappableCharacter(c)),
             }
         }
 
@@ -92,7 +99,7 @@ impl Encoding {
     }
 
     /// Encode as UTF-16.
-    fn encode_utf16<B>(buf: &mut Vec<u8>, s: &str) -> anyhow::Result<()>
+    fn encode_utf16<B>(buf: &mut Vec<u8>, s: &str)
     where
         B: byteorder::ByteOrder,
     {
@@ -103,8 +110,6 @@ impl Encoding {
             let s = buf.len() - 2;
             B::write_u16(&mut buf[s..], c);
         }
-
-        Ok(())
     }
 
     /// Decode an UTF-8 string efficiently.

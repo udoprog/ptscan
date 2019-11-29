@@ -33,6 +33,7 @@ pub struct FilterOptions {
     on_scan: Option<Box<dyn Fn()>>,
     on_reset: Option<Box<dyn Fn()>>,
     on_refresh: Option<Box<dyn Fn()>>,
+    on_filter_expr_changed: Option<Box<dyn Fn(Option<FilterExpr>)>>,
     on_value_expr_changed: Option<Box<dyn Fn(ValueExpr)>>,
     handle: Option<Arc<RwLock<ProcessHandle>>>,
     enabled: bool,
@@ -96,6 +97,7 @@ impl FilterOptions {
             on_reset: None,
             on_scan: None,
             on_refresh: None,
+            on_filter_expr_changed: None,
             on_value_expr_changed: None,
             handle: None,
             enabled: true,
@@ -140,6 +142,8 @@ impl FilterOptions {
             Self::parse_value_expr(&slf);
         }));
 
+        clip.hook_entry(&value_expr_text);
+
         modules_only.connect_toggled(clone!(slf => move |btn| {
             let mut slf = slf.borrow_mut();
             slf.state.modules_only = btn.get_active();
@@ -164,6 +168,14 @@ impl FilterOptions {
         self.on_refresh = Some(Box::new(on_refresh));
     }
 
+    /// Handle to fire when fitler expression has successfully changed.
+    pub fn on_filter_expr_changed(
+        &mut self,
+        on_filter_expr_changed: (impl Fn(Option<FilterExpr>) + 'static),
+    ) {
+        self.on_filter_expr_changed = Some(Box::new(on_filter_expr_changed));
+    }
+
     /// Handle to fire when value expression has successfully changed.
     pub fn on_value_expr_changed(&mut self, on_value_expr_changed: (impl Fn(ValueExpr) + 'static)) {
         self.on_value_expr_changed = Some(Box::new(on_value_expr_changed));
@@ -180,38 +192,48 @@ impl FilterOptions {
     }
 
     /// Parse the current filter expression.
-    pub fn parse_filter_expr(slf_rc: &Rc<RefCell<Self>>) {
-        let mut slf = slf_rc.borrow_mut();
+    pub fn parse_filter_expr(slf: &Rc<RefCell<Self>>) {
+        let (cb, update) = {
+            let mut slf = slf.borrow_mut();
 
-        let result = {
-            let handle = optional!(&slf.handle);
-            let handle = optional!(handle.try_read());
+            let result = {
+                let handle = optional!(&slf.handle);
+                let handle = optional!(handle.try_read());
 
-            if slf.state.filter_expr_text.is_empty() {
-                if let Some(error) = slf.widgets.filter_expr_error.upgrade() {
-                    error.hide();
+                if slf.state.filter_expr_text.is_empty() {
+                    if let Some(error) = slf.widgets.filter_expr_error.upgrade() {
+                        error.hide();
+                    }
+
+                    return;
                 }
 
-                return;
-            }
+                FilterExpr::parse(&slf.state.filter_expr_text, &handle.process)
+            };
 
-            FilterExpr::parse(&slf.state.filter_expr_text, &handle.process)
+            match result {
+                Ok(filter_expr) => {
+                    slf.state.filter_expr = Some(filter_expr.clone());
+
+                    if let Some(error) = slf.widgets.filter_expr_error.upgrade() {
+                        error.hide();
+                    }
+
+                    (slf.on_filter_expr_changed.take(), Some(filter_expr))
+                }
+                Err(..) => {
+                    if let Some(error) = slf.widgets.filter_expr_error.upgrade() {
+                        error.show();
+                    }
+
+                    return;
+                }
+            }
         };
 
-        match result {
-            Ok(filter_expr) => {
-                slf.state.filter_expr = Some(filter_expr);
-
-                if let Some(error) = slf.widgets.filter_expr_error.upgrade() {
-                    error.hide();
-                }
-            }
-            Err(..) => {
-                if let Some(error) = slf.widgets.filter_expr_error.upgrade() {
-                    error.show();
-                }
-            }
-        }
+        let cb = optional!(cb);
+        cb(update);
+        slf.borrow_mut().on_filter_expr_changed = Some(cb);
     }
 
     /// Parse the current global value expression.

@@ -1,7 +1,6 @@
 use crate::{prelude::*, CurrentScanResult};
-use anyhow::anyhow;
 use parking_lot::RwLock;
-use ptscan::{ProcessHandle, TypeHint, ValueExpr, Values};
+use ptscan::{FilterExpr, ProcessHandle, TypeHint, ValueExpr, Values};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 struct Widgets {
@@ -35,6 +34,7 @@ pub struct ScanResults {
     /// Menu for editing scan results.
     show_scan_result_dialog: Rc<RefCell<ui::ShowScanResultDialog>>,
     /// Current value expression in use.
+    filter_expr: Option<FilterExpr>,
     value_expr: ValueExpr,
 }
 
@@ -83,6 +83,7 @@ impl ScanResults {
             results_generation: 0,
             on_add_results: None,
             show_scan_result_dialog,
+            filter_expr: None,
             value_expr: ValueExpr::Value,
         }));
 
@@ -193,6 +194,11 @@ impl ScanResults {
         slf
     }
 
+    /// Set the current filter expression.
+    pub fn set_filter_expr(&mut self, filter_expr: Option<FilterExpr>) {
+        self.filter_expr = filter_expr;
+    }
+
     /// Set the current value expression.
     pub fn set_value_expr(&mut self, value_expr: ValueExpr) {
         self.value_expr = value_expr;
@@ -280,11 +286,12 @@ impl ScanResults {
         let visible = optional!(&slf.visible);
         let initial = visible.scan.initial.clone();
         let last_type = visible.scan.last.ty;
-        let current = visible.current.clone();
+        let mut current = visible.current.clone();
         let addresses = visible.scan.addresses.clone();
 
         let thread_pool = slf.thread_pool.clone();
         let results_generation = slf.results_generation;
+        let filter_expr = slf.filter_expr.clone();
         let value_expr = slf.value_expr.clone();
 
         let task = cascade! {
@@ -294,26 +301,20 @@ impl ScanResults {
                     None => return Ok(None),
                 };
 
-                let value_type = value_expr
-                    .value_type_of(TypeHint::Explicit(last_type))?
-                    .option();
-
-                let value_type = match value_type {
-                    Some(value_type) => value_type,
-                    None => return Err(anyhow!("cannot determine type of value")),
+                let value_type = match filter_expr {
+                    Some(filter_expr) => filter_expr.value_type_of(TypeHint::NoHint)?.into_implicit(),
+                    None => TypeHint::NoHint,
                 };
 
+                let value_type = value_expr.value_type_of(TypeHint::NoHint)?.solve(value_type)?;
+                let value_type = value_type.option().unwrap_or(last_type).unsize(last_type, &*handle);
+
                 // NB: need to convert the value storage in case current type differs.
-                let (mut current, type_change) = if value_type != current.ty {
-                    let mut new = Values::new(value_type, &*handle);
-
-                    for v in current.iter() {
-                        new.push(value_type.convert(v.read()));
-                    }
-
-                    (new, true)
+                let type_change = if value_type != current.ty {
+                    current.convert_in_place(value_type, &*handle);
+                    true
                 } else {
-                    (current, false)
+                    false
                 };
 
                 handle.refresh_values(

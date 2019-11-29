@@ -413,7 +413,6 @@ impl ProcessInformation {
 
             let base_sort = u64::from(thread.stack.base);
             let size_sort = u64::from(thread.stack.size);
-            let stack_exit_sort = thread.stack_exit.map(u64::from);
 
             let iter = threads_model.insert_with_values(
                 None,
@@ -427,11 +426,11 @@ impl ProcessInformation {
             );
 
             threads_model.set_value(&iter, 0, &(index as u64).to_value());
-            threads_model.set_value(&iter, 4, &base_sort.to_value());
-            threads_model.set_value(&iter, 5, &size_sort.to_value());
+            threads_model.set_value(&iter, 5, &base_sort.to_value());
+            threads_model.set_value(&iter, 6, &size_sort.to_value());
 
-            if let Some(stack_exit_sort) = stack_exit_sort {
-                threads_model.set_value(&iter, 6, &stack_exit_sort.to_value());
+            if let Some(stack_exit_sort) = thread.stack_exit.map(u64::from) {
+                threads_model.set_value(&iter, 7, &stack_exit_sort.to_value());
             }
         }
 

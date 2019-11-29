@@ -6,22 +6,41 @@ lalrpop_util::lalrpop_mod!(
 );
 
 use crate::{
-    process_handle::ProcessHandle, utils::EscapeString, Address, Offset, ProcessInfo, Sign, Size,
+    process_handle::ProcessHandle, utils::EscapeString, Address, Offset, PointerWidth, ProcessInfo,
+    Sign, Size,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
 pub trait PointerInfo {
+    type ByteOrder: byteorder::ByteOrder;
+
     /// Get the width of a pointer in the system.
-    fn pointer_width(&self) -> usize;
+    fn pointer_width(&self) -> PointerWidth;
+
+    /// Encode the pointer.
+    fn encode_pointer(&self, buf: &mut [u8], value: u64) -> bool;
 }
 
 impl<T> PointerInfo for T
 where
     T: ProcessInfo,
 {
-    fn pointer_width(&self) -> usize {
+    type ByteOrder = T::ByteOrder;
+
+    fn pointer_width(&self) -> PointerWidth {
         ProcessInfo::pointer_width(self)
+    }
+
+    fn encode_pointer(&self, buf: &mut [u8], value: u64) -> bool {
+        ProcessInfo::encode_pointer(self, buf, value)
+    }
+}
+
+#[cfg(test)]
+impl PointerInfo for usize {
+    fn pointer_width(&self) -> usize {
+        *self
     }
 }
 
@@ -136,7 +155,7 @@ impl Pointer {
         }
 
         let mut current = address;
-        let mut buf = vec![0u8; handle.process.pointer_width];
+        let mut buf = vec![0u8; handle.process.pointer_width.size()];
 
         for o in &self.offsets {
             let len = eval(current, &mut buf)?;
@@ -145,7 +164,7 @@ impl Pointer {
                 return Ok(None);
             }
 
-            current = Address::decode(&handle.process, &buf)?;
+            current = handle.process.decode_pointer(&buf);
 
             current = match current.checked_offset(*o) {
                 Some(current) => current,

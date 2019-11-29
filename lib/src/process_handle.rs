@@ -3,12 +3,13 @@
 use crate::{
     error::Error,
     filter_expr::FilterExpr,
-    process::{MemoryInformation, MemoryReader, VirtualMemoryRegions},
+    process::{MemoryInformation, MemoryReader},
     progress_reporter::ProgressReporter,
     system,
     thread::Thread,
-    values, Address, AddressRange, Cached, Pointer, PointerBase, Process, ProcessId, ProcessInfo,
-    Size, Special, Test, ThreadId, Token, Type, TypeHint, Value, ValueExpr, ValueInfo, Values,
+    values, Address, AddressRange, Cached, Pointer, PointerBase, PointerWidth, Process, ProcessId,
+    ProcessInfo, Size, Special, Test, ThreadId, Token, Type, TypeHint, Value, ValueExpr, ValueInfo,
+    Values,
 };
 use anyhow::{anyhow, bail, Context as _};
 use crossbeam_queue::SegQueue;
@@ -347,9 +348,7 @@ impl ProcessHandle {
         stack: AddressRange,
         kernel32: Option<&AddressRange>,
     ) -> anyhow::Result<Option<Address>> {
-        use byteorder::{ByteOrder, LittleEndian};
-
-        let ptr_width = Size::new(process.pointer_width as u64);
+        let ptr_width = Size::try_from(process.pointer_width.size())?;
         let mut buf = vec![0u8; stack.size.as_usize()];
         process.read_process_memory(stack.base, &mut buf)?;
 
@@ -368,7 +367,7 @@ impl ProcessHandle {
 
         for (n, w) in buf.chunks(ptr_width.as_usize()).enumerate().rev() {
             // TODO: make independent of host architecture (use u64).
-            let ptr = Address::from(LittleEndian::read_u64(w));
+            let ptr = process.decode_pointer(w);
 
             if kernel32.contains(ptr) {
                 let stack_offset = Size::try_from(n * ptr_width.as_usize())?;
@@ -1247,23 +1246,16 @@ impl ProcessInfo for ProcessHandle {
     type Process = Process;
     type ByteOrder = byteorder::NativeEndian;
 
-    fn pointer_width(&self) -> usize {
+    fn process(&self) -> &Self::Process {
+        &self.process
+    }
+
+    fn pointer_width(&self) -> PointerWidth {
         ProcessInfo::pointer_width(&self.process)
     }
 
     fn virtual_query(&self, address: Address) -> anyhow::Result<Option<MemoryInformation>> {
         self.process.virtual_query(address)
-    }
-
-    fn virtual_memory_regions(&self) -> VirtualMemoryRegions<'_, Self::Process>
-    where
-        Self::Process: Sized,
-    {
-        self.process.virtual_memory_regions()
-    }
-
-    fn encode_pointer(&self, buf: &mut [u8], value: u64) -> anyhow::Result<(), Error> {
-        self.process.encode_pointer(buf, value)
     }
 }
 

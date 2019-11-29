@@ -1,3 +1,4 @@
+use hashbrown::HashMap;
 use ptscan::{Address, Pointer, ProcessHandle, Type, Value, ValueHolder, ValueInfo, Values};
 use serde::{Deserialize, Serialize};
 use std::fmt;

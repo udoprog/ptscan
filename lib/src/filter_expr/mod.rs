@@ -1,6 +1,6 @@
 use crate::{
     error::Error, process::MemoryInformation, value, AddressProxy, AddressRange, ProcessInfo, Sign,
-    Type, TypeHint, Value, ValueExpr,
+    Type, TypeHint, TypeSolveError, Value, ValueExpr,
 };
 use anyhow::bail;
 use hashbrown::HashSet;
@@ -233,17 +233,11 @@ impl Binary {
             TypeHint::NoHint,
         )?;
 
-        let expr_type = match (lhs_type, rhs_type) {
-            (Explicit(lhs), Explicit(rhs)) => {
-                if lhs != rhs {
-                    bail!("incompatible types in expression: {} {} {}", lhs, op, rhs)
-                }
-
-                lhs
+        let expr_type = match lhs_type.solve(rhs_type) {
+            Ok(expr_type) => expr_type.ok_or_else(|| Error::BinaryTypeInference(self.clone()))?,
+            Err(TypeSolveError(lhs, rhs)) => {
+                bail!("incompatible types in expression: {} {} {}", lhs, op, rhs)
             }
-            (Explicit(ty), _) | (_, Explicit(ty)) => ty,
-            (Implicit(ty), _) | (_, Implicit(ty)) => ty,
-            _ => return Err(Error::BinaryTypeInference(self.clone()).into()),
         };
 
         let lhs = lhs.type_check(initial.ty, last.ty, proxy.ty, expr_type)?;
@@ -315,7 +309,8 @@ impl Binary {
         if let Some(value) = exact {
             let width = value.size(process).unwrap_or(16);
             let mut buf = vec![0u8; width];
-            value.encode(process, &mut buf)?;
+
+            value.encode(process, &mut buf);
 
             if buf.iter().all(|c| *c == 0) {
                 return Ok(Some(Special::Zero(width)));
@@ -876,7 +871,12 @@ mod tests {
     }
 
     impl ProcessInfo for FakeProcess {
+        type Process = FakeProcess;
         type ByteOrder = byteorder::NativeEndian;
+
+        fn process(&self) -> &Self::Process {
+            self
+        }
 
         fn pointer_width(&self) -> usize {
             self.pointer_width

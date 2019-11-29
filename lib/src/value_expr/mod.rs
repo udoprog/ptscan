@@ -46,15 +46,19 @@ impl TypedValueExpr<'_> {
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Value> {
         Ok(match *self {
-            Self::Value(expr_type) => expr_type.convert(proxy.eval()?.0),
-            Self::Initial(expr_type) => expr_type.convert(initial.value.clone()),
-            Self::Last(expr_type) => expr_type.convert(last.value.clone()),
+            Self::Value(expr_type) => expr_type.convert(proxy.handle, proxy.eval()?.0),
+            Self::Initial(expr_type) => expr_type.convert(proxy.handle, initial.value.clone()),
+            Self::Last(expr_type) => expr_type.convert(proxy.handle, last.value.clone()),
             Self::Number(expr_type, value) => Value::from_bigint(expr_type, value)?,
             Self::Decimal(expr_type, value) => Value::from_bigdecimal(expr_type, value)?,
-            Self::String(expr_type, value) => expr_type.convert(Value::String(value.to_string())),
-            Self::Bytes(expr_type, value) => expr_type.convert(Value::Bytes(value.clone())),
+            Self::String(expr_type, value) => {
+                expr_type.convert(proxy.handle, Value::String(value.to_string()))
+            }
+            Self::Bytes(expr_type, value) => {
+                expr_type.convert(proxy.handle, Value::Bytes(value.clone()))
+            }
             Self::Deref(expr_type, ref value) => {
-                let value = Type::Pointer.convert(value.eval(initial, last, proxy)?);
+                let value = Type::Pointer.convert(proxy.handle, value.eval(initial, last, proxy)?);
 
                 let address = match value.as_address() {
                     Some(address) => address,
@@ -63,7 +67,7 @@ impl TypedValueExpr<'_> {
 
                 let pointer = Pointer::from(address);
                 let (value, _) = proxy.handle.address_proxy(&pointer, expr_type).eval()?;
-                expr_type.convert(value)
+                expr_type.convert(proxy.handle, value)
             }
             Self::AddressOf(expr_type, ref value) => {
                 let new_address = match value.address_of(initial, last, proxy)? {
@@ -71,9 +75,11 @@ impl TypedValueExpr<'_> {
                     None => return Ok(Value::None),
                 };
 
-                expr_type.convert(Value::Pointer(new_address))
+                expr_type.convert(proxy.handle, Value::Pointer(new_address))
             }
-            Self::Cast(expr_type, ref expr) => expr_type.convert(expr.eval(initial, last, proxy)?),
+            Self::Cast(expr_type, ref expr) => {
+                expr_type.convert(proxy.handle, expr.eval(initial, last, proxy)?)
+            }
             Self::Binary(expr_type, op, ref lhs, ref rhs) => {
                 let lhs = lhs.eval(initial, last, proxy)?;
                 let rhs = rhs.eval(initial, last, proxy)?;
@@ -83,7 +89,7 @@ impl TypedValueExpr<'_> {
                     None => return Ok(Value::None),
                 };
 
-                expr_type.convert(value)
+                expr_type.convert(proxy.handle, value)
             }
         })
     }
@@ -298,7 +304,7 @@ impl ValueExpr {
                 type_hint: None, ..
             } => default_hint.or_implicit(Type::F32),
             Self::String { .. } => default_hint.or_implicit(Type::String(Default::default())),
-            Self::Bytes { ref value } => default_hint.or_implicit(Type::Bytes(value.len())),
+            Self::Bytes { ref value } => default_hint.or_implicit(Type::Bytes(Some(value.len()))),
         })
     }
 
@@ -341,10 +347,10 @@ impl ValueExpr {
             },
             Self::Cast {
                 ref expr,
-                cast_type,
+                cast_type: inner_type,
             } => match &**expr {
-                Self::Value => Explicit(cast_type),
-                ref other => other.value_type_of(Explicit(cast_type))?,
+                Self::Value => Explicit(inner_type),
+                ref other => other.value_type_of(Explicit(inner_type))?,
             },
             _ => NoHint,
         })

@@ -1,12 +1,12 @@
 use crate::{
     error::Error,
     utils::{EscapeString, Hex},
-    Address, Encoding, ProcessInfo, Type,
+    Address, Encoding, PointerInfo, Type,
 };
 use anyhow::bail;
 use num_bigint::Sign;
 use serde::{Deserialize, Serialize};
-use std::{cmp, fmt, mem, str};
+use std::{cmp, fmt, iter, mem, str};
 
 macro_rules! numeric_op {
     ($a:ident $op:tt $b:ident, $checked_op:ident) => {
@@ -210,40 +210,73 @@ impl Value {
     }
 
     /// Encode the given buffer into a value.
-    pub fn encode<P>(&self, process: &P, buf: &mut [u8]) -> anyhow::Result<()>
+    pub fn encode<P>(&self, process: &P, buf: &mut Vec<u8>) -> bool
     where
-        P: ProcessInfo,
+        P: PointerInfo,
     {
         use byteorder::ByteOrder as _;
 
+        macro_rules! reserve {
+            ($len:expr) => {{
+                buf.reserve($len);
+                buf.extend(iter::repeat(0u8).take($len));
+                &mut buf[..$len]
+            }};
+        }
+
         match *self {
             Self::None => (),
-            Self::Pointer(address) => address.encode(process, buf)?,
+            Self::Pointer(Address(address)) => {
+                let width = process.pointer_width().size();
+                return process.encode_pointer(reserve!(width), address);
+            }
             Self::U8(value) => {
-                buf[0] = value;
+                buf.reserve(1);
+                buf.push(value);
             }
             Self::I8(value) => {
-                buf[0] = value as u8;
+                buf.reserve(1);
+                buf.push(value as u8);
             }
-            Self::U16(value) => P::ByteOrder::write_u16(buf, value),
-            Self::I16(value) => P::ByteOrder::write_u16(buf, value as u16),
-            Self::U32(value) => P::ByteOrder::write_u32(buf, value),
-            Self::I32(value) => P::ByteOrder::write_u32(buf, value as u32),
-            Self::U64(value) => P::ByteOrder::write_u64(buf, value),
-            Self::I64(value) => P::ByteOrder::write_u64(buf, value as u64),
-            Self::U128(value) => P::ByteOrder::write_u128(buf, value),
-            Self::I128(value) => P::ByteOrder::write_u128(buf, value as u128),
-            Self::F32(value) => P::ByteOrder::write_f32(buf, value),
-            Self::F64(value) => P::ByteOrder::write_f64(buf, value),
-            // TODO: use the proper encoding.
-            Self::String(ref s) => Encoding::default().encode(buf, s)?,
+            Self::U16(value) => {
+                P::ByteOrder::write_u16(reserve!(2), value);
+            }
+            Self::I16(value) => {
+                P::ByteOrder::write_u16(reserve!(2), value as u16);
+            }
+            Self::U32(value) => {
+                P::ByteOrder::write_u32(reserve!(4), value);
+            }
+            Self::I32(value) => {
+                reserve!(4);
+                P::ByteOrder::write_u32(reserve!(4), value as u32);
+            }
+            Self::U64(value) => {
+                P::ByteOrder::write_u64(reserve!(8), value);
+            }
+            Self::I64(value) => {
+                P::ByteOrder::write_u64(reserve!(8), value as u64);
+            }
+            Self::U128(value) => {
+                P::ByteOrder::write_u128(reserve!(16), value);
+            }
+            Self::I128(value) => {
+                P::ByteOrder::write_u128(reserve!(16), value as u128);
+            }
+            Self::F32(value) => P::ByteOrder::write_f32(reserve!(4), value),
+            Self::F64(value) => P::ByteOrder::write_f64(reserve!(4), value),
+            Self::String(ref s) => {
+                // TODO: use the proper encoding.
+                // Currently stops encoding when reaching an unmappable character.
+                return Encoding::default().stream_encode(buf, s).is_ok();
+            }
             Self::Bytes(ref bytes) => {
-                let len = usize::min(bytes.len(), buf.len());
-                buf[..len].clone_from_slice(&bytes[..len]);
+                let buf = reserve!(bytes.len());
+                buf.clone_from_slice(&bytes[..]);
             }
         }
 
-        Ok(())
+        true
     }
 
     /// Cast this value.
@@ -267,10 +300,10 @@ impl Value {
     }
 
     /// Get the size in bytes of this value.
-    pub fn size(&self, process: &impl ProcessInfo) -> Option<usize> {
+    pub fn size(&self, process: &impl PointerInfo) -> Option<usize> {
         Some(match self {
             Self::None => return None,
-            Self::Pointer(..) => process.pointer_width(),
+            Self::Pointer(..) => process.pointer_width().size(),
             Self::U8(..) => mem::size_of::<u8>(),
             Self::I8(..) => mem::size_of::<i8>(),
             Self::U16(..) => mem::size_of::<u16>(),

@@ -192,6 +192,9 @@ impl MainWindow {
             ..on_reset(clone!(slf => move || {
                 Self::reset(&slf);
             }));
+            ..on_filter_expr_changed(clone!(slf => move |value_expr| {
+                slf.borrow().scan_results.borrow_mut().set_filter_expr(value_expr);
+            }));
             ..on_value_expr_changed(clone!(slf => move |value_expr| {
                 slf.borrow().scan_results.borrow_mut().set_value_expr(value_expr);
             }));
@@ -290,9 +293,9 @@ impl MainWindow {
                 }
             }
 
-            let value_type = value_expr
+            let value_type = filter_expr
                 .value_type_of(TypeHint::NoHint)?
-                .unwrap_or(filter_expr.value_type_of(TypeHint::NoHint)?)
+                .solve(value_expr.value_type_of(TypeHint::NoHint)?.into_implicit())?
                 .ok_or_else(|| anyhow!("cannot determine type of value"))?;
 
             let handle = RwLockWriteGuard::downgrade_to_upgradable(handle.write());
@@ -392,13 +395,32 @@ impl MainWindow {
         let scan = slf.scan.clone();
         let thread_pool = slf.thread_pool.clone();
         let started = Instant::now();
-        let value_expr = slf.filter_options.borrow().state.value_expr.clone();
+
+        let (filter_expr, value_expr) = {
+            let filter_options = slf.filter_options.borrow();
+            let filter_expr = filter_options.state.filter_expr.clone();
+            let value_expr = filter_options.state.value_expr.clone();
+            (filter_expr, value_expr)
+        };
 
         let task = cascade! {
             task::Task::new(main, move |s| {
+                let value_type = match filter_expr {
+                    Some(filter_expr) => filter_expr.value_type_of(TypeHint::NoHint)?,
+                    None => TypeHint::NoHint,
+                };
+
+                let value_type = value_expr.value_type_of(TypeHint::NoHint)?.solve(value_type)?;
+
                 let handle = handle.read();
                 let mut scan = scan.write();
                 let scan = optional!(&mut *scan, Ok(None));
+
+                let value_type = value_type.option().unwrap_or(scan.last.ty).unsize(scan.last.ty, &*handle);
+
+                if value_type != scan.last.ty {
+                    scan.last.convert_in_place(value_type, &*handle);
+                }
 
                 handle.refresh_values(
                     &*thread_pool,

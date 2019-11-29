@@ -1,4 +1,9 @@
 use crate::Type;
+use thiserror::Error;
+
+#[derive(Debug, Clone, Error)]
+#[error("can solve between two conflicting types {0} and {1}")]
+pub struct TypeSolveError(pub Type, pub Type);
 
 #[derive(Debug, Clone, Copy)]
 pub enum TypeHint {
@@ -16,6 +21,14 @@ impl TypeHint {
         match self {
             Self::NoHint => Err(fallback()),
             Self::Implicit(ty) | Self::Explicit(ty) => Ok(ty),
+        }
+    }
+
+    /// Convert hint into an implicit hint.
+    pub fn into_implicit(self) -> Self {
+        match self {
+            Self::Explicit(ty) | Self::Implicit(ty) => Self::Implicit(ty),
+            Self::NoHint => Self::NoHint,
         }
     }
 
@@ -40,5 +53,22 @@ impl TypeHint {
             Self::NoHint => Self::Implicit(ty),
             other => other,
         }
+    }
+
+    /// Try to solve two type hints into one.
+    pub fn solve(self, other: TypeHint) -> Result<TypeHint, TypeSolveError> {
+        Ok(match (self, other) {
+            (Self::Explicit(lhs), Self::Explicit(rhs)) => {
+                if lhs != rhs {
+                    return Err(TypeSolveError(lhs, rhs));
+                }
+
+                TypeHint::Explicit(lhs)
+            }
+            // NB: explicit type hint takes precedence.
+            (Self::Explicit(ty), _) | (_, Self::Explicit(ty)) => TypeHint::Explicit(ty),
+            (Self::Implicit(ty), _) | (_, Self::Implicit(ty)) => TypeHint::Implicit(ty),
+            _ => TypeHint::NoHint,
+        })
     }
 }

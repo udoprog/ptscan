@@ -72,7 +72,7 @@ impl Values {
             for _ in 0..self.len {
                 unsafe {
                     let v = Accessor::read_unchecked(self.ty, src);
-                    let v = ty.convert(v);
+                    let v = ty.convert(pointer, v);
                     Mutator::write_unchecked(ty, dst, v);
                     src = src.add(self.element_size);
                     dst = dst.add(element_size);
@@ -90,7 +90,7 @@ impl Values {
 
             for v in self.iter() {
                 let v = v.read();
-                let v = ty.convert(v);
+                let v = ty.convert(pointer, v);
                 new.push(v);
             }
 
@@ -120,6 +120,12 @@ impl Values {
     /// Get the length of the collection.
     pub fn len(&self) -> usize {
         self.len
+    }
+
+    /// Clear the data from this container.
+    pub fn clear(&mut self) {
+        self.len = 0;
+        self.data.clear();
     }
 
     /// Get the value at the given location.
@@ -166,7 +172,7 @@ impl Values {
         }
 
         self.data.reserve(self.element_size);
-        let pos = self.data.len();
+        let pos = self.len * self.element_size;
 
         unsafe {
             let ptr = self.data.as_mut_ptr().add(pos);
@@ -190,9 +196,16 @@ impl Values {
         self.data.append(&mut other.data);
     }
 
-    pub fn swap_remove(&mut self, index: usize) {
+    /// Removes the element at the given index by swapping it with the element
+    /// at the last place and truncating the collection.
+    pub fn swap_remove(&mut self, index: usize) -> bool {
         if index >= self.len {
-            panic!("index:{} out of bounds len:{}", index, self.len)
+            return false;
+        }
+
+        if self.element_size == 0 {
+            self.len -= 1;
+            return true;
         }
 
         let from = index * self.element_size;
@@ -205,13 +218,21 @@ impl Values {
 
         match self.ty {
             Type::String(..) => {
-                // Drop the string stored in the location.
                 unsafe { ptr::drop_in_place(to as *mut String) };
+            }
+            Type::Bytes(None) => {
+                unsafe { ptr::drop_in_place(to as *mut Vec<u8>) };
             }
             _ => (),
         }
 
         self.len -= 1;
+
+        unsafe {
+            self.data.set_len(self.len * self.element_size);
+        }
+
+        true
     }
 
     /// Iterate mutably over the current collection.
@@ -240,72 +261,53 @@ impl Values {
         }
     }
 
-    /// Push the given value into the collection.
-    pub unsafe fn unsafe_push(&mut self, src: *const u8, len: usize) {
-        self.len += 1;
+    /// Clone the internal data as type `T`.
+    unsafe fn clone_data<T>(&self) -> Vec<u8> {
+        let len = self.len * self.element_size;
+        let mut data = Vec::with_capacity(len);
+        let mut dst = data.as_mut_ptr() as *mut String;
+        let mut src = self.data.as_ptr() as *const String;
 
-        if self.element_size == 0 {
-            return;
+        for _ in 0..self.len {
+            ptr::write(dst, String::clone(&*src));
+            dst = dst.add(1);
+            src = src.add(1);
         }
 
-        self.data.reserve(self.element_size);
-
-        let pos = self.data.len();
-        let ptr = self.data.as_mut_ptr().add(pos);
-
-        match self.ty {
-            Type::String(..) => {
-                let value = slice::from_raw_parts(src, len).to_vec();
-                let string = String::from_utf8_unchecked(value);
-                ptr::write(ptr as *mut String, string);
-                self.data.set_len(pos + self.element_size);
-            }
-            _ => {
-                ptr::copy_nonoverlapping(src, ptr, self.element_size);
-                self.data.set_len(pos + self.element_size);
-            }
-        }
+        data.set_len(len);
+        data
     }
 
-    /// Drop all elements in the vector.
-    unsafe fn drop_string_vec(&mut self) {
-        let mut ptr = self.data.as_mut_ptr() as *mut String;
+    /// Drop all elements in the backing vector as type `T`.
+    unsafe fn drop_data<T>(&mut self) {
+        let mut ptr = self.data.as_mut_ptr() as *mut T;
 
         for _ in 0..self.len {
             ptr::drop_in_place(ptr);
             ptr = ptr.add(1);
         }
+
+        self.len = 0;
+        self.data.set_len(0);
     }
 }
 
 impl Clone for Values {
     fn clone(&self) -> Self {
         match self.ty {
-            // Note: need to take care to clone each element.
-            Type::String(..) => {
-                let len = self.len * self.element_size;
-                let mut data = Vec::with_capacity(len);
-
-                unsafe {
-                    let mut dst = data.as_mut_ptr() as *mut String;
-                    let mut src = self.data.as_ptr() as *const String;
-
-                    for _ in 0..self.len {
-                        ptr::write(dst, String::clone(&*src));
-                        dst = dst.add(1);
-                        src = src.add(1);
-                    }
-
-                    data.set_len(len);
-                }
-
-                Self {
-                    ty: self.ty,
-                    element_size: self.element_size,
-                    data,
-                    len: self.len,
-                }
-            }
+            // Special cases where we need to take care to clone each element.
+            Type::String(..) => Self {
+                ty: self.ty,
+                element_size: self.element_size,
+                data: unsafe { self.clone_data::<String>() },
+                len: self.len,
+            },
+            Type::Bytes(None) => Self {
+                ty: self.ty,
+                element_size: self.element_size,
+                data: unsafe { self.clone_data::<Vec<u8>>() },
+                len: self.len,
+            },
             _ => Self {
                 ty: self.ty,
                 element_size: self.element_size,
@@ -319,7 +321,8 @@ impl Clone for Values {
 impl Drop for Values {
     fn drop(&mut self) {
         match self.ty {
-            Type::String(..) => unsafe { self.drop_string_vec() },
+            Type::String(..) => unsafe { self.drop_data::<String>() },
+            Type::Bytes(None) => unsafe { self.drop_data::<Vec<u8>>() },
             _ => (),
         }
     }
@@ -370,8 +373,9 @@ impl Accessor<'_> {
             Type::I128 => Value::I128(ptr::read(ptr as *const _)),
             Type::F32 => Value::F32(ptr::read(ptr as *const _)),
             Type::F64 => Value::F64(ptr::read(ptr as *const _)),
-            Type::String(..) => Value::String(Clone::clone(&*(ptr as *const String))),
-            Type::Bytes(len) => {
+            Type::String(..) => Value::String(String::clone(&*(ptr as *const _))),
+            Type::Bytes(None) => Value::Bytes(<Vec<u8>>::clone(&*(ptr as *const _))),
+            Type::Bytes(Some(len)) => {
                 let mut data = Vec::with_capacity(len);
                 ptr::copy_nonoverlapping(ptr, data.as_mut_ptr(), len);
                 data.set_len(len);
@@ -393,7 +397,8 @@ impl Accessor<'_> {
                     Type::None => ValueRef::None,
                     $(Type::$variant => ValueRef::$variant(*(ptr as *const $variant_ty)),)*
                     Type::String(..) => ValueRef::String(String::as_str(&*(ptr as *const _))),
-                    Type::Bytes(len) => ValueRef::Bytes(slice::from_raw_parts(ptr, len)),
+                    Type::Bytes(None) => ValueRef::Bytes(<Vec<u8>>::as_slice(&*(ptr as *const _))),
+                    Type::Bytes(Some(len)) => ValueRef::Bytes(slice::from_raw_parts(ptr, len)),
                 }
             }
         }
@@ -475,26 +480,27 @@ impl Mutator<'_> {
         macro_rules! write {
             ($(($variant:ident, $ty:ty)),*) => {
                 match (ty, value) {
-                    (Type::None, Value::None) => (),
+                    (Type::None, ..) => (),
                     $(
                         (Type::$variant{..}, Value::$variant(value)) => {
                             ptr::write(ptr as *mut _, value);
                         },
-                        (Type::$variant{..}, Value::None) => {
+                        (Type::$variant{..}, ..) => {
                             ptr::write(ptr as *mut _, <$ty>::default());
                         },
                     )*
-                    (Type::Bytes(len), Value::None) => {
-                        ptr::write_bytes(ptr, 0u8, len);
+                    (Type::Bytes(None), Value::Bytes(b)) => {
+                        ptr::write(ptr as *mut _, b);
                     },
-                    (Type::Bytes(len), Value::Bytes(b)) => {
-                        if len != b.len() {
-                            panic!("cannot copy bytes:{} of difference size:{}", len, b.len());
-                        }
-
+                    (Type::Bytes(None), ..) => {
+                        ptr::write(ptr as *mut _, <Vec<u8>>::default());
+                    },
+                    (Type::Bytes(Some(len)), Value::Bytes(b)) if b.len() >= len => {
                         ptr::copy_nonoverlapping(b.as_ptr(), ptr, len);
                     },
-                    (ty, value) => panic!("cannot write value:{} into type:{}", value, ty),
+                    (Type::Bytes(Some(len)), ..) => {
+                        ptr::write_bytes(ptr, 0u8, len);
+                    },
                 }
             }
         }
@@ -514,60 +520,6 @@ impl Mutator<'_> {
             (F32, f32),
             (F64, f64),
             (String, String)
-        );
-    }
-
-    /// NB: For when we level up and can do direct referential reads during a scan.
-    #[allow(unused)]
-    unsafe fn write_unchecked_ref(ty: Type, ptr: *mut u8, value: ValueRef<'_>) {
-        macro_rules! write {
-            ($(($variant:ident, $ty:ty)),*) => {
-                match (ty, value) {
-                    (Type::None, ValueRef::None) => (),
-                    $(
-                        (Type::$variant{..}, ValueRef::$variant(value)) => {
-                            ptr::write(ptr as *mut _, value);
-                        },
-                        (Type::$variant{..}, ValueRef::None) => {
-                            ptr::write(ptr as *mut _, <$ty>::default());
-                        },
-                    )*
-                    (Type::String(..), ValueRef::None) => {
-                        ptr::write(ptr as *mut _, String::default());
-                    },
-                    (Type::String(..), ValueRef::String(s)) => {
-                        ptr::write(ptr as *mut _, s.to_string());
-                    },
-                    (Type::Bytes(len), ValueRef::None) => {
-                        ptr::write_bytes(ptr, 0u8, len);
-                    },
-                    (Type::Bytes(len), ValueRef::Bytes(b)) => {
-                        ptr::copy_nonoverlapping(b.as_ptr(), ptr, len);
-
-                        // pad the rest with zeros.
-                        if b.len() > len {
-                            ptr::write_bytes(ptr, 0u8, b.len() - len);
-                        }
-                    },
-                    (ty, value) => panic!("cannot write value:{} into type:{}", value, ty),
-                }
-            }
-        }
-
-        write!(
-            (Pointer, Address),
-            (U8, u8),
-            (I8, i8),
-            (U16, u16),
-            (I16, i16),
-            (U32, u32),
-            (I32, i32),
-            (U64, u64),
-            (I64, i64),
-            (U128, u128),
-            (I128, i128),
-            (F32, f32),
-            (F64, f64)
         );
     }
 }
@@ -607,20 +559,16 @@ mod tests {
     #[test]
     fn test_values() {
         let encoding = Encoding::default();
-        let mut values = Values::new(Type::String(encoding), 8);
+        let mut values = Values::new(Type::String(encoding), &8usize);
         let string = String::from("hello world");
-
-        unsafe {
-            values.unsafe_push(string.as_ptr(), string.len());
-        }
-
+        values.push(Value::String(string.clone()));
         assert_eq!(Some(Value::String(string)), values.get(0));
         assert_eq!(None, values.get(1));
     }
 
     #[test]
     fn test_iterators() {
-        let mut values = Values::new(Type::U32, 8);
+        let mut values = Values::new(Type::U32, &8usize);
         values.push(Value::U32(42));
 
         assert_eq!(

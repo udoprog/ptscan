@@ -13,6 +13,22 @@ use winapi::{
     um::{memoryapi, processthreadsapi, psapi, winnt},
 };
 
+#[derive(Debug, Clone, Copy)]
+pub enum PointerWidth {
+    Pointer32,
+    Pointer64,
+}
+
+impl PointerWidth {
+    /// The size of the pointer in bytes.
+    pub fn size(self) -> usize {
+        match self {
+            Self::Pointer32 => 4,
+            Self::Pointer64 => 8,
+        }
+    }
+}
+
 pub trait MemoryReader {
     type Process: ProcessInfo;
 
@@ -37,29 +53,62 @@ pub trait ProcessInfo {
     type Process: ProcessInfo;
     type ByteOrder: byteorder::ByteOrder;
 
+    fn process(&self) -> &Self::Process;
+
     /// The pointer width of the process.
-    fn pointer_width(&self) -> usize;
+    fn pointer_width(&self) -> PointerWidth;
 
     /// Access information on virtual memory for the given address.
     fn virtual_query(&self, address: Address) -> anyhow::Result<Option<MemoryInformation>>;
 
     /// Access virtual memory regions of the process.
-    fn virtual_memory_regions(&self) -> VirtualMemoryRegions<'_, Self::Process>;
+    fn virtual_memory_regions(&self) -> VirtualMemoryRegions<'_, Self::Process> {
+        VirtualMemoryRegions {
+            process: self.process(),
+            current: Address::null(),
+        }
+    }
 
-    /// Encode a pointer into the specified buffer.
-    fn encode_pointer(&self, buf: &mut [u8], value: u64) -> anyhow::Result<(), Error> {
-        assert!(buf.len() == self.pointer_width());
+    /// Decode the given buffer as a pointer.
+    fn decode_pointer(&self, buf: &[u8]) -> Address {
+        assert!(
+            buf.len() == self.pointer_width().size(),
+            "{} (buffer length) != {} (pointer width)",
+            buf.len(),
+            self.pointer_width().size()
+        );
 
         match self.pointer_width() {
-            8 => <Self::ByteOrder as byteorder::ByteOrder>::write_u64(buf, value),
-            4 => {
-                let value = u32::try_from(value).map_err(|_| Error::PointerConversionError)?;
+            PointerWidth::Pointer64 => {
+                let address = <Self::ByteOrder as byteorder::ByteOrder>::read_u64(buf);
+                Address(address)
+            }
+            PointerWidth::Pointer32 => {
+                let address = <Self::ByteOrder as byteorder::ByteOrder>::read_u32(buf);
+                Address(address as u64)
+            }
+        }
+    }
+
+    /// Encode a pointer into the specified buffer.
+    ///
+    /// Returns a boolean indicating if the pointer could be encoded.
+    fn encode_pointer(&self, buf: &mut [u8], value: u64) -> bool {
+        match self.pointer_width() {
+            PointerWidth::Pointer64 => {
+                <Self::ByteOrder as byteorder::ByteOrder>::write_u64(buf, value)
+            }
+            PointerWidth::Pointer32 => {
+                let value = match u32::try_from(value) {
+                    Ok(value) => value,
+                    Err(..) => return false,
+                };
+
                 <Self::ByteOrder as byteorder::ByteOrder>::write_u32(buf, value);
             }
-            n => return Err(Error::UnsupportedPointerWidth(n)),
         }
 
-        Ok(())
+        true
     }
 }
 
@@ -68,7 +117,7 @@ pub trait ProcessInfo {
 pub struct Process {
     pub process_id: ProcessId,
     pub is_64bit: bool,
-    pub pointer_width: usize,
+    pub pointer_width: PointerWidth,
     pub endianness: Endianness,
     pub(crate) handle: Arc<utils::Handle>,
 }
@@ -267,19 +316,16 @@ impl ProcessInfo for Process {
     type Process = Process;
     type ByteOrder = byteorder::NativeEndian;
 
-    fn pointer_width(&self) -> usize {
+    fn process(&self) -> &Self::Process {
+        self
+    }
+
+    fn pointer_width(&self) -> PointerWidth {
         self.pointer_width
     }
 
     fn virtual_query(&self, address: Address) -> anyhow::Result<Option<MemoryInformation>> {
         Process::virtual_query(self, address)
-    }
-
-    fn virtual_memory_regions(&self) -> VirtualMemoryRegions<'_, Self::Process> {
-        VirtualMemoryRegions {
-            process: self,
-            current: Address::null(),
-        }
     }
 }
 
@@ -345,7 +391,11 @@ impl OpenProcessBuilder {
         let is_64bit = handle.is_64bit()?;
         let handle = Arc::new(handle);
 
-        let pointer_width = if is_64bit { 8 } else { 4 };
+        let pointer_width = if is_64bit {
+            PointerWidth::Pointer64
+        } else {
+            PointerWidth::Pointer32
+        };
         let endianness = Endianness::LittleEndian;
 
         Ok(Process {

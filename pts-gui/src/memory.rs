@@ -1,5 +1,5 @@
 use crate::ScanResult;
-use ptscan::{MemoryInformation, ThreadId, Value};
+use ptscan::{MemoryInformation, ThreadId, Type, Value};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -41,15 +41,15 @@ impl fmt::Display for MemoryInfo {
 pub struct CurrentScanResult {
     #[serde(flatten)]
     pub result: ScanResult,
-    pub current: Option<Value>,
+    pub current: Option<(Type, Value)>,
 }
 
 impl fmt::Display for CurrentScanResult {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "{}", self.result)?;
 
-        if let Some(current) = &self.current {
-            write!(fmt, " {}", current)?;
+        if let Some((ty, current)) = &self.current {
+            write!(fmt, " {} {}", ty, current)?;
         }
 
         Ok(())

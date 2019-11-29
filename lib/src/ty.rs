@@ -1,5 +1,6 @@
 use crate::{
-    address, encoding, error::Error, process::MemoryReader, Address, Encoding, ProcessInfo, Value,
+    address, encoding, error::Error, process::MemoryReader, Address, Encoding, PointerInfo,
+    ProcessInfo, Value,
 };
 use anyhow::bail;
 use byteorder::ByteOrder as _;
@@ -165,7 +166,14 @@ impl Type {
             (Self::F32, other @ Value::F32(..)) => other,
             (Self::F64, other @ Value::F64(..)) => other,
             (Self::String(..), Value::String(string)) => Value::String(string),
-            (Self::Bytes(..), other @ Value::Bytes(..)) => other,
+            (Self::Bytes(a), Value::Bytes(mut b)) => {
+                if a == b.len() {
+                    Value::Bytes(b)
+                } else {
+                    b.resize_with(a, u8::default);
+                    Value::Bytes(b)
+                }
+            }
             (Self::Bytes(len), Value::String(string)) => {
                 let encoding = Encoding::default();
 
@@ -293,7 +301,7 @@ impl Type {
 
     /// The known in-memory size that a type has.
     #[inline]
-    pub fn size(&self, process: &impl ProcessInfo) -> Option<usize> {
+    pub fn size(&self, process: &impl PointerInfo) -> Option<usize> {
         Some(match *self {
             Self::None => 0,
             Self::Pointer => process.pointer_width(),
@@ -316,10 +324,10 @@ impl Type {
 
     /// The known in-memory size that a type has.
     #[inline]
-    pub fn element_size(&self, pointer_width: usize) -> usize {
+    pub fn element_size(&self, pointer: &impl PointerInfo) -> usize {
         match *self {
             Self::None => 0,
-            Self::Pointer => pointer_width,
+            Self::Pointer => pointer.pointer_width(),
             Self::U8 => mem::size_of::<u8>(),
             Self::I8 => mem::size_of::<i8>(),
             Self::U16 => mem::size_of::<u16>(),

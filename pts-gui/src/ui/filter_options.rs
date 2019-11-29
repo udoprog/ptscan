@@ -41,9 +41,7 @@ pub struct FilterOptions {
 
 impl FilterOptions {
     /// Construct a widget representing the current state.
-    pub fn new(clipboard: Rc<Clipboard>, frame: &gtk::Box) -> Rc<RefCell<Self>> {
-        let builder = resource("filter_options.glade").into_builder();
-
+    pub fn new(clipboard: Rc<Clipboard>, builder: &Builder) -> Rc<RefCell<Self>> {
         // TODO: make serializable.
         let state = State {
             filter_expr: None,
@@ -59,29 +57,29 @@ impl FilterOptions {
         };
 
         let scan_button = cascade! {
-            builder.get_object::<Button>("scan_button");
+            builder.get_object::<Button>("filter_scan_button");
         };
 
         let reset_button = cascade! {
-            builder.get_object::<Button>("reset_button");
+            builder.get_object::<Button>("filter_reset_button");
         };
 
         let value_expr_text = cascade! {
-            builder.get_object::<Entry>("value_expr_text");
+            builder.get_object::<Entry>("filter_value_text");
             ..set_text(&state.value_expr_text);
         };
 
         let modules_only = cascade! {
-            builder.get_object::<CheckButton>("modules_only");
+            builder.get_object::<CheckButton>("filter_modules_only");
             ..set_active(state.modules_only);
         };
 
         let refresh_button = cascade! {
-            builder.get_object::<Button>("refresh_button");
+            builder.get_object::<Button>("filter_refresh_button");
         };
 
         let filter_expr_error = builder.get_object::<Image>("filter_expr_error");
-        let value_expr_error = builder.get_object::<Image>("value_expr_error");
+        let value_expr_error = builder.get_object::<Image>("filter_value_error");
 
         let slf = Rc::new(RefCell::new(FilterOptions {
             state,
@@ -146,13 +144,6 @@ impl FilterOptions {
             let mut slf = slf.borrow_mut();
             slf.state.modules_only = btn.get_active();
         }));
-
-        let root = builder.get_object::<gtk::Box>("root");
-
-        root.foreach(|child| {
-            root.remove(child);
-            frame.add(child);
-        });
 
         slf.borrow_mut().update_components();
         slf

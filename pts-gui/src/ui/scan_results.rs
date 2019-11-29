@@ -1,6 +1,7 @@
 use crate::{prelude::*, CurrentScanResult};
+use anyhow::anyhow;
 use parking_lot::RwLock;
-use ptscan::{ProcessHandle, ValueExpr, Values};
+use ptscan::{ProcessHandle, TypeHint, ValueExpr, Values};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 struct Widgets {
@@ -181,7 +182,7 @@ impl ScanResults {
                     let iter = model.get_iter(&path)?;
                     let index = model.get_value(&iter, 0).get::<u64>().ok()?? as usize;
                     let result = visible.scan.get(&*handle, index)?.clone();
-                    let current = visible.current.get(index).clone();
+                    let current = visible.current.get(index).clone().map(|v| (visible.current.ty, v));
                     results.push(CurrentScanResult { result, current });
                 }
 
@@ -278,8 +279,10 @@ impl ScanResults {
         let handle = optional!(slf.handle.clone());
         let visible = optional!(&slf.visible);
         let initial = visible.scan.initial.clone();
+        let last_type = visible.scan.last.ty;
+        let current = visible.current.clone();
         let addresses = visible.scan.addresses.clone();
-        let mut current = visible.current.clone();
+
         let thread_pool = slf.thread_pool.clone();
         let results_generation = slf.results_generation;
         let value_expr = slf.value_expr.clone();
@@ -289,6 +292,28 @@ impl ScanResults {
                 let handle = match handle.try_read() {
                     Some(handle) => handle,
                     None => return Ok(None),
+                };
+
+                let value_type = value_expr
+                    .value_type_of(TypeHint::Explicit(last_type))?
+                    .option();
+
+                let value_type = match value_type {
+                    Some(value_type) => value_type,
+                    None => return Err(anyhow!("cannot determine type of value")),
+                };
+
+                // NB: need to convert the value storage in case current type differs.
+                let (mut current, type_change) = if value_type != current.ty {
+                    let mut new = Values::new(value_type, &*handle);
+
+                    for v in current.iter() {
+                        new.push(value_type.convert(v.read()));
+                    }
+
+                    (new, true)
+                } else {
+                    (current, false)
                 };
 
                 handle.refresh_values(
@@ -301,11 +326,19 @@ impl ScanResults {
                     &value_expr,
                 )?;
 
-                Ok(Some(current))
+                Ok(Some((current, type_change)))
             });
             ..then(move |slf, values| {
-                if let Ok(Some(values)) = values {
-                    slf.refresh_visible_diff(results_generation, values);
+                if let Ok(Some((values, type_change))) = values {
+                    if type_change {
+                        if let Some(visible) = &mut slf.visible {
+                            visible.current = values;
+                        }
+
+                        slf.refresh_visible();
+                    } else {
+                        slf.refresh_visible_diff(results_generation, values);
+                    }
                 }
 
                 slf.refresh_task = None;
@@ -322,8 +355,11 @@ impl ScanResults {
         }
 
         let model = upgrade!(self.widgets.model);
-
         let visible = optional!(&mut self.visible);
+
+        if visible.current.ty != values.ty {
+            return;
+        }
 
         for (index, (last, (mut prev, new))) in visible
             .scan
@@ -354,6 +390,36 @@ impl ScanResults {
             }
 
             prev.write(new.read());
+        }
+    }
+
+    /// Refresh all visible values under the assumption that they have changed.
+    fn refresh_visible(&mut self) {
+        let model = upgrade!(self.widgets.model);
+        let visible = optional!(&self.visible);
+
+        for (index, (last, current)) in visible
+            .scan
+            .last
+            .iter()
+            .zip(visible.current.iter())
+            .enumerate()
+        {
+            {
+                let current = current.as_ref();
+
+                if let Some(iter) = model.iter_nth_child(None, index as i32) {
+                    model.set_value(&iter, 5, &current.to_string().to_value());
+
+                    let background = if current == last.as_ref() {
+                        &self.settings.default_cell_background
+                    } else {
+                        &self.settings.highlight_cell_background
+                    };
+
+                    model.set_value(&iter, 6, &background.to_value());
+                }
+            }
         }
     }
 

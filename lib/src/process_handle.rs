@@ -3,13 +3,12 @@
 use crate::{
     error::Error,
     filter_expr::FilterExpr,
-    process::{MemoryInformation, MemoryReader},
+    process::{MemoryInformation, MemoryReader, VirtualMemoryRegions},
     progress_reporter::ProgressReporter,
     system,
     thread::Thread,
-    values, Address, AddressRange, Cached, Pointer, PointerBase, Process, ProcessId,
-    ProcessInfo as _, Size, Special, Test, ThreadId, Token, Type, TypeHint, Value, ValueExpr,
-    ValueInfo, Values,
+    values, Address, AddressRange, Cached, Pointer, PointerBase, Process, ProcessId, ProcessInfo,
+    Size, Special, Test, ThreadId, Token, Type, TypeHint, Value, ValueExpr, ValueInfo, Values,
 };
 use anyhow::{anyhow, bail, Context as _};
 use crossbeam_queue::SegQueue;
@@ -1070,7 +1069,7 @@ impl ProcessHandle {
             } = work;
 
             let mut addresses = Vec::new();
-            let mut values = Values::new(value_type, handle.process.pointer_width);
+            let mut values = Values::new(value_type, &handle.process);
 
             let mut buffer = vec![0u8; buffer_size];
 
@@ -1240,6 +1239,31 @@ impl ProcessHandle {
                 *to_align += alignment - rem;
             }
         }
+    }
+}
+
+// NB: forward impl to inner `Process`.
+impl ProcessInfo for ProcessHandle {
+    type Process = Process;
+    type ByteOrder = byteorder::NativeEndian;
+
+    fn pointer_width(&self) -> usize {
+        ProcessInfo::pointer_width(&self.process)
+    }
+
+    fn virtual_query(&self, address: Address) -> anyhow::Result<Option<MemoryInformation>> {
+        self.process.virtual_query(address)
+    }
+
+    fn virtual_memory_regions(&self) -> VirtualMemoryRegions<'_, Self::Process>
+    where
+        Self::Process: Sized,
+    {
+        self.process.virtual_memory_regions()
+    }
+
+    fn encode_pointer(&self, buf: &mut [u8], value: u64) -> anyhow::Result<(), Error> {
+        self.process.encode_pointer(buf, value)
     }
 }
 

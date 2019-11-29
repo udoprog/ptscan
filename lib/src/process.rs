@@ -34,6 +34,7 @@ impl MemoryReader for Process {
 }
 
 pub trait ProcessInfo {
+    type Process: ProcessInfo;
     type ByteOrder: byteorder::ByteOrder;
 
     /// The pointer width of the process.
@@ -43,15 +44,7 @@ pub trait ProcessInfo {
     fn virtual_query(&self, address: Address) -> anyhow::Result<Option<MemoryInformation>>;
 
     /// Access virtual memory regions of the process.
-    fn virtual_memory_regions(&self) -> VirtualMemoryRegions<'_, Self>
-    where
-        Self: Sized,
-    {
-        VirtualMemoryRegions {
-            process: self,
-            current: Address::null(),
-        }
-    }
+    fn virtual_memory_regions(&self) -> VirtualMemoryRegions<'_, Self::Process>;
 
     /// Encode a pointer into the specified buffer.
     fn encode_pointer(&self, buf: &mut [u8], value: u64) -> anyhow::Result<(), Error> {
@@ -271,6 +264,7 @@ impl Process {
 }
 
 impl ProcessInfo for Process {
+    type Process = Process;
     type ByteOrder = byteorder::NativeEndian;
 
     fn pointer_width(&self) -> usize {
@@ -279,6 +273,13 @@ impl ProcessInfo for Process {
 
     fn virtual_query(&self, address: Address) -> anyhow::Result<Option<MemoryInformation>> {
         Process::virtual_query(self, address)
+    }
+
+    fn virtual_memory_regions(&self) -> VirtualMemoryRegions<'_, Self::Process> {
+        VirtualMemoryRegions {
+            process: self,
+            current: Address::null(),
+        }
     }
 }
 

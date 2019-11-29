@@ -67,7 +67,6 @@ impl MainWindow {
         let scan_progress = builder.get_object::<ProgressBar>("scan_progress");
         let scan_cancel = builder.get_object::<Button>("scan_cancel");
         let scan_progress_container = builder.get_object::<gtk::Box>("scan_progress_container");
-        let filter_options_container = builder.get_object::<gtk::Box>("filter_options_container");
         let scan_results_status = builder.get_object::<Label>("scan_results_status");
 
         let status_label = cascade! {
@@ -112,7 +111,7 @@ impl MainWindow {
             edit_scan_result_dialog_window.downgrade(),
         );
 
-        let filter_options = ui::FilterOptions::new(clipboard.clone(), &filter_options_container);
+        let filter_options = ui::FilterOptions::new(clipboard.clone(), &builder);
 
         let main_menu = ui::MainMenu::new(
             &builder,
@@ -312,7 +311,7 @@ impl MainWindow {
             let handle = RwLockWriteGuard::downgrade(handle);
 
             let mut addresses = Vec::new();
-            let mut values = Values::new(value_type, handle.process.pointer_width);
+            let mut values = Values::new(value_type, &*handle);
 
             let result = handle.initial_scan(
                 &*thread_pool,

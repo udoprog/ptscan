@@ -410,7 +410,7 @@ impl ScratchResults {
                 let token = c.as_token();
 
                 let mut addresses = Vec::new();
-                let mut values = Values::new(Type::Pointer, handle.process.pointer_width);
+                let mut values = Values::new(Type::Pointer, &handle.process);
 
                 handle.initial_scan(
                     &*thread_pool,

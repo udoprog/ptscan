@@ -5,9 +5,25 @@ lalrpop_util::lalrpop_mod!(
     "/pointer/parser.rs"
 );
 
-use crate::{process_handle::ProcessHandle, utils::EscapeString, Address, Offset, Sign, Size};
+use crate::{
+    process_handle::ProcessHandle, utils::EscapeString, Address, Offset, ProcessInfo, Sign, Size,
+};
 use serde::{Deserialize, Serialize};
 use std::fmt;
+
+pub trait PointerInfo {
+    /// Get the width of a pointer in the system.
+    fn pointer_width(&self) -> usize;
+}
+
+impl<T> PointerInfo for T
+where
+    T: ProcessInfo,
+{
+    fn pointer_width(&self) -> usize {
+        ProcessInfo::pointer_width(self)
+    }
+}
 
 static NULL_POINTER: Pointer = Pointer {
     base: PointerBase::Address {

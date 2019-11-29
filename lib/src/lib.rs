@@ -4,6 +4,7 @@ use winapi::shared::minwindef::DWORD;
 pub mod utils;
 mod address;
 mod address_range;
+mod bitset;
 mod encoding;
 mod error;
 mod filter_expr;
@@ -44,12 +45,13 @@ pub enum Cached<T> {
 
 pub use self::address::Address;
 pub use self::address_range::AddressRange;
+pub use self::bitset::BitSet;
 pub use self::encoding::Encoding;
 pub use self::error::Error;
 pub use self::filter_expr::{FilterExpr, Special, Test, ValueInfo};
 pub use self::module::Module;
 pub use self::offset::Offset;
-pub use self::pointer::{Pointer, PointerBase};
+pub use self::pointer::{Pointer, PointerBase, PointerInfo};
 pub use self::pointer_scan::{
     PointerScan, PointerScanBackreferenceProgress, PointerScanInitialProgress,
 };

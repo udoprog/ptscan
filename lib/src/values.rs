@@ -7,7 +7,7 @@
 //! T in this case is `Value`, and the discriminator is `Type`. Combined this
 //! means we can store dynamically determined values with much less memory.
 
-use crate::{Address, Type, Value, ValueRef};
+use crate::{Address, PointerInfo, Type, Value, ValueRef};
 use std::{marker, mem, ptr, slice};
 
 /// A dynamic collection of values, with the goal of supporting efficient delete
@@ -32,12 +32,69 @@ impl Values {
     }
 
     /// Construct a new values collection.
-    pub fn new(ty: Type, pointer_width: usize) -> Self {
+    pub fn new(ty: Type, pointer: &impl PointerInfo) -> Self {
         Self {
             ty,
-            element_size: ty.element_size(pointer_width),
+            element_size: ty.element_size(pointer),
             data: Vec::new(),
             len: 0,
+        }
+    }
+
+    /// Creates a values collection with the given capacity.
+    pub fn with_capacity(ty: Type, pointer: &impl PointerInfo, cap: usize) -> Self {
+        let element_size = ty.element_size(pointer);
+
+        Self {
+            ty,
+            element_size,
+            data: Vec::with_capacity(element_size * cap),
+            len: 0,
+        }
+    }
+
+    /// Convert the current collection in place.
+    ///
+    /// This allows for some neat optimizations, like avoiding an allocation in
+    /// case we are shrinking the collection.
+    pub fn convert_in_place(&mut self, ty: Type, pointer: &impl PointerInfo) {
+        if self.ty == ty {
+            return;
+        }
+
+        let element_size = ty.element_size(pointer);
+
+        // shrinking can be done in-place.
+        if element_size <= self.element_size {
+            let mut dst = self.data.as_mut_ptr();
+            let mut src = self.data.as_ptr();
+
+            for _ in 0..self.len {
+                unsafe {
+                    let v = Accessor::read_unchecked(self.ty, src);
+                    let v = ty.convert(v);
+                    Mutator::write_unchecked(ty, dst, v);
+                    src = src.add(self.element_size);
+                    dst = dst.add(element_size);
+                };
+            }
+
+            self.ty = ty;
+            self.element_size = element_size;
+
+            unsafe {
+                self.data.set_len(element_size * self.len);
+            }
+        } else {
+            let mut new = Values::with_capacity(ty, pointer, self.len);
+
+            for v in self.iter() {
+                let v = v.read();
+                let v = ty.convert(v);
+                new.push(v);
+            }
+
+            *self = new;
         }
     }
 
@@ -416,14 +473,26 @@ impl Mutator<'_> {
     /// Write the given value to the unchecked memory location.
     unsafe fn write_unchecked(ty: Type, ptr: *mut u8, value: Value) {
         macro_rules! write {
-            ($($variant:ident),*) => {
+            ($(($variant:ident, $ty:ty)),*) => {
                 match (ty, value) {
                     (Type::None, Value::None) => (),
-                    $((Type::$variant{..}, Value::$variant(value)) => {
-                        ptr::write(ptr as *mut _, value);
-                    },)*
-                    (Type::Bytes(..), Value::Bytes(b)) => {
-                        ptr::copy_nonoverlapping(b.as_ptr(), ptr, b.len());
+                    $(
+                        (Type::$variant{..}, Value::$variant(value)) => {
+                            ptr::write(ptr as *mut _, value);
+                        },
+                        (Type::$variant{..}, Value::None) => {
+                            ptr::write(ptr as *mut _, <$ty>::default());
+                        },
+                    )*
+                    (Type::Bytes(len), Value::None) => {
+                        ptr::write_bytes(ptr, 0u8, len);
+                    },
+                    (Type::Bytes(len), Value::Bytes(b)) => {
+                        if len != b.len() {
+                            panic!("cannot copy bytes:{} of difference size:{}", len, b.len());
+                        }
+
+                        ptr::copy_nonoverlapping(b.as_ptr(), ptr, len);
                     },
                     (ty, value) => panic!("cannot write value:{} into type:{}", value, ty),
                 }
@@ -431,9 +500,74 @@ impl Mutator<'_> {
         }
 
         write!(
-            Pointer,
-            U8,
-            I8, U16, I16, U32, I32, U64, I64, U128, I128, F32, F64, String
+            (Pointer, Address),
+            (U8, u8),
+            (I8, i8),
+            (U16, u16),
+            (I16, i16),
+            (U32, u32),
+            (I32, i32),
+            (U64, u64),
+            (I64, i64),
+            (U128, u128),
+            (I128, i128),
+            (F32, f32),
+            (F64, f64),
+            (String, String)
+        );
+    }
+
+    /// NB: For when we level up and can do direct referential reads during a scan.
+    #[allow(unused)]
+    unsafe fn write_unchecked_ref(ty: Type, ptr: *mut u8, value: ValueRef<'_>) {
+        macro_rules! write {
+            ($(($variant:ident, $ty:ty)),*) => {
+                match (ty, value) {
+                    (Type::None, ValueRef::None) => (),
+                    $(
+                        (Type::$variant{..}, ValueRef::$variant(value)) => {
+                            ptr::write(ptr as *mut _, value);
+                        },
+                        (Type::$variant{..}, ValueRef::None) => {
+                            ptr::write(ptr as *mut _, <$ty>::default());
+                        },
+                    )*
+                    (Type::String(..), ValueRef::None) => {
+                        ptr::write(ptr as *mut _, String::default());
+                    },
+                    (Type::String(..), ValueRef::String(s)) => {
+                        ptr::write(ptr as *mut _, s.to_string());
+                    },
+                    (Type::Bytes(len), ValueRef::None) => {
+                        ptr::write_bytes(ptr, 0u8, len);
+                    },
+                    (Type::Bytes(len), ValueRef::Bytes(b)) => {
+                        ptr::copy_nonoverlapping(b.as_ptr(), ptr, len);
+
+                        // pad the rest with zeros.
+                        if b.len() > len {
+                            ptr::write_bytes(ptr, 0u8, b.len() - len);
+                        }
+                    },
+                    (ty, value) => panic!("cannot write value:{} into type:{}", value, ty),
+                }
+            }
+        }
+
+        write!(
+            (Pointer, Address),
+            (U8, u8),
+            (I8, i8),
+            (U16, u16),
+            (I16, i16),
+            (U32, u32),
+            (I32, i32),
+            (U64, u64),
+            (I64, i64),
+            (U128, u128),
+            (I128, i128),
+            (F32, f32),
+            (F64, f64)
         );
     }
 }

@@ -293,9 +293,9 @@ impl MainWindow {
                 }
             }
 
-            let value_type = filter_expr
+            let value_type = value_expr
                 .value_type_of(TypeHint::NoHint)?
-                .solve(value_expr.value_type_of(TypeHint::NoHint)?.into_implicit())?
+                .solve(filter_expr.value_type_of(TypeHint::NoHint)?)?
                 .ok_or_else(|| anyhow!("cannot determine type of value"))?;
 
             let handle = RwLockWriteGuard::downgrade_to_upgradable(handle.write());

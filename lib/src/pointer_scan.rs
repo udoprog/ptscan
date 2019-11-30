@@ -1,4 +1,7 @@
-use crate::{values, Address, Location, Offset, Pointer, PointerBase, ProcessHandle, Size, Token};
+use crate::{
+    values, Address, Base, FollowablePointer as _, Location, Offset, Pointer, ProcessHandle, Size,
+    Token,
+};
 use anyhow::anyhow;
 use hashbrown::{hash_map, HashMap};
 use std::collections::{BTreeMap, VecDeque};
@@ -58,12 +61,17 @@ impl<'a> PointerScan<'a> {
     }
 
     /// Build forward and backward references.
-    pub fn build_references<'v, A, V>(&mut self, addresses: A, values: V) -> anyhow::Result<()>
+    pub fn build_references<'v, A, V>(&mut self, bases: A, values: V) -> anyhow::Result<()>
     where
-        A: IntoIterator<Item = Address>,
+        A: IntoIterator<Item = Base>,
         V: IntoIterator<Item = values::Accessor<'v>>,
     {
-        for (from, value) in addresses.into_iter().zip(values.into_iter()) {
+        for (base, value) in bases.into_iter().zip(values.into_iter()) {
+            let from = match base.eval(self.handle)? {
+                Some(address) => address,
+                None => continue,
+            };
+
             let to = match value.read().as_address() {
                 Some(address) => address,
                 None => continue,
@@ -132,8 +140,8 @@ impl<'a> PointerScan<'a> {
                         path.reverse();
 
                         let pointer = Pointer::new(
-                            PointerBase::Module {
-                                name: module.name.to_string(),
+                            Base::Module {
+                                id: module.id,
                                 offset,
                             },
                             path.clone(),

@@ -1,7 +1,7 @@
 use crate::prelude::*;
 use glib::signal::SignalHandlerId;
 use parking_lot::RwLock;
-use ptscan::{Address, Cached, Pointer, ProcessHandle, Type, Value};
+use ptscan::{Address, Cached, PortablePointer, ProcessHandle, Type, Value};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 struct Widgets {
@@ -96,7 +96,7 @@ impl EditScanResultDialog {
 
                     let result = optional!(result);
 
-                    let pointer = match Pointer::parse(text.as_str()) {
+                    let pointer = match PortablePointer::parse(text.as_str()) {
                         Ok(p) => p,
                         Err(..) => {
                             if let Some(image) = widgets.address_error.upgrade() {
@@ -216,11 +216,11 @@ impl EditScanResultDialog {
             let address_entry = upgrade!(self.widgets.address_entry).block(&signals.address_entry);
             let type_entry = upgrade!(self.widgets.type_entry).block(&signals.type_entry);
 
-            address_entry.set_text(&result.address.to_string());
+            address_entry.set_text(&result.pointer.to_string());
             type_entry.set_text(&result.last_type.to_string());
         }
 
-        self.last_address = Some(result.address);
+        self.last_address = result.last_address;
         self.value = Some(result.last.clone());
         self.result = Some(result);
         self.update_components();

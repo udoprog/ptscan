@@ -290,7 +290,7 @@ impl MainWindow {
 
                     let result = handle.rescan_values(
                         &*thread_pool,
-                        &mut scan.addresses,
+                        &mut scan.bases,
                         &mut scan.initial,
                         &mut scan.last,
                         Some(s.as_token()),
@@ -330,7 +330,7 @@ impl MainWindow {
             handle.update_threads(threads);
             let handle = RwLockWriteGuard::downgrade(handle);
 
-            let mut addresses = Vec::new();
+            let mut bases = Vec::new();
             let mut values = Values::new(value_type, &*handle);
 
             if suspend {
@@ -343,7 +343,7 @@ impl MainWindow {
             let result = handle.initial_scan(
                 &*thread_pool,
                 &filter_expr,
-                &mut addresses,
+                &mut bases,
                 &mut values,
                 Some(s.as_token()),
                 ContextProgress::new(s),
@@ -358,7 +358,7 @@ impl MainWindow {
             }
 
             *scan.write() = Some(Scan {
-                addresses,
+                bases,
                 initial: values.clone(),
                 last: values,
             });
@@ -455,7 +455,7 @@ impl MainWindow {
 
                 handle.refresh_values(
                     &*thread_pool,
-                    &scan.addresses,
+                    &scan.bases,
                     &scan.initial,
                     &mut scan.last,
                     Some(s.as_token()),

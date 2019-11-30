@@ -90,12 +90,12 @@ impl ScanResults {
         let clip = clipboard.handle("scan");
 
         add_item.connect_activate(clone!(slf => move |_| {
-            let slf = slf.borrow();
+            let slf = slf.borrow_mut();
             let tree = upgrade!(slf.widgets.tree);
             let handle = optional!(optional!(slf.handle.as_ref()).try_read());
 
-            let on_add_results = optional!(&slf.on_add_results);
             let visible = optional!(&slf.visible);
+            let on_add_results = optional!(&slf.on_add_results);
 
             let (selected, _) = tree.get_selection().get_selected_rows();
 
@@ -232,16 +232,26 @@ impl ScanResults {
         let mut last = Values::new_of(&scan.last);
         last.extend(scan.last.iter().take(100));
 
-        let addresses = scan.addresses.iter().copied().take(100).collect::<Vec<_>>();
+        let bases = scan.bases.iter().cloned().take(100).collect::<Vec<_>>();
 
-        let it = addresses
-            .iter()
-            .copied()
-            .zip(initial.iter().zip(last.iter()));
+        let it = bases.iter().cloned().zip(initial.iter().zip(last.iter()));
 
-        for (index, (address, (initial, last))) in it.enumerate() {
+        let handle = match &self.handle {
+            Some(handle) => Some(handle.read()),
+            None => None,
+        };
+
+        for (index, (base, (initial, last))) in it.enumerate() {
             let ty = scan.initial.ty.to_string();
-            let pointer = address.to_string();
+
+            let pointer = match &handle {
+                Some(handle) => match base.as_portable(&*handle) {
+                    Some(base) => base.to_string(),
+                    None => base.to_string(),
+                },
+                None => base.to_string(),
+            };
+
             let initial = initial.as_ref().to_string();
             let last = last.as_ref().to_string();
 
@@ -263,7 +273,7 @@ impl ScanResults {
 
         self.visible = Some(Visible {
             scan: Scan {
-                addresses,
+                bases,
                 initial,
                 last: last.clone(),
             },
@@ -287,7 +297,7 @@ impl ScanResults {
         let initial = visible.scan.initial.clone();
         let last_type = visible.scan.last.ty;
         let mut current = visible.current.clone();
-        let addresses = visible.scan.addresses.clone();
+        let bases = visible.scan.bases.clone();
 
         let thread_pool = slf.thread_pool.clone();
         let results_generation = slf.results_generation;
@@ -319,7 +329,7 @@ impl ScanResults {
 
                 handle.refresh_values(
                     &*thread_pool,
-                    &addresses,
+                    &bases,
                     &initial,
                     &mut current,
                     Some(c.as_token()),

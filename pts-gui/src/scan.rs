@@ -1,11 +1,14 @@
-use ptscan::{Address, Pointer, ProcessHandle, Type, Value, ValueHolder, ValueRef, Values};
+use ptscan::{
+    Address, Base, FollowablePointer, PortablePointer, ProcessHandle, Type, Value, ValueHolder,
+    ValueRef, Values,
+};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResult {
-    pub address: Address,
-    pub pointer: Pointer,
+    pub pointer: PortablePointer,
+    pub last_address: Option<Address>,
     pub initial_type: Type,
     pub initial: Value,
     pub last_type: Type,
@@ -16,14 +19,16 @@ impl fmt::Display for ScanResult {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             fmt,
-            "{} => {} {} {} {} {}",
-            self.pointer, self.address, self.initial_type, self.initial, self.last_type, self.last
+            "{} {} {} {} {}",
+            self.pointer, self.initial_type, self.initial, self.last_type, self.last
         )
     }
 }
 
 impl ValueHolder for ScanResult {
-    fn pointer(&self) -> &Pointer {
+    type Pointer = PortablePointer;
+
+    fn pointer(&self) -> &Self::Pointer {
         &self.pointer
     }
 
@@ -49,7 +54,7 @@ impl ValueHolder for ScanResult {
 }
 
 pub struct Scan {
-    pub addresses: Vec<Address>,
+    pub bases: Vec<Base>,
     pub initial: Values,
     pub last: Values,
 }
@@ -57,13 +62,14 @@ pub struct Scan {
 impl Scan {
     /// Get a single scan result.
     pub fn get(&self, handle: &ProcessHandle, index: usize) -> Option<ScanResult> {
-        let address = self.addresses.get(index).copied()?;
-        let base = handle.address_to_pointer_base(address);
-        let pointer = Pointer::new(base, std::iter::empty());
+        let base = self.bases.get(index)?;
+        let last_address = base.follow_default(handle).ok().and_then(|v| v);
+        let base = base.as_portable(handle)?;
+        let pointer = PortablePointer::new(base, std::iter::empty());
 
         Some(ScanResult {
-            address,
             pointer,
+            last_address,
             initial_type: self.initial.ty,
             initial: self.initial.get(index)?,
             last_type: self.last.ty,
@@ -73,6 +79,6 @@ impl Scan {
 
     /// Get the number of results in this scan.
     pub fn len(&self) -> usize {
-        self.addresses.len()
+        self.bases.len()
     }
 }

@@ -3,7 +3,7 @@ use crate::{
     process::Process,
     utils::{EscapeString, Hex},
     value::Value,
-    Address, AddressProxy, Pointer, Sign, Type, TypeHint, ValueRef,
+    Address, AddressProxy, FollowablePointer, Pointer, Sign, Type, TypeHint, ValueRef,
 };
 use anyhow::{anyhow, bail};
 use bigdecimal::BigDecimal;
@@ -43,7 +43,7 @@ impl TypedValueExpr<'_> {
         &self,
         initial: ValueRef<'_>,
         last: ValueRef<'_>,
-        proxy: &mut AddressProxy<'_>,
+        proxy: &mut AddressProxy<'_, impl FollowablePointer>,
     ) -> anyhow::Result<Value> {
         Ok(match *self {
             Self::Value(expr_type) => proxy.eval(expr_type)?.0,
@@ -94,12 +94,15 @@ impl TypedValueExpr<'_> {
         })
     }
 
-    pub fn address_of(
+    pub fn address_of<P>(
         &self,
         initial: ValueRef<'_>,
         last: ValueRef<'_>,
-        proxy: &mut AddressProxy<'_>,
-    ) -> anyhow::Result<Option<Address>> {
+        proxy: &mut AddressProxy<'_, P>,
+    ) -> anyhow::Result<Option<Address>>
+    where
+        P: FollowablePointer,
+    {
         let mut stack = Vec::new();
         self.stacked_address_of(&mut stack, initial, last, proxy)?;
         Ok(stack.last().copied().and_then(|a| a))
@@ -111,7 +114,7 @@ impl TypedValueExpr<'_> {
         stack: &mut Vec<Option<Address>>,
         initial: ValueRef<'_>,
         last: ValueRef<'_>,
-        proxy: &mut AddressProxy<'_>,
+        proxy: &mut AddressProxy<'_, impl FollowablePointer>,
     ) -> anyhow::Result<()> {
         match self {
             Self::Value(..) => {

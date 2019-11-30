@@ -1,14 +1,17 @@
 // vim: ft=rust
 use crate::{
     Offset,
-    pointer::{Pointer, PointerBase, lexer::{Hex, Token}},
+    pointer::{PortableBase, PortablePointer, lexer::{Hex, Token}},
 };
 
 grammar<'input>;
 
-pub Pointer: Pointer = {
-    <base:PointerBase> <offsets:("->" <Deref>)*> => {
-        Pointer::new(base, offsets.into_iter().map(Hex::into_offset))
+pub Pointer: PortablePointer = {
+    <base:PortableBase> <offsets:("->" <Deref>)*> => {
+        PortablePointer {
+            base,
+            offsets: offsets.into_iter().map(Hex::into_offset).collect(),
+        }
     },
 }
 
@@ -18,7 +21,7 @@ Deref: Hex = {
     "-" <hex:Hex> => hex.negate(),
 }
 
-PointerBase: PointerBase = {
+PortableBase: PortableBase = {
     <address:Hex> <offsets:BaseOffset*> => {
         let mut address = address.into_address();
 
@@ -26,7 +29,7 @@ PointerBase: PointerBase = {
             address = address.saturating_offset(o);
         }
 
-        PointerBase::Address { address }
+        PortableBase::Address { address }
     },
     <name:String> <offsets:BaseOffset*> => {
         let mut offset = Offset::zero();
@@ -35,7 +38,7 @@ PointerBase: PointerBase = {
             offset = offset.saturating_add(o);
         }
 
-        PointerBase::Module { name, offset }
+        PortableBase::Module { name, offset }
     },
 }
 

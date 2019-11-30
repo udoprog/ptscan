@@ -51,7 +51,9 @@ pub use self::error::Error;
 pub use self::filter_expr::{FilterExpr, Special, Test, TypedFilterExpr, ValueInfo};
 pub use self::module::Module;
 pub use self::offset::Offset;
-pub use self::pointer::{Pointer, PointerBase, PointerInfo};
+pub use self::pointer::{
+    Base, FollowablePointer, Pointer, PointerInfo, PortableBase, PortablePointer,
+};
 pub use self::pointer_scan::{
     PointerScan, PointerScanBackreferenceProgress, PointerScanInitialProgress,
 };

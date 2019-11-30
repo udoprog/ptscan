@@ -2,8 +2,9 @@ use crate::{prelude::*, ui::EditScanResultDialog};
 use anyhow::anyhow;
 use parking_lot::RwLock;
 use ptscan::{
-    Address, FilterExpr, Pointer, PointerScan, PointerScanBackreferenceProgress,
-    PointerScanInitialProgress, ProcessHandle, Size, Type, Value, ValueExpr, Values,
+    FilterExpr, FollowablePointer as _, PointerScan, PointerScanBackreferenceProgress,
+    PointerScanInitialProgress, PortablePointer, ProcessHandle, Size, Type, Value, ValueExpr,
+    Values,
 };
 use std::{
     cell::RefCell,
@@ -162,8 +163,8 @@ impl ScratchResults {
                     let mut scan_result_dialog = s.scan_result_dialog.borrow_mut();
 
                     scan_result_dialog.set_result(ScanResult {
-                        address: Address::null(),
-                        pointer: Pointer::null(),
+                        pointer: PortablePointer::null(),
+                        last_address: None,
                         initial_type: Type::default(),
                         initial: Value::default(),
                         last_type: Type::default(),
@@ -298,11 +299,11 @@ impl ScratchResults {
         let model = upgrade!(self.widgets.model);
 
         let ty = result.last_type.to_string();
-        let address = result.address.to_string();
+        let pointer = result.pointer.to_string();
         let initial = result.initial.to_string();
         let last = result.last.to_string();
 
-        let iter = model.insert_with_values(None, &[1, 2, 3, 4], &[&ty, &address, &initial, &last]);
+        let iter = model.insert_with_values(None, &[1, 2, 3, 4], &[&ty, &pointer, &initial, &last]);
         model.set_value(&iter, 0, &(self.state.results.len() as u64).to_value());
 
         self.state.results.push(result);
@@ -318,12 +319,12 @@ impl ScratchResults {
         let model = upgrade!(self.widgets.model);
 
         let ty = result.last_type.to_string();
-        let address = result.address.to_string();
+        let pointer = result.pointer.to_string();
         let initial = result.initial.to_string();
         let last = result.last.to_string();
 
         if let Some(iter) = model.iter_nth_child(None, index as i32) {
-            model.set(&iter, &[1, 2, 3, 4], &[&ty, &address, &initial, &last]);
+            model.set(&iter, &[1, 2, 3, 4], &[&ty, &pointer, &initial, &last]);
         }
 
         if let Some(r) = self.state.results.get_mut(index) {
@@ -404,7 +405,11 @@ impl ScratchResults {
             task::Task::new(slf_rc, move |c| {
                 let handle = handle.read();
 
-                let needle = result.address;
+                let needle = match result.pointer.follow_default(&*handle)? {
+                    Some(needle) => needle,
+                    None => return Err(anyhow!("failed to follow pointer `{}` to address", result.pointer)),
+                };
+
                 let pointer_filter = FilterExpr::pointer(ValueExpr::Value, &handle.process)?;
 
                 let token = c.as_token();
@@ -426,13 +431,14 @@ impl ScratchResults {
                 pointer_scan.max_depth = 7;
                 pointer_scan.max_offset = Size::new(0x1000);
 
+                let mut results = Vec::new();
+
                 pointer_scan.build_references(addresses.into_iter(), values.iter())?;
 
                 if c.is_stopped() {
                     return Err(anyhow!("pointer scan cancelled"));
                 }
 
-                let mut results = Vec::new();
                 pointer_scan.scan(needle, &mut results, &mut InitialProgress::new(c, "Scanning for paths"))?;
 
                 if c.is_stopped() {

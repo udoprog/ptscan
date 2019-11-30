@@ -3,13 +3,14 @@
 use crate::{
     error::Error,
     filter_expr::FilterExpr,
+    pointer::FollowablePointer,
     process::{MemoryInformation, MemoryReader},
     progress_reporter::ProgressReporter,
     system,
     thread::Thread,
-    values, Address, AddressRange, Cached, Pointer, PointerBase, PointerWidth, Process, ProcessId,
-    ProcessInfo, Size, Special, Test, ThreadId, Token, Type, TypeHint, TypedFilterExpr, Value,
-    ValueExpr, ValueRef, Values,
+    values, Address, AddressRange, Base, Cached, Pointer, PointerWidth, PortableBase, Process,
+    ProcessId, ProcessInfo, Size, Special, Test, ThreadId, Token, Type, TypeHint, TypedFilterExpr,
+    Value, ValueExpr, ValueRef, Values,
 };
 use anyhow::{anyhow, bail, Context as _};
 use crossbeam_queue::SegQueue;
@@ -37,8 +38,10 @@ pub struct InitialScanConfig {
 
 /// Trait used for interfacing with dynamic values in a scan.
 pub trait ValueHolder {
+    type Pointer: FollowablePointer;
+
     /// Access the address of the value.
-    fn pointer(&self) -> &Pointer;
+    fn pointer(&self) -> &Self::Pointer;
 
     /// The type of the initial value.
     fn initial_type(&self) -> Type;
@@ -69,6 +72,7 @@ pub struct ModulesState {
     pub process_name: Option<String>,
     pub process_file_name: Option<OsString>,
     pub modules: Vec<ModuleInfo>,
+    pub modules_index: HashMap<String, u16>,
     pub modules_address: HashMap<String, Address>,
     pub kernel32: Option<AddressRange>,
 }
@@ -146,10 +150,13 @@ impl ProcessHandle {
         let mut process_name = None;
         let mut process_file_name = None;
         let mut modules = Vec::with_capacity(self.modules.modules.len());
+        let mut modules_index = HashMap::new();
         let mut modules_address = HashMap::new();
         let mut kernel32 = None;
 
-        for module in self.process.modules()? {
+        for (id, module) in self.process.modules()?.into_iter().enumerate() {
+            let id = u16::try_from(id)?;
+
             let name = module
                 .name(&self.process)
                 .with_context(|| "failed to get module name")?;
@@ -178,7 +185,9 @@ impl ProcessHandle {
             let file_name = file_name.map(|n| n.to_string_lossy().to_string());
 
             modules_address.insert(name.clone(), range.base);
+            modules_index.insert(name.clone(), id);
             modules.push(ModuleInfo {
+                id,
                 name,
                 file_name,
                 range,
@@ -192,6 +201,7 @@ impl ProcessHandle {
             process_file_name,
             modules,
             modules_address,
+            modules_index,
             kernel32,
         })
     }
@@ -291,16 +301,32 @@ impl ProcessHandle {
     }
 
     /// Convert an address into a pointer base.
-    pub fn address_to_pointer_base(&self, address: Address) -> PointerBase {
+    pub fn address_to_base(&self, address: Address) -> Base {
         match self.find_location(address) {
             Location::Module(module) => {
                 let offset = address.offset_of(module.range.base);
-                PointerBase::Module {
+
+                Base::Module {
+                    id: module.id,
+                    offset,
+                }
+            }
+            _ => Base::Address { address },
+        }
+    }
+
+    /// Convert an address into a portable pointer base.
+    pub fn address_to_portable_base(&self, address: Address) -> PortableBase {
+        match self.find_location(address) {
+            Location::Module(module) => {
+                let offset = address.offset_of(module.range.base);
+
+                PortableBase::Module {
                     name: module.name.to_string(),
                     offset,
                 }
             }
-            _ => PointerBase::Address { address },
+            _ => PortableBase::Address { address },
         }
     }
 
@@ -366,7 +392,7 @@ impl ProcessHandle {
         Ok(None)
     }
 
-    pub fn null_address_proxy(&self) -> AddressProxy<'_> {
+    pub fn null_address_proxy(&self) -> AddressProxy<'_, Pointer> {
         AddressProxy {
             pointer: Pointer::null_ref(),
             handle: self,
@@ -377,7 +403,10 @@ impl ProcessHandle {
     }
 
     /// Construct an address proxy for the given address.
-    pub fn address_proxy<'a>(&'a self, pointer: &'a Pointer) -> AddressProxy<'a> {
+    pub fn address_proxy<'a, P>(&'a self, pointer: &'a P) -> AddressProxy<'a, P>
+    where
+        P: FollowablePointer,
+    {
         AddressProxy {
             pointer,
             handle: self,
@@ -407,7 +436,7 @@ impl ProcessHandle {
     pub fn rescan_values(
         &self,
         thread_pool: &rayon::ThreadPool,
-        addresses: &mut Vec<Address>,
+        bases: &mut Vec<Base>,
         initial: &mut Values,
         values: &mut Values,
         cancel: Option<&Token>,
@@ -421,14 +450,14 @@ impl ProcessHandle {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        if addresses.is_empty() {
+        if bases.is_empty() {
             return Ok(());
         }
 
-        if addresses.len() != values.len() {
+        if bases.len() != values.len() {
             return Err(anyhow!(
-                "argument length mismatch, addresses ({}) != values ({})",
-                addresses.len(),
+                "argument length mismatch, bases ({}) != values ({})",
+                bases.len(),
                 values.len()
             ));
         }
@@ -448,7 +477,7 @@ impl ProcessHandle {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<Task>>();
                 let (p_tx, p_rx) = crossbeam_channel::unbounded::<
-                    Option<(usize, Address, values::Accessor<'_>, values::Mutator<'_>)>,
+                    Option<(usize, &Base, values::Accessor<'_>, values::Mutator<'_>)>,
                 >();
 
                 for _ in 0..tasks {
@@ -457,15 +486,14 @@ impl ProcessHandle {
 
                     s.spawn(move |_| {
                         while !cancel.test() {
-                            let (index, address, initial, mut value) =
+                            let (index, base, initial, mut value) =
                                 match p_rx.recv().expect("failed to receive") {
                                     Some(task) => task,
                                     None => break,
                                 };
 
                             let mut work = || {
-                                let pointer = Pointer::from(address);
-                                let mut proxy = self.address_proxy(&pointer);
+                                let mut proxy = self.address_proxy(base);
 
                                 if let Test::True =
                                     filter.test(initial.as_ref(), value.as_ref(), &mut proxy)?
@@ -484,14 +512,13 @@ impl ProcessHandle {
                     });
                 }
 
-                let mut it = addresses
+                let mut it = bases
                     .iter()
-                    .copied()
                     .zip(initial.iter().zip(values.iter_mut()))
                     .enumerate();
 
-                for (index, (address, (initial, value))) in (&mut it).take(tasks) {
-                    p_tx.send(Some((index, address, initial, value)))
+                for (index, (base, (initial, value))) in (&mut it).take(tasks) {
+                    p_tx.send(Some((index, base, initial, value)))
                         .expect("failed to send");
                 }
 
@@ -500,8 +527,8 @@ impl ProcessHandle {
                 while tasks > 0 {
                     let result = rx.recv().expect("closed");
 
-                    if let Some((index, (address, (initial, value)))) = it.next() {
-                        p_tx.send(Some((index, address, initial, value)))
+                    if let Some((index, (base, (initial, value)))) = it.next() {
+                        p_tx.send(Some((index, base, initial, value)))
                             .expect("failed to send");
                     } else {
                         p_tx.send(None).expect("failed to send");
@@ -535,7 +562,7 @@ impl ProcessHandle {
         for index in to_remove {
             initial.swap_remove(index);
             values.swap_remove(index);
-            addresses.swap_remove(index);
+            bases.swap_remove(index);
         }
 
         if let Some(e) = last_error {
@@ -558,7 +585,7 @@ impl ProcessHandle {
     pub fn refresh_values(
         &self,
         thread_pool: &rayon::ThreadPool,
-        addresses: &[Address],
+        bases: &[Base],
         initial: &Values,
         values: &mut Values,
         cancel: Option<&Token>,
@@ -572,13 +599,12 @@ impl ProcessHandle {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        if addresses.is_empty() {
+        if bases.is_empty() {
             return Ok(());
         }
 
         let mut last_error = None;
-        let mut reporter =
-            ProgressReporter::new(progress, addresses.len(), cancel, &mut last_error);
+        let mut reporter = ProgressReporter::new(progress, bases.len(), cancel, &mut last_error);
 
         // how many tasks to run in parallel.
         let mut tasks = thread_pool.current_num_threads();
@@ -588,7 +614,7 @@ impl ProcessHandle {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<bool>>();
                 let (p_tx, p_rx) = crossbeam_channel::unbounded::<
-                    Option<(Address, values::Accessor<'_>, values::Mutator<'_>)>,
+                    Option<(&Base, values::Accessor<'_>, values::Mutator<'_>)>,
                 >();
 
                 for _ in 0..tasks {
@@ -597,7 +623,7 @@ impl ProcessHandle {
 
                     s.spawn(move |_| {
                         while !cancel.test() {
-                            let (address, initial, mut value) = match p_rx.recv().expect("closed") {
+                            let (base, initial, mut value) = match p_rx.recv().expect("closed") {
                                 Some(task) => task,
                                 None => {
                                     break;
@@ -605,8 +631,7 @@ impl ProcessHandle {
                             };
 
                             let mut work = move || {
-                                let pointer = Pointer::from(address);
-                                let mut proxy = self.address_proxy(&pointer);
+                                let mut proxy = self.address_proxy(base);
 
                                 let expr_type = expr
                                     .type_of(
@@ -632,13 +657,10 @@ impl ProcessHandle {
                     });
                 }
 
-                let mut it = addresses
-                    .iter()
-                    .copied()
-                    .zip(initial.iter().zip(values.iter_mut()));
+                let mut it = bases.iter().zip(initial.iter().zip(values.iter_mut()));
 
-                for (address, (initial, value)) in (&mut it).take(tasks) {
-                    p_tx.send(Some((address, initial, value))).expect("closed");
+                for (base, (initial, value)) in (&mut it).take(tasks) {
+                    p_tx.send(Some((base, initial, value))).expect("closed");
                 }
 
                 let mut count = 0u64;
@@ -646,8 +668,8 @@ impl ProcessHandle {
                 while tasks > 0 {
                     let res = rx.recv().expect("failed to receive on channel");
 
-                    if let Some((address, (initial, value))) = it.next() {
-                        p_tx.send(Some((address, initial, value)))
+                    if let Some((base, (initial, value))) = it.next() {
+                        p_tx.send(Some((base, initial, value)))
                             .expect("failed to send on channel");
                     } else {
                         p_tx.send(None).expect("failed to send on channel");
@@ -803,7 +825,7 @@ impl ProcessHandle {
         &self,
         thread_pool: &rayon::ThreadPool,
         filter: &FilterExpr,
-        addresses: &mut Vec<Address>,
+        bases: &mut Vec<Base>,
         values: &mut Values,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
@@ -956,7 +978,7 @@ impl ProcessHandle {
                     match rx.recv().expect("channel closed") {
                         Task::Done(result, ..) => {
                             if let Some((mut a, mut r)) = reporter.eval(result) {
-                                addresses.append(&mut a);
+                                bases.append(&mut a);
                                 values.append(&mut r);
                             }
 
@@ -984,7 +1006,7 @@ impl ProcessHandle {
         return Ok(());
 
         enum Task {
-            Done(anyhow::Result<(Vec<Address>, Values)>, Duration, Instant),
+            Done(anyhow::Result<(Vec<Base>, Values)>, Duration, Instant),
             Tick(usize, u64, Duration, Instant),
         }
 
@@ -1002,7 +1024,7 @@ impl ProcessHandle {
         }
 
         #[inline(always)]
-        fn work(work: Work<'_, '_>) -> anyhow::Result<(Vec<Address>, Values)> {
+        fn work(work: Work<'_, '_>) -> anyhow::Result<(Vec<Base>, Values)> {
             let Work {
                 handle,
                 tx,
@@ -1016,14 +1038,14 @@ impl ProcessHandle {
                 cancel,
             } = work;
 
-            let mut addresses = Vec::new();
+            let mut bases = Vec::new();
             let mut values = Values::new(value_type, &handle.process);
 
             let mut buffer = vec![0u8; buffer_size];
 
             while let Ok((address, len)) = queue.pop() {
                 if cancel.test() {
-                    return Ok((addresses, values));
+                    return Ok((bases, values));
                 }
 
                 let len = usize::min(buffer.len(), len);
@@ -1044,7 +1066,7 @@ impl ProcessHandle {
                     handle,
                     filter,
                     value_type,
-                    addresses: &mut addresses,
+                    bases: &mut bases,
                     values: &mut values,
                     hits: &mut hits,
                     base: address,
@@ -1060,14 +1082,14 @@ impl ProcessHandle {
                     .expect("send tick failed");
             }
 
-            Ok((addresses, values))
+            Ok((bases, values))
         };
 
         struct ProcessOne<'a, 'filter> {
             handle: &'a ProcessHandle,
             filter: &'filter TypedFilterExpr<'a>,
             value_type: Type,
-            addresses: &'a mut Vec<Address>,
+            bases: &'a mut Vec<Base>,
             values: &'a mut Values,
             hits: &'a mut u64,
             base: Address,
@@ -1084,7 +1106,7 @@ impl ProcessHandle {
                 handle,
                 filter,
                 value_type,
-                addresses,
+                bases,
                 values,
                 hits,
                 base,
@@ -1135,7 +1157,10 @@ impl ProcessHandle {
                 if let Test::True = filter.test(ValueRef::None, ValueRef::None, &mut proxy)? {
                     *hits += 1;
                     let (value, advance) = proxy.eval(value_type)?;
-                    addresses.push(address);
+
+                    let base = handle.address_to_base(address);
+
+                    bases.push(base);
                     values.push(value);
 
                     if let Some(advance) = advance {
@@ -1199,8 +1224,11 @@ impl ProcessInfo for ProcessHandle {
 }
 
 #[derive(Debug, Clone)]
-pub struct AddressProxy<'a> {
-    pub pointer: &'a Pointer,
+pub struct AddressProxy<'a, P>
+where
+    P: FollowablePointer,
+{
+    pub pointer: &'a P,
     pub(crate) handle: &'a ProcessHandle,
     memory_cache: Option<&'a MemoryCache>,
     /// cached, followed address.
@@ -1209,7 +1237,10 @@ pub struct AddressProxy<'a> {
     cache: HashMap<Type, (Value, Option<usize>)>,
 }
 
-impl AddressProxy<'_> {
+impl<P> AddressProxy<'_, P>
+where
+    P: FollowablePointer,
+{
     pub fn address(&mut self) -> anyhow::Result<Option<Address>> {
         Ok(if let Some(memory_cache) = self.memory_cache {
             match self.followed {
@@ -1370,6 +1401,7 @@ impl iter::FromIterator<MemoryInformation> for Regions {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModuleInfo {
+    pub id: u16,
     pub name: String,
     pub file_name: Option<String>,
     pub range: AddressRange,
@@ -1455,7 +1487,10 @@ pub struct Session<'a> {
 
 impl<'a> Session<'a> {
     /// Construct an address proxy for the given address.
-    pub fn address_proxy(&'a self, pointer: &'a Pointer) -> AddressProxy<'a> {
+    pub fn address_proxy<P>(&'a self, pointer: &'a P) -> AddressProxy<'a, P>
+    where
+        P: FollowablePointer,
+    {
         AddressProxy {
             pointer,
             handle: self.handle,

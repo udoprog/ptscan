@@ -12,6 +12,17 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+/// Defines how you follow a pointer.
+pub trait FollowablePointer {
+    /// Follow the pointer.
+    fn follow_default(&self, handle: &ProcessHandle) -> anyhow::Result<Option<Address>>;
+
+    /// Follow the pointer using a custom resolver.
+    fn follow<F>(&self, handle: &ProcessHandle, eval: F) -> anyhow::Result<Option<Address>>
+    where
+        F: Fn(Address, &mut [u8]) -> anyhow::Result<usize>;
+}
+
 pub trait PointerInfo {
     type ByteOrder: byteorder::ByteOrder;
 
@@ -45,44 +56,66 @@ impl PointerInfo for usize {
 }
 
 static NULL_POINTER: Pointer = Pointer {
-    base: PointerBase::Address {
-        address: Address::null(),
-    },
+    base: Base::Null,
     offsets: Vec::new(),
 };
 
-/// The base of the pointer.
+/// A portable base of a pointer.
 ///
 /// Can either be a module identified by a string that has to be looked up from a `ProcessHandle`, or a fixed address.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum PointerBase {
-    /// An offset from a named module.
-    #[serde(rename = "module")]
-    Module { name: String, offset: Offset },
+pub enum PortableBase {
+    Null,
+    /// A non-portable module, who's indexed in a specific `Handle`.
+    Module {
+        name: String,
+        offset: Offset,
+    },
     /// A fixed address.
-    #[serde(rename = "address")]
-    Address { address: Address },
+    Address {
+        address: Address,
+    },
 }
 
-impl PointerBase {
+impl PortableBase {
+    pub fn as_local(&self, handle: &ProcessHandle) -> Option<Base> {
+        Some(match *self {
+            Self::Null => Base::Null,
+            Self::Module { ref name, offset } => {
+                let id = handle.modules.modules_index.get(name).cloned();
+
+                let id = match id {
+                    Some(id) => id,
+                    None => return None,
+                };
+
+                Base::Module { id, offset }
+            }
+            Self::Address { address } => Base::Address { address },
+        })
+    }
+
     /// Evaluate a pointer base, trying to translate it into an address.
     pub fn eval(&self, handle: &ProcessHandle) -> anyhow::Result<Option<Address>> {
-        match self {
-            Self::Module { name, offset, .. } => match handle.modules.modules_address.get(name) {
-                Some(address) => Ok(Some(address.saturating_offset(*offset))),
+        match *self {
+            Self::Null => Ok(None),
+            Self::Module {
+                ref name, offset, ..
+            } => match handle.modules.modules_address.get(name) {
+                Some(address) => Ok(Some(address.saturating_offset(offset))),
                 None => Ok(None),
             },
-            Self::Address { address } => Ok(Some(*address)),
+            Self::Address { address } => Ok(Some(address)),
         }
     }
 }
 
-impl fmt::Display for PointerBase {
+impl fmt::Display for PortableBase {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PointerBase::Address { address } => fmt::Display::fmt(address, fmt),
-            PointerBase::Module { name, offset } => {
+        match *self {
+            Self::Null => write!(fmt, "?"),
+            Self::Address { ref address } => fmt::Display::fmt(address, fmt),
+            Self::Module { ref name, offset } => {
                 write!(fmt, "{}", EscapeString(name))?;
 
                 if offset.abs() > Size::new(0) {
@@ -98,40 +131,60 @@ impl fmt::Display for PointerBase {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct Pointer {
-    /// Base address.
-    pub base: PointerBase,
-    /// Offsets and derefs to apply to find the given memory location.
-    pub offsets: Vec<Offset>,
+/// The base of the pointer.
+///
+/// Can either be a module identified by a string that has to be looked up from a `ProcessHandle`, or a fixed address.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Base {
+    Null,
+    /// A non-portable module, who's indexed in a specific `Handle`.
+    Module {
+        id: u16,
+        offset: Offset,
+    },
+    /// A fixed address.
+    Address {
+        address: Address,
+    },
 }
 
-impl Pointer {
-    /// Construct a new pointer.
-    pub fn new(base: PointerBase, offsets: impl IntoIterator<Item = Offset>) -> Self {
-        Self {
-            base,
-            offsets: offsets.into_iter().collect(),
-        }
+impl Base {
+    /// Convert base into a portable base.
+    pub fn as_portable(&self, handle: &ProcessHandle) -> Option<PortableBase> {
+        Some(match *self {
+            Self::Null => PortableBase::Null,
+            Self::Module { id, offset } => {
+                let module = handle.modules.modules.get(id as usize);
+
+                let module = match module {
+                    Some(module) => module,
+                    None => return None,
+                };
+
+                PortableBase::Module {
+                    name: module.name.clone(),
+                    offset,
+                }
+            }
+            Self::Address { address } => PortableBase::Address { address },
+        })
     }
 
-    /// Construct the pointer associated with null.
-    pub const fn null() -> Self {
-        Self {
-            base: PointerBase::Address {
-                address: Address::null(),
+    /// Evaluate a pointer base, trying to translate it into an address.
+    pub fn eval(&self, handle: &ProcessHandle) -> anyhow::Result<Option<Address>> {
+        match *self {
+            Self::Null => Ok(None),
+            Self::Module { id, offset, .. } => match handle.modules.modules.get(usize::from(id)) {
+                Some(m) => Ok(Some(m.range.base.saturating_offset(offset))),
+                None => Ok(None),
             },
-            offsets: Vec::new(),
+            Self::Address { address } => Ok(Some(address)),
         }
     }
+}
 
-    /// Get a null raw pointer with a static lifetime.
-    pub fn null_ref() -> &'static Pointer {
-        &NULL_POINTER
-    }
-
-    /// Follow, using default memory resolution.
-    pub fn follow_default(&self, handle: &ProcessHandle) -> anyhow::Result<Option<Address>> {
+impl FollowablePointer for Base {
+    fn follow_default(&self, handle: &ProcessHandle) -> anyhow::Result<Option<Address>> {
         self.follow(handle, |a, buf| {
             handle
                 .process
@@ -141,7 +194,87 @@ impl Pointer {
     }
 
     /// Try to evaluate the current location into an address.
-    pub fn follow<F>(&self, handle: &ProcessHandle, eval: F) -> anyhow::Result<Option<Address>>
+    fn follow<F>(&self, handle: &ProcessHandle, _: F) -> anyhow::Result<Option<Address>>
+    where
+        F: Fn(Address, &mut [u8]) -> anyhow::Result<usize>,
+    {
+        self.eval(handle)
+    }
+}
+
+impl fmt::Display for Base {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Null => write!(fmt, "?"),
+            Self::Address { ref address } => fmt::Display::fmt(address, fmt),
+            Self::Module { id, ref offset } => {
+                write!(fmt, "(module:{})", id)?;
+
+                if offset.abs() > Size::new(0) {
+                    match offset.sign() {
+                        Sign::Plus | Sign::NoSign => write!(fmt, " + {}", offset)?,
+                        Sign::Minus => write!(fmt, " - {}", offset.abs())?,
+                    }
+                }
+
+                Ok(())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct PortablePointer {
+    /// Base address.
+    pub base: PortableBase,
+    /// Offsets and derefs to apply to find the given memory location.
+    pub offsets: Vec<Offset>,
+}
+
+impl PortablePointer {
+    /// Create a null pointer.
+    pub fn null() -> Self {
+        PortablePointer {
+            base: PortableBase::Null,
+            offsets: Vec::new(),
+        }
+    }
+
+    /// Parse a a string into a portable pointer.
+    pub fn parse(input: &str) -> Result<Self, anyhow::Error> {
+        let portable = self::parser::PointerParser::new().parse(lexer::Lexer::new(input))?;
+        Ok(portable)
+    }
+
+    /// Construct a new pointer.
+    pub fn new(base: PortableBase, offsets: impl IntoIterator<Item = Offset>) -> Self {
+        Self {
+            base,
+            offsets: offsets.into_iter().collect(),
+        }
+    }
+
+    /// Convert into a process-local pointer.
+    pub fn as_local(&self, handle: &ProcessHandle) -> Option<Pointer> {
+        Some(Pointer {
+            base: self.base.as_local(handle)?,
+            offsets: self.offsets.clone(),
+        })
+    }
+}
+
+impl FollowablePointer for PortablePointer {
+    fn follow_default(&self, handle: &ProcessHandle) -> anyhow::Result<Option<Address>> {
+        self.follow(handle, |a, buf| {
+            handle
+                .process
+                .read_process_memory(a, buf)
+                .map_err(Into::into)
+        })
+    }
+
+    /// Try to evaluate the current location into an address.
+    fn follow<F>(&self, handle: &ProcessHandle, eval: F) -> anyhow::Result<Option<Address>>
     where
         F: Fn(Address, &mut [u8]) -> anyhow::Result<usize>,
     {
@@ -176,12 +309,110 @@ impl Pointer {
     }
 }
 
+impl fmt::Display for PortablePointer {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "{}", self.base)?;
+
+        for o in &self.offsets {
+            write!(fmt, " -> {}", o)?;
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Pointer {
+    /// Base address.
+    pub base: Base,
+    /// Offsets and derefs to apply to find the given memory location.
+    pub offsets: Vec<Offset>,
+}
+
+impl Pointer {
+    /// Construct a new pointer.
+    pub fn new(base: Base, offsets: impl IntoIterator<Item = Offset>) -> Self {
+        Self {
+            base,
+            offsets: offsets.into_iter().collect(),
+        }
+    }
+
+    /// Construct the pointer associated with null.
+    pub const fn null() -> Self {
+        Self {
+            base: Base::Null,
+            offsets: Vec::new(),
+        }
+    }
+
+    /// Get a null raw pointer with a static lifetime.
+    pub fn null_ref() -> &'static Pointer {
+        &NULL_POINTER
+    }
+}
+
 impl From<Address> for Pointer {
     fn from(address: Address) -> Self {
         Self {
-            base: PointerBase::Address { address },
+            base: Base::Address { address },
             offsets: Vec::new(),
         }
+    }
+}
+
+impl From<Base> for Pointer {
+    fn from(base: Base) -> Self {
+        Self {
+            base,
+            offsets: Vec::new(),
+        }
+    }
+}
+
+impl FollowablePointer for Pointer {
+    fn follow_default(&self, handle: &ProcessHandle) -> anyhow::Result<Option<Address>> {
+        self.follow(handle, |a, buf| {
+            handle
+                .process
+                .read_process_memory(a, buf)
+                .map_err(Into::into)
+        })
+    }
+
+    /// Try to evaluate the current location into an address.
+    fn follow<F>(&self, handle: &ProcessHandle, eval: F) -> anyhow::Result<Option<Address>>
+    where
+        F: Fn(Address, &mut [u8]) -> anyhow::Result<usize>,
+    {
+        let address = match self.base.eval(handle)? {
+            Some(address) => address,
+            None => return Ok(None),
+        };
+
+        if self.offsets.is_empty() {
+            return Ok(Some(address));
+        }
+
+        let mut current = address;
+        let mut buf = vec![0u8; handle.process.pointer_width.size()];
+
+        for o in &self.offsets {
+            let len = eval(current, &mut buf)?;
+
+            if len != buf.len() {
+                return Ok(None);
+            }
+
+            current = handle.process.decode_pointer(&buf);
+
+            current = match current.checked_offset(*o) {
+                Some(current) => current,
+                None => return Ok(None),
+            };
+        }
+
+        Ok(Some(current))
     }
 }
 
@@ -194,13 +425,6 @@ impl fmt::Display for Pointer {
         }
 
         Ok(())
-    }
-}
-
-impl Pointer {
-    /// Parse a a string into a filter.
-    pub fn parse(input: &str) -> Result<Pointer, anyhow::Error> {
-        Ok(self::parser::PointerParser::new().parse(lexer::Lexer::new(input))?)
     }
 }
 

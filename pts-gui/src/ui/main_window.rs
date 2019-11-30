@@ -23,20 +23,20 @@ struct Widgets {
     status_label: glib::WeakRef<Label>,
     attached_image: glib::WeakRef<Image>,
     detached_image: glib::WeakRef<Image>,
-    scan_results_status: glib::WeakRef<Label>,
+    scan_status: glib::WeakRef<Label>,
 }
 
 pub struct MainWindow {
     thread_pool: Arc<rayon::ThreadPool>,
-    scan: Arc<RwLock<Option<Scan>>>,
+    scan: Arc<RwLock<Option<scan::Scan>>>,
     widgets: Widgets,
     handle: Option<Arc<RwLock<ptscan::ProcessHandle>>>,
     open_process_task: Option<task::Handle>,
     filter_options: Rc<RefCell<ui::FilterOptions>>,
     current_major_task: Option<task::Handle>,
     error_dialog: Rc<RefCell<ui::ErrorDialog>>,
-    scan_results: Rc<RefCell<ui::ScanResults>>,
-    scratch_results: Rc<RefCell<ui::ScratchResults>>,
+    ui_scan: Rc<RefCell<ui::Scan>>,
+    scratch_results: Rc<RefCell<ui::Scratch>>,
     edit_scan_result_dialog: Rc<RefCell<ui::EditScanResultDialog>>,
     show_scan_result_dialog: Rc<RefCell<ui::ShowScanResultDialog>>,
     process_information: Rc<RefCell<ui::ProcessInformation>>,
@@ -67,7 +67,7 @@ impl MainWindow {
         let scan_progress = builder.get_object::<ProgressBar>("scan_progress");
         let scan_cancel = builder.get_object::<Button>("scan_cancel");
         let scan_progress_container = builder.get_object::<gtk::Box>("scan_progress_container");
-        let scan_results_status = builder.get_object::<Label>("scan_results_status");
+        let scan_status = builder.get_object::<Label>("scan_status");
 
         let status_label = cascade! {
             Label::new(Some("Welcome!"));
@@ -90,7 +90,7 @@ impl MainWindow {
         let (process_information, process_information_window) =
             ui::ProcessInformation::new(&accel_group, clipboard.clone());
 
-        let scan_results = ui::ScanResults::new(
+        let ui_scan = ui::Scan::new(
             &builder,
             clipboard.clone(),
             settings.clone(),
@@ -103,7 +103,7 @@ impl MainWindow {
         let (edit_scan_result_dialog, edit_scan_result_dialog_window) =
             ui::EditScanResultDialog::new(settings.clone());
 
-        let scratch_results = ui::ScratchResults::new(
+        let scratch_results = ui::Scratch::new(
             &builder,
             clipboard.clone(),
             thread_pool.clone(),
@@ -137,14 +137,14 @@ impl MainWindow {
                 status_label: status_label.downgrade(),
                 attached_image: attached_image.downgrade(),
                 detached_image: detached_image.downgrade(),
-                scan_results_status: scan_results_status.downgrade(),
+                scan_status: scan_status.downgrade(),
             },
             handle: None,
             open_process_task: None,
             filter_options: filter_options.clone(),
             current_major_task: None,
             error_dialog,
-            scan_results: scan_results.clone(),
+            ui_scan: ui_scan.clone(),
             scratch_results: scratch_results.clone(),
             edit_scan_result_dialog,
             show_scan_result_dialog,
@@ -156,7 +156,7 @@ impl MainWindow {
             slf.borrow_mut().detach();
         }));
 
-        scan_results
+        ui_scan
             .borrow_mut()
             .on_add_results(clone!(slf => move |_, result| {
                 let slf = slf.borrow();
@@ -193,10 +193,10 @@ impl MainWindow {
                 Self::reset(&slf);
             }));
             ..on_filter_expr_changed(clone!(slf => move |value_expr| {
-                slf.borrow().scan_results.borrow_mut().set_filter_expr(value_expr);
+                slf.borrow().ui_scan.borrow_mut().set_filter_expr(value_expr);
             }));
             ..on_value_expr_changed(clone!(slf => move |value_expr| {
-                slf.borrow().scan_results.borrow_mut().set_value_expr(value_expr);
+                slf.borrow().ui_scan.borrow_mut().set_value_expr(value_expr);
             }));
         };
 
@@ -241,7 +241,7 @@ impl MainWindow {
             });
             ..then(|main, _| {
                 main.end_major_task();
-                main.scan_results.borrow_mut().refresh();
+                main.ui_scan.borrow_mut().refresh();
                 main.filter_options.borrow_mut().has_results(false);
             });
         };
@@ -357,7 +357,7 @@ impl MainWindow {
                     .context("failed to resume process")?;
             }
 
-            *scan.write() = Some(Scan {
+            *scan.write() = Some(scan::Scan {
                 bases,
                 initial: values.clone(),
                 last: values,
@@ -404,7 +404,7 @@ impl MainWindow {
                 }
             }
 
-            main.scan_results.borrow_mut().refresh();
+            main.ui_scan.borrow_mut().refresh();
             main.filter_options.borrow_mut().has_results(true);
             main.end_major_task();
             main.update_components();
@@ -502,7 +502,7 @@ impl MainWindow {
                     }
                 }
 
-                slf.scan_results.borrow_mut().refresh();
+                slf.ui_scan.borrow_mut().refresh();
                 slf.filter_options.borrow_mut().has_results(true);
                 slf.end_major_task();
                 slf.update_components();
@@ -586,19 +586,19 @@ impl MainWindow {
         let attached = upgrade!(self.widgets.attached_image);
         let detached = upgrade!(self.widgets.detached_image);
 
-        let scan_results_status = upgrade!(self.widgets.scan_results_status);
+        let scan_status = upgrade!(self.widgets.scan_status);
 
         if let Some(scan) = self.scan.try_read() {
             match scan.as_ref() {
                 Some(scan) => {
-                    scan_results_status.set_text(&format!("Scan with {} result(s)", scan.len()));
+                    scan_status.set_text(&format!("Scan with {} result(s)", scan.len()));
                 }
                 None => {
-                    scan_results_status.set_text("No scan in progress");
+                    scan_status.set_text("No scan in progress");
                 }
             }
         } else {
-            scan_results_status.set_text("Failed to lock scan");
+            scan_status.set_text("Failed to lock scan");
         }
 
         if let Some(handle) = self.handle.as_ref().and_then(|h| h.try_read()) {
@@ -614,9 +614,7 @@ impl MainWindow {
         attached.set_visible(self.handle.is_some());
         detached.set_visible(self.handle.is_none());
 
-        self.scan_results
-            .borrow_mut()
-            .set_handle(self.handle.clone());
+        self.ui_scan.borrow_mut().set_handle(self.handle.clone());
         self.scratch_results
             .borrow_mut()
             .set_handle(self.handle.clone());

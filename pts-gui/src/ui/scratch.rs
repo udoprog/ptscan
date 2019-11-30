@@ -31,7 +31,7 @@ struct State {
     results: Vec<ScanResult>,
 }
 
-pub struct ScratchResults {
+pub struct Scratch {
     thread_pool: Arc<rayon::ThreadPool>,
     state: State,
     widgets: Widgets,
@@ -49,7 +49,7 @@ pub struct ScratchResults {
     pointer_scan_task: Option<task::Handle>,
 }
 
-impl Drop for ScratchResults {
+impl Drop for Scratch {
     fn drop(&mut self) {
         if let Some(timer) = self.timer.take() {
             glib::source_remove(timer);
@@ -57,7 +57,7 @@ impl Drop for ScratchResults {
     }
 }
 
-impl ScratchResults {
+impl Scratch {
     /// Construct a new container for scan results.
     pub fn new(
         builder: &Builder,

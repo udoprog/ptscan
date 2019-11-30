@@ -1,7 +1,8 @@
 pub use crate::{
     error_handler::ErrorHandler,
+    scan,
     signal::{Block, BlockExt as _},
-    task, ui, Clipboard, ClipboardBuffer, ClipboardBufferRef, ClipboardHandle, Scan, ScanResult,
+    task, ui, Clipboard, ClipboardBuffer, ClipboardBufferRef, ClipboardHandle, ScanResult,
     Settings,
 };
 pub use cascade::cascade;
@@ -12,7 +13,7 @@ pub use gtk::{
     AboutDialog, AccelFlags, AccelGroup, Align, ApplicationWindow, Button, CellRendererText,
     CheckButton, Entry, Frame, IconSize, Image, Label, ListStore, Menu, MenuBar, MenuItem,
     Orientation, ProgressBar, ScrolledWindow, SelectionMode, Spinner, Statusbar, TreeModelFilter,
-    TreeView, TreeViewColumn, Viewport, Window, WindowPosition, WindowType,
+    TreeSelection, TreeView, TreeViewColumn, Viewport, Window, WindowPosition, WindowType,
 };
 pub use pango::prelude::*;
 

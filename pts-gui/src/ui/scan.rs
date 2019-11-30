@@ -8,17 +8,18 @@ struct Widgets {
     tree: glib::WeakRef<TreeView>,
     add_item: glib::WeakRef<MenuItem>,
     info_item: glib::WeakRef<MenuItem>,
+    remove_item: glib::WeakRef<MenuItem>,
     show_scan_result_dialog_window: glib::WeakRef<Window>,
     context_menu: Menu,
 }
 
 struct Visible {
-    scan: Scan,
+    scan: scan::Scan,
     current: Values,
 }
 
-pub struct ScanResults {
-    scan: Arc<RwLock<Option<Scan>>>,
+pub struct Scan {
+    scan: Arc<RwLock<Option<scan::Scan>>>,
     thread_pool: Arc<rayon::ThreadPool>,
     widgets: Widgets,
     settings: Arc<Settings>,
@@ -38,7 +39,7 @@ pub struct ScanResults {
     value_expr: ValueExpr,
 }
 
-impl Drop for ScanResults {
+impl Drop for Scan {
     fn drop(&mut self) {
         if let Some(timer) = self.timer.take() {
             glib::source_remove(timer);
@@ -46,23 +47,24 @@ impl Drop for ScanResults {
     }
 }
 
-impl ScanResults {
+impl Scan {
     /// Construct a new container for scan results.
     pub fn new(
         builder: &Builder,
         clipboard: Rc<Clipboard>,
         settings: Arc<Settings>,
-        scan: Arc<RwLock<Option<Scan>>>,
+        scan: Arc<RwLock<Option<scan::Scan>>>,
         thread_pool: Arc<rayon::ThreadPool>,
         show_scan_result_dialog: Rc<RefCell<ui::ShowScanResultDialog>>,
         show_scan_result_dialog_window: glib::WeakRef<Window>,
     ) -> Rc<RefCell<Self>> {
-        let model = builder.get_object::<ListStore>("scan_results_model");
-        let tree = builder.get_object::<TreeView>("scan_results_tree");
+        let model = builder.get_object::<ListStore>("scan_model");
+        let tree = builder.get_object::<TreeView>("scan_tree");
 
-        let context_menu = builder.get_object::<Menu>("scan_results_context_menu");
-        let add_item = builder.get_object::<MenuItem>("scan_results_add_item");
-        let info_item = builder.get_object::<MenuItem>("scan_results_info_item");
+        let context_menu = builder.get_object::<Menu>("scan_context_menu");
+        let add_item = builder.get_object::<MenuItem>("scan_add_item");
+        let info_item = builder.get_object::<MenuItem>("scan_info_item");
+        let remove_item = builder.get_object::<MenuItem>("scan_remove_item");
 
         let slf = Rc::new(RefCell::new(Self {
             scan,
@@ -72,6 +74,7 @@ impl ScanResults {
                 tree: tree.downgrade(),
                 add_item: add_item.downgrade(),
                 info_item: info_item.downgrade(),
+                remove_item: remove_item.downgrade(),
                 show_scan_result_dialog_window,
                 context_menu,
             },
@@ -125,6 +128,12 @@ impl ScanResults {
             window.present();
         }));
 
+        remove_item.connect_activate(clone!(slf => move |_| {
+            let mut slf = slf.borrow_mut();
+            let tree = upgrade!(slf.widgets.tree);
+            slf.remove_selection(tree.get_selection());
+        }));
+
         slf.borrow_mut().timer = Some(glib::source::timeout_add_local(
             500,
             clone!(slf => move || {
@@ -146,6 +155,16 @@ impl ScanResults {
 
                 on_add_results(&*slf, result);
             }));
+            ..connect_key_press_event(clone!(slf => move |tree, e| {
+                match (e.get_event_type(), e.get_keycode()) {
+                    (EventType::KeyPress, Some(46)) => {
+                        slf.borrow_mut().remove_selection(tree.get_selection());
+                    }
+                    _ => (),
+                }
+
+                Inhibit(false)
+            }));
             ..connect_button_press_event(clone!(slf => move |_, e| {
                 match (e.get_event_type(), e.get_button()) {
                     (EventType::ButtonPress, 3) => {
@@ -154,10 +173,12 @@ impl ScanResults {
                         let tree = upgrade!(slf.widgets.tree, Inhibit(false));
                         let add_item = upgrade!(slf.widgets.add_item, Inhibit(false));
                         let info_item = upgrade!(slf.widgets.info_item, Inhibit(false));
+                        let remove_item = upgrade!(slf.widgets.remove_item, Inhibit(false));
 
                         let any_selected = tree.get_selection().count_selected_rows() > 0;
                         add_item.set_sensitive(any_selected);
                         info_item.set_sensitive(any_selected);
+                        remove_item.set_sensitive(any_selected);
 
                         slf.widgets.context_menu.popup_at_pointer(Some(&e));
                         slf.widgets.context_menu.show();
@@ -217,6 +238,34 @@ impl ScanResults {
         self.on_add_results = Some(Box::new(on_add_results));
     }
 
+    /// Remove the given selection.
+    fn remove_selection(&mut self, selection: TreeSelection) {
+        let (paths, model) = selection.get_selected_rows();
+
+        let mut to_remove = Vec::new();
+
+        for path in paths {
+            if let Some(iter) = model.get_iter(&path) {
+                let index =
+                    optional!(optional!(model.get_value(&iter, 0).get::<u64>().ok())) as usize;
+                to_remove.push(index);
+            }
+        }
+
+        to_remove.sort_by(|a, b| b.cmp(a));
+
+        {
+            let mut scan = optional!(self.scan.try_write());
+            let scan = optional!(&mut *scan);
+
+            for index in to_remove {
+                scan.swap_remove(index);
+            }
+        }
+
+        self.refresh();
+    }
+
     /// Refresh the collection of scan results being showed.
     pub fn refresh(&mut self) {
         let scan = optional!(self.scan.try_read());
@@ -272,7 +321,7 @@ impl ScanResults {
         }
 
         self.visible = Some(Visible {
-            scan: Scan {
+            scan: scan::Scan {
                 bases,
                 initial,
                 last: last.clone(),

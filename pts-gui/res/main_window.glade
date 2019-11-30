@@ -38,21 +38,11 @@
     <property name="can_focus">False</property>
     <property name="stock">gtk-help</property>
   </object>
-  <object class="GtkMenu" id="scan_results_context_menu">
+  <object class="GtkMenu" id="scan_context_menu">
     <property name="visible">True</property>
     <property name="can_focus">False</property>
     <child>
-      <object class="GtkImageMenuItem" id="scan_results_add_item">
-        <property name="label">gtk-add</property>
-        <property name="visible">True</property>
-        <property name="can_focus">False</property>
-        <property name="use_underline">True</property>
-        <property name="use_stock">True</property>
-        <property name="always_show_image">True</property>
-      </object>
-    </child>
-    <child>
-      <object class="GtkImageMenuItem" id="scan_results_info_item">
+      <object class="GtkImageMenuItem" id="scan_info_item">
         <property name="label">gtk-info</property>
         <property name="visible">True</property>
         <property name="can_focus">False</property>
@@ -61,8 +51,30 @@
         <property name="always_show_image">True</property>
       </object>
     </child>
+    <child>
+      <object class="GtkImageMenuItem" id="scan_remove_item">
+        <property name="label">gtk-remove</property>
+        <property name="visible">True</property>
+        <property name="can_focus">False</property>
+        <property name="tooltip_text" translatable="yes">Remove from scan</property>
+        <property name="use_underline">True</property>
+        <property name="use_stock">True</property>
+        <property name="always_show_image">True</property>
+      </object>
+    </child>
+    <child>
+      <object class="GtkImageMenuItem" id="scan_add_item">
+        <property name="label">gtk-add</property>
+        <property name="visible">True</property>
+        <property name="can_focus">False</property>
+        <property name="tooltip_text" translatable="yes">Add to scratch pad</property>
+        <property name="use_underline">True</property>
+        <property name="use_stock">True</property>
+        <property name="always_show_image">True</property>
+      </object>
+    </child>
   </object>
-  <object class="GtkListStore" id="scan_results_model">
+  <object class="GtkListStore" id="scan_model">
     <columns>
       <!-- column-name index -->
       <column type="guint64"/>
@@ -394,11 +406,11 @@
                         <property name="shadow_type">etched-in</property>
                         <property name="min_content_width">400</property>
                         <child>
-                          <object class="GtkTreeView" id="scan_results_tree">
+                          <object class="GtkTreeView" id="scan_tree">
                             <property name="visible">True</property>
                             <property name="can_focus">True</property>
                             <property name="hexpand">True</property>
-                            <property name="model">scan_results_model</property>
+                            <property name="model">scan_model</property>
                             <child internal-child="selection">
                               <object class="GtkTreeSelection">
                                 <property name="mode">multiple</property>
@@ -479,7 +491,7 @@
                       </packing>
                     </child>
                     <child>
-                      <object class="GtkLabel" id="scan_results_status">
+                      <object class="GtkLabel" id="scan_status">
                         <property name="visible">True</property>
                         <property name="can_focus">False</property>
                         <property name="halign">start</property>

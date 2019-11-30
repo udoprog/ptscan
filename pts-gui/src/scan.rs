@@ -81,4 +81,17 @@ impl Scan {
     pub fn len(&self) -> usize {
         self.bases.len()
     }
+
+    /// Remove the given index.
+    pub fn swap_remove(&mut self, index: usize) -> bool {
+        // NB: nothing to remove.
+        if index >= self.bases.len() {
+            return false;
+        }
+
+        self.bases.swap_remove(index);
+        self.initial.swap_remove(index);
+        self.last.swap_remove(index);
+        return true;
+    }
 }

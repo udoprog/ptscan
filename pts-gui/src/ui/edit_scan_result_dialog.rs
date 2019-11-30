@@ -10,8 +10,6 @@ struct Widgets {
     last_address_label: glib::WeakRef<Label>,
     type_entry: glib::WeakRef<Entry>,
     type_error: glib::WeakRef<Image>,
-    initial_label: glib::WeakRef<Label>,
-    last_label: glib::WeakRef<Label>,
     value_label: glib::WeakRef<Label>,
 }
 
@@ -31,7 +29,7 @@ pub struct EditScanResultDialog {
     on_save: Option<Box<dyn Fn(&Self, ScanResult)>>,
     refresh_timer: Option<glib::SourceId>,
     refresh_value_task: Option<task::Handle>,
-    value: Option<Value>,
+    value: Value,
     last_address: Option<Address>,
 }
 
@@ -54,8 +52,6 @@ impl EditScanResultDialog {
         let last_address_label = builder.get_object::<Label>("last_address_label");
         let type_entry = builder.get_object::<Entry>("type_entry");
         let type_error = builder.get_object::<Image>("type_error");
-        let initial_label = builder.get_object::<Label>("initial_label");
-        let last_label = builder.get_object::<Label>("last_label");
         let value_label = builder.get_object::<Label>("value_label");
         let save_button = builder.get_object::<Button>("save_button");
         let close_button = builder.get_object::<Button>("close_button");
@@ -67,8 +63,6 @@ impl EditScanResultDialog {
                 last_address_label: last_address_label.downgrade(),
                 type_entry: type_entry.downgrade(),
                 type_error: type_error.downgrade(),
-                initial_label: initial_label.downgrade(),
-                last_label: last_label.downgrade(),
                 value_label: value_label.downgrade(),
             },
             settings,
@@ -79,7 +73,7 @@ impl EditScanResultDialog {
             refresh_timer: None,
             refresh_value_task: None,
             last_address: None,
-            value: None,
+            value: Value::None,
         }));
 
         slf.borrow_mut().signals = Some(Signals {
@@ -124,6 +118,7 @@ impl EditScanResultDialog {
                     let Self {
                         ref mut result,
                         ref widgets,
+                        ref handle,
                         ..
                     } = *slf;
 
@@ -144,8 +139,14 @@ impl EditScanResultDialog {
                         image.hide();
                     }
 
-                    result.initial = ty.default_value();
-                    result.last = Value::None;
+                    let ty = if let Some(handle) = handle.as_ref().and_then(|h| h.try_read()) {
+                        ty.unsize(result.value_type, &*handle)
+                    } else {
+                        ty
+                    };
+
+                    result.value_type = ty;
+                    result.value = Value::None;
                 }
 
                 Self::refresh_value(&slf);
@@ -217,11 +218,11 @@ impl EditScanResultDialog {
             let type_entry = upgrade!(self.widgets.type_entry).block(&signals.type_entry);
 
             address_entry.set_text(&result.pointer.to_string());
-            type_entry.set_text(&result.last_type.to_string());
+            type_entry.set_text(&result.value_type.to_string());
         }
 
         self.last_address = result.last_address;
-        self.value = Some(result.last.clone());
+        self.value = result.value.clone();
         self.result = Some(result);
         self.update_components();
     }
@@ -246,7 +247,7 @@ impl EditScanResultDialog {
                 };
 
                 let mut proxy = handle.address_proxy(&result.pointer);
-                let value = proxy.eval(result.last_type)?.0;
+                let value = proxy.eval(result.value_type)?.0;
                 Ok(Some((value, proxy.followed)))
             });
             ..then(move |slf, value| {
@@ -255,10 +256,10 @@ impl EditScanResultDialog {
                         slf.last_address = address;
                     }
 
-                    slf.value = Some(value);
+                    slf.value = value;
                 } else {
                     slf.last_address = None;
-                    slf.value = None;
+                    slf.value = Value::None;
                 }
 
                 slf.refresh_value_task = None;
@@ -271,7 +272,7 @@ impl EditScanResultDialog {
 
     fn clear(&mut self) {
         self.result = None;
-        self.value = None;
+        self.value = Value::None;
         self.last_address = None;
         self.update_components();
     }
@@ -287,32 +288,17 @@ impl EditScanResultDialog {
 
         let value_label = upgrade!(self.widgets.value_label);
 
-        if let Some(value) = &self.value {
-            let differ = match &self.result {
-                Some(result) => result.last != *value,
-                _ => false,
-            };
+        let differ = match &self.result {
+            Some(result) => result.value != self.value,
+            _ => false,
+        };
 
-            if differ {
-                value_label.set_attributes(Some(&self.settings.highlight_color));
-            } else {
-                value_label.set_attributes(None);
-            }
-
-            value_label.set_text(&value.to_string());
+        if differ {
+            value_label.set_attributes(Some(&self.settings.highlight_color));
         } else {
-            value_label.set_text("?");
+            value_label.set_attributes(None);
         }
 
-        let initial_label = upgrade!(self.widgets.initial_label);
-        let last_label = upgrade!(self.widgets.last_label);
-
-        if let Some(result) = &self.result {
-            initial_label.set_text(&result.initial.to_string());
-            last_label.set_text(&result.last.to_string());
-        } else {
-            initial_label.set_text("");
-            last_label.set_text("");
-        }
+        value_label.set_text(&self.value.to_string());
     }
 }

@@ -52,22 +52,22 @@
       </object>
     </child>
     <child>
-      <object class="GtkImageMenuItem" id="scan_remove_item">
-        <property name="label">gtk-remove</property>
+      <object class="GtkImageMenuItem" id="scan_add_item">
+        <property name="label">gtk-add</property>
         <property name="visible">True</property>
         <property name="can_focus">False</property>
-        <property name="tooltip_text" translatable="yes">Remove from scan</property>
+        <property name="tooltip_text" translatable="yes">Add to scratch pad</property>
         <property name="use_underline">True</property>
         <property name="use_stock">True</property>
         <property name="always_show_image">True</property>
       </object>
     </child>
     <child>
-      <object class="GtkImageMenuItem" id="scan_add_item">
-        <property name="label">gtk-add</property>
+      <object class="GtkImageMenuItem" id="scan_remove_item">
+        <property name="label">gtk-remove</property>
         <property name="visible">True</property>
         <property name="can_focus">False</property>
-        <property name="tooltip_text" translatable="yes">Add to scratch pad</property>
+        <property name="tooltip_text" translatable="yes">Remove from scan</property>
         <property name="use_underline">True</property>
         <property name="use_stock">True</property>
         <property name="always_show_image">True</property>
@@ -100,9 +100,7 @@
       <column type="gchararray"/>
       <!-- column-name address -->
       <column type="gchararray"/>
-      <!-- column-name initial -->
-      <column type="gchararray"/>
-      <!-- column-name last -->
+      <!-- column-name value -->
       <column type="gchararray"/>
     </columns>
   </object>
@@ -846,24 +844,11 @@
                               <object class="GtkTreeViewColumn">
                                 <property name="min_width">20</property>
                                 <property name="max_width">100</property>
-                                <property name="title" translatable="yes">initial</property>
-                                <child>
-                                  <object class="GtkCellRendererText"/>
-                                  <attributes>
-                                    <attribute name="text">3</attribute>
-                                  </attributes>
-                                </child>
-                              </object>
-                            </child>
-                            <child>
-                              <object class="GtkTreeViewColumn">
-                                <property name="min_width">20</property>
-                                <property name="max_width">100</property>
                                 <property name="title" translatable="yes">last</property>
                                 <child>
                                   <object class="GtkCellRendererText"/>
                                   <attributes>
-                                    <attribute name="text">4</attribute>
+                                    <attribute name="text">3</attribute>
                                   </attributes>
                                 </child>
                               </object>
@@ -962,16 +947,6 @@
     <property name="visible">True</property>
     <property name="can_focus">False</property>
     <child>
-      <object class="GtkImageMenuItem" id="scratch_remove_item">
-        <property name="label">gtk-remove</property>
-        <property name="visible">True</property>
-        <property name="can_focus">False</property>
-        <property name="use_underline">True</property>
-        <property name="use_stock">True</property>
-        <property name="always_show_image">True</property>
-      </object>
-    </child>
-    <child>
       <object class="GtkImageMenuItem" id="scratch_edit_item">
         <property name="label">gtk-edit</property>
         <property name="visible">True</property>
@@ -984,6 +959,16 @@
     <child>
       <object class="GtkImageMenuItem" id="scratch_add_item">
         <property name="label">gtk-add</property>
+        <property name="visible">True</property>
+        <property name="can_focus">False</property>
+        <property name="use_underline">True</property>
+        <property name="use_stock">True</property>
+        <property name="always_show_image">True</property>
+      </object>
+    </child>
+    <child>
+      <object class="GtkImageMenuItem" id="scratch_remove_item">
+        <property name="label">gtk-remove</property>
         <property name="visible">True</property>
         <property name="can_focus">False</property>
         <property name="use_underline">True</property>

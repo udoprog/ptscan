@@ -252,6 +252,10 @@ impl Scan {
             }
         }
 
+        if to_remove.is_empty() {
+            return;
+        }
+
         to_remove.sort_by(|a, b| b.cmp(a));
 
         {
@@ -343,7 +347,6 @@ impl Scan {
 
         let handle = optional!(slf.handle.clone());
         let visible = optional!(&slf.visible);
-        let initial = visible.scan.initial.clone();
         let last_type = visible.scan.last.ty;
         let mut current = visible.current.clone();
         let bases = visible.scan.bases.clone();
@@ -379,7 +382,6 @@ impl Scan {
                 handle.refresh_values(
                     &*thread_pool,
                     &bases,
-                    &initial,
                     &mut current,
                     Some(c.as_token()),
                     NoopProgress,

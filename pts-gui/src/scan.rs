@@ -9,19 +9,13 @@ use std::fmt;
 pub struct ScanResult {
     pub pointer: PortablePointer,
     pub last_address: Option<Address>,
-    pub initial_type: Type,
-    pub initial: Value,
-    pub last_type: Type,
-    pub last: Value,
+    pub value_type: Type,
+    pub value: Value,
 }
 
 impl fmt::Display for ScanResult {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            fmt,
-            "{} {} {} {} {}",
-            self.pointer, self.initial_type, self.initial, self.last_type, self.last
-        )
+        write!(fmt, "{} {} {}", self.pointer, self.value_type, self.value)
     }
 }
 
@@ -32,24 +26,16 @@ impl ValueHolder for ScanResult {
         &self.pointer
     }
 
-    fn initial_type(&self) -> Type {
-        self.initial_type
+    fn value_type(&self) -> Type {
+        self.value_type
     }
 
-    fn initial(&self) -> ValueRef<'_> {
-        self.initial.as_ref()
-    }
-
-    fn last_type(&self) -> Type {
-        self.last_type
-    }
-
-    fn last(&self) -> ValueRef<'_> {
-        self.last.as_ref()
+    fn value(&self) -> ValueRef<'_> {
+        self.value.as_ref()
     }
 
     fn insert(&mut self, value: Value) {
-        self.last = value;
+        self.value = value;
     }
 }
 
@@ -70,10 +56,8 @@ impl Scan {
         Some(ScanResult {
             pointer,
             last_address,
-            initial_type: self.initial.ty,
-            initial: self.initial.get(index)?,
-            last_type: self.last.ty,
-            last: self.last.get(index)?,
+            value_type: self.last.ty,
+            value: self.last.get(index)?,
         })
     }
 

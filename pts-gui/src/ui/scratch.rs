@@ -103,41 +103,21 @@ impl Scratch {
 
         let clip = clipboard.handle("scratch");
 
+        tree.connect_key_press_event(clone!(slf => move |tree, e| {
+            match (e.get_event_type(), e.get_keycode()) {
+                (EventType::KeyPress, Some(46)) => {
+                    slf.borrow_mut().remove_selection(tree.get_selection());
+                }
+                _ => (),
+            }
+
+            Inhibit(false)
+        }));
+
         remove_item.connect_activate(clone!(slf => move |_| {
             let mut slf = slf.borrow_mut();
             let tree = upgrade!(slf.widgets.tree);
-            let model = optional!(slf.widgets.model.upgrade());
-
-            let (selected, _) = tree.get_selection().get_selected_rows();
-
-            let mut to_remove = Vec::new();
-
-            for s in selected {
-                let index = match s.get_indices().into_iter().next() {
-                    Some(index) => index as usize,
-                    None => continue,
-                };
-
-                to_remove.push(index);
-            }
-
-            if to_remove.is_empty() {
-                return;
-            }
-
-            to_remove.sort_by(|a, b| b.cmp(a));
-
-            for index in to_remove {
-                let iter = match model.iter_nth_child(None, index as i32) {
-                    Some(iter) => iter,
-                    None => continue,
-                };
-
-                model.remove(&iter);
-                slf.state.results.swap_remove(index);
-            }
-
-            slf.results_generation += 1;
+            slf.remove_selection(tree.get_selection());
         }));
 
         edit_item.connect_activate(clone!(slf => move |_| {
@@ -165,10 +145,8 @@ impl Scratch {
                     scan_result_dialog.set_result(ScanResult {
                         pointer: PortablePointer::null(),
                         last_address: None,
-                        initial_type: Type::default(),
-                        initial: Value::default(),
-                        last_type: Type::default(),
-                        last: Value::default(),
+                        value_type: Type::default(),
+                        value: Value::default(),
                     });
 
                     scan_result_dialog.on_save(clone!(slf => move |_, result| {
@@ -243,6 +221,39 @@ impl Scratch {
         slf
     }
 
+    /// Remove the given selection.
+    fn remove_selection(&mut self, selection: TreeSelection) {
+        let (selected, _) = selection.get_selected_rows();
+
+        let mut to_remove = Vec::new();
+
+        for s in selected {
+            let index = match s.get_indices().into_iter().next() {
+                Some(index) => index as usize,
+                None => continue,
+            };
+
+            to_remove.push(index);
+        }
+
+        if to_remove.is_empty() {
+            return;
+        }
+
+        let model = upgrade!(self.widgets.model);
+        to_remove.sort_by(|a, b| b.cmp(a));
+
+        for index in to_remove {
+            let iter = match model.iter_nth_child(None, index as i32) {
+                Some(iter) => iter,
+                None => continue,
+            };
+
+            model.remove(&iter);
+            self.state.results.swap_remove(index);
+        }
+    }
+
     /// Refresh the current set of results.
     pub fn refresh_current(slf_rc: &Rc<RefCell<Self>>) {
         let mut slf = slf_rc.borrow_mut();
@@ -278,8 +289,7 @@ impl Scratch {
                     &ValueExpr::Value,
                 )?;
 
-                let values = results.into_iter().map(|r| r.last.unwrap_or(r.initial)).collect::<Vec<_>>();
-
+                let values = results.into_iter().map(|r| r.value).collect::<Vec<_>>();
                 Ok(Some(values))
             });
             ..then(move |scratch_results, values| {
@@ -298,12 +308,11 @@ impl Scratch {
     pub fn add_result(&mut self, result: ScanResult) {
         let model = upgrade!(self.widgets.model);
 
-        let ty = result.last_type.to_string();
+        let ty = result.value_type.to_string();
         let pointer = result.pointer.to_string();
-        let initial = result.initial.to_string();
-        let last = result.last.to_string();
+        let value = result.value.to_string();
 
-        let iter = model.insert_with_values(None, &[1, 2, 3, 4], &[&ty, &pointer, &initial, &last]);
+        let iter = model.insert_with_values(None, &[1, 2, 3], &[&ty, &pointer, &value]);
         model.set_value(&iter, 0, &(self.state.results.len() as u64).to_value());
 
         self.state.results.push(result);
@@ -318,13 +327,12 @@ impl Scratch {
 
         let model = upgrade!(self.widgets.model);
 
-        let ty = result.last_type.to_string();
+        let ty = result.value_type.to_string();
         let pointer = result.pointer.to_string();
-        let initial = result.initial.to_string();
-        let last = result.last.to_string();
+        let value = result.value.to_string();
 
         if let Some(iter) = model.iter_nth_child(None, index as i32) {
-            model.set(&iter, &[1, 2, 3, 4], &[&ty, &pointer, &initial, &last]);
+            model.set(&iter, &[1, 2, 3], &[&ty, &pointer, &value]);
         }
 
         if let Some(r) = self.state.results.get_mut(index) {
@@ -343,15 +351,15 @@ impl Scratch {
         let model = upgrade!(self.widgets.model);
 
         for (index, (result, update)) in self.state.results.iter_mut().zip(values).enumerate() {
-            if result.last == update {
+            if result.value == update {
                 continue;
             }
 
             if let Some(iter) = model.iter_nth_child(None, index as i32) {
-                model.set_value(&iter, 4, &update.to_string().to_value());
+                model.set_value(&iter, 3, &update.to_string().to_value());
             }
 
-            result.last = update;
+            result.value = update;
         }
     }
 

@@ -374,7 +374,7 @@ impl Binary {
 
         if let Some(value) = exact {
             let width = value.size(process).unwrap_or(16);
-            let mut buf = vec![0u8; width];
+            let mut buf = Vec::with_capacity(width);
 
             value.encode(process, &mut buf);
 

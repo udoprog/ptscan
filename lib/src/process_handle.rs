@@ -43,17 +43,11 @@ pub trait ValueHolder {
     /// Access the address of the value.
     fn pointer(&self) -> &Self::Pointer;
 
-    /// The type of the initial value.
-    fn initial_type(&self) -> Type;
-
-    /// Access the initial value for the holder
-    fn initial(&self) -> ValueRef<'_>;
-
     /// The type of the last value.
-    fn last_type(&self) -> Type;
+    fn value_type(&self) -> Type;
 
     /// Get information on last value.
-    fn last(&self) -> ValueRef<'_>;
+    fn value(&self) -> ValueRef<'_>;
 
     /// Insert an updated value into the holder.
     fn insert(&mut self, value: Value);
@@ -586,7 +580,6 @@ impl ProcessHandle {
         &self,
         thread_pool: &rayon::ThreadPool,
         bases: &[Base],
-        initial: &Values,
         values: &mut Values,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
@@ -613,9 +606,8 @@ impl ProcessHandle {
         thread_pool.install(|| {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<bool>>();
-                let (p_tx, p_rx) = crossbeam_channel::unbounded::<
-                    Option<(&Base, values::Accessor<'_>, values::Mutator<'_>)>,
-                >();
+                let (p_tx, p_rx) =
+                    crossbeam_channel::unbounded::<Option<(&Base, values::Mutator<'_>)>>();
 
                 for _ in 0..tasks {
                     let tx = tx.clone();
@@ -623,7 +615,7 @@ impl ProcessHandle {
 
                     s.spawn(move |_| {
                         while !cancel.test() {
-                            let (base, initial, mut value) = match p_rx.recv().expect("closed") {
+                            let (base, mut value) = match p_rx.recv().expect("closed") {
                                 Some(task) => task,
                                 None => {
                                     break;
@@ -635,16 +627,16 @@ impl ProcessHandle {
 
                                 let expr_type = expr
                                     .type_of(
-                                        TypeHint::Explicit(initial.ty),
-                                        TypeHint::Explicit(value.ty),
+                                        TypeHint::Explicit(Type::None),
+                                        TypeHint::Explicit(Type::None),
                                         TypeHint::Explicit(value.ty),
                                         TypeHint::NoHint,
                                     )?
                                     .ok_or_else(|| Error::TypeInference(expr.clone()))?;
 
                                 let new_value = expr
-                                    .type_check(initial.ty, value.ty, value.ty, expr_type)?
-                                    .eval(initial.as_ref(), value.as_ref(), &mut proxy)?;
+                                    .type_check(Type::None, Type::None, value.ty, expr_type)?
+                                    .eval(ValueRef::None, value.as_ref(), &mut proxy)?;
 
                                 value.write(new_value);
                                 Ok(false)
@@ -657,10 +649,10 @@ impl ProcessHandle {
                     });
                 }
 
-                let mut it = bases.iter().zip(initial.iter().zip(values.iter_mut()));
+                let mut it = bases.iter().zip(values.iter_mut());
 
-                for (base, (initial, value)) in (&mut it).take(tasks) {
-                    p_tx.send(Some((base, initial, value))).expect("closed");
+                for (base, value) in (&mut it).take(tasks) {
+                    p_tx.send(Some((base, value))).expect("closed");
                 }
 
                 let mut count = 0u64;
@@ -668,8 +660,8 @@ impl ProcessHandle {
                 while tasks > 0 {
                     let res = rx.recv().expect("failed to receive on channel");
 
-                    if let Some((base, (initial, value))) = it.next() {
-                        p_tx.send(Some((base, initial, value)))
+                    if let Some((base, value)) = it.next() {
+                        p_tx.send(Some((base, value)))
                             .expect("failed to send on channel");
                     } else {
                         p_tx.send(None).expect("failed to send on channel");
@@ -743,23 +735,22 @@ impl ProcessHandle {
 
                             let mut work = move || {
                                 let new_value = {
-                                    let initial_type = value.initial_type();
-                                    let last_type = value.last_type();
+                                    let value_type = value.value_type();
 
                                     let pointer = value.pointer();
                                     let mut proxy = self.address_proxy(pointer);
 
                                     let expr_type = expr
                                         .type_of(
-                                            TypeHint::Explicit(initial_type),
-                                            TypeHint::Explicit(last_type),
-                                            TypeHint::Explicit(last_type),
+                                            TypeHint::Explicit(Type::None),
+                                            TypeHint::Explicit(Type::None),
+                                            TypeHint::Explicit(value_type),
                                             TypeHint::NoHint,
                                         )?
                                         .ok_or_else(|| Error::TypeInference(expr.clone()))?;
 
-                                    expr.type_check(initial_type, last_type, last_type, expr_type)?
-                                        .eval(value.initial(), value.last(), &mut proxy)?
+                                    expr.type_check(Type::None, Type::None, value_type, expr_type)?
+                                        .eval(ValueRef::None, ValueRef::None, &mut proxy)?
                                 };
 
                                 value.insert(new_value);

@@ -456,7 +456,6 @@ impl MainWindow {
                 handle.refresh_values(
                     &*thread_pool,
                     &scan.bases,
-                    &scan.initial,
                     &mut scan.last,
                     Some(s.as_token()),
                     ContextProgress::new(s),

@@ -7,8 +7,6 @@ struct Widgets {
     address_label: glib::WeakRef<Label>,
     last_address_label: glib::WeakRef<Label>,
     type_label: glib::WeakRef<Label>,
-    initial_label: glib::WeakRef<Label>,
-    last_label: glib::WeakRef<Label>,
     value_label: glib::WeakRef<Label>,
 }
 
@@ -20,7 +18,7 @@ pub struct ShowScanResultDialog {
     result: Option<ScanResult>,
     refresh_timer: Option<glib::SourceId>,
     refresh_value_task: Option<task::Handle>,
-    value: Option<Value>,
+    value: Value,
     last_address: Option<Address>,
 }
 
@@ -41,8 +39,6 @@ impl ShowScanResultDialog {
         let address_label = builder.get_object::<Label>("address_label");
         let last_address_label = builder.get_object::<Label>("last_address_label");
         let type_label = builder.get_object::<Label>("type_label");
-        let initial_label = builder.get_object::<Label>("initial_label");
-        let last_label = builder.get_object::<Label>("last_label");
         let value_label = builder.get_object::<Label>("value_label");
         let close_button = builder.get_object::<Button>("close_button");
 
@@ -51,8 +47,6 @@ impl ShowScanResultDialog {
                 address_label: address_label.downgrade(),
                 last_address_label: last_address_label.downgrade(),
                 type_label: type_label.downgrade(),
-                initial_label: initial_label.downgrade(),
-                last_label: last_label.downgrade(),
                 value_label: value_label.downgrade(),
             },
             settings,
@@ -60,7 +54,7 @@ impl ShowScanResultDialog {
             result: None,
             refresh_timer: None,
             refresh_value_task: None,
-            value: None,
+            value: Value::None,
             last_address: None,
         }));
 
@@ -105,11 +99,9 @@ impl ShowScanResultDialog {
         let type_label = upgrade!(self.widgets.type_label);
 
         address_label.set_text(&result.pointer.to_string());
-        type_label.set_text(&result.last_type.to_string());
+        type_label.set_text(&result.value_type.to_string());
 
-        upgrade!(self.widgets.initial_label).set_text(&result.initial.to_string());
-        upgrade!(self.widgets.last_label).set_text(&result.last.to_string());
-        upgrade!(self.widgets.value_label).set_text(&result.last.to_string());
+        upgrade!(self.widgets.value_label).set_text(&result.value.to_string());
         self.result = Some(result);
     }
 
@@ -133,7 +125,7 @@ impl ShowScanResultDialog {
                 };
 
                 let mut proxy = handle.address_proxy(&result.pointer);
-                let value = proxy.eval(result.last_type)?.0;
+                let value = proxy.eval(result.value_type)?.0;
                 Ok(Some((value, proxy.followed)))
             });
             ..then(move |slf, value| {
@@ -142,7 +134,7 @@ impl ShowScanResultDialog {
                         slf.last_address = address;
                     }
 
-                    slf.value = Some(value);
+                    slf.value = value;
                 }
 
                 slf.refresh_value_task = None;
@@ -155,7 +147,7 @@ impl ShowScanResultDialog {
 
     fn clear(&mut self) {
         self.result = None;
-        self.value = None;
+        self.value = Value::None;
         self.last_address = None;
         self.update_components();
     }
@@ -171,32 +163,17 @@ impl ShowScanResultDialog {
 
         let value_label = upgrade!(self.widgets.value_label);
 
-        if let Some(value) = &self.value {
-            let differ = match &self.result {
-                Some(result) => result.last != *value,
-                _ => false,
-            };
+        let differ = match &self.result {
+            Some(result) => result.value != self.value,
+            _ => false,
+        };
 
-            if differ {
-                value_label.set_attributes(Some(&self.settings.highlight_color));
-            } else {
-                value_label.set_attributes(None);
-            }
-
-            value_label.set_text(&value.to_string());
+        if differ {
+            value_label.set_attributes(Some(&self.settings.highlight_color));
         } else {
-            value_label.set_text("?");
+            value_label.set_attributes(None);
         }
 
-        let initial_label = upgrade!(self.widgets.initial_label);
-        let last_label = upgrade!(self.widgets.last_label);
-
-        if let Some(result) = &self.result {
-            initial_label.set_text(&result.initial.to_string());
-            last_label.set_text(&result.last.to_string());
-        } else {
-            initial_label.set_text("");
-            last_label.set_text("");
-        }
+        value_label.set_text(&self.value.to_string());
     }
 }

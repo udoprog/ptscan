@@ -300,13 +300,13 @@ impl MainWindow {
 
             let handle = RwLockWriteGuard::downgrade_to_upgradable(handle.write());
 
-            let threads = handle
-                .get_threads()
-                .context("error when refreshing threads")?;
-
             let modules = handle
                 .get_modules()
                 .context("error when refreshing modules")?;
+
+            let threads = handle
+                .get_threads_with_modules(&modules)
+                .context("error when refreshing threads")?;
 
             let mut handle = RwLockUpgradableReadGuard::upgrade(handle);
             handle.update_modules(modules);
@@ -524,7 +524,7 @@ impl MainWindow {
                 match handle {
                     Ok(handle) => {
                         if let Some(label) = main.widgets.attached_label.upgrade() {
-                            label.set_text(&format!("Attached to: {}", handle.name));
+                            label.set_text(&format!("Attached to: {}", handle.name.to_string_lossy()));
                         }
 
                         main.handle = Some(Arc::new(RwLock::new(handle)));
@@ -573,7 +573,8 @@ impl MainWindow {
         if let Some(handle) = self.handle.as_ref().and_then(|h| h.try_read()) {
             label.set_text(&format!(
                 "Attached to {} ({})",
-                handle.name, handle.process.process_id
+                handle.name.to_string_lossy(),
+                handle.process.process_id
             ));
         } else {
             label.set_text("Not Attached");

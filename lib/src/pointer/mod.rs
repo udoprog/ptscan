@@ -69,7 +69,7 @@ impl PointerBase {
     /// Evaluate a pointer base, trying to translate it into an address.
     pub fn eval(&self, handle: &ProcessHandle) -> anyhow::Result<Option<Address>> {
         match self {
-            Self::Module { name, offset, .. } => match handle.modules_address.get(name) {
+            Self::Module { name, offset, .. } => match handle.modules.modules_address.get(name) {
                 Some(address) => Ok(Some(address.saturating_offset(*offset))),
                 None => Ok(None),
             },

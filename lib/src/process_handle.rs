@@ -18,7 +18,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::{
     convert::{TryFrom as _, TryInto as _},
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fmt, iter,
     sync::mpsc,
     time::{Duration, Instant},
@@ -58,31 +58,25 @@ pub trait ScanProgress {
     fn report(&mut self, percentage: usize, results: u64) -> anyhow::Result<()>;
 }
 
-/// A handle for a process.
-#[derive(Debug)]
-pub struct ProcessHandle {
-    /// Name of the process (if present).
-    pub name: String,
-    /// The file name of the process.
-    pub file_name: Option<OsString>,
-    /// Handle to the process.
-    pub process: Process,
-    /// Information about all loaded modules.
-    pub modules: Vec<ModuleInfo>,
-    /// Module address by name.
-    pub modules_address: HashMap<String, Address>,
-    /// The range at which we have found kernel32.dll (if present).
-    kernel32: Option<AddressRange>,
-    /// Threads.
-    pub threads: Vec<ProcessThread>,
-}
-
+#[derive(Debug, Clone, Default)]
 pub struct ModulesState {
     pub process_name: Option<String>,
     pub process_file_name: Option<OsString>,
     pub modules: Vec<ModuleInfo>,
     pub modules_address: HashMap<String, Address>,
     pub kernel32: Option<AddressRange>,
+}
+
+/// A handle for a process.
+#[derive(Debug)]
+pub struct ProcessHandle {
+    pub name: OsString,
+    /// Handle to the process.
+    pub process: Process,
+    /// Name of the process (if present).
+    pub modules: ModulesState,
+    /// Threads.
+    pub threads: Vec<ProcessThread>,
 }
 
 impl ProcessHandle {
@@ -110,21 +104,20 @@ impl ProcessHandle {
             },
         };
 
-        let name = process.module_base_name()?.to_string_lossy().to_string();
+        let name = process.module_base_name()?;
 
         Ok(Some(ProcessHandle {
             name,
-            file_name: None,
             process,
-            modules: Vec::new(),
-            modules_address: HashMap::new(),
-            kernel32: None,
+            modules: Default::default(),
             threads: Vec::new(),
         }))
     }
 
     /// Find the first process matching the given name.
     pub fn open_by_name(name: &str) -> anyhow::Result<Option<ProcessHandle>> {
+        let name = OsStr::new(name);
+
         for pid in system::processes()? {
             let handle = match ProcessHandle::open(pid).with_context(|| Error::OpenProcess(pid))? {
                 Some(handle) => handle,
@@ -132,7 +125,7 @@ impl ProcessHandle {
                 None => continue,
             };
 
-            if handle.name.to_lowercase() != name.to_lowercase() {
+            if name != handle.name {
                 continue;
             }
 
@@ -142,21 +135,11 @@ impl ProcessHandle {
         Ok(None)
     }
 
-    /// Name of the process.
-    pub fn name(&self) -> ProcessName {
-        ProcessName {
-            id: self.process.process_id(),
-            name: self.name.clone(),
-        }
-    }
-
     /// Get the current module state for the process.
     pub fn get_modules(&self) -> anyhow::Result<ModulesState> {
-        use std::ffi::OsStr;
-
         let mut process_name = None;
         let mut process_file_name = None;
-        let mut modules = Vec::with_capacity(self.modules.len());
+        let mut modules = Vec::with_capacity(self.modules.modules.len());
         let mut modules_address = HashMap::new();
         let mut kernel32 = None;
 
@@ -209,15 +192,7 @@ impl ProcessHandle {
 
     /// Update modules with the result from a get_modules call.
     pub fn update_modules(&mut self, modules: ModulesState) {
-        if let Some(name) = modules.process_name {
-            self.name = name;
-        }
-
-        self.file_name = modules.process_file_name;
-
-        self.modules = modules.modules;
-        self.modules_address = modules.modules_address;
-        self.kernel32 = modules.kernel32;
+        self.modules = modules;
     }
 
     /// Refresh module state in-place.
@@ -229,13 +204,6 @@ impl ProcessHandle {
         let update = self.get_modules()?;
         self.update_modules(update);
         Ok(())
-    }
-
-    /// Get information on threads.
-    pub fn get_threads(&self) -> anyhow::Result<Vec<ProcessThread>> {
-        let mut threads = Vec::new();
-        Self::load_threads_into(&self.process, &mut threads, self.kernel32.as_ref())?;
-        Ok(threads)
     }
 
     /// Get threads with custom modules state.
@@ -255,7 +223,11 @@ impl ProcessHandle {
 
     /// Refresh the known threads in place.
     pub fn refresh_threads(&mut self) -> anyhow::Result<()> {
-        Self::load_threads_into(&self.process, &mut self.threads, self.kernel32.as_ref())
+        Self::load_threads_into(
+            &self.process,
+            &mut self.threads,
+            self.modules.kernel32.as_ref(),
+        )
     }
 
     /// Refresh information about known threads.
@@ -328,7 +300,7 @@ impl ProcessHandle {
 
     /// Find if address is contained in a module.
     pub fn find_module(&self, address: Address) -> Option<&ModuleInfo> {
-        AddressRange::find_in_range(&self.modules, |m| &m.range, address)
+        AddressRange::find_in_range(&self.modules.modules, |m| &m.range, address)
     }
 
     /// Find if address is contained in a module.
@@ -912,7 +884,7 @@ impl ProcessHandle {
                 .collect::<HashSet<_>>();
 
             if config.modules_only {
-                ranges.extend(handle.modules.iter().map(|m| m.range));
+                ranges.extend(handle.modules.modules.iter().map(|m| m.range));
             } else {
                 for m in handle.process.virtual_memory_regions().only_relevant() {
                     let m = m?;
@@ -922,7 +894,7 @@ impl ProcessHandle {
                     }
                 }
 
-                ranges.extend(handle.modules.iter().map(|m| m.range));
+                ranges.extend(handle.modules.modules.iter().map(|m| m.range));
             }
         }
 

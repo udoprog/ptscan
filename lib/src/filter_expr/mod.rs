@@ -1,6 +1,6 @@
 use crate::{
     error::Error, process::MemoryInformation, value, AddressProxy, AddressRange, ProcessInfo, Sign,
-    Type, TypeHint, TypeSolveError, Value, ValueExpr,
+    Type, TypeHint, TypeSolveError, TypedValueExpr, Value, ValueExpr, ValueRef,
 };
 use anyhow::bail;
 use hashbrown::HashSet;
@@ -74,6 +74,40 @@ impl FilterExpr {
         Ok(Self::IsPointer(IsPointer::new(expr, process)?))
     }
 
+    pub fn type_check(
+        &self,
+        initial_type: Type,
+        last_type: Type,
+        value_type: Type,
+    ) -> anyhow::Result<TypedFilterExpr<'_>> {
+        Ok(match self {
+            Self::Binary(m) => {
+                TypedFilterExpr::Binary(m.type_check(initial_type, last_type, value_type)?)
+            }
+            Self::All(m) => {
+                TypedFilterExpr::All(m.type_check(initial_type, last_type, value_type)?)
+            }
+            Self::Any(m) => {
+                TypedFilterExpr::Any(m.type_check(initial_type, last_type, value_type)?)
+            }
+            Self::IsPointer(m) => {
+                TypedFilterExpr::IsPointer(m.type_check(initial_type, last_type, value_type)?)
+            }
+            Self::IsType(m) => {
+                TypedFilterExpr::IsType(m.type_check(initial_type, last_type, value_type)?)
+            }
+            Self::IsNan(m) => {
+                TypedFilterExpr::IsNan(m.type_check(initial_type, last_type, value_type)?)
+            }
+            Self::Not(m) => {
+                TypedFilterExpr::Not(m.type_check(initial_type, last_type, value_type)?)
+            }
+            Self::Regex(m) => {
+                TypedFilterExpr::Regex(m.type_check(initial_type, last_type, value_type)?)
+            }
+        })
+    }
+
     pub fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
         match self {
             Self::Binary(m) => m.value_type_of(cast_type),
@@ -84,25 +118,6 @@ impl FilterExpr {
             Self::IsNan(m) => m.value_type_of(cast_type),
             Self::Not(m) => m.value_type_of(cast_type),
             Self::Regex(m) => m.value_type_of(cast_type),
-        }
-    }
-
-    /// Test the specified memory region.
-    pub fn test(
-        &self,
-        initial: ValueInfo<'_>,
-        last: ValueInfo<'_>,
-        proxy: &mut AddressProxy<'_>,
-    ) -> anyhow::Result<Test> {
-        match self {
-            Self::Binary(m) => m.test(initial, last, proxy),
-            Self::All(m) => m.test(initial, last, proxy),
-            Self::Any(m) => m.test(initial, last, proxy),
-            Self::IsPointer(m) => m.test(initial, last, proxy),
-            Self::IsType(m) => m.test(initial, last, proxy),
-            Self::IsNan(m) => m.test(initial, last, proxy),
-            Self::Not(m) => m.test(initial, last, proxy),
-            Self::Regex(m) => m.test(initial, last, proxy),
         }
     }
 
@@ -140,11 +155,155 @@ impl fmt::Display for FilterExpr {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum TypedFilterExpr<'a> {
+    Binary(TypedBinary<'a>),
+    All(TypedAll<'a>),
+    Any(TypedAny<'a>),
+    IsPointer(TypedIsPointer<'a>),
+    IsType(TypedIsType<'a>),
+    IsNan(TypedIsNan<'a>),
+    Not(TypedNot<'a>),
+    Regex(TypedRegex<'a>),
+}
+
+impl TypedFilterExpr<'_> {
+    /// Test the specified memory region.
+    pub fn test(
+        &self,
+        initial: ValueRef<'_>,
+        last: ValueRef<'_>,
+        proxy: &mut AddressProxy<'_>,
+    ) -> anyhow::Result<Test> {
+        match self {
+            Self::Binary(m) => m.test(initial, last, proxy),
+            Self::All(m) => m.test(initial, last, proxy),
+            Self::Any(m) => m.test(initial, last, proxy),
+            Self::IsPointer(m) => m.test(initial, last, proxy),
+            Self::IsType(m) => m.test(initial, last, proxy),
+            Self::IsNan(m) => m.test(initial, last, proxy),
+            Self::Not(m) => m.test(initial, last, proxy),
+            Self::Regex(m) => m.test(initial, last, proxy),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TypedBinary<'a>(FilterOp, TypedValueExpr<'a>, TypedValueExpr<'a>);
+
+impl TypedBinary<'_> {
+    fn test(
+        &self,
+        initial: ValueRef<'_>,
+        last: ValueRef<'_>,
+        proxy: &mut AddressProxy<'_>,
+    ) -> anyhow::Result<Test> {
+        use self::FilterOp::*;
+
+        macro_rules! binary {
+            ($expr_a:expr, $expr_b:expr, $a:ident $op:tt $b:ident) => {
+                match ($expr_a, $expr_b) {
+                    (Value::None, _) => return Ok(Test::Undefined),
+                    (_, Value::None) => return Ok(Test::Undefined),
+                    (Value::Pointer($a), Value::Pointer($b)) => $a $op $b,
+                    (Value::U8($a), Value::U8($b)) => $a $op $b,
+                    (Value::I8($a), Value::I8($b)) => $a $op $b,
+                    (Value::U16($a), Value::U16($b)) => $a $op $b,
+                    (Value::I16($a), Value::I16($b)) => $a $op $b,
+                    (Value::U32($a), Value::U32($b)) => $a $op $b,
+                    (Value::I32($a), Value::I32($b)) => $a $op $b,
+                    (Value::U64($a), Value::U64($b)) => $a $op $b,
+                    (Value::I64($a), Value::I64($b)) => $a $op $b,
+                    (Value::U128($a), Value::U128($b)) => $a $op $b,
+                    (Value::I128($a), Value::I128($b)) => $a $op $b,
+                    (Value::F32($a), Value::F32($b)) => $a $op $b,
+                    (Value::F64($a), Value::F64($b)) => $a $op $b,
+                    (Value::String($a), Value::String($b)) => $a $op $b,
+                    (Value::Bytes($a), Value::Bytes($b)) => $a $op $b,
+                    _ => false,
+                }
+            };
+        }
+
+        let Self(op, lhs, rhs) = self;
+
+        let lhs = lhs.eval(initial, last, proxy)?;
+        let rhs = rhs.eval(initial, last, proxy)?;
+
+        // NB: we treat 'none' specially:
+        // The only allowed match on none is to compare against something which is strictly not equal to it, like value != none.
+        let result = match op {
+            Eq => binary!(lhs, rhs, a == b),
+            Neq => binary!(lhs, rhs, a != b),
+            Lt => binary!(lhs, rhs, a < b),
+            Lte => binary!(lhs, rhs, a <= b),
+            Gt => binary!(lhs, rhs, a > b),
+            Gte => binary!(lhs, rhs, a >= b),
+            StartsWith => match lhs {
+                Value::String(lhs) => match rhs {
+                    Value::None => return Ok(Test::Undefined),
+                    Value::String(rhs) => lhs.starts_with(&rhs),
+                    Value::Bytes(rhs) => lhs.as_bytes().starts_with(&rhs),
+                    _ => false,
+                },
+                Value::Bytes(lhs) => match rhs {
+                    Value::None => return Ok(Test::Undefined),
+                    Value::String(rhs) => lhs.starts_with(rhs.as_bytes()),
+                    Value::Bytes(rhs) => lhs.starts_with(&rhs),
+                    _ => false,
+                },
+                Value::None => return Ok(Test::Undefined),
+                _ => false,
+            },
+        };
+
+        Ok(result.into())
+    }
+}
+
 /// Only match values which are exactly equal.
 #[derive(Debug, Clone)]
 pub struct Binary(FilterOp, ValueExpr, ValueExpr);
 
 impl Binary {
+    /// Type check the binary expression.
+    pub fn type_check(
+        &self,
+        initial_type: Type,
+        last_type: Type,
+        value_type: Type,
+    ) -> anyhow::Result<TypedBinary<'_>> {
+        use self::TypeHint::*;
+
+        let Self(op, lhs, rhs) = self;
+
+        let lhs_type = lhs.type_of(
+            Explicit(initial_type),
+            Explicit(last_type),
+            Explicit(value_type),
+            TypeHint::NoHint,
+        )?;
+
+        let rhs_type = rhs.type_of(
+            Explicit(initial_type),
+            Explicit(last_type),
+            Explicit(value_type),
+            TypeHint::NoHint,
+        )?;
+
+        let expr_type = match lhs_type.solve(rhs_type) {
+            Ok(expr_type) => expr_type.ok_or_else(|| Error::BinaryTypeInference(self.clone()))?,
+            Err(TypeSolveError(lhs, rhs)) => {
+                bail!("incompatible types in expression: {} {} {}", lhs, op, rhs)
+            }
+        };
+
+        let lhs = lhs.type_check(initial_type, last_type, value_type, expr_type)?;
+        let rhs = rhs.type_check(initial_type, last_type, value_type, expr_type)?;
+
+        Ok(TypedBinary(*op, lhs, rhs))
+    }
+
     fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
         use self::TypeHint::*;
 
@@ -181,99 +340,6 @@ impl Binary {
             (result, NoHint) | (NoHint, result) => result,
             _ => NoHint,
         })
-    }
-
-    fn test(
-        &self,
-        initial: ValueInfo<'_>,
-        last: ValueInfo<'_>,
-        proxy: &mut AddressProxy<'_>,
-    ) -> anyhow::Result<Test> {
-        use self::FilterOp::*;
-        use self::TypeHint::*;
-
-        macro_rules! binary {
-            ($expr_a:expr, $expr_b:expr, $a:ident $op:tt $b:ident) => {
-                match ($expr_a, $expr_b) {
-                    (Value::None, _) => return Ok(Test::Undefined),
-                    (_, Value::None) => return Ok(Test::Undefined),
-                    (Value::Pointer($a), Value::Pointer($b)) => $a $op $b,
-                    (Value::U8($a), Value::U8($b)) => $a $op $b,
-                    (Value::I8($a), Value::I8($b)) => $a $op $b,
-                    (Value::U16($a), Value::U16($b)) => $a $op $b,
-                    (Value::I16($a), Value::I16($b)) => $a $op $b,
-                    (Value::U32($a), Value::U32($b)) => $a $op $b,
-                    (Value::I32($a), Value::I32($b)) => $a $op $b,
-                    (Value::U64($a), Value::U64($b)) => $a $op $b,
-                    (Value::I64($a), Value::I64($b)) => $a $op $b,
-                    (Value::U128($a), Value::U128($b)) => $a $op $b,
-                    (Value::I128($a), Value::I128($b)) => $a $op $b,
-                    (Value::F32($a), Value::F32($b)) => $a $op $b,
-                    (Value::F64($a), Value::F64($b)) => $a $op $b,
-                    (Value::String($a), Value::String($b)) => $a $op $b,
-                    (Value::Bytes($a), Value::Bytes($b)) => $a $op $b,
-                    _ => false,
-                }
-            };
-        }
-
-        let Binary(op, lhs, rhs) = self;
-
-        let lhs_type = lhs.type_of(
-            Explicit(initial.ty),
-            Explicit(last.ty),
-            Explicit(proxy.ty),
-            TypeHint::NoHint,
-        )?;
-
-        let rhs_type = rhs.type_of(
-            Explicit(initial.ty),
-            Explicit(last.ty),
-            Explicit(proxy.ty),
-            TypeHint::NoHint,
-        )?;
-
-        let expr_type = match lhs_type.solve(rhs_type) {
-            Ok(expr_type) => expr_type.ok_or_else(|| Error::BinaryTypeInference(self.clone()))?,
-            Err(TypeSolveError(lhs, rhs)) => {
-                bail!("incompatible types in expression: {} {} {}", lhs, op, rhs)
-            }
-        };
-
-        let lhs = lhs.type_check(initial.ty, last.ty, proxy.ty, expr_type)?;
-        let rhs = rhs.type_check(initial.ty, last.ty, proxy.ty, expr_type)?;
-
-        let lhs = lhs.eval(initial, last, proxy)?;
-        let rhs = rhs.eval(initial, last, proxy)?;
-
-        // NB: we treat 'none' specially:
-        // The only allowed match on none is to compare against something which is strictly not equal to it, like value != none.
-        let result = match op {
-            Eq => binary!(lhs, rhs, a == b),
-            Neq => binary!(lhs, rhs, a != b),
-            Lt => binary!(lhs, rhs, a < b),
-            Lte => binary!(lhs, rhs, a <= b),
-            Gt => binary!(lhs, rhs, a > b),
-            Gte => binary!(lhs, rhs, a >= b),
-            StartsWith => match lhs {
-                Value::String(lhs) => match rhs {
-                    Value::None => return Ok(Test::Undefined),
-                    Value::String(rhs) => lhs.starts_with(&rhs),
-                    Value::Bytes(rhs) => lhs.as_bytes().starts_with(&rhs),
-                    _ => false,
-                },
-                Value::Bytes(lhs) => match rhs {
-                    Value::None => return Ok(Test::Undefined),
-                    Value::String(rhs) => lhs.starts_with(rhs.as_bytes()),
-                    Value::Bytes(rhs) => lhs.starts_with(&rhs),
-                    _ => false,
-                },
-                Value::None => return Ok(Test::Undefined),
-                _ => false,
-            },
-        };
-
-        Ok(result.into())
     }
 
     fn special(
@@ -356,15 +422,54 @@ impl fmt::Display for Binary {
 
 /// Only matches when all nested filters match.
 #[derive(Debug, Clone)]
+pub struct TypedAll<'a>(Vec<TypedFilterExpr<'a>>);
+
+impl TypedAll<'_> {
+    fn test(
+        &self,
+        initial: ValueRef<'_>,
+        last: ValueRef<'_>,
+        proxy: &mut AddressProxy<'_>,
+    ) -> anyhow::Result<Test> {
+        for m in &self.0 {
+            match m.test(initial, last, proxy)? {
+                Test::False => return Ok(Test::False),
+                Test::Undefined => return Ok(Test::Undefined),
+                _ => (),
+            }
+        }
+
+        Ok(Test::True)
+    }
+}
+
+/// Only matches when all nested filters match.
+#[derive(Debug, Clone)]
 pub struct All(Vec<FilterExpr>);
 
 impl All {
-    fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
-        collection_value_type_of(self, &self.0, cast_type)
-    }
-
     pub fn new(filters: impl IntoIterator<Item = FilterExpr>) -> Self {
         All(filters.into_iter().collect())
+    }
+
+    /// Type check the all expression.
+    fn type_check(
+        &self,
+        initial_type: Type,
+        last_type: Type,
+        value_type: Type,
+    ) -> anyhow::Result<TypedAll<'_>> {
+        let mut all = Vec::new();
+
+        for m in &self.0 {
+            all.push(m.type_check(initial_type, last_type, value_type)?);
+        }
+
+        Ok(TypedAll(all))
+    }
+
+    fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
+        collection_value_type_of(self, &self.0, cast_type)
     }
 
     pub fn special(
@@ -386,23 +491,6 @@ impl All {
 
         Ok(all.into_iter().next())
     }
-
-    fn test(
-        &self,
-        initial: ValueInfo<'_>,
-        last: ValueInfo<'_>,
-        proxy: &mut AddressProxy<'_>,
-    ) -> anyhow::Result<Test> {
-        for m in &self.0 {
-            match m.test(initial, last, proxy)? {
-                Test::False => return Ok(Test::False),
-                Test::Undefined => return Ok(Test::Undefined),
-                _ => (),
-            }
-        }
-
-        Ok(Test::True)
-    }
 }
 
 impl fmt::Display for All {
@@ -423,15 +511,54 @@ impl fmt::Display for All {
 
 /// Only matches when any nested filter match.
 #[derive(Debug, Clone)]
+pub struct TypedAny<'a>(Vec<TypedFilterExpr<'a>>);
+
+impl TypedAny<'_> {
+    fn test(
+        &self,
+        initial: ValueRef<'_>,
+        last: ValueRef<'_>,
+        proxy: &mut AddressProxy<'_>,
+    ) -> anyhow::Result<Test> {
+        for m in &self.0 {
+            match m.test(initial, last, proxy)? {
+                Test::True => return Ok(Test::True),
+                Test::Undefined => return Ok(Test::Undefined),
+                _ => (),
+            }
+        }
+
+        Ok(Test::False)
+    }
+}
+
+/// Only matches when any nested filter match.
+#[derive(Debug, Clone)]
 pub struct Any(Vec<FilterExpr>);
 
 impl Any {
-    fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
-        collection_value_type_of(self, &self.0, cast_type)
-    }
-
     pub fn new(filters: impl IntoIterator<Item = FilterExpr>) -> Self {
         Any(filters.into_iter().collect())
+    }
+
+    /// Type check the all expression.
+    fn type_check(
+        &self,
+        initial_type: Type,
+        last_type: Type,
+        value_type: Type,
+    ) -> anyhow::Result<TypedAny<'_>> {
+        let mut any = Vec::new();
+
+        for m in &self.0 {
+            any.push(m.type_check(initial_type, last_type, value_type)?);
+        }
+
+        Ok(TypedAny(any))
+    }
+
+    fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
+        collection_value_type_of(self, &self.0, cast_type)
     }
 
     pub fn special(
@@ -454,23 +581,6 @@ impl Any {
 
         Ok(any.into_iter().next())
     }
-
-    fn test(
-        &self,
-        initial: ValueInfo<'_>,
-        last: ValueInfo<'_>,
-        proxy: &mut AddressProxy<'_>,
-    ) -> anyhow::Result<Test> {
-        for m in &self.0 {
-            match m.test(initial, last, proxy)? {
-                Test::True => return Ok(Test::True),
-                Test::Undefined => return Ok(Test::Undefined),
-                _ => (),
-            }
-        }
-
-        Ok(Test::False)
-    }
 }
 
 impl fmt::Display for Any {
@@ -486,6 +596,39 @@ impl fmt::Display for Any {
         }
 
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TypedIsPointer<'a> {
+    expr: TypedValueExpr<'a>,
+    /// Sorted memory regions.
+    memory_regions: &'a [MemoryInformation],
+}
+
+impl TypedIsPointer<'_> {
+    pub fn test(
+        &self,
+        initial: ValueRef<'_>,
+        last: ValueRef<'_>,
+        proxy: &mut AddressProxy<'_>,
+    ) -> anyhow::Result<Test> {
+        let value = self.expr.eval(initial, last, proxy)?;
+
+        let address = match value {
+            Value::Pointer(address) => address,
+            _ => return Ok(Test::False),
+        };
+
+        if address.is_null() {
+            return Ok(Test::False);
+        }
+
+        Ok(
+            AddressRange::find_in_range(&self.memory_regions, |m| &m.range, address)
+                .is_some()
+                .into(),
+        )
     }
 }
 
@@ -513,51 +656,64 @@ impl IsPointer {
         })
     }
 
-    fn value_type_of(&self, _: TypeHint) -> anyhow::Result<TypeHint> {
-        self.expr.value_type_of(TypeHint::Explicit(Type::Pointer))
-    }
-
-    pub fn test(
+    /// Type check the all expression.
+    fn type_check(
         &self,
-        initial: ValueInfo<'_>,
-        last: ValueInfo<'_>,
-        proxy: &mut AddressProxy<'_>,
-    ) -> anyhow::Result<Test> {
+        initial_type: Type,
+        last_type: Type,
+        value_type: Type,
+    ) -> anyhow::Result<TypedIsPointer<'_>> {
         let expr_type = self
             .expr
             .type_of(
-                TypeHint::Explicit(initial.ty),
-                TypeHint::Explicit(last.ty),
-                TypeHint::Explicit(proxy.ty),
+                TypeHint::Explicit(initial_type),
+                TypeHint::Explicit(last_type),
+                TypeHint::Explicit(value_type),
                 TypeHint::NoHint,
             )?
             .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
 
-        let value = self
+        let expr = self
             .expr
-            .type_check(initial.ty, last.ty, proxy.ty, expr_type)?
-            .eval(initial, last, proxy)?;
+            .type_check(initial_type, last_type, value_type, expr_type)?;
 
-        let address = match value {
-            Value::Pointer(address) => address,
-            _ => return Ok(Test::False),
-        };
+        Ok(TypedIsPointer {
+            expr,
+            memory_regions: &self.memory_regions[..],
+        })
+    }
 
-        if address.is_null() {
-            return Ok(Test::False);
-        }
-
-        Ok(
-            AddressRange::find_in_range(&self.memory_regions, |m| &m.range, address)
-                .is_some()
-                .into(),
-        )
+    fn value_type_of(&self, _: TypeHint) -> anyhow::Result<TypeHint> {
+        self.expr.value_type_of(TypeHint::Explicit(Type::Pointer))
     }
 }
 
 impl fmt::Display for IsPointer {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "is pointer")
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TypedIsType<'a> {
+    expr: TypedValueExpr<'a>,
+    ty: Type,
+}
+
+impl TypedIsType<'_> {
+    fn test(
+        &self,
+        initial: ValueRef<'_>,
+        last: ValueRef<'_>,
+        proxy: &mut AddressProxy<'_>,
+    ) -> anyhow::Result<Test> {
+        let value = self.expr.eval(initial, last, proxy)?;
+
+        if value.is_none() {
+            return Ok(Test::Undefined);
+        }
+
+        Ok(value.is(self.ty).into())
     }
 }
 
@@ -572,42 +728,60 @@ impl IsType {
         Ok(Self { expr, ty })
     }
 
-    fn value_type_of(&self, _: TypeHint) -> anyhow::Result<TypeHint> {
-        self.expr.value_type_of(TypeHint::Explicit(self.ty))
-    }
-
-    pub fn test(
+    pub fn type_check(
         &self,
-        initial: ValueInfo<'_>,
-        last: ValueInfo<'_>,
-        proxy: &mut AddressProxy<'_>,
-    ) -> anyhow::Result<Test> {
-        let expr_type = self
-            .expr
+        initial_type: Type,
+        last_type: Type,
+        value_type: Type,
+    ) -> anyhow::Result<TypedIsType<'_>> {
+        let Self { expr, ty } = self;
+
+        let expr_type = expr
             .type_of(
-                TypeHint::Explicit(initial.ty),
-                TypeHint::Explicit(last.ty),
-                TypeHint::Explicit(proxy.ty),
+                TypeHint::Explicit(initial_type),
+                TypeHint::Explicit(last_type),
+                TypeHint::Explicit(value_type),
                 TypeHint::NoHint,
             )?
-            .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
+            .ok_or_else(|| Error::TypeInference(expr.clone()))?;
 
-        let value = self
-            .expr
-            .type_check(initial.ty, last.ty, proxy.ty, expr_type)?
-            .eval(initial, last, proxy)?;
+        let expr = expr.type_check(initial_type, last_type, value_type, expr_type)?;
 
-        if value.is_none() {
-            return Ok(Test::Undefined);
-        }
+        Ok(TypedIsType { expr, ty: *ty })
+    }
 
-        Ok(value.is(self.ty).into())
+    fn value_type_of(&self, _: TypeHint) -> anyhow::Result<TypeHint> {
+        self.expr.value_type_of(TypeHint::Explicit(self.ty))
     }
 }
 
 impl fmt::Display for IsType {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "is {}", self.ty)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TypedIsNan<'a> {
+    expr: TypedValueExpr<'a>,
+}
+
+impl TypedIsNan<'_> {
+    pub fn test(
+        &self,
+        initial: ValueRef<'_>,
+        last: ValueRef<'_>,
+        proxy: &mut AddressProxy<'_>,
+    ) -> anyhow::Result<Test> {
+        let value = self.expr.eval(initial, last, proxy)?;
+
+        let value = match value {
+            Value::F32(value) => value.is_nan(),
+            Value::F64(value) => value.is_nan(),
+            _ => false,
+        };
+
+        Ok(value.into())
     }
 }
 
@@ -621,6 +795,29 @@ impl IsNan {
         Ok(Self { expr })
     }
 
+    fn type_check(
+        &self,
+        initial_type: Type,
+        last_type: Type,
+        value_type: Type,
+    ) -> anyhow::Result<TypedIsNan<'_>> {
+        let expr_type = self
+            .expr
+            .type_of(
+                TypeHint::Explicit(initial_type),
+                TypeHint::Explicit(last_type),
+                TypeHint::Explicit(value_type),
+                TypeHint::NoHint,
+            )?
+            .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
+
+        let expr = self
+            .expr
+            .type_check(initial_type, last_type, value_type, expr_type)?;
+
+        Ok(TypedIsNan { expr })
+    }
+
     pub fn special(
         &self,
         process: &impl ProcessInfo,
@@ -632,36 +829,6 @@ impl IsNan {
     fn value_type_of(&self, _: TypeHint) -> anyhow::Result<TypeHint> {
         self.expr.value_type_of(TypeHint::Implicit(Type::F32))
     }
-
-    pub fn test(
-        &self,
-        initial: ValueInfo<'_>,
-        last: ValueInfo<'_>,
-        proxy: &mut AddressProxy<'_>,
-    ) -> anyhow::Result<Test> {
-        let expr_type = self
-            .expr
-            .type_of(
-                TypeHint::Explicit(initial.ty),
-                TypeHint::Explicit(last.ty),
-                TypeHint::Explicit(proxy.ty),
-                TypeHint::NoHint,
-            )?
-            .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
-
-        let value = self
-            .expr
-            .type_check(initial.ty, last.ty, proxy.ty, expr_type)?
-            .eval(initial, last, proxy)?;
-
-        let value = match value {
-            Value::F32(value) => value.is_nan(),
-            Value::F64(value) => value.is_nan(),
-            _ => false,
-        };
-
-        Ok(value.into())
-    }
 }
 
 impl fmt::Display for IsNan {
@@ -671,81 +838,18 @@ impl fmt::Display for IsNan {
 }
 
 #[derive(Debug, Clone)]
-pub struct Regex {
-    expr: ValueExpr,
-    regex: regex::bytes::Regex,
+pub struct TypedNot<'a> {
+    filter: Box<TypedFilterExpr<'a>>,
 }
 
-impl Regex {
-    pub fn new(expr: ValueExpr, regex: regex::bytes::Regex) -> Self {
-        Self { expr, regex }
-    }
-
-    fn value_type_of(&self, _: TypeHint) -> anyhow::Result<TypeHint> {
-        self.expr
-            .value_type_of(TypeHint::Implicit(Type::String(Default::default())))
-    }
-
-    pub fn test(
+impl TypedNot<'_> {
+    fn test(
         &self,
-        initial: ValueInfo<'_>,
-        last: ValueInfo<'_>,
+        initial: ValueRef<'_>,
+        last: ValueRef<'_>,
         proxy: &mut AddressProxy<'_>,
     ) -> anyhow::Result<Test> {
-        let expr_type = self
-            .expr
-            .type_of(
-                TypeHint::Explicit(initial.ty),
-                TypeHint::Explicit(last.ty),
-                TypeHint::Explicit(proxy.ty),
-                TypeHint::NoHint,
-            )?
-            .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
-
-        let value = self
-            .expr
-            .type_check(initial.ty, last.ty, proxy.ty, expr_type)?
-            .eval(initial, last, proxy)?;
-
-        let bytes = match &value {
-            Value::Bytes(bytes) => &bytes[..],
-            Value::String(s, ..) => s.as_bytes(),
-            Value::None => return Ok(Test::Undefined),
-            _ => return Ok(Test::False),
-        };
-
-        Ok(self.regex.is_match(bytes).into())
-    }
-
-    pub fn special(&self) -> anyhow::Result<Option<Special>> {
-        if !self.regex.as_str().starts_with('^') && !self.regex.as_str().ends_with('$') {
-            return Ok(Some(Special::Regex(self.regex.clone())));
-        }
-
-        let mut regex = self.regex.as_str();
-
-        if regex.starts_with('^') {
-            regex = &regex[1..];
-        }
-
-        if regex.ends_with('$') && !regex.ends_with("\\$") {
-            regex = &regex[..regex.len() - 1];
-        }
-
-        if let Ok(regex) = regex::bytes::Regex::new(regex) {
-            return Ok(Some(Special::Regex(regex)));
-        }
-
-        match self.expr.reduced() {
-            ValueExpr::Value => Ok(Some(Special::NonZero(None))),
-            _ => Ok(None),
-        }
-    }
-}
-
-impl fmt::Display for Regex {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(fmt, "is none")
+        Ok(self.filter.test(initial, last, proxy)?.invert())
     }
 }
 
@@ -755,13 +859,19 @@ pub struct Not {
 }
 
 impl Not {
-    fn test(
+    fn type_check(
         &self,
-        initial: ValueInfo<'_>,
-        last: ValueInfo<'_>,
-        proxy: &mut AddressProxy<'_>,
-    ) -> anyhow::Result<Test> {
-        Ok(self.filter.test(initial, last, proxy)?.invert())
+        initial_type: Type,
+        last_type: Type,
+        value_type: Type,
+    ) -> anyhow::Result<TypedNot<'_>> {
+        let filter = self
+            .filter
+            .type_check(initial_type, last_type, value_type)?;
+
+        Ok(TypedNot {
+            filter: Box::new(filter),
+        })
     }
 
     fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
@@ -800,6 +910,106 @@ impl fmt::Display for Not {
             FilterExpr::IsNan(..) => write!(fmt, "is not nan"),
             other => write!(fmt, "not {}", other),
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TypedRegex<'a> {
+    expr: TypedValueExpr<'a>,
+    regex: &'a regex::bytes::Regex,
+}
+
+impl TypedRegex<'_> {
+    pub fn test(
+        &self,
+        initial: ValueRef<'_>,
+        last: ValueRef<'_>,
+        proxy: &mut AddressProxy<'_>,
+    ) -> anyhow::Result<Test> {
+        let value = self.expr.eval(initial, last, proxy)?;
+
+        let bytes = match &value {
+            Value::Bytes(bytes) => &bytes[..],
+            Value::String(s, ..) => s.as_bytes(),
+            Value::None => return Ok(Test::Undefined),
+            _ => return Ok(Test::False),
+        };
+
+        Ok(self.regex.is_match(bytes).into())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Regex {
+    expr: ValueExpr,
+    regex: regex::bytes::Regex,
+}
+
+impl Regex {
+    pub fn new(expr: ValueExpr, regex: regex::bytes::Regex) -> Self {
+        Self { expr, regex }
+    }
+
+    fn type_check(
+        &self,
+        initial_type: Type,
+        last_type: Type,
+        value_type: Type,
+    ) -> anyhow::Result<TypedRegex<'_>> {
+        let expr_type = self
+            .expr
+            .type_of(
+                TypeHint::Explicit(initial_type),
+                TypeHint::Explicit(last_type),
+                TypeHint::Explicit(value_type),
+                TypeHint::NoHint,
+            )?
+            .ok_or_else(|| Error::TypeInference(self.expr.clone()))?;
+
+        let expr = self
+            .expr
+            .type_check(initial_type, last_type, value_type, expr_type)?;
+
+        Ok(TypedRegex {
+            expr,
+            regex: &self.regex,
+        })
+    }
+
+    fn value_type_of(&self, _: TypeHint) -> anyhow::Result<TypeHint> {
+        self.expr
+            .value_type_of(TypeHint::Implicit(Type::String(Default::default())))
+    }
+
+    pub fn special(&self) -> anyhow::Result<Option<Special>> {
+        if !self.regex.as_str().starts_with('^') && !self.regex.as_str().ends_with('$') {
+            return Ok(Some(Special::Regex(self.regex.clone())));
+        }
+
+        let mut regex = self.regex.as_str();
+
+        if regex.starts_with('^') {
+            regex = &regex[1..];
+        }
+
+        if regex.ends_with('$') && !regex.ends_with("\\$") {
+            regex = &regex[..regex.len() - 1];
+        }
+
+        if let Ok(regex) = regex::bytes::Regex::new(regex) {
+            return Ok(Some(Special::Regex(regex)));
+        }
+
+        match self.expr.reduced() {
+            ValueExpr::Value => Ok(Some(Special::NonZero(None))),
+            _ => Ok(None),
+        }
+    }
+}
+
+impl fmt::Display for Regex {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(fmt, "is none")
     }
 }
 

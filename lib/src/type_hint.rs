@@ -40,7 +40,7 @@ impl TypeHint {
         }
     }
 
-    /// Unwrap into a default type if this is None.
+    /// Unwrap into a default type if this is NoHint.
     pub fn unwrap_or(self, fallback: TypeHint) -> TypeHint {
         match self {
             Self::NoHint => fallback,

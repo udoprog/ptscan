@@ -8,8 +8,8 @@ use crate::{
     system,
     thread::Thread,
     values, Address, AddressRange, Cached, Pointer, PointerBase, PointerWidth, Process, ProcessId,
-    ProcessInfo, Size, Special, Test, ThreadId, Token, Type, TypeHint, Value, ValueExpr, ValueInfo,
-    Values,
+    ProcessInfo, Size, Special, Test, ThreadId, Token, Type, TypeHint, TypedFilterExpr, Value,
+    ValueExpr, ValueRef, Values,
 };
 use anyhow::{anyhow, bail, Context as _};
 use crossbeam_queue::SegQueue;
@@ -40,11 +40,17 @@ pub trait ValueHolder {
     /// Access the address of the value.
     fn pointer(&self) -> &Pointer;
 
+    /// The type of the initial value.
+    fn initial_type(&self) -> Type;
+
     /// Access the initial value for the holder
-    fn initial_info(&self) -> ValueInfo<'_>;
+    fn initial(&self) -> ValueRef<'_>;
+
+    /// The type of the last value.
+    fn last_type(&self) -> Type;
 
     /// Get information on last value.
-    fn last_info(&self) -> ValueInfo<'_>;
+    fn last(&self) -> ValueRef<'_>;
 
     /// Insert an updated value into the holder.
     fn insert(&mut self, value: Value);
@@ -362,24 +368,22 @@ impl ProcessHandle {
 
     pub fn null_address_proxy(&self) -> AddressProxy<'_> {
         AddressProxy {
-            ty: Type::None,
             pointer: Pointer::null_ref(),
             handle: self,
             memory_cache: None,
             followed: Cached::None,
-            evaled: Cached::None,
+            cache: Default::default(),
         }
     }
 
     /// Construct an address proxy for the given address.
-    pub fn address_proxy<'a>(&'a self, pointer: &'a Pointer, ty: Type) -> AddressProxy<'a> {
+    pub fn address_proxy<'a>(&'a self, pointer: &'a Pointer) -> AddressProxy<'a> {
         AddressProxy {
-            ty,
             pointer,
             handle: self,
             memory_cache: None,
             followed: Cached::None,
-            evaled: Cached::None,
+            cache: Default::default(),
         }
     }
 
@@ -437,6 +441,9 @@ impl ProcessHandle {
 
         let mut to_remove = Vec::new();
 
+        let filter = filter.type_check(initial.ty, values.ty, values.ty)?;
+        let filter = &filter;
+
         thread_pool.install(|| {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<Task>>();
@@ -458,24 +465,12 @@ impl ProcessHandle {
 
                             let mut work = || {
                                 let pointer = Pointer::from(address);
-                                let mut proxy = self.address_proxy(&pointer, value.ty);
-
-                                let initial_info = initial.read();
-                                let initial_info = ValueInfo {
-                                    ty: initial.ty,
-                                    value: &initial_info,
-                                };
-
-                                let last_info = value.read();
-                                let last_info = ValueInfo {
-                                    ty: value.ty,
-                                    value: &last_info,
-                                };
+                                let mut proxy = self.address_proxy(&pointer);
 
                                 if let Test::True =
-                                    filter.test(initial_info, last_info, &mut proxy)?
+                                    filter.test(initial.as_ref(), value.as_ref(), &mut proxy)?
                                 {
-                                    value.write(proxy.eval()?.0);
+                                    value.write(proxy.eval(value.ty)?.0);
                                     return Ok(Task::Accepted);
                                 }
 
@@ -611,19 +606,7 @@ impl ProcessHandle {
 
                             let mut work = move || {
                                 let pointer = Pointer::from(address);
-                                let mut proxy = self.address_proxy(&pointer, value.ty);
-
-                                let initial_info = initial.read();
-                                let initial_info = ValueInfo {
-                                    ty: initial.ty,
-                                    value: &initial_info,
-                                };
-
-                                let last_info = value.read();
-                                let last_info = ValueInfo {
-                                    ty: value.ty,
-                                    value: &last_info,
-                                };
+                                let mut proxy = self.address_proxy(&pointer);
 
                                 let expr_type = expr
                                     .type_of(
@@ -636,7 +619,7 @@ impl ProcessHandle {
 
                                 let new_value = expr
                                     .type_check(initial.ty, value.ty, value.ty, expr_type)?
-                                    .eval(initial_info, last_info, &mut proxy)?;
+                                    .eval(initial.as_ref(), value.as_ref(), &mut proxy)?;
 
                                 value.write(new_value);
                                 Ok(false)
@@ -738,32 +721,23 @@ impl ProcessHandle {
 
                             let mut work = move || {
                                 let new_value = {
-                                    let initial_info = value.initial_info();
-                                    let last_info = value.last_info();
+                                    let initial_type = value.initial_type();
+                                    let last_type = value.last_type();
 
                                     let pointer = value.pointer();
-                                    let mut proxy = self.address_proxy(pointer, last_info.ty);
+                                    let mut proxy = self.address_proxy(pointer);
 
                                     let expr_type = expr
                                         .type_of(
-                                            TypeHint::Explicit(initial_info.ty),
-                                            TypeHint::Explicit(last_info.ty),
-                                            TypeHint::Explicit(last_info.ty),
+                                            TypeHint::Explicit(initial_type),
+                                            TypeHint::Explicit(last_type),
+                                            TypeHint::Explicit(last_type),
                                             TypeHint::NoHint,
                                         )?
                                         .ok_or_else(|| Error::TypeInference(expr.clone()))?;
 
-                                    expr.type_check(
-                                        initial_info.ty,
-                                        last_info.ty,
-                                        last_info.ty,
-                                        expr_type,
-                                    )?
-                                    .eval(
-                                        initial_info,
-                                        last_info,
-                                        &mut proxy,
-                                    )?
+                                    expr.type_check(initial_type, last_type, last_type, expr_type)?
+                                        .eval(value.initial(), value.last(), &mut proxy)?
                                 };
 
                                 value.insert(new_value);
@@ -865,6 +839,9 @@ impl ProcessHandle {
 
         let special = filter.special(&handle.process, values.ty)?;
         let special = special.as_ref();
+
+        let filter = filter.type_check(Type::None, Type::None, values.ty)?;
+        let filter = &filter;
 
         let tasks = config
             .tasks
@@ -1011,11 +988,11 @@ impl ProcessHandle {
             Tick(usize, u64, Duration, Instant),
         }
 
-        struct Work<'a> {
+        struct Work<'a, 'filter> {
             handle: &'a ProcessHandle,
             tx: &'a mpsc::Sender<Task>,
             queue: &'a SegQueue<(Address, usize)>,
-            filter: &'a FilterExpr,
+            filter: &'filter TypedFilterExpr<'a>,
             value_type: Type,
             special: Option<&'a Special>,
             alignment: Option<usize>,
@@ -1025,7 +1002,7 @@ impl ProcessHandle {
         }
 
         #[inline(always)]
-        fn work(work: Work<'_>) -> anyhow::Result<(Vec<Address>, Values)> {
+        fn work(work: Work<'_, '_>) -> anyhow::Result<(Vec<Address>, Values)> {
             let Work {
                 handle,
                 tx,
@@ -1043,13 +1020,6 @@ impl ProcessHandle {
             let mut values = Values::new(value_type, &handle.process);
 
             let mut buffer = vec![0u8; buffer_size];
-
-            let none_value = Value::None;
-
-            let none = ValueInfo {
-                ty: Type::None,
-                value: &none_value,
-            };
 
             while let Ok((address, len)) = queue.pop() {
                 if cancel.test() {
@@ -1080,7 +1050,6 @@ impl ProcessHandle {
                     base: address,
                     data,
                     step_size,
-                    none,
                     alignment,
                     special,
                     cancel,
@@ -1094,9 +1063,9 @@ impl ProcessHandle {
             Ok((addresses, values))
         };
 
-        struct ProcessOne<'a> {
+        struct ProcessOne<'a, 'filter> {
             handle: &'a ProcessHandle,
-            filter: &'a FilterExpr,
+            filter: &'filter TypedFilterExpr<'a>,
             value_type: Type,
             addresses: &'a mut Vec<Address>,
             values: &'a mut Values,
@@ -1104,14 +1073,13 @@ impl ProcessHandle {
             base: Address,
             data: &'a [u8],
             step_size: usize,
-            none: ValueInfo<'a>,
             alignment: Option<usize>,
             special: Option<&'a Special>,
             cancel: &'a Token,
         }
 
         #[inline(always)]
-        fn process_one(process_one: ProcessOne<'_>) -> anyhow::Result<()> {
+        fn process_one(process_one: ProcessOne<'_, '_>) -> anyhow::Result<()> {
             let ProcessOne {
                 handle,
                 filter,
@@ -1122,7 +1090,6 @@ impl ProcessHandle {
                 base,
                 data,
                 step_size,
-                none,
                 alignment,
                 special,
                 cancel,
@@ -1150,7 +1117,7 @@ impl ProcessHandle {
                 };
 
                 let pointer = Pointer::from(address);
-                let mut proxy = handle.address_proxy(&pointer, value_type);
+                let mut proxy = handle.address_proxy(&pointer);
 
                 // sanity check
                 if let Some(last_address) = last_address {
@@ -1165,9 +1132,9 @@ impl ProcessHandle {
 
                 last_address = Some(address);
 
-                if let Test::True = filter.test(none, none, &mut proxy)? {
+                if let Test::True = filter.test(ValueRef::None, ValueRef::None, &mut proxy)? {
                     *hits += 1;
-                    let (value, advance) = proxy.eval()?;
+                    let (value, advance) = proxy.eval(value_type)?;
                     addresses.push(address);
                     values.push(value);
 
@@ -1233,13 +1200,13 @@ impl ProcessInfo for ProcessHandle {
 
 #[derive(Debug, Clone)]
 pub struct AddressProxy<'a> {
-    pub(crate) ty: Type,
     pub pointer: &'a Pointer,
     pub(crate) handle: &'a ProcessHandle,
     memory_cache: Option<&'a MemoryCache>,
     /// cached, followed address.
     pub followed: Cached<Option<Address>>,
-    evaled: Cached<(Value, Option<usize>)>,
+    /// Cached value of different types.
+    cache: HashMap<Type, (Value, Option<usize>)>,
 }
 
 impl AddressProxy<'_> {
@@ -1269,39 +1236,33 @@ impl AddressProxy<'_> {
     }
 
     /// Evaluate the pointer of the proxy.
-    pub fn eval(&mut self) -> anyhow::Result<(Value, Option<usize>)> {
-        if let Cached::Some(result) = &self.evaled {
-            return Ok(result.clone());
+    pub fn eval(&mut self, ty: Type) -> anyhow::Result<(Value, Option<usize>)> {
+        if let Some(result) = self.cache.get(&ty).cloned() {
+            return Ok(result);
         }
 
         let address = match self.address()? {
             Some(address) => address,
             None => {
-                self.evaled = Cached::Some((Value::None, None));
+                self.cache.insert(ty, (Value::None, None));
                 return Ok((Value::None, None));
             }
         };
 
-        if let Some(memory_cache) = self.memory_cache {
-            let result = match self
-                .ty
-                .decode(&(memory_cache, &self.handle.process), address)
-            {
+        let result = if let Some(memory_cache) = self.memory_cache {
+            match ty.decode(&(memory_cache, &self.handle.process), address) {
                 Ok(value) => value,
                 Err(..) => (Value::None, None),
-            };
-
-            self.evaled = Cached::Some(result.clone());
-            Ok(result)
+            }
         } else {
-            let result = match self.ty.decode(&self.handle.process, address) {
+            match ty.decode(&self.handle.process, address) {
                 Ok(value) => value,
                 Err(..) => (Value::None, None),
-            };
+            }
+        };
 
-            self.evaled = Cached::Some(result.clone());
-            Ok(result)
-        }
+        // self.cache.insert(ty, result.clone());
+        Ok(result)
     }
 }
 
@@ -1494,14 +1455,13 @@ pub struct Session<'a> {
 
 impl<'a> Session<'a> {
     /// Construct an address proxy for the given address.
-    pub fn address_proxy(&'a self, pointer: &'a Pointer, ty: Type) -> AddressProxy<'a> {
+    pub fn address_proxy(&'a self, pointer: &'a Pointer) -> AddressProxy<'a> {
         AddressProxy {
-            ty,
             pointer,
             handle: self.handle,
             memory_cache: Some(&self.memory_cache),
             followed: Cached::None,
-            evaled: Cached::None,
+            cache: Default::default(),
         }
     }
 }

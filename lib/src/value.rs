@@ -65,6 +65,28 @@ pub enum Value {
 }
 
 impl Value {
+    /// Convert into the reference value equivalent.
+    pub fn as_ref(&self) -> ValueRef<'_> {
+        match *self {
+            Self::None => ValueRef::None,
+            Self::Pointer(address) => ValueRef::Pointer(address),
+            Self::U8(value) => ValueRef::U8(value),
+            Self::I8(value) => ValueRef::I8(value),
+            Self::U16(value) => ValueRef::U16(value),
+            Self::I16(value) => ValueRef::I16(value),
+            Self::U32(value) => ValueRef::U32(value),
+            Self::I32(value) => ValueRef::I32(value),
+            Self::U64(value) => ValueRef::U64(value),
+            Self::I64(value) => ValueRef::I64(value),
+            Self::U128(value) => ValueRef::U128(value),
+            Self::I128(value) => ValueRef::I128(value),
+            Self::F32(value) => ValueRef::F32(value),
+            Self::F64(value) => ValueRef::F64(value),
+            Self::String(ref value) => ValueRef::String(value.as_str()),
+            Self::Bytes(ref value) => ValueRef::Bytes(value.as_slice()),
+        }
+    }
+
     /// Test if this value is something.
     pub fn is_some(&self) -> bool {
         match *self {
@@ -440,7 +462,7 @@ impl fmt::Display for Value {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "type", content = "value")]
 pub enum ValueRef<'a> {
     None,
@@ -459,6 +481,30 @@ pub enum ValueRef<'a> {
     F64(f64),
     String(&'a str),
     Bytes(&'a [u8]),
+}
+
+impl ValueRef<'_> {
+    /// Convert into the owne value equivalent.
+    pub fn to_owned(&self) -> Value {
+        match *self {
+            Self::None => Value::None,
+            Self::Pointer(address) => Value::Pointer(address),
+            Self::U8(value) => Value::U8(value),
+            Self::I8(value) => Value::I8(value),
+            Self::U16(value) => Value::U16(value),
+            Self::I16(value) => Value::I16(value),
+            Self::U32(value) => Value::U32(value),
+            Self::I32(value) => Value::I32(value),
+            Self::U64(value) => Value::U64(value),
+            Self::I64(value) => Value::I64(value),
+            Self::U128(value) => Value::U128(value),
+            Self::I128(value) => Value::I128(value),
+            Self::F32(value) => Value::F32(value),
+            Self::F64(value) => Value::F64(value),
+            Self::String(value) => Value::String(value.to_string()),
+            Self::Bytes(value) => Value::Bytes(value.to_vec()),
+        }
+    }
 }
 
 impl fmt::Display for ValueRef<'_> {

@@ -263,13 +263,15 @@ impl MainWindow {
         let thread_pool = slf.thread_pool.clone();
         let started = Instant::now();
 
-        let (value_expr, filter_expr, config) = {
+        let (value_expr, filter_expr, config, suspend) = {
             let filter_options = slf.filter_options.borrow();
             let value_expr = filter_options.state.value_expr.clone();
             let filter_expr = optional!(&filter_options.state.filter_expr).clone();
             let mut config = InitialScanConfig::default();
             config.modules_only = filter_options.state.modules_only;
-            (value_expr, filter_expr, config)
+            config.alignment = filter_options.state.alignment;
+            let suspend = filter_options.state.suspend;
+            (value_expr, filter_expr, config, suspend)
         };
 
         let mut task = task::Task::new(main, move |s| {
@@ -279,7 +281,14 @@ impl MainWindow {
                 if let Some(scan) = &mut *scan {
                     let handle = handle.read();
 
-                    handle.rescan_values(
+                    if suspend {
+                        handle
+                            .process
+                            .suspend()
+                            .context("failed to suspend process")?;
+                    }
+
+                    let result = handle.rescan_values(
                         &*thread_pool,
                         &mut scan.addresses,
                         &mut scan.initial,
@@ -287,15 +296,23 @@ impl MainWindow {
                         Some(s.as_token()),
                         ContextProgress::new(s),
                         &filter_expr,
-                    )?;
+                    );
 
+                    if suspend {
+                        handle
+                            .process
+                            .resume()
+                            .context("failed to resume process")?;
+                    }
+
+                    result?;
                     return Ok(s.is_stopped());
                 }
             }
 
             let value_type = value_expr
                 .value_type_of(TypeHint::NoHint)?
-                .solve(filter_expr.value_type_of(TypeHint::NoHint)?)?
+                .unwrap_or(filter_expr.value_type_of(TypeHint::NoHint)?)
                 .ok_or_else(|| anyhow!("cannot determine type of value"))?;
 
             let handle = RwLockWriteGuard::downgrade_to_upgradable(handle.write());
@@ -316,6 +333,13 @@ impl MainWindow {
             let mut addresses = Vec::new();
             let mut values = Values::new(value_type, &*handle);
 
+            if suspend {
+                handle
+                    .process
+                    .suspend()
+                    .context("failed to suspend process")?;
+            }
+
             let result = handle.initial_scan(
                 &*thread_pool,
                 &filter_expr,
@@ -325,6 +349,13 @@ impl MainWindow {
                 ContextProgress::new(s),
                 config,
             );
+
+            if suspend {
+                handle
+                    .process
+                    .resume()
+                    .context("failed to resume process")?;
+            }
 
             *scan.write() = Some(Scan {
                 addresses,
@@ -410,7 +441,7 @@ impl MainWindow {
                     None => TypeHint::NoHint,
                 };
 
-                let value_type = value_expr.value_type_of(TypeHint::NoHint)?.solve(value_type)?;
+                let value_type = value_expr.value_type_of(TypeHint::NoHint)?.unwrap_or(value_type);
 
                 let handle = handle.read();
                 let mut scan = scan.write();

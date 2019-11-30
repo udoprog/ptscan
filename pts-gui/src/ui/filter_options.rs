@@ -14,6 +14,10 @@ pub struct State {
     pub value_expr_text: String,
     /// Only scan in modules.
     pub modules_only: bool,
+    /// Suspend the process while scanning.
+    pub suspend: bool,
+    /// Alignment to use while scanning.
+    pub alignment: Option<usize>,
 }
 
 struct Widgets {
@@ -26,6 +30,9 @@ struct Widgets {
     refresh_button: glib::WeakRef<Button>,
     #[allow(unused)]
     modules_only: glib::WeakRef<CheckButton>,
+    suspend: glib::WeakRef<CheckButton>,
+    alignment: glib::WeakRef<CheckButton>,
+    alignment_text: glib::WeakRef<Entry>,
 }
 pub struct FilterOptions {
     pub state: State,
@@ -35,6 +42,7 @@ pub struct FilterOptions {
     on_refresh: Option<Box<dyn Fn()>>,
     on_filter_expr_changed: Option<Box<dyn Fn(Option<FilterExpr>)>>,
     on_value_expr_changed: Option<Box<dyn Fn(ValueExpr)>>,
+    on_alignment_changed: Option<Box<dyn Fn(Option<usize>)>>,
     handle: Option<Arc<RwLock<ProcessHandle>>>,
     enabled: bool,
     has_results: bool,
@@ -50,6 +58,8 @@ impl FilterOptions {
             value_expr: ValueExpr::Value,
             value_expr_text: String::from("value"),
             modules_only: false,
+            suspend: false,
+            alignment: None,
         };
 
         let filter_expr_text = cascade! {
@@ -75,6 +85,22 @@ impl FilterOptions {
             ..set_active(state.modules_only);
         };
 
+        let suspend = cascade! {
+            builder.get_object::<CheckButton>("filter_suspend");
+            ..set_active(state.suspend);
+        };
+
+        let alignment = cascade! {
+            builder.get_object::<CheckButton>("filter_alignment");
+            ..set_active(state.alignment.is_some());
+        };
+
+        let alignment_text = cascade! {
+            builder.get_object::<Entry>("filter_alignment_text");
+            ..set_sensitive(state.alignment.is_some());
+            ..set_text(&state.alignment.as_ref().map(|v| v.to_string()).unwrap_or_default());
+        };
+
         let refresh_button = cascade! {
             builder.get_object::<Button>("filter_refresh_button");
         };
@@ -93,12 +119,16 @@ impl FilterOptions {
                 scan_button: scan_button.downgrade(),
                 refresh_button: refresh_button.downgrade(),
                 modules_only: modules_only.downgrade(),
+                suspend: suspend.downgrade(),
+                alignment: alignment.downgrade(),
+                alignment_text: alignment_text.downgrade(),
             },
             on_reset: None,
             on_scan: None,
             on_refresh: None,
             on_filter_expr_changed: None,
             on_value_expr_changed: None,
+            on_alignment_changed: None,
             handle: None,
             enabled: true,
             has_results: false,
@@ -149,6 +179,50 @@ impl FilterOptions {
             slf.state.modules_only = btn.get_active();
         }));
 
+        suspend.connect_toggled(clone!(slf => move |btn| {
+            let mut slf = slf.borrow_mut();
+            slf.state.suspend = btn.get_active();
+        }));
+
+        alignment.connect_toggled(clone!(slf => move |btn| {
+            let (cb, update) = {
+                let mut slf = slf.borrow_mut();
+                let alignment_text = upgrade!(slf.widgets.alignment_text);
+
+                let alignment = if btn.get_active() {
+                    alignment_text.get_text().as_ref().and_then(|s| {
+                        str::parse::<usize>(s.as_str()).ok()
+                    })
+                } else {
+                    None
+                };
+
+                slf.state.alignment = alignment;
+                alignment_text.set_sensitive(btn.get_active());
+                let cb = optional!(slf.on_alignment_changed.take());
+                (cb, slf.state.alignment.clone())
+            };
+
+            cb(update);
+            slf.borrow_mut().on_alignment_changed = Some(cb);
+        }));
+
+        alignment_text.connect_changed(clone!(slf => move |entry| {
+            let (cb, update) = {
+                let mut slf = slf.borrow_mut();
+
+                slf.state.alignment = entry.get_text().as_ref().and_then(|s| {
+                    str::parse::<usize>(s.as_str()).ok()
+                });
+
+                let cb = optional!(slf.on_alignment_changed.take());
+                (cb, slf.state.alignment.clone())
+            };
+
+            cb(update);
+            slf.borrow_mut().on_alignment_changed = Some(cb);
+        }));
+
         slf.borrow_mut().update_components();
         slf
     }
@@ -179,6 +253,14 @@ impl FilterOptions {
     /// Handle to fire when value expression has successfully changed.
     pub fn on_value_expr_changed(&mut self, on_value_expr_changed: (impl Fn(ValueExpr) + 'static)) {
         self.on_value_expr_changed = Some(Box::new(on_value_expr_changed));
+    }
+
+    /// Handle when alignment option is changed
+    pub fn on_alignment_changed(
+        &mut self,
+        on_alignment_changed: (impl Fn(Option<usize>) + 'static),
+    ) {
+        self.on_alignment_changed = Some(Box::new(on_alignment_changed));
     }
 
     pub fn sync_state(&mut self) {
@@ -321,5 +403,22 @@ impl FilterOptions {
         if let Some(button) = self.widgets.refresh_button.upgrade() {
             button.set_sensitive(self.handle.is_some() && self.enabled && self.has_results);
         }
+
+        let suspend = optional!(self.widgets.suspend.upgrade());
+        suspend.set_active(self.state.suspend);
+
+        let alignment = optional!(self.widgets.alignment.upgrade());
+        let alignment_text = optional!(self.widgets.alignment_text.upgrade());
+
+        alignment.set_active(self.state.alignment.is_some());
+        alignment_text.set_sensitive(self.state.alignment.is_some());
+        alignment_text.set_text(
+            &self
+                .state
+                .alignment
+                .as_ref()
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+        );
     }
 }

@@ -1,4 +1,4 @@
-use ptscan::{Address, Pointer, ProcessHandle, Type, Value, ValueHolder, ValueInfo, Values};
+use ptscan::{Address, Pointer, ProcessHandle, Type, Value, ValueHolder, ValueRef, Values};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -27,18 +27,20 @@ impl ValueHolder for ScanResult {
         &self.pointer
     }
 
-    fn initial_info(&self) -> ValueInfo<'_> {
-        ValueInfo {
-            ty: self.initial_type,
-            value: &self.initial,
-        }
+    fn initial_type(&self) -> Type {
+        self.initial_type
     }
 
-    fn last_info(&self) -> ValueInfo<'_> {
-        ValueInfo {
-            ty: self.last_type,
-            value: &self.last,
-        }
+    fn initial(&self) -> ValueRef<'_> {
+        self.initial.as_ref()
+    }
+
+    fn last_type(&self) -> Type {
+        self.last_type
+    }
+
+    fn last(&self) -> ValueRef<'_> {
+        self.last.as_ref()
     }
 
     fn insert(&mut self, value: Value) {

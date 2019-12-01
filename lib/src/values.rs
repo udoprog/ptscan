@@ -245,40 +245,39 @@ impl Values {
     /// Removes the element at the given index by swapping it with the element
     /// at the last place and truncating the collection.
     pub fn swap_remove(&mut self, index: usize) -> bool {
-        if index >= self.len {
-            return false;
-        }
+        unsafe {
+            if index >= self.len {
+                return false;
+            }
 
-        if self.element_size == 0 {
+            if self.element_size == 0 {
+                self.len -= 1;
+                return true;
+            }
+
+            let ptr = self.data.as_ptr();
+            let hole = self.data.as_mut_ptr().add(index * self.element_size);
+
+            match self.ty {
+                Type::String(..) => {
+                    ptr::drop_in_place(hole as *mut String);
+                }
+                Type::Bytes(None) => {
+                    ptr::drop_in_place(hole as *mut Vec<u8>);
+                }
+                _ => (),
+            }
+
             self.len -= 1;
-            return true;
-        }
 
-        let from = index * self.element_size;
-        let to = (self.len - 1) * self.element_size;
-        let ptr = self.data.as_mut_ptr();
-
-        unsafe {
-            ptr::swap(ptr.add(from), ptr.add(to));
-        }
-
-        match self.ty {
-            Type::String(..) => {
-                unsafe { ptr::drop_in_place(to as *mut String) };
+            if self.len > 1 {
+                let from = ptr.add(self.len * self.element_size);
+                ptr::copy_nonoverlapping(from, hole, self.element_size);
             }
-            Type::Bytes(None) => {
-                unsafe { ptr::drop_in_place(to as *mut Vec<u8>) };
-            }
-            _ => (),
-        }
 
-        self.len -= 1;
-
-        unsafe {
             self.data.set_len(self.len * self.element_size);
+            true
         }
-
-        true
     }
 
     /// Iterate mutably over the current collection.

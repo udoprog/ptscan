@@ -14,7 +14,7 @@ use std::{marker, mem, ptr, slice};
 /// operations (through swap_remove), and as much contiguous memory as possible.
 pub struct Values {
     pub ty: Type,
-    element_size: usize,
+    pub element_size: usize,
     data: Vec<u8>,
     len: usize,
 }
@@ -126,6 +126,15 @@ impl Values {
     pub fn clear(&mut self) {
         self.len = 0;
         self.data.clear();
+    }
+
+    /// Bytes used by this collection.
+    pub fn bytes(&self) -> usize {
+        if self.element_size == 0 {
+            return 0;
+        }
+
+        self.data.len()
     }
 
     /// Get the value at the given location.

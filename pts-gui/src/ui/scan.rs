@@ -285,24 +285,24 @@ impl Scan {
         let mut last = Values::new_of(&scan.last);
         last.extend(scan.last.iter().take(100));
 
-        let bases = scan.bases.iter().cloned().take(100).collect::<Vec<_>>();
+        let addresses = scan.addresses.iter().cloned().take(100).collect::<Vec<_>>();
 
-        let it = bases.iter().cloned().zip(initial.iter().zip(last.iter()));
+        let it = addresses
+            .iter()
+            .cloned()
+            .zip(initial.iter().zip(last.iter()));
 
         let handle = match &self.handle {
             Some(handle) => Some(handle.read()),
             None => None,
         };
 
-        for (index, (base, (initial, last))) in it.enumerate() {
+        for (index, (address, (initial, last))) in it.enumerate() {
             let ty = scan.initial.ty.to_string();
 
             let pointer = match &handle {
-                Some(handle) => match base.as_portable(&*handle) {
-                    Some(base) => base.to_string(),
-                    None => base.to_string(),
-                },
-                None => base.to_string(),
+                Some(handle) => handle.address_to_portable_base(address).to_string(),
+                None => address.to_string(),
             };
 
             let initial = initial.as_ref().to_string();
@@ -326,7 +326,7 @@ impl Scan {
 
         self.visible = Some(Visible {
             scan: scan::Scan {
-                bases,
+                addresses,
                 initial,
                 last: last.clone(),
             },
@@ -349,7 +349,7 @@ impl Scan {
         let visible = optional!(&slf.visible);
         let last_type = visible.scan.last.ty;
         let mut current = visible.current.clone();
-        let bases = visible.scan.bases.clone();
+        let addresses = visible.scan.addresses.clone();
 
         let thread_pool = slf.thread_pool.clone();
         let results_generation = slf.results_generation;
@@ -381,7 +381,7 @@ impl Scan {
 
                 handle.refresh_values(
                     &*thread_pool,
-                    &bases,
+                    &addresses,
                     &mut current,
                     Some(c.as_token()),
                     NoopProgress,

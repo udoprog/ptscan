@@ -1,6 +1,6 @@
 use crate::{
     filter_expr::special::{find_first_nonzero, is_all_zeros},
-    Address, Alignment, Base, ProcessHandle, Special, Test, Token, Type, TypedFilterExpr, ValueRef,
+    Address, Alignment, ProcessHandle, Special, Test, Token, Type, TypedFilterExpr, ValueRef,
     Values,
 };
 use anyhow::bail;
@@ -14,13 +14,53 @@ fn align(to_align: &mut usize, alignment: usize) {
     }
 }
 
+/// Trait deciding how the scan is performed.
+pub trait ScannerTrait {
+    /// Find the first offset which satistifes the trait.
+    fn find_trait_offset(&self, data: &[u8]) -> Option<usize>;
+
+    /// Test if the found byte slice satisfies the trait.
+    fn test(&self, data: &[u8]) -> bool;
+}
+
+/// Find zeroed bytes.
+pub struct FindZero;
+
+impl ScannerTrait for FindZero {
+    #[inline(always)]
+    fn find_trait_offset(&self, data: &[u8]) -> Option<usize> {
+        memchr::memchr(0, data)
+    }
+
+    #[inline(always)]
+    fn test(&self, data: &[u8]) -> bool {
+        is_all_zeros(data)
+    }
+}
+
+/// Find non-zeroed bytes.
+pub struct FindNonZero;
+
+impl ScannerTrait for FindNonZero {
+    #[inline(always)]
+    fn find_trait_offset(&self, data: &[u8]) -> Option<usize> {
+        find_first_nonzero(data)
+    }
+
+    #[inline(always)]
+    fn test(&self, _: &[u8]) -> bool {
+        // NB: doesn't matter
+        true
+    }
+}
+
 pub trait Scanner: Send + Sync {
     fn scan(
         &self,
         base: Address,
         handle: &ProcessHandle,
         data: &[u8],
-        bases: &mut Vec<Base>,
+        addresses: &mut Vec<Address>,
         values: &mut Values,
         hits: &mut u64,
         cancel: &Token,
@@ -60,7 +100,7 @@ impl<'a> Scanner for DefaultScanner<'a> {
         base: Address,
         handle: &ProcessHandle,
         data: &[u8],
-        bases: &mut Vec<Base>,
+        addresses: &mut Vec<Address>,
         values: &mut Values,
         hits: &mut u64,
         cancel: &Token,
@@ -107,9 +147,7 @@ impl<'a> Scanner for DefaultScanner<'a> {
                 *hits += 1;
                 let (value, advance) = proxy.eval(self.value_type)?;
 
-                let base = handle.address_to_base(address);
-
-                bases.push(base);
+                addresses.push(address);
                 values.push(value);
 
                 if let Some(advance) = advance {
@@ -145,105 +183,29 @@ impl<'a> Scanner for DefaultScanner<'a> {
     }
 }
 
-/// A highly specialized, aligned non-zero scanner.
-pub struct NonZeroScanner<A, B>
-where
-    A: Alignment,
-    B: Send + Sync + byteorder::ByteOrder,
-{
-    alignment: A,
-    type_size: usize,
-    value_type: Type,
-    marker: marker::PhantomData<B>,
-}
-
-impl<A, B> NonZeroScanner<A, B>
-where
-    A: Alignment,
-    B: Send + Sync + byteorder::ByteOrder,
-{
-    pub fn new(alignment: A, type_size: usize, value_type: Type) -> Self {
-        Self {
-            alignment,
-            type_size,
-            value_type,
-            marker: marker::PhantomData,
-        }
-    }
-}
-
-impl<A, B> Scanner for NonZeroScanner<A, B>
-where
-    A: Alignment,
-    B: Send + Sync + byteorder::ByteOrder,
-{
-    fn scan(
-        &self,
-        base: Address,
-        handle: &ProcessHandle,
-        data: &[u8],
-        bases: &mut Vec<Base>,
-        values: &mut Values,
-        hits: &mut u64,
-        cancel: &Token,
-    ) -> anyhow::Result<()> {
-        let mut offset = 0usize;
-
-        while offset < data.len() && !cancel.test() {
-            let o = match find_first_nonzero(&data[offset..]) {
-                Some(o) => o,
-                None => break,
-            };
-
-            offset += o;
-
-            self.alignment.align(&mut offset);
-
-            let d = &data[offset..];
-
-            if d.len() < self.type_size {
-                break;
-            }
-
-            if let Some(value) = self.value_type.decode_fixed::<B>(handle, d) {
-                let address = match base.checked_add(o.try_into()?) {
-                    Some(address) => address,
-                    None => break,
-                };
-
-                bases.push(Base::from(address));
-                values.push(value);
-                *hits += 1;
-                offset += self.alignment.step();
-                continue;
-            }
-
-            break;
-        }
-
-        Ok(())
-    }
-}
-
 /// A highly specialized, aligned zero scanner.
-pub struct ZeroScanner<A, B>
+pub struct BytesScanner<A, B, T>
 where
     A: Alignment,
     B: Send + Sync + byteorder::ByteOrder,
+    T: Send + Sync + ScannerTrait,
 {
+    scanner_trait: T,
     alignment: A,
     type_size: usize,
     value_type: Type,
     marker: marker::PhantomData<B>,
 }
 
-impl<A, B> ZeroScanner<A, B>
+impl<A, B, T> BytesScanner<A, B, T>
 where
     A: Alignment,
     B: Send + Sync + byteorder::ByteOrder,
+    T: Send + Sync + ScannerTrait,
 {
-    pub fn new(alignment: A, type_size: usize, value_type: Type) -> Self {
+    pub fn new(scanner_trait: T, alignment: A, type_size: usize, value_type: Type) -> Self {
         Self {
+            scanner_trait,
             alignment,
             type_size,
             value_type,
@@ -252,17 +214,18 @@ where
     }
 }
 
-impl<A, B> Scanner for ZeroScanner<A, B>
+impl<A, B, T> Scanner for BytesScanner<A, B, T>
 where
     A: Alignment,
     B: Send + Sync + byteorder::ByteOrder,
+    T: Send + Sync + ScannerTrait,
 {
     fn scan(
         &self,
         base: Address,
         handle: &ProcessHandle,
         data: &[u8],
-        bases: &mut Vec<Base>,
+        addresses: &mut Vec<Address>,
         values: &mut Values,
         hits: &mut u64,
         cancel: &Token,
@@ -270,7 +233,7 @@ where
         let mut offset = 0usize;
 
         while offset < data.len() && !cancel.test() {
-            let o = match memchr::memchr(0, &data[offset..]) {
+            let o = match self.scanner_trait.find_trait_offset(&data[offset..]) {
                 Some(o) => o,
                 None => break,
             };
@@ -281,31 +244,48 @@ where
 
             let d = &data[offset..];
 
-            if d.len() < self.type_size {
-                break;
-            }
+            let mut tmp;
 
-            let d = &d[..self.type_size];
+            // special case: buffer doesn't contain enough data, so we need to
+            // read using the handle.
+            let (d, address) = if d.len() < self.type_size {
+                tmp = vec![0u8; self.type_size];
 
-            if !is_all_zeros(d) {
-                offset += self.alignment.step();
-                continue;
-            }
-
-            if let Some(value) = self.value_type.decode_fixed::<B>(handle, d) {
                 let address = match base.checked_add(o.try_into()?) {
                     Some(address) => address,
                     None => break,
                 };
 
-                bases.push(Base::from(address));
-                values.push(value);
-                *hits += 1;
+                let read = handle.process.read_process_memory(address, &mut tmp)?;
+
+                if read != self.type_size {
+                    break;
+                }
+
+                (&tmp[..], Some(address))
+            } else {
+                (&d[..self.type_size], None)
+            };
+
+            if !self.scanner_trait.test(d) {
                 offset += self.alignment.step();
                 continue;
             }
 
-            break;
+            let value = self.value_type.decode_fixed::<B>(handle, d);
+
+            let address = match address {
+                Some(address) => address,
+                None => match base.checked_add(o.try_into()?) {
+                    Some(address) => address,
+                    None => break,
+                },
+            };
+
+            addresses.push(address);
+            values.push(value);
+            *hits += 1;
+            offset += self.alignment.step();
         }
 
         Ok(())
@@ -344,7 +324,7 @@ where
         base: Address,
         handle: &ProcessHandle,
         data: &[u8],
-        bases: &mut Vec<Base>,
+        addresses: &mut Vec<Address>,
         values: &mut Values,
         hits: &mut u64,
         cancel: &Token,
@@ -372,20 +352,16 @@ where
                 continue;
             }
 
-            if let Some(value) = self.value_type.decode_fixed::<B>(handle, d) {
-                let address = match base.checked_add(o.try_into()?) {
-                    Some(address) => address,
-                    None => break,
-                };
+            let value = self.value_type.decode_fixed::<B>(handle, d);
+            let address = match base.checked_add(o.try_into()?) {
+                Some(address) => address,
+                None => break,
+            };
 
-                bases.push(Base::from(address));
-                values.push(value);
-                *hits += 1;
-                offset += self.buffer.len() + 1;
-                continue;
-            }
-
-            break;
+            addresses.push(address);
+            values.push(value);
+            *hits += 1;
+            offset += self.buffer.len() + 1;
         }
 
         Ok(())

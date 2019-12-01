@@ -464,7 +464,8 @@ impl Binary {
 
                 if buf.iter().all(|c| *c == 0) {
                     return Ok(Some(Box::new(
-                        scanner::NonZeroScanner::<_, P::ByteOrder>::new(
+                        scanner::BytesScanner::<_, P::ByteOrder, _>::new(
+                            scanner::FindNonZero,
                             Aligned(alignment),
                             type_size,
                             value_type,
@@ -498,7 +499,8 @@ impl Binary {
                 if buffer.iter().all(|c| *c == 0) {
                     if let Some(alignment) = alignment {
                         return Ok(Some(Box::new(
-                            scanner::ZeroScanner::<_, P::ByteOrder>::new(
+                            scanner::BytesScanner::<_, P::ByteOrder, _>::new(
+                                scanner::FindZero,
                                 Aligned(alignment),
                                 type_size,
                                 value_type,
@@ -506,8 +508,11 @@ impl Binary {
                         )));
                     } else {
                         return Ok(Some(Box::new(
-                            scanner::ZeroScanner::<_, P::ByteOrder>::new(
-                                Unaligned, type_size, value_type,
+                            scanner::BytesScanner::<_, P::ByteOrder, _>::new(
+                                scanner::FindZero,
+                                Unaligned,
+                                type_size,
+                                value_type,
                             ),
                         )));
                     }

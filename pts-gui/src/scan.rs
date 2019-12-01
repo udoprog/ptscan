@@ -1,7 +1,4 @@
-use ptscan::{
-    Address, Base, FollowablePointer, PortablePointer, ProcessHandle, Type, Value, ValueHolder,
-    ValueRef, Values,
-};
+use ptscan::{Address, PortablePointer, ProcessHandle, Type, Value, ValueHolder, ValueRef, Values};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -40,7 +37,7 @@ impl ValueHolder for ScanResult {
 }
 
 pub struct Scan {
-    pub bases: Vec<Base>,
+    pub addresses: Vec<Address>,
     pub initial: Values,
     pub last: Values,
 }
@@ -48,10 +45,9 @@ pub struct Scan {
 impl Scan {
     /// Get a single scan result.
     pub fn get(&self, handle: &ProcessHandle, index: usize) -> Option<ScanResult> {
-        let base = self.bases.get(index)?;
-        let last_address = base.follow_default(handle).ok().and_then(|v| v);
-        let base = base.as_portable(handle)?;
-        let pointer = PortablePointer::new(base, std::iter::empty());
+        let address = self.addresses.get(index).copied()?;
+        let pointer = PortablePointer::from(handle.address_to_portable_base(address));
+        let last_address = Some(address);
 
         Some(ScanResult {
             pointer,
@@ -63,17 +59,17 @@ impl Scan {
 
     /// Get the number of results in this scan.
     pub fn len(&self) -> usize {
-        self.bases.len()
+        self.addresses.len()
     }
 
     /// Remove the given index.
     pub fn swap_remove(&mut self, index: usize) -> bool {
         // NB: nothing to remove.
-        if index >= self.bases.len() {
+        if index >= self.addresses.len() {
             return false;
         }
 
-        self.bases.swap_remove(index);
+        self.addresses.swap_remove(index);
         self.initial.swap_remove(index);
         self.last.swap_remove(index);
         return true;

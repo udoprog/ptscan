@@ -436,11 +436,11 @@ impl Type {
         self,
         handle: &ProcessHandle,
         data: &[u8],
-    ) -> Option<Value> {
+    ) -> Value {
         macro_rules! decode_buf {
             ($ty:ty, $reader:ident) => {{
                 if data.len() < std::mem::size_of::<$ty>() {
-                    return None;
+                    return Value::None;
                 }
 
                 B::$reader(data) as $ty
@@ -450,14 +450,14 @@ impl Type {
         macro_rules! decode_byte {
             ($ty:ty) => {{
                 if data.is_empty() {
-                    return None;
+                    return Value::None;
                 }
 
                 data[0] as $ty
             }};
         }
 
-        Some(match self {
+        match self {
             Self::None => Value::None,
             Self::Pointer => Value::Pointer(handle.process.decode_pointer(data)),
             Self::U8 => Value::U8(decode_byte!(u8)),
@@ -473,8 +473,8 @@ impl Type {
             Self::F32 => Value::F32(decode_buf!(f32, read_f32)),
             Self::F64 => Value::F64(decode_buf!(f64, read_f64)),
             Self::Bytes(..) => Value::Bytes(data.to_vec()),
-            _ => return None,
-        })
+            _ => Value::None,
+        }
     }
 
     /// Convert into a type which implements `fmt::Display` for a human-readable string.

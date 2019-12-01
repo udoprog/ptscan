@@ -135,6 +135,7 @@ impl fmt::Display for PortableBase {
 ///
 /// Can either be a module identified by a string that has to be looked up from a `ProcessHandle`, or a fixed address.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(C)]
 pub enum Base {
     Null,
     /// A non-portable module, who's indexed in a specific `Handle`.
@@ -266,6 +267,12 @@ impl PortablePointer {
             base: self.base.as_local(handle)?,
             offsets: self.offsets.clone(),
         })
+    }
+}
+
+impl From<PortableBase> for PortablePointer {
+    fn from(base: PortableBase) -> Self {
+        Self::new(base, std::iter::empty())
     }
 }
 

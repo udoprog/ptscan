@@ -61,17 +61,12 @@ impl<'a> PointerScan<'a> {
     }
 
     /// Build forward and backward references.
-    pub fn build_references<'v, A, V>(&mut self, bases: A, values: V) -> anyhow::Result<()>
+    pub fn build_references<'v, A, V>(&mut self, addresses: A, values: V) -> anyhow::Result<()>
     where
-        A: IntoIterator<Item = Base>,
+        A: IntoIterator<Item = Address>,
         V: IntoIterator<Item = values::Accessor<'v>>,
     {
-        for (base, value) in bases.into_iter().zip(values.into_iter()) {
-            let from = match base.eval(self.handle)? {
-                Some(address) => address,
-                None => continue,
-            };
-
+        for (from, value) in addresses.into_iter().zip(values.into_iter()) {
             let to = match value.read().as_address() {
                 Some(address) => address,
                 None => continue,

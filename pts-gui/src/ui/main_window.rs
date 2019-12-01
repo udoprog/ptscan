@@ -4,7 +4,7 @@ use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 
 use anyhow::{anyhow, Context as _};
 use chrono::Utc;
-use ptscan::{InitialScanConfig, ProcessId, TypeHint, Values};
+use ptscan::{Address, InitialScanConfig, ProcessId, TypeHint, Values};
 
 struct Widgets {
     #[allow(unused)]
@@ -290,7 +290,7 @@ impl MainWindow {
 
                     let result = handle.rescan_values(
                         &*thread_pool,
-                        &mut scan.bases,
+                        &mut scan.addresses,
                         &mut scan.initial,
                         &mut scan.last,
                         Some(s.as_token()),
@@ -330,7 +330,7 @@ impl MainWindow {
             handle.update_threads(threads);
             let handle = RwLockWriteGuard::downgrade(handle);
 
-            let mut bases = Vec::new();
+            let mut addresses = Vec::new();
             let mut values = Values::new(value_type, &*handle);
 
             if suspend {
@@ -343,7 +343,7 @@ impl MainWindow {
             let result = handle.initial_scan(
                 &*thread_pool,
                 &filter_expr,
-                &mut bases,
+                &mut addresses,
                 &mut values,
                 Some(s.as_token()),
                 ContextProgress::new(s),
@@ -358,7 +358,7 @@ impl MainWindow {
             }
 
             *scan.write() = Some(scan::Scan {
-                bases,
+                addresses,
                 initial: values.clone(),
                 last: values,
             });
@@ -455,7 +455,7 @@ impl MainWindow {
 
                 handle.refresh_values(
                     &*thread_pool,
-                    &scan.bases,
+                    &scan.addresses,
                     &mut scan.last,
                     Some(s.as_token()),
                     ContextProgress::new(s),
@@ -590,7 +590,11 @@ impl MainWindow {
         if let Some(scan) = self.scan.try_read() {
             match scan.as_ref() {
                 Some(scan) => {
-                    scan_status.set_text(&format!("Scan with {} result(s)", scan.len()));
+                    let initial = (scan.initial.bytes() as f64) / 1_000_000f64;
+                    let last = (scan.last.bytes() as f64) / 1_000_000f64;
+                    let addresses = (scan.addresses.len() * std::mem::size_of::<Address>()) as f64
+                        / 1_000_000f64;
+                    scan_status.set_text(&format!("Scan with {} result(s) (initial: {initial:.2}M / {initial_element}B, last: {last:.2}M / {last_element}B, addresses: {addresses:.2}M)", scan.len(), initial = initial, initial_element = scan.initial.element_size, last = last, last_element = scan.last.element_size, addresses = addresses));
                 }
                 None => {
                     scan_status.set_text("No scan in progress");

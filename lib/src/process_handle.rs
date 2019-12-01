@@ -1,26 +1,19 @@
 //! High-level interface to processes.
 
 use crate::{
-    error::Error,
-    filter_expr::FilterExpr,
-    pointer::FollowablePointer,
-    process::{MemoryInformation, MemoryReader},
-    progress_reporter::ProgressReporter,
-    system,
-    thread::Thread,
-    values, Address, AddressRange, Base, Cached, DefaultScanner, Pointer, PointerWidth,
-    PortableBase, Process, ProcessId, ProcessInfo, Scanner, Size, Test, ThreadId, Token, Type,
-    TypeHint, Value, ValueExpr, ValueRef, Values,
+    error::Error, filter_expr::FilterExpr, progress_reporter::ProgressReporter, system,
+    thread::Thread, values, Address, AddressRange, Base, Cached, DefaultScanner, FollowablePointer,
+    MemoryInformation, Pointer, PointerWidth, PortableBase, Process, ProcessId, ProcessInfo,
+    Scanner, Size, Test, ThreadId, Token, Type, TypeHint, Value, ValueExpr, ValueRef, Values,
 };
 use anyhow::{anyhow, bail, Context as _};
 use crossbeam_queue::SegQueue;
 use hashbrown::{HashMap, HashSet};
-use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::{
     convert::{TryFrom as _, TryInto as _},
     ffi::{OsStr, OsString},
-    fmt, iter,
+    fmt,
     sync::mpsc,
     time::{Duration, Instant},
 };
@@ -390,7 +383,6 @@ impl ProcessHandle {
         AddressProxy {
             pointer: Pointer::null_ref(),
             handle: self,
-            memory_cache: None,
             followed: Cached::None,
             cache: Default::default(),
         }
@@ -404,33 +396,16 @@ impl ProcessHandle {
         AddressProxy {
             pointer,
             handle: self,
-            memory_cache: None,
             followed: Cached::None,
             cache: Default::default(),
         }
-    }
-
-    /// Create a new cached session.
-    pub fn session(&self) -> anyhow::Result<Session<'_>> {
-        use crate::utils::IteratorExtension as _;
-
-        let regions = self
-            .process
-            .virtual_memory_regions()
-            .only_relevant()
-            .collect::<anyhow::Result<_>>()?;
-
-        Ok(Session {
-            handle: self,
-            memory_cache: MemoryCache::new(regions),
-        })
     }
 
     /// Read the value of many memory locations.
     pub fn rescan_values(
         &self,
         thread_pool: &rayon::ThreadPool,
-        bases: &mut Vec<Base>,
+        addresses: &mut Vec<Address>,
         initial: &mut Values,
         values: &mut Values,
         cancel: Option<&Token>,
@@ -444,14 +419,14 @@ impl ProcessHandle {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        if bases.is_empty() {
+        if addresses.is_empty() {
             return Ok(());
         }
 
-        if bases.len() != values.len() {
+        if addresses.len() != values.len() {
             return Err(anyhow!(
-                "argument length mismatch, bases ({}) != values ({})",
-                bases.len(),
+                "argument length mismatch, addresses ({}) != values ({})",
+                addresses.len(),
                 values.len()
             ));
         }
@@ -471,7 +446,7 @@ impl ProcessHandle {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<Task>>();
                 let (p_tx, p_rx) = crossbeam_channel::unbounded::<
-                    Option<(usize, &Base, values::Accessor<'_>, values::Mutator<'_>)>,
+                    Option<(usize, Address, values::Accessor<'_>, values::Mutator<'_>)>,
                 >();
 
                 for _ in 0..tasks {
@@ -480,14 +455,14 @@ impl ProcessHandle {
 
                     s.spawn(move |_| {
                         while !cancel.test() {
-                            let (index, base, initial, mut value) =
+                            let (index, address, initial, mut value) =
                                 match p_rx.recv().expect("failed to receive") {
                                     Some(task) => task,
                                     None => break,
                                 };
 
                             let mut work = || {
-                                let mut proxy = self.address_proxy(base);
+                                let mut proxy = self.address_proxy(&address);
 
                                 if let Test::True =
                                     filter.test(initial.as_ref(), value.as_ref(), &mut proxy)?
@@ -506,13 +481,14 @@ impl ProcessHandle {
                     });
                 }
 
-                let mut it = bases
+                let mut it = addresses
                     .iter()
+                    .copied()
                     .zip(initial.iter().zip(values.iter_mut()))
                     .enumerate();
 
-                for (index, (base, (initial, value))) in (&mut it).take(tasks) {
-                    p_tx.send(Some((index, base, initial, value)))
+                for (index, (address, (initial, value))) in (&mut it).take(tasks) {
+                    p_tx.send(Some((index, address, initial, value)))
                         .expect("failed to send");
                 }
 
@@ -521,8 +497,8 @@ impl ProcessHandle {
                 while tasks > 0 {
                     let result = rx.recv().expect("closed");
 
-                    if let Some((index, (base, (initial, value)))) = it.next() {
-                        p_tx.send(Some((index, base, initial, value)))
+                    if let Some((index, (address, (initial, value)))) = it.next() {
+                        p_tx.send(Some((index, address, initial, value)))
                             .expect("failed to send");
                     } else {
                         p_tx.send(None).expect("failed to send");
@@ -556,7 +532,7 @@ impl ProcessHandle {
         for index in to_remove {
             initial.swap_remove(index);
             values.swap_remove(index);
-            bases.swap_remove(index);
+            addresses.swap_remove(index);
         }
 
         if let Some(e) = last_error {
@@ -576,15 +552,18 @@ impl ProcessHandle {
     }
 
     /// Refresh a given set of existing values without a filter.
-    pub fn refresh_values(
+    pub fn refresh_values<P>(
         &self,
         thread_pool: &rayon::ThreadPool,
-        bases: &[Base],
+        pointers: &[P],
         values: &mut Values,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
         expr: &ValueExpr,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<()>
+    where
+        P: Sync + FollowablePointer,
+    {
         let mut local_cancel = None;
 
         let cancel = match cancel {
@@ -592,22 +571,34 @@ impl ProcessHandle {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        if bases.is_empty() {
+        if pointers.is_empty() {
             return Ok(());
         }
 
         let mut last_error = None;
-        let mut reporter = ProgressReporter::new(progress, bases.len(), cancel, &mut last_error);
+        let mut reporter = ProgressReporter::new(progress, pointers.len(), cancel, &mut last_error);
 
         // how many tasks to run in parallel.
         let mut tasks = thread_pool.current_num_threads();
         let cancel = &cancel;
 
+        let expr_type = expr
+            .type_of(
+                TypeHint::Explicit(Type::None),
+                TypeHint::Explicit(Type::None),
+                TypeHint::Explicit(values.ty),
+                TypeHint::NoHint,
+            )?
+            .ok_or_else(|| Error::TypeInference(expr.clone()))?;
+
+        let expr = expr.type_check(Type::None, Type::None, values.ty, expr_type)?;
+        let expr = &expr;
+
         thread_pool.install(|| {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<bool>>();
                 let (p_tx, p_rx) =
-                    crossbeam_channel::unbounded::<Option<(&Base, values::Mutator<'_>)>>();
+                    crossbeam_channel::unbounded::<Option<(&P, values::Mutator<'_>)>>();
 
                 for _ in 0..tasks {
                     let tx = tx.clone();
@@ -615,7 +606,7 @@ impl ProcessHandle {
 
                     s.spawn(move |_| {
                         while !cancel.test() {
-                            let (base, mut value) = match p_rx.recv().expect("closed") {
+                            let (pointer, mut value) = match p_rx.recv().expect("closed") {
                                 Some(task) => task,
                                 None => {
                                     break;
@@ -623,20 +614,10 @@ impl ProcessHandle {
                             };
 
                             let mut work = move || {
-                                let mut proxy = self.address_proxy(base);
+                                let mut proxy = self.address_proxy(pointer);
 
-                                let expr_type = expr
-                                    .type_of(
-                                        TypeHint::Explicit(Type::None),
-                                        TypeHint::Explicit(Type::None),
-                                        TypeHint::Explicit(value.ty),
-                                        TypeHint::NoHint,
-                                    )?
-                                    .ok_or_else(|| Error::TypeInference(expr.clone()))?;
-
-                                let new_value = expr
-                                    .type_check(Type::None, Type::None, value.ty, expr_type)?
-                                    .eval(ValueRef::None, value.as_ref(), &mut proxy)?;
+                                let new_value =
+                                    expr.eval(ValueRef::None, value.as_ref(), &mut proxy)?;
 
                                 value.write(new_value);
                                 Ok(false)
@@ -649,7 +630,7 @@ impl ProcessHandle {
                     });
                 }
 
-                let mut it = bases.iter().zip(values.iter_mut());
+                let mut it = pointers.iter().zip(values.iter_mut());
 
                 for (base, value) in (&mut it).take(tasks) {
                     p_tx.send(Some((base, value))).expect("closed");
@@ -816,7 +797,7 @@ impl ProcessHandle {
         &self,
         thread_pool: &rayon::ThreadPool,
         filter: &FilterExpr,
-        bases: &mut Vec<Base>,
+        addresses: &mut Vec<Address>,
         values: &mut Values,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
@@ -976,7 +957,7 @@ impl ProcessHandle {
                     match rx.recv().expect("channel closed") {
                         Task::Done(result, ..) => {
                             if let Some((mut a, mut r)) = reporter.eval(result) {
-                                bases.append(&mut a);
+                                addresses.append(&mut a);
                                 values.append(&mut r);
                             }
 
@@ -1004,7 +985,7 @@ impl ProcessHandle {
         return Ok(());
 
         enum Task {
-            Done(anyhow::Result<(Vec<Base>, Values)>, Duration, Instant),
+            Done(anyhow::Result<(Vec<Address>, Values)>, Duration, Instant),
             Tick(usize, u64, Duration, Instant),
         }
 
@@ -1019,7 +1000,7 @@ impl ProcessHandle {
         }
 
         #[inline(always)]
-        fn work(work: Work<'_>) -> anyhow::Result<(Vec<Base>, Values)> {
+        fn work(work: Work<'_>) -> anyhow::Result<(Vec<Address>, Values)> {
             let Work {
                 handle,
                 tx,
@@ -1030,14 +1011,14 @@ impl ProcessHandle {
                 scanner,
             } = work;
 
-            let mut bases = Vec::new();
+            let mut addresses = Vec::new();
             let mut values = Values::new(value_type, &handle.process);
 
             let mut buffer = vec![0u8; buffer_size];
 
             while let Ok((address, len)) = queue.pop() {
                 if cancel.test() {
-                    return Ok((bases, values));
+                    return Ok((addresses, values));
                 }
 
                 let len = usize::min(buffer.len(), len);
@@ -1058,7 +1039,7 @@ impl ProcessHandle {
                     address,
                     handle,
                     data,
-                    &mut bases,
+                    &mut addresses,
                     &mut values,
                     &mut hits,
                     cancel,
@@ -1069,7 +1050,7 @@ impl ProcessHandle {
                     .expect("send tick failed");
             }
 
-            Ok((bases, values))
+            Ok((addresses, values))
         };
     }
 }
@@ -1099,7 +1080,6 @@ where
 {
     pub pointer: &'a P,
     pub(crate) handle: &'a ProcessHandle,
-    memory_cache: Option<&'a MemoryCache>,
     /// cached, followed address.
     pub followed: Cached<Option<Address>>,
     /// Cached value of different types.
@@ -1111,26 +1091,12 @@ where
     P: FollowablePointer,
 {
     pub fn address(&mut self) -> anyhow::Result<Option<Address>> {
-        Ok(if let Some(memory_cache) = self.memory_cache {
-            match self.followed {
-                Cached::Some(address) => address,
-                Cached::None => {
-                    let address = self.pointer.follow(self.handle, |a, buf| {
-                        memory_cache.read_process_memory(&self.handle.process, a, buf)
-                    })?;
-
-                    self.followed = Cached::Some(address);
-                    address
-                }
-            }
-        } else {
-            match self.followed {
-                Cached::Some(address) => address,
-                Cached::None => {
-                    let address = self.pointer.follow_default(self.handle)?;
-                    self.followed = Cached::Some(address);
-                    address
-                }
+        Ok(match self.followed {
+            Cached::Some(address) => address,
+            Cached::None => {
+                let address = self.pointer.follow_default(self.handle)?;
+                self.followed = Cached::Some(address);
+                address
             }
         })
     }
@@ -1149,122 +1115,13 @@ where
             }
         };
 
-        let result = if let Some(memory_cache) = self.memory_cache {
-            match ty.decode(&(memory_cache, &self.handle.process), address) {
-                Ok(value) => value,
-                Err(..) => (Value::None, None),
-            }
-        } else {
-            match ty.decode(&self.handle.process, address) {
-                Ok(value) => value,
-                Err(..) => (Value::None, None),
-            }
+        let result = match ty.decode(&self.handle.process, address) {
+            Ok(value) => value,
+            Err(..) => (Value::None, None),
         };
 
-        // self.cache.insert(ty, result.clone());
+        self.cache.insert(ty, result.clone());
         Ok(result)
-    }
-}
-
-#[derive(Debug)]
-pub struct MemoryCache {
-    /// Underlying cache.
-    cache: RwLock<lru::LruCache<AddressRange, Vec<u8>>>,
-    /// Valid memory regions.
-    regions: Regions,
-}
-
-impl MemoryCache {
-    /// Construct a new cache out of the given process.
-    pub fn new(regions: Regions) -> Self {
-        Self {
-            cache: RwLock::new(lru::LruCache::new(0x1000)),
-            regions,
-        }
-    }
-
-    /// Read process memory.
-    pub fn read_process_memory<'a>(
-        &self,
-        process: &Process,
-        address: Address,
-        buf: &'a mut [u8],
-    ) -> anyhow::Result<usize> {
-        let region = match self.regions.find_region_for(address) {
-            Some(region) => region,
-            None => return Ok(0),
-        };
-
-        let s = address.as_usize() - region.base.as_usize();
-        let e = s.saturating_add(buf.len());
-
-        {
-            let cache = self.cache.read();
-
-            if let Some(data) = cache.peek(region) {
-                if e >= data.len() {
-                    return Ok(0);
-                }
-
-                buf.clone_from_slice(&data[s..e]);
-                return Ok(buf.len());
-            }
-        }
-
-        let mut cache = self.cache.write();
-        let len = region.size.as_usize();
-        let mut data = vec![0u8; len];
-
-        let read = process.read_process_memory(region.base, &mut data)?;
-
-        if read != data.len() {
-            return Ok(0);
-        }
-
-        let len = if e <= data.len() {
-            // full read
-            buf.clone_from_slice(&data[s..e]);
-            buf.len()
-        } else {
-            // partial read
-            let len = buf.len() - (e - data.len());
-            buf[..len].clone_from_slice(&data[s..]);
-            len
-        };
-
-        cache.put(region.clone(), data);
-        Ok(len)
-    }
-}
-
-impl<'m, 'p> MemoryReader for (&'m MemoryCache, &'p Process) {
-    type Process = Process;
-
-    fn read_memory(&self, address: Address, buf: &mut [u8]) -> anyhow::Result<usize> {
-        Ok(self.0.read_process_memory(self.1, address, buf)?)
-    }
-
-    fn process(&self) -> &Self::Process {
-        self.1
-    }
-}
-
-#[derive(Debug)]
-pub struct Regions {
-    regions: Vec<MemoryInformation>,
-}
-
-impl Regions {
-    /// Find the region for the given address.
-    pub fn find_region_for(&self, address: Address) -> Option<&AddressRange> {
-        AddressRange::find_in_range(&self.regions, |r| &r.range, address).map(|r| &r.range)
-    }
-}
-
-impl iter::FromIterator<MemoryInformation> for Regions {
-    fn from_iter<I: IntoIterator<Item = MemoryInformation>>(iter: I) -> Self {
-        let regions = iter.into_iter().collect();
-        Self { regions }
     }
 }
 
@@ -1346,26 +1203,5 @@ impl Decode for u32 {
     fn decode(buf: &[u8]) -> Result<Self, anyhow::Error> {
         use byteorder::{ByteOrder, LittleEndian};
         Ok(LittleEndian::read_u32(buf))
-    }
-}
-
-pub struct Session<'a> {
-    handle: &'a ProcessHandle,
-    memory_cache: MemoryCache,
-}
-
-impl<'a> Session<'a> {
-    /// Construct an address proxy for the given address.
-    pub fn address_proxy<P>(&'a self, pointer: &'a P) -> AddressProxy<'a, P>
-    where
-        P: FollowablePointer,
-    {
-        AddressProxy {
-            pointer,
-            handle: self.handle,
-            memory_cache: Some(&self.memory_cache),
-            followed: Cached::None,
-            cache: Default::default(),
-        }
     }
 }

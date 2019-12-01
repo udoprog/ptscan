@@ -1,4 +1,0 @@
-#define APP_MANIFEST 1
-#define RT_MANIFEST 24
-
-APP_MANIFEST RT_MANIFEST "ptscan_tui.exe.manifest"

@@ -1,7 +1,7 @@
 use crate::{
-    error::Error, process::MemoryInformation, scanner, value, AddressProxy, AddressRange, Aligned,
-    FollowablePointer, ProcessInfo, Scanner, Sign, Type, TypeHint, TypeSolveError, TypedValueExpr,
-    Unaligned, Value, ValueExpr, ValueRef,
+    error::Error, process::MemoryInformation, scanner, value, AddressRange, Aligned, ProcessInfo,
+    Proxy, Scanner, Sign, Type, TypeHint, TypeSolveError, TypedValueExpr, Unaligned, Value,
+    ValueExpr, ValueRef,
 };
 use anyhow::bail;
 use hashbrown::HashSet;
@@ -187,7 +187,7 @@ impl TypedFilterExpr<'_> {
         &self,
         initial: ValueRef<'_>,
         last: ValueRef<'_>,
-        proxy: &mut AddressProxy<'_, impl FollowablePointer>,
+        proxy: &mut impl Proxy,
     ) -> anyhow::Result<Test> {
         match self {
             Self::Binary(m) => m.test(initial, last, proxy),
@@ -210,7 +210,7 @@ impl TypedBinary<'_> {
         &self,
         initial: ValueRef<'_>,
         last: ValueRef<'_>,
-        proxy: &mut AddressProxy<'_, impl FollowablePointer>,
+        proxy: &mut impl Proxy,
     ) -> anyhow::Result<Test> {
         use self::FilterOp::*;
 
@@ -543,7 +543,7 @@ impl TypedAll<'_> {
         &self,
         initial: ValueRef<'_>,
         last: ValueRef<'_>,
-        proxy: &mut AddressProxy<'_, impl FollowablePointer>,
+        proxy: &mut impl Proxy,
     ) -> anyhow::Result<Test> {
         for m in &self.0 {
             match m.test(initial, last, proxy)? {
@@ -632,7 +632,7 @@ impl TypedAny<'_> {
         &self,
         initial: ValueRef<'_>,
         last: ValueRef<'_>,
-        proxy: &mut AddressProxy<'_, impl FollowablePointer>,
+        proxy: &mut impl Proxy,
     ) -> anyhow::Result<Test> {
         for m in &self.0 {
             match m.test(initial, last, proxy)? {
@@ -725,7 +725,7 @@ impl TypedIsPointer<'_> {
         &self,
         initial: ValueRef<'_>,
         last: ValueRef<'_>,
-        proxy: &mut AddressProxy<'_, impl FollowablePointer>,
+        proxy: &mut impl Proxy,
     ) -> anyhow::Result<Test> {
         let value = self.expr.eval(initial, last, proxy)?;
 
@@ -819,7 +819,7 @@ impl TypedIsType<'_> {
         &self,
         initial: ValueRef<'_>,
         last: ValueRef<'_>,
-        proxy: &mut AddressProxy<'_, impl FollowablePointer>,
+        proxy: &mut impl Proxy,
     ) -> anyhow::Result<Test> {
         let value = self.expr.eval(initial, last, proxy)?;
 
@@ -885,7 +885,7 @@ impl TypedIsNan<'_> {
         &self,
         initial: ValueRef<'_>,
         last: ValueRef<'_>,
-        proxy: &mut AddressProxy<'_, impl FollowablePointer>,
+        proxy: &mut impl Proxy,
     ) -> anyhow::Result<Test> {
         let value = self.expr.eval(initial, last, proxy)?;
 
@@ -961,7 +961,7 @@ impl TypedNot<'_> {
         &self,
         initial: ValueRef<'_>,
         last: ValueRef<'_>,
-        proxy: &mut AddressProxy<'_, impl FollowablePointer>,
+        proxy: &mut impl Proxy,
     ) -> anyhow::Result<Test> {
         Ok(self.filter.test(initial, last, proxy)?.invert())
     }
@@ -1038,7 +1038,7 @@ impl TypedRegex<'_> {
         &self,
         initial: ValueRef<'_>,
         last: ValueRef<'_>,
-        proxy: &mut AddressProxy<'_, impl FollowablePointer>,
+        proxy: &mut impl Proxy,
     ) -> anyhow::Result<Test> {
         let value = self.expr.eval(initial, last, proxy)?;
 

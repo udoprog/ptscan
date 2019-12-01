@@ -153,6 +153,43 @@ impl Values {
         Some(value)
     }
 
+    /// Get accessor related to the given index.
+    pub fn get_accessor(&self, index: usize) -> Option<Accessor<'_>> {
+        if index >= self.len {
+            return None;
+        }
+
+        unsafe {
+            let ptr = self.data.as_ptr().add(index * self.element_size);
+
+            Some(Accessor {
+                ty: self.ty,
+                ptr,
+                _marker: marker::PhantomData,
+            })
+        }
+    }
+
+    /// Get mutator related to the give position.
+    ///
+    /// # Safety
+    /// The mutator allows mutation through a reference, among other things, the
+    /// caller needs to make sure that:
+    /// * Multiple mutators are not active to the same index.
+    pub unsafe fn get_mutator_unsafe(&self, index: usize) -> Option<Mutator<'_>> {
+        if index >= self.len {
+            return None;
+        }
+
+        let ptr = (self.data.as_ptr() as *mut u8).add(index * self.element_size);
+
+        Some(Mutator {
+            ty: self.ty,
+            ptr,
+            _marker: marker::PhantomData,
+        })
+    }
+
     /// Get the value as a reference at the given location.
     pub fn get_ref(&self, index: usize) -> Option<ValueRef<'_>> {
         if index >= self.len {
@@ -271,14 +308,17 @@ impl Values {
     }
 
     /// Clone the internal data as type `T`.
-    unsafe fn clone_data<T>(&self) -> Vec<u8> {
+    unsafe fn clone_data<T>(&self) -> Vec<u8>
+    where
+        T: Clone,
+    {
         let len = self.len * self.element_size;
         let mut data = Vec::with_capacity(len);
-        let mut dst = data.as_mut_ptr() as *mut String;
-        let mut src = self.data.as_ptr() as *const String;
+        let mut dst = data.as_mut_ptr() as *mut T;
+        let mut src = self.data.as_ptr() as *const T;
 
         for _ in 0..self.len {
-            ptr::write(dst, String::clone(&*src));
+            ptr::write(dst, T::clone(&*src));
             dst = dst.add(1);
             src = src.add(1);
         }

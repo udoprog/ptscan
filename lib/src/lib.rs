@@ -61,11 +61,11 @@ pub use self::pointer_scan::{
     PointerScan, PointerScanBackreferenceProgress, PointerScanInitialProgress,
 };
 pub use self::process::{
-    MemoryInformation, MemoryState, MemoryType, PointerWidth, Process, ProcessInfo,
+    MemoryInformation, MemoryReader, MemoryState, MemoryType, PointerWidth, Process, ProcessInfo,
 };
 pub use self::process_handle::{
-    AddressProxy, InitialScanConfig, Location, ModuleInfo, ModulesState, ProcessHandle,
-    ProcessName, ProcessThread, ScanProgress, ValueHolder,
+    AddressProxy, BufferProxy, InitialScanConfig, Location, ModuleInfo, ModulesState,
+    ProcessHandle, ProcessName, ProcessThread, Proxy, ScanProgress, ValueHolder,
 };
 pub use self::scanner::{DefaultScanner, Scanner};
 pub use self::sign::Sign;

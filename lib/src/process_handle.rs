@@ -2,9 +2,10 @@
 
 use crate::{
     error::Error, filter_expr::FilterExpr, progress_reporter::ProgressReporter, system,
-    thread::Thread, values, Address, AddressRange, Base, Cached, DefaultScanner, FollowablePointer,
-    MemoryInformation, Pointer, PointerWidth, PortableBase, Process, ProcessId, ProcessInfo,
-    Scanner, Size, Test, ThreadId, Token, Type, TypeHint, Value, ValueExpr, ValueRef, Values,
+    thread::Thread, utils::IteratorExtension as _, values, Address, AddressRange, Base, Cached,
+    DefaultScanner, FollowablePointer, MemoryInformation, MemoryReader, Pointer, PointerWidth,
+    PortableBase, Process, ProcessId, ProcessInfo, Scanner, Size, Test, ThreadId, Token, Type,
+    TypeHint, Value, ValueExpr, ValueRef, Values,
 };
 use anyhow::{anyhow, bail, Context as _};
 use crossbeam_queue::SegQueue;
@@ -401,8 +402,301 @@ impl ProcessHandle {
         }
     }
 
-    /// Read the value of many memory locations.
     pub fn rescan_values(
+        &self,
+        thread_pool: &rayon::ThreadPool,
+        addresses: &mut Vec<Address>,
+        initial: &mut Values,
+        values: &mut Values,
+        cancel: Option<&Token>,
+        progress: (impl ScanProgress + Send),
+        filter: &FilterExpr,
+    ) -> anyhow::Result<()> {
+        if addresses.len() < 100_000 {
+            self.rescan_small(
+                thread_pool,
+                addresses,
+                initial,
+                values,
+                cancel,
+                progress,
+                filter,
+            )
+        } else {
+            self.rescan_large(
+                thread_pool,
+                addresses,
+                initial,
+                values,
+                cancel,
+                progress,
+                filter,
+            )
+        }
+    }
+
+    /// Read the value of many memory locations.
+    pub fn rescan_large(
+        &self,
+        thread_pool: &rayon::ThreadPool,
+        addresses: &mut Vec<Address>,
+        initial: &mut Values,
+        values: &mut Values,
+        cancel: Option<&Token>,
+        progress: (impl ScanProgress + Send),
+        filter: &FilterExpr,
+    ) -> anyhow::Result<()> {
+        // Check every 100_000 addresses scanned.
+        const CHECK_INTERVAL: u64 = 100_000;
+
+        let mut local_cancel = None;
+
+        let cancel = match cancel {
+            Some(cancel) => cancel,
+            None => local_cancel.get_or_insert(Token::new()),
+        };
+
+        if addresses.is_empty() {
+            return Ok(());
+        }
+
+        if addresses.len() != values.len() {
+            return Err(anyhow!(
+                "argument length mismatch, addresses ({}) != values ({})",
+                addresses.len(),
+                values.len()
+            ));
+        }
+
+        // how many tasks to run in parallel.
+        let mut tasks = thread_pool.current_num_threads();
+
+        let mut to_remove = Vec::new();
+
+        let filter = filter.type_check(initial.ty, values.ty, values.ty)?;
+        let filter = &filter;
+
+        let mut ranges = Vec::new();
+
+        {
+            let thread_stacks = self
+                .threads
+                .iter()
+                .map(|t| t.stack.clone())
+                .collect::<HashSet<_>>();
+
+            for m in self.process.virtual_memory_regions().only_relevant() {
+                let m = m?;
+
+                if !thread_stacks.contains(&m.range) {
+                    ranges.push(m.range);
+                }
+            }
+
+            ranges.extend(self.modules.modules.iter().map(|m| m.range));
+        }
+
+        // Divide up into partitions.
+        let mut partitions = ranges
+            .iter()
+            .map(|_| Vec::with_capacity(0x10))
+            .collect::<Vec<_>>();
+
+        for (index, address) in addresses.iter().copied().enumerate() {
+            match AddressRange::find_index_in_range(&ranges, |r| r, address)
+                .and_then(|i| partitions.get_mut(i))
+            {
+                Some(p) => p.push(index),
+                None => to_remove.push(index),
+            }
+        }
+
+        let mut last_error = None;
+        let mut reporter = ProgressReporter::new(
+            progress,
+            addresses.len() - to_remove.len(),
+            cancel,
+            &mut last_error,
+        );
+
+        thread_pool.install(|| {
+            rayon::scope(|s| {
+                let (tx, rx) = mpsc::channel::<anyhow::Result<Task>>();
+                let (p_tx, p_rx) =
+                    crossbeam_channel::unbounded::<Option<(&AddressRange, Vec<usize>)>>();
+
+                for _ in 0..tasks {
+                    let tx = tx.clone();
+                    let p_rx = p_rx.clone();
+
+                    let addresses = &*addresses;
+                    let initial = &*initial;
+                    let values = &*values;
+
+                    s.spawn(move |_| {
+                        while !cancel.test() {
+                            let (range, task) = match p_rx.recv().expect("failed to receive") {
+                                Some(task) => task,
+                                None => break,
+                            };
+
+                            let work = |tx: &mpsc::Sender<anyhow::Result<Task>>| {
+                                let address = range.base;
+                                let size = range.size.as_usize();
+                                let mut buffer = vec![0u8; size];
+                                let read =
+                                    self.process.read_process_memory(address, &mut buffer)?;
+                                let buffer = &buffer[..read];
+
+                                let mut accepted = 0u64;
+                                let mut rejected = Vec::new();
+
+                                let mut count = 0u64;
+
+                                for index in task {
+                                    if count > CHECK_INTERVAL {
+                                        if cancel.test() {
+                                            break;
+                                        }
+
+                                        tx.send(Ok(Task::Progress { count, accepted }))
+                                            .expect("failed to send progress");
+                                        count = 0;
+                                        accepted = 0;
+                                    }
+
+                                    count += 1;
+
+                                    let address = addresses[index];
+                                    let initial =
+                                        initial.get_ref(index).expect("missing initial value");
+                                    let mut value = unsafe { values.get_mutator_unsafe(index) }
+                                        .expect("missing value");
+
+                                    let offset =
+                                        match usize::try_from(address.offset_of(range.base)) {
+                                            Ok(offset) => offset,
+                                            Err(..) => {
+                                                rejected.push(index);
+                                                continue;
+                                            }
+                                        };
+
+                                    if offset >= buffer.len() {
+                                        rejected.push(index);
+                                        continue;
+                                    }
+
+                                    let buffer = &buffer[offset..];
+                                    let mut proxy = BufferProxy::new(address, buffer, self);
+
+                                    if let Test::True =
+                                        filter.test(initial, value.as_ref(), &mut proxy)?
+                                    {
+                                        accepted += 1;
+                                        value.write(proxy.eval(value.ty)?.0);
+                                    } else {
+                                        rejected.push(index);
+                                    }
+                                }
+
+                                Ok(Task::Result {
+                                    count,
+                                    accepted,
+                                    rejected,
+                                })
+                            };
+
+                            let result = work(&tx);
+                            tx.send(result).expect("failed to send");
+                        }
+
+                        tx.send(Ok(Task::Done)).expect("failed to send");
+                    });
+                }
+
+                let mut it = partitions
+                    .into_iter()
+                    .enumerate()
+                    .filter(|(_, p)| !p.is_empty());
+
+                for (index, task) in (&mut it).take(tasks) {
+                    p_tx.send(Some((&ranges[index], task)))
+                        .expect("failed to send");
+                }
+
+                let mut results = 0u64;
+
+                while tasks > 0 {
+                    let result = rx.recv().expect("closed");
+
+                    if let Some((index, task)) = it.next() {
+                        p_tx.send(Some((&ranges[index], task)))
+                            .expect("failed to send");
+                    } else {
+                        p_tx.send(None).expect("failed to send");
+                    }
+
+                    if let Some(result) = reporter.eval(result) {
+                        match result {
+                            Task::Result {
+                                count,
+                                accepted,
+                                mut rejected,
+                            } => {
+                                results += accepted;
+                                reporter.tick_n(count as usize, results);
+                                to_remove.append(&mut rejected);
+                            }
+                            Task::Progress { count, accepted } => {
+                                results += accepted;
+                                reporter.tick_n(count as usize, results);
+                            }
+                            Task::Done => {
+                                tasks -= 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                Ok::<_, anyhow::Error>(())
+            })?;
+
+            Ok::<_, anyhow::Error>(())
+        })?;
+
+        to_remove.sort_by(|a, b| b.cmp(a));
+
+        for index in to_remove {
+            initial.swap_remove(index);
+            values.swap_remove(index);
+            addresses.swap_remove(index);
+        }
+
+        if let Some(e) = last_error {
+            return Err(e);
+        }
+
+        return Ok(());
+
+        enum Task {
+            /// Address was accepted.
+            Result {
+                count: u64,
+                accepted: u64,
+                rejected: Vec<usize>,
+            },
+            Progress {
+                count: u64,
+                accepted: u64,
+            },
+            /// Task is done.
+            Done,
+        }
+    }
+
+    fn rescan_small(
         &self,
         thread_pool: &rayon::ThreadPool,
         addresses: &mut Vec<Address>,
@@ -441,6 +735,26 @@ impl ProcessHandle {
 
         let filter = filter.type_check(initial.ty, values.ty, values.ty)?;
         let filter = &filter;
+
+        let mut ranges = Vec::new();
+
+        {
+            let thread_stacks = self
+                .threads
+                .iter()
+                .map(|t| t.stack.clone())
+                .collect::<HashSet<_>>();
+
+            for m in self.process.virtual_memory_regions().only_relevant() {
+                let m = m?;
+
+                if !thread_stacks.contains(&m.range) {
+                    ranges.push(m.range);
+                }
+            }
+
+            ranges.extend(self.modules.modules.iter().map(|m| m.range));
+        }
 
         thread_pool.install(|| {
             rayon::scope(|s| {
@@ -805,10 +1119,6 @@ impl ProcessHandle {
     ) -> anyhow::Result<()> {
         const DEFAULT_BUFFER_SIZE: usize = 0x100_000;
 
-        let handle = self;
-
-        use crate::utils::IteratorExtension;
-
         let mut local_cancel = None;
 
         let cancel = match cancel {
@@ -824,14 +1134,14 @@ impl ProcessHandle {
             .unwrap_or_else(|| values.ty.is_default_aligned());
         let alignment = values
             .ty
-            .alignment(&handle.process)
+            .alignment(&self.process)
             .ok_or_else(|| anyhow!("cannot scan for none"))?;
         let step_size = if aligned { alignment } else { 1 };
         let alignment = config
             .alignment
             .or_else(|| if aligned { Some(alignment) } else { None });
 
-        let special = filter.special(&handle.process, values.ty)?;
+        let special = filter.special(&self.process, values.ty)?;
         let special = special.as_ref();
 
         let mut specialized_scanner = None;
@@ -858,16 +1168,16 @@ impl ProcessHandle {
         let mut ranges = Vec::new();
 
         {
-            let thread_stacks = handle
+            let thread_stacks = self
                 .threads
                 .iter()
                 .map(|t| t.stack.clone())
                 .collect::<HashSet<_>>();
 
             if config.modules_only {
-                ranges.extend(handle.modules.modules.iter().map(|m| m.range));
+                ranges.extend(self.modules.modules.iter().map(|m| m.range));
             } else {
-                for m in handle.process.virtual_memory_regions().only_relevant() {
+                for m in self.process.virtual_memory_regions().only_relevant() {
                     let m = m?;
 
                     if !thread_stacks.contains(&m.range) {
@@ -875,7 +1185,7 @@ impl ProcessHandle {
                     }
                 }
 
-                ranges.extend(handle.modules.modules.iter().map(|m| m.range));
+                ranges.extend(self.modules.modules.iter().map(|m| m.range));
             }
         }
 
@@ -928,7 +1238,7 @@ impl ProcessHandle {
                     s.spawn(move |_| {
                         let start = Instant::now();
                         let result = work(Work {
-                            handle,
+                            handle: self,
                             tx: &tx,
                             queue,
                             value_type,
@@ -1073,6 +1383,17 @@ impl ProcessInfo for ProcessHandle {
     }
 }
 
+pub trait Proxy {
+    /// Get the address of the proxy.
+    fn address(&mut self) -> anyhow::Result<Option<Address>>;
+
+    /// Evaluate the value of the proxy with the given type.
+    fn eval(&mut self, ty: Type) -> anyhow::Result<(Value, Option<usize>)>;
+
+    /// Access the underlying process handle for the proxy.
+    fn handle(&self) -> &ProcessHandle;
+}
+
 #[derive(Debug, Clone)]
 pub struct AddressProxy<'a, P>
 where
@@ -1086,11 +1407,11 @@ where
     cache: HashMap<Type, (Value, Option<usize>)>,
 }
 
-impl<P> AddressProxy<'_, P>
+impl<P> Proxy for AddressProxy<'_, P>
 where
     P: FollowablePointer,
 {
-    pub fn address(&mut self) -> anyhow::Result<Option<Address>> {
+    fn address(&mut self) -> anyhow::Result<Option<Address>> {
         Ok(match self.followed {
             Cached::Some(address) => address,
             Cached::None => {
@@ -1101,8 +1422,7 @@ where
         })
     }
 
-    /// Evaluate the pointer of the proxy.
-    pub fn eval(&mut self, ty: Type) -> anyhow::Result<(Value, Option<usize>)> {
+    fn eval(&mut self, ty: Type) -> anyhow::Result<(Value, Option<usize>)> {
         if let Some(result) = self.cache.get(&ty).cloned() {
             return Ok(result);
         }
@@ -1122,6 +1442,90 @@ where
 
         self.cache.insert(ty, result.clone());
         Ok(result)
+    }
+
+    fn handle(&self) -> &ProcessHandle {
+        self.handle
+    }
+}
+
+/// A proxy backed by a buffer.
+pub struct BufferProxy<'a> {
+    address: Address,
+    buffer: &'a [u8],
+    /// Cached value of different types.
+    cache: HashMap<Type, (Value, Option<usize>)>,
+    handle: &'a ProcessHandle,
+}
+
+impl<'a> BufferProxy<'a> {
+    /// Create a proxy for a backing buffer.
+    pub fn new(address: Address, buffer: &'a [u8], handle: &'a ProcessHandle) -> BufferProxy<'a> {
+        Self {
+            address,
+            buffer,
+            cache: HashMap::new(),
+            handle,
+        }
+    }
+}
+
+impl Proxy for BufferProxy<'_> {
+    fn address(&mut self) -> anyhow::Result<Option<Address>> {
+        Ok(Some(self.address))
+    }
+
+    fn eval(&mut self, ty: Type) -> anyhow::Result<(Value, Option<usize>)> {
+        if let Some(result) = self.cache.get(&ty).cloned() {
+            return Ok(result);
+        }
+
+        let buffer_reader = BufferReader {
+            process: &self.handle.process,
+            buffer: &self.buffer,
+            address: self.address,
+        };
+
+        let result = match ty.decode(&buffer_reader, self.address) {
+            Ok(value) => value,
+            Err(..) => (Value::None, None),
+        };
+
+        self.cache.insert(ty, result.clone());
+        return Ok(result);
+
+        struct BufferReader<'a> {
+            process: &'a Process,
+            buffer: &'a [u8],
+            address: Address,
+        }
+
+        impl MemoryReader for BufferReader<'_> {
+            type Process = Process;
+
+            fn read_memory(&self, address: Address, buf: &mut [u8]) -> anyhow::Result<usize> {
+                let s = match usize::try_from(address.offset_of(self.address)) {
+                    Ok(s) => s,
+                    Err(..) => return Ok(0),
+                };
+
+                if s >= self.buffer.len() {
+                    return Ok(0);
+                }
+
+                let e = usize::min(s + buf.len(), self.buffer.len());
+                buf.clone_from_slice(&self.buffer[s..e]);
+                Ok(e - s)
+            }
+
+            fn process(&self) -> &Self::Process {
+                self.process
+            }
+        }
+    }
+
+    fn handle(&self) -> &ProcessHandle {
+        self.handle
     }
 }
 

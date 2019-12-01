@@ -3,7 +3,7 @@ use crate::{
     process::Process,
     utils::{EscapeString, Hex},
     value::Value,
-    Address, AddressProxy, FollowablePointer, Pointer, Sign, Type, TypeHint, ValueRef,
+    Address, Pointer, Proxy, Sign, Type, TypeHint, ValueRef,
 };
 use anyhow::{anyhow, bail};
 use bigdecimal::BigDecimal;
@@ -43,22 +43,23 @@ impl TypedValueExpr<'_> {
         &self,
         initial: ValueRef<'_>,
         last: ValueRef<'_>,
-        proxy: &mut AddressProxy<'_, impl FollowablePointer>,
+        proxy: &mut impl Proxy,
     ) -> anyhow::Result<Value> {
         Ok(match *self {
             Self::Value(expr_type) => proxy.eval(expr_type)?.0,
-            Self::Initial(expr_type) => expr_type.convert(proxy.handle, initial.to_owned()),
-            Self::Last(expr_type) => expr_type.convert(proxy.handle, last.to_owned()),
+            Self::Initial(expr_type) => expr_type.convert(proxy.handle(), initial.to_owned()),
+            Self::Last(expr_type) => expr_type.convert(proxy.handle(), last.to_owned()),
             Self::Number(expr_type, value) => Value::from_bigint(expr_type, value)?,
             Self::Decimal(expr_type, value) => Value::from_bigdecimal(expr_type, value)?,
             Self::String(expr_type, value) => {
-                expr_type.convert(proxy.handle, Value::String(value.to_string()))
+                expr_type.convert(proxy.handle(), Value::String(value.to_string()))
             }
             Self::Bytes(expr_type, value) => {
-                expr_type.convert(proxy.handle, Value::Bytes(value.clone()))
+                expr_type.convert(proxy.handle(), Value::Bytes(value.clone()))
             }
             Self::Deref(expr_type, ref value) => {
-                let value = Type::Pointer.convert(proxy.handle, value.eval(initial, last, proxy)?);
+                let value = value.eval(initial, last, proxy)?;
+                let value = Type::Pointer.convert(proxy.handle(), value);
 
                 let address = match value.as_address() {
                     Some(address) => address,
@@ -66,8 +67,8 @@ impl TypedValueExpr<'_> {
                 };
 
                 let pointer = Pointer::from(address);
-                let (value, _) = proxy.handle.address_proxy(&pointer).eval(expr_type)?;
-                expr_type.convert(proxy.handle, value)
+                let (value, _) = proxy.handle().address_proxy(&pointer).eval(expr_type)?;
+                expr_type.convert(proxy.handle(), value)
             }
             Self::AddressOf(expr_type, ref value) => {
                 let new_address = match value.address_of(initial, last, proxy)? {
@@ -75,10 +76,11 @@ impl TypedValueExpr<'_> {
                     None => return Ok(Value::None),
                 };
 
-                expr_type.convert(proxy.handle, Value::Pointer(new_address))
+                expr_type.convert(proxy.handle(), Value::Pointer(new_address))
             }
             Self::Cast(expr_type, ref expr) => {
-                expr_type.convert(proxy.handle, expr.eval(initial, last, proxy)?)
+                let value = expr.eval(initial, last, proxy)?;
+                expr_type.convert(proxy.handle(), value)
             }
             Self::Binary(expr_type, op, ref lhs, ref rhs) => {
                 let lhs = lhs.eval(initial, last, proxy)?;
@@ -89,20 +91,17 @@ impl TypedValueExpr<'_> {
                     None => return Ok(Value::None),
                 };
 
-                expr_type.convert(proxy.handle, value)
+                expr_type.convert(proxy.handle(), value)
             }
         })
     }
 
-    pub fn address_of<P>(
+    pub fn address_of(
         &self,
         initial: ValueRef<'_>,
         last: ValueRef<'_>,
-        proxy: &mut AddressProxy<'_, P>,
-    ) -> anyhow::Result<Option<Address>>
-    where
-        P: FollowablePointer,
-    {
+        proxy: &mut impl Proxy,
+    ) -> anyhow::Result<Option<Address>> {
         let mut stack = Vec::new();
         self.stacked_address_of(&mut stack, initial, last, proxy)?;
         Ok(stack.last().copied().and_then(|a| a))
@@ -114,7 +113,7 @@ impl TypedValueExpr<'_> {
         stack: &mut Vec<Option<Address>>,
         initial: ValueRef<'_>,
         last: ValueRef<'_>,
-        proxy: &mut AddressProxy<'_, impl FollowablePointer>,
+        proxy: &mut impl Proxy,
     ) -> anyhow::Result<()> {
         match self {
             Self::Value(..) => {

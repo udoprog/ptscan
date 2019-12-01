@@ -1,6 +1,7 @@
 use crate::{Address, Sign, Size};
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use std::{convert::TryFrom, fmt};
+use thiserror::Error;
 
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Offset {
@@ -188,6 +189,22 @@ impl fmt::Display for Offset {
 impl fmt::Debug for Offset {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, fmt)
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("out of range offset to integer type conversion attempted")]
+pub struct TryFromOffsetError(());
+
+impl TryFrom<Offset> for usize {
+    type Error = TryFromOffsetError;
+
+    fn try_from(offset: Offset) -> Result<Self, Self::Error> {
+        if offset.sign == Sign::Minus {
+            return Err(TryFromOffsetError(()));
+        }
+
+        usize::try_from(offset.offset.0).map_err(|_| TryFromOffsetError(()))
     }
 }
 

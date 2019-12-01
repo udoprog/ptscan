@@ -42,6 +42,25 @@ impl AddressRange {
         None
     }
 
+    /// Find the corresponding index in the specified range.
+    pub fn find_index_in_range<T>(
+        things: &[T],
+        accessor: impl Fn(&T) -> &AddressRange,
+        address: Address,
+    ) -> Option<usize> {
+        let (index, thing) = match things.binary_search_by(|m| accessor(m).base.cmp(&address)) {
+            Ok(exact) => (exact, &things[exact]),
+            Err(0) => return None,
+            Err(n) => (n - 1, &things[n - 1]),
+        };
+
+        if accessor(thing).contains(address) {
+            return Some(index);
+        }
+
+        None
+    }
+
     /// Perform a binary search to check if `things` contains the given range.
     pub fn find_range_in_range<'a, T>(
         things: &'a [T],

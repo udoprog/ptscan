@@ -1,7 +1,7 @@
 use crate::{
     filter_expr::special::{find_first_nonzero, is_all_zeros},
-    Address, Alignment, ProcessHandle, Special, Test, Token, Type, TypedFilterExpr, ValueRef,
-    Values,
+    Address, Alignment, ProcessHandle, Proxy as _, Special, Test, Token, Type, TypedFilterExpr,
+    ValueRef, Values,
 };
 use anyhow::bail;
 use std::{convert::TryInto as _, marker};

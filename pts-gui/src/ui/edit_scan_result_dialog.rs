@@ -1,7 +1,7 @@
 use crate::prelude::*;
 use glib::signal::SignalHandlerId;
 use parking_lot::RwLock;
-use ptscan::{Address, Cached, PortablePointer, ProcessHandle, Type, Value};
+use ptscan::{Address, Cached, PortablePointer, ProcessHandle, Proxy as _, Type, Value};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 struct Widgets {

@@ -1,6 +1,6 @@
 use crate::prelude::*;
 use parking_lot::RwLock;
-use ptscan::{Address, Cached, ProcessHandle, Value};
+use ptscan::{Address, Cached, ProcessHandle, Proxy as _, Value};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 struct Widgets {

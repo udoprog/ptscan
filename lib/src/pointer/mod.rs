@@ -183,6 +183,12 @@ impl Base {
     }
 }
 
+impl From<Address> for Base {
+    fn from(address: Address) -> Self {
+        Self::Address { address }
+    }
+}
+
 impl FollowablePointer for Base {
     fn follow_default(&self, handle: &ProcessHandle) -> anyhow::Result<Option<Address>> {
         self.follow(handle, |a, buf| {

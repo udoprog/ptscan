@@ -51,7 +51,7 @@ impl MemoryReader for Process {
 
 pub trait ProcessInfo {
     type Process: ProcessInfo;
-    type ByteOrder: byteorder::ByteOrder;
+    type ByteOrder: 'static + Send + Sync + byteorder::ByteOrder;
 
     fn process(&self) -> &Self::Process;
 

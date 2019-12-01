@@ -853,10 +853,18 @@ impl ProcessHandle {
         let special = filter.special(&handle.process, values.ty)?;
         let special = special.as_ref();
 
-        let filter = filter.type_check(Type::None, Type::None, values.ty)?;
+        let mut specialized_scanner = None;
+        let mut current_scanner = None;
 
-        let scanner = DefaultScanner::new(filter, special, alignment, step_size);
-        let scanner = &scanner;
+        let scanner: &dyn Scanner = match filter.scanner(alignment, self, value_type)? {
+            Some(scanner) => &**specialized_scanner.get_or_insert(scanner),
+            None => {
+                let filter = filter.type_check(Type::None, Type::None, values.ty)?;
+                current_scanner.get_or_insert(DefaultScanner::new(
+                    filter, special, alignment, step_size, value_type,
+                ))
+            }
+        };
 
         let tasks = config
             .tasks
@@ -1048,7 +1056,6 @@ impl ProcessHandle {
 
                 scanner.scan(
                     address,
-                    value_type,
                     handle,
                     data,
                     &mut bases,

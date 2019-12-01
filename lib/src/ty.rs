@@ -1,6 +1,6 @@
 use crate::{
     address, encoding, error::Error, process::MemoryReader, Address, Encoding, PointerInfo,
-    ProcessInfo, Value,
+    ProcessHandle, ProcessInfo, Value,
 };
 use anyhow::bail;
 use byteorder::ByteOrder as _;
@@ -405,7 +405,7 @@ impl Type {
 
             let value = match self {
                 Self::None => Value::None,
-                Type::Pointer => Value::Pointer(reader.process().decode_pointer(buf)),
+                Self::Pointer => Value::Pointer(reader.process().decode_pointer(buf)),
                 Self::U8 => Value::U8(decode_byte!(buf, u8)),
                 Self::I8 => Value::I8(decode_byte!(buf, i8)),
                 Self::U16 => Value::U16(decode_buf!(buf, u16, read_u16)),
@@ -429,6 +429,52 @@ impl Type {
             Self::String(encoding) => Ok(encoding.stream_decode(reader, address)?),
             other => bail!("tried to decode sized {} as unsized", other),
         };
+    }
+
+    /// Decode the given data as a fixed-length value.
+    pub fn decode_fixed<B: byteorder::ByteOrder>(
+        self,
+        handle: &ProcessHandle,
+        data: &[u8],
+    ) -> Option<Value> {
+        macro_rules! decode_buf {
+            ($ty:ty, $reader:ident) => {{
+                if data.len() < std::mem::size_of::<$ty>() {
+                    return None;
+                }
+
+                B::$reader(data) as $ty
+            }};
+        }
+
+        macro_rules! decode_byte {
+            ($ty:ty) => {{
+                if data.is_empty() {
+                    return None;
+                }
+
+                data[0] as $ty
+            }};
+        }
+
+        Some(match self {
+            Self::None => Value::None,
+            Self::Pointer => Value::Pointer(handle.process.decode_pointer(data)),
+            Self::U8 => Value::U8(decode_byte!(u8)),
+            Self::I8 => Value::I8(decode_byte!(i8)),
+            Self::U16 => Value::U16(decode_buf!(u16, read_u16)),
+            Self::I16 => Value::I16(decode_buf!(i16, read_u16)),
+            Self::U32 => Value::U32(decode_buf!(u32, read_u32)),
+            Self::I32 => Value::I32(decode_buf!(i32, read_u32)),
+            Self::U64 => Value::U64(decode_buf!(u64, read_u64)),
+            Self::I64 => Value::I64(decode_buf!(i64, read_u64)),
+            Self::U128 => Value::U128(decode_buf!(u128, read_u128)),
+            Self::I128 => Value::I128(decode_buf!(i128, read_u128)),
+            Self::F32 => Value::F32(decode_buf!(f32, read_f32)),
+            Self::F64 => Value::F64(decode_buf!(f64, read_f64)),
+            Self::Bytes(..) => Value::Bytes(data.to_vec()),
+            _ => return None,
+        })
     }
 
     /// Convert into a type which implements `fmt::Display` for a human-readable string.

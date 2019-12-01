@@ -1,6 +1,7 @@
 use crate::{
-    error::Error, process::MemoryInformation, value, AddressProxy, AddressRange, FollowablePointer,
-    ProcessInfo, Sign, Type, TypeHint, TypeSolveError, TypedValueExpr, Value, ValueExpr, ValueRef,
+    error::Error, process::MemoryInformation, scanner, value, AddressProxy, AddressRange, Aligned,
+    FollowablePointer, ProcessInfo, Scanner, Sign, Type, TypeHint, TypeSolveError, TypedValueExpr,
+    Unaligned, Value, ValueExpr, ValueRef,
 };
 use anyhow::bail;
 use hashbrown::HashSet;
@@ -136,6 +137,19 @@ impl FilterExpr {
             Self::IsNan(is_nan) => is_nan.special(process, value_type),
             Self::Not(m) => m.special(process, value_type),
             Self::Regex(m) => m.special(),
+        }
+    }
+
+    /// Construct a special scanner if possible.
+    pub fn scanner(
+        &self,
+        alignment: Option<usize>,
+        process: &impl ProcessInfo,
+        value_type: Type,
+    ) -> anyhow::Result<Option<Box<dyn Scanner>>> {
+        match self {
+            Self::Binary(m) => m.scanner(alignment, process, value_type),
+            _ => Ok(None),
         }
     }
 }
@@ -408,6 +422,101 @@ impl Binary {
 
         if non_zero {
             return Ok(Some(Special::NonZero(value_type.size(process))));
+        }
+
+        Ok(None)
+    }
+
+    fn scanner<P>(
+        &self,
+        alignment: Option<usize>,
+        process: &P,
+        value_type: Type,
+    ) -> anyhow::Result<Option<Box<dyn Scanner>>>
+    where
+        P: ProcessInfo,
+    {
+        use self::FilterOp::*;
+        use self::ValueExpr::*;
+
+        let self::Binary(op, lhs, rhs) = self;
+
+        let not_equal = match (op, lhs.reduced(), rhs.reduced()) {
+            (Neq, Number { value, .. }, Value) | (Neq, Value, Number { value, .. }) => {
+                Some(value::Value::from_bigint(value_type, value)?)
+            }
+            (Neq, Decimal { value, .. }, Value) | (Neq, Value, Decimal { value, .. }) => {
+                Some(value::Value::from_bigdecimal(value_type, value)?)
+            }
+            (Neq, String { value }, Value) | (Neq, Value, String { value }) => {
+                Some(value::Value::String(value.to_owned()))
+            }
+            (Neq, Bytes { value }, Value) | (Neq, Value, Bytes { value }) => {
+                Some(value::Value::Bytes(value.clone()))
+            }
+            _ => None,
+        };
+
+        if let Some(value) = not_equal {
+            if let (Some(type_size), Some(alignment)) = (value.size(process), alignment) {
+                let mut buf = Vec::with_capacity(type_size);
+                value.encode(process, &mut buf);
+
+                if buf.iter().all(|c| *c == 0) {
+                    return Ok(Some(Box::new(
+                        scanner::NonZeroScanner::<_, P::ByteOrder>::new(
+                            Aligned(alignment),
+                            type_size,
+                            value_type,
+                        ),
+                    )));
+                }
+            }
+        }
+
+        let equal = match (op, lhs.reduced(), rhs.reduced()) {
+            (Eq, Number { value, .. }, Value) | (Eq, Value, Number { value, .. }) => {
+                Some(value::Value::from_bigint(value_type, value)?)
+            }
+            (Eq, Decimal { value, .. }, Value) | (Eq, Value, Decimal { value, .. }) => {
+                Some(value::Value::from_bigdecimal(value_type, value)?)
+            }
+            (Eq, String { value }, Value) | (Eq, Value, String { value }) => {
+                Some(value::Value::String(value.to_owned()))
+            }
+            (Eq, Bytes { value }, Value) | (Eq, Value, Bytes { value }) => {
+                Some(value::Value::Bytes(value.clone()))
+            }
+            _ => None,
+        };
+
+        if let Some(value) = equal {
+            if let Some(type_size) = value.size(process) {
+                let mut buffer = Vec::with_capacity(type_size);
+                value.encode(process, &mut buffer);
+
+                if buffer.iter().all(|c| *c == 0) {
+                    if let Some(alignment) = alignment {
+                        return Ok(Some(Box::new(
+                            scanner::ZeroScanner::<_, P::ByteOrder>::new(
+                                Aligned(alignment),
+                                type_size,
+                                value_type,
+                            ),
+                        )));
+                    } else {
+                        return Ok(Some(Box::new(
+                            scanner::ZeroScanner::<_, P::ByteOrder>::new(
+                                Unaligned, type_size, value_type,
+                            ),
+                        )));
+                    }
+                } else {
+                    return Ok(Some(Box::new(scanner::BufferScanner::<P::ByteOrder>::new(
+                        value_type, buffer,
+                    ))));
+                }
+            }
         }
 
         Ok(None)

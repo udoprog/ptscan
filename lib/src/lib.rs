@@ -4,6 +4,7 @@ use winapi::shared::minwindef::DWORD;
 pub mod utils;
 mod address;
 mod address_range;
+mod alignment;
 mod bitset;
 mod encoding;
 mod error;
@@ -46,6 +47,7 @@ pub enum Cached<T> {
 
 pub use self::address::Address;
 pub use self::address_range::AddressRange;
+pub use self::alignment::{Aligned, Alignment, Unaligned};
 pub use self::bitset::BitSet;
 pub use self::encoding::Encoding;
 pub use self::error::Error;

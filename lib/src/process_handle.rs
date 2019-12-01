@@ -8,9 +8,9 @@ use crate::{
     progress_reporter::ProgressReporter,
     system,
     thread::Thread,
-    values, Address, AddressRange, Base, Cached, Pointer, PointerWidth, PortableBase, Process,
-    ProcessId, ProcessInfo, Size, Special, Test, ThreadId, Token, Type, TypeHint, TypedFilterExpr,
-    Value, ValueExpr, ValueRef, Values,
+    values, Address, AddressRange, Base, Cached, DefaultScanner, Pointer, PointerWidth,
+    PortableBase, Process, ProcessId, ProcessInfo, Scanner, Size, Test, ThreadId, Token, Type,
+    TypeHint, Value, ValueExpr, ValueRef, Values,
 };
 use anyhow::{anyhow, bail, Context as _};
 use crossbeam_queue::SegQueue;
@@ -854,7 +854,9 @@ impl ProcessHandle {
         let special = special.as_ref();
 
         let filter = filter.type_check(Type::None, Type::None, values.ty)?;
-        let filter = &filter;
+
+        let scanner = DefaultScanner::new(filter, special, alignment, step_size);
+        let scanner = &scanner;
 
         let tasks = config
             .tasks
@@ -940,13 +942,10 @@ impl ProcessHandle {
                             handle,
                             tx: &tx,
                             queue,
-                            filter,
                             value_type,
-                            special,
-                            alignment,
-                            step_size,
                             buffer_size,
                             cancel,
+                            scanner,
                         });
 
                         let now = Instant::now();
@@ -1001,32 +1000,26 @@ impl ProcessHandle {
             Tick(usize, u64, Duration, Instant),
         }
 
-        struct Work<'a, 'filter> {
+        struct Work<'a> {
             handle: &'a ProcessHandle,
             tx: &'a mpsc::Sender<Task>,
             queue: &'a SegQueue<(Address, usize)>,
-            filter: &'filter TypedFilterExpr<'a>,
             value_type: Type,
-            special: Option<&'a Special>,
-            alignment: Option<usize>,
-            step_size: usize,
             buffer_size: usize,
             cancel: &'a Token,
+            scanner: &'a dyn Scanner,
         }
 
         #[inline(always)]
-        fn work(work: Work<'_, '_>) -> anyhow::Result<(Vec<Base>, Values)> {
+        fn work(work: Work<'_>) -> anyhow::Result<(Vec<Base>, Values)> {
             let Work {
                 handle,
                 tx,
                 queue,
-                filter,
                 value_type,
-                special,
-                alignment,
-                step_size,
                 buffer_size,
                 cancel,
+                scanner,
             } = work;
 
             let mut bases = Vec::new();
@@ -1053,20 +1046,16 @@ impl ProcessHandle {
 
                 let data = &data[..len];
 
-                process_one(ProcessOne {
-                    handle,
-                    filter,
+                scanner.scan(
+                    address,
                     value_type,
-                    bases: &mut bases,
-                    values: &mut values,
-                    hits: &mut hits,
-                    base: address,
+                    handle,
                     data,
-                    step_size,
-                    alignment,
-                    special,
+                    &mut bases,
+                    &mut values,
+                    &mut hits,
                     cancel,
-                })?;
+                )?;
 
                 let duration = Instant::now().duration_since(start);
                 tx.send(Task::Tick(data.len(), hits, duration, Instant::now()))
@@ -1075,124 +1064,6 @@ impl ProcessHandle {
 
             Ok((bases, values))
         };
-
-        struct ProcessOne<'a, 'filter> {
-            handle: &'a ProcessHandle,
-            filter: &'filter TypedFilterExpr<'a>,
-            value_type: Type,
-            bases: &'a mut Vec<Base>,
-            values: &'a mut Values,
-            hits: &'a mut u64,
-            base: Address,
-            data: &'a [u8],
-            step_size: usize,
-            alignment: Option<usize>,
-            special: Option<&'a Special>,
-            cancel: &'a Token,
-        }
-
-        #[inline(always)]
-        fn process_one(process_one: ProcessOne<'_, '_>) -> anyhow::Result<()> {
-            let ProcessOne {
-                handle,
-                filter,
-                value_type,
-                bases,
-                values,
-                hits,
-                base,
-                data,
-                step_size,
-                alignment,
-                special,
-                cancel,
-                ..
-            } = process_one;
-
-            let mut offset = match special {
-                Some(special) => match special.test(data) {
-                    Some(offset) => offset,
-                    None => return Ok(()),
-                },
-                None => 0usize,
-            };
-
-            if let Some(size) = alignment {
-                align(&mut offset, size);
-            }
-
-            let mut last_address = None;
-
-            while offset < data.len() && !cancel.test() {
-                let address = match base.checked_add(offset.try_into()?) {
-                    Some(address) => address,
-                    None => bail!("base `{}` + offset `{}` out of range", base, offset),
-                };
-
-                let pointer = Pointer::from(address);
-                let mut proxy = handle.address_proxy(&pointer);
-
-                // sanity check
-                if let Some(last_address) = last_address {
-                    if last_address >= address {
-                        bail!(
-                            "BUG: address did not increase during scan: {} -> {}",
-                            last_address,
-                            address
-                        )
-                    }
-                }
-
-                last_address = Some(address);
-
-                if let Test::True = filter.test(ValueRef::None, ValueRef::None, &mut proxy)? {
-                    *hits += 1;
-                    let (value, advance) = proxy.eval(value_type)?;
-
-                    let base = handle.address_to_base(address);
-
-                    bases.push(base);
-                    values.push(value);
-
-                    if let Some(advance) = advance {
-                        if advance == 0 {
-                            bail!("BUG: attempt to advance by 0 bytes");
-                        }
-
-                        offset += advance;
-                    } else {
-                        offset += step_size;
-                    }
-                } else {
-                    offset += step_size;
-                }
-
-                if offset >= data.len() {
-                    break;
-                }
-
-                if let Some(special) = special {
-                    offset += match special.test(&data[offset..]) {
-                        Some(o) => o,
-                        None => return Ok(()),
-                    };
-
-                    if let Some(size) = alignment {
-                        align(&mut offset, size);
-                    }
-                }
-            }
-
-            Ok(())
-        }
-
-        fn align(to_align: &mut usize, alignment: usize) {
-            let rem = *to_align % alignment;
-
-            if rem > 0 {
-                *to_align += alignment - rem;
-            }
-        }
     }
 }
 

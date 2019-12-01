@@ -1,6 +1,6 @@
 //! Abstraction to help deal with virtual addresses.
 
-use crate::{error::Error, Offset, Sign, Size};
+use crate::{error::Error, FollowablePointer, Offset, ProcessHandle, Sign, Size};
 
 use std::{
     convert::{self, TryFrom, TryInto},
@@ -134,6 +134,19 @@ impl Address {
     /// Internal function, use `convert` instead.
     pub fn as_usize(self) -> usize {
         self.0.try_into().expect("usize conversion failed")
+    }
+}
+
+impl FollowablePointer for Address {
+    fn follow_default(&self, _: &ProcessHandle) -> anyhow::Result<Option<Address>> {
+        Ok(Some(*self))
+    }
+
+    fn follow<F>(&self, _: &ProcessHandle, _: F) -> anyhow::Result<Option<Address>>
+    where
+        F: Fn(Address, &mut [u8]) -> anyhow::Result<usize>,
+    {
+        Ok(Some(*self))
     }
 }
 

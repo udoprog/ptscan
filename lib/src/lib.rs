@@ -15,6 +15,7 @@ mod pointer_scan;
 mod process;
 mod process_handle;
 mod progress_reporter;
+mod scanner;
 mod sign;
 mod size;
 mod system;
@@ -64,6 +65,7 @@ pub use self::process_handle::{
     AddressProxy, InitialScanConfig, Location, ModuleInfo, ModulesState, ProcessHandle,
     ProcessName, ProcessThread, ScanProgress, ValueHolder,
 };
+pub use self::scanner::{DefaultScanner, Scanner};
 pub use self::sign::Sign;
 pub use self::size::Size;
 pub use self::system::processes;

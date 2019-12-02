@@ -96,6 +96,15 @@ impl PointerWidth {
     }
 }
 
+impl fmt::Display for PointerWidth {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Pointer32 => write!(fmt, "pointer32"),
+            Self::Pointer64 => write!(fmt, "pointer64"),
+        }
+    }
+}
+
 pub trait MemoryReader {
     type ByteOrder: byteorder::ByteOrder;
 

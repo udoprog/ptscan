@@ -1,7 +1,7 @@
 use crate::{
     filter_expr::special::{find_first_nonzero, is_all_zeros},
-    Address, Alignment, ProcessHandle, Proxy as _, Special, Test, Token, Type, TypedFilterExpr,
-    ValueRef, Values,
+    Address, Addresses, Alignment, ProcessHandle, Proxy as _, Special, Test, Token, Type,
+    TypedFilterExpr, ValueRef, Values,
 };
 use anyhow::bail;
 use std::{convert::TryInto as _, marker};
@@ -60,7 +60,7 @@ pub trait Scanner: Send + Sync {
         base: Address,
         handle: &ProcessHandle,
         data: &[u8],
-        addresses: &mut Vec<Address>,
+        addresses: &mut Addresses,
         values: &mut Values,
         hits: &mut u64,
         cancel: &Token,
@@ -100,7 +100,7 @@ impl<'a> Scanner for DefaultScanner<'a> {
         base: Address,
         handle: &ProcessHandle,
         data: &[u8],
-        addresses: &mut Vec<Address>,
+        addresses: &mut Addresses,
         values: &mut Values,
         hits: &mut u64,
         cancel: &Token,
@@ -225,7 +225,7 @@ where
         base: Address,
         handle: &ProcessHandle,
         data: &[u8],
-        addresses: &mut Vec<Address>,
+        addresses: &mut Addresses,
         values: &mut Values,
         hits: &mut u64,
         cancel: &Token,
@@ -324,7 +324,7 @@ where
         base: Address,
         _: &ProcessHandle,
         data: &[u8],
-        addresses: &mut Vec<Address>,
+        addresses: &mut Addresses,
         values: &mut Values,
         hits: &mut u64,
         cancel: &Token,

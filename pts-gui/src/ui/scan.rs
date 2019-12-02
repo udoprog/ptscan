@@ -1,6 +1,6 @@
 use crate::{prelude::*, CurrentScanResult};
 use parking_lot::RwLock;
-use ptscan::{FilterExpr, ProcessHandle, TypeHint, ValueExpr, Values};
+use ptscan::{Addresses, FilterExpr, ProcessHandle, TypeHint, ValueExpr, Values};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 struct Widgets {
@@ -285,12 +285,10 @@ impl Scan {
         let mut last = Values::new_of(&scan.last);
         last.extend(scan.last.iter().take(100));
 
-        let addresses = scan.addresses.iter().cloned().take(100).collect::<Vec<_>>();
+        let mut addresses = Addresses::new_of(&scan.addresses);
+        addresses.extend(scan.addresses.iter().take(100));
 
-        let it = addresses
-            .iter()
-            .cloned()
-            .zip(initial.iter().zip(last.iter()));
+        let it = addresses.iter().zip(initial.iter().zip(last.iter()));
 
         let handle = match &self.handle {
             Some(handle) => Some(handle.read()),

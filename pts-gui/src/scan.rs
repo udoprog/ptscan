@@ -1,4 +1,6 @@
-use ptscan::{Address, PortablePointer, ProcessHandle, Type, Value, ValueHolder, ValueRef, Values};
+use ptscan::{
+    Address, Addresses, PortablePointer, ProcessHandle, Type, Value, ValueHolder, ValueRef, Values,
+};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -37,7 +39,7 @@ impl ValueHolder for ScanResult {
 }
 
 pub struct Scan {
-    pub addresses: Vec<Address>,
+    pub addresses: Addresses,
     pub initial: Values,
     pub last: Values,
 }
@@ -45,7 +47,7 @@ pub struct Scan {
 impl Scan {
     /// Get a single scan result.
     pub fn get(&self, handle: &ProcessHandle, index: usize) -> Option<ScanResult> {
-        let address = self.addresses.get(index).copied()?;
+        let address = self.addresses.get(index)?;
         let pointer = PortablePointer::from(handle.address_to_portable_base(address));
         let last_address = Some(address);
 

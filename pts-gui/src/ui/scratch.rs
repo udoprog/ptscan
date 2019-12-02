@@ -2,7 +2,7 @@ use crate::{prelude::*, ui::EditScanResultDialog};
 use anyhow::anyhow;
 use parking_lot::RwLock;
 use ptscan::{
-    FilterExpr, FollowablePointer as _, PointerInfo as _, PointerScan,
+    Addresses, FilterExpr, FollowablePointer as _, PointerInfo as _, PointerScan,
     PointerScanBackreferenceProgress, PointerScanInitialProgress, PortablePointer, ProcessHandle,
     Size, Type, Value, ValueExpr, Values,
 };
@@ -422,7 +422,7 @@ impl Scratch {
 
                 let token = c.as_token();
 
-                let mut addresses = Vec::new();
+                let mut addresses = Addresses::new(handle.pointer_width());
                 let mut values = Values::new(handle.process.pointer_type());
 
                 handle.initial_scan(
@@ -441,7 +441,9 @@ impl Scratch {
 
                 let mut results = Vec::new();
 
-                pointer_scan.build_references(addresses.into_iter(), values.iter())?;
+                pointer_scan.build_references(addresses.iter(), values.iter())?;
+                // TODO: implement into_iter
+                drop(addresses);
 
                 if c.is_stopped() {
                     return Err(anyhow!("pointer scan cancelled"));

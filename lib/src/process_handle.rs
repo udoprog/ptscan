@@ -2,10 +2,10 @@
 
 use crate::{
     error::Error, filter_expr::FilterExpr, progress_reporter::ProgressReporter, system,
-    thread::Thread, utils::IteratorExtension as _, values, Address, AddressRange, Base, Cached,
-    DefaultScanner, FollowablePointer, MemoryInformation, MemoryReader, Pointer, PointerInfo,
-    PointerWidth, PortableBase, Process, ProcessId, ProcessInfo, Scanner, Size, Test, ThreadId,
-    Token, Type, TypeHint, Value, ValueExpr, ValueRef, Values,
+    thread::Thread, utils::IteratorExtension as _, values, Address, AddressRange, Addresses, Base,
+    Cached, DefaultScanner, FollowablePointer, MemoryInformation, MemoryReader, Pointer,
+    PointerInfo, PointerWidth, PortableBase, Process, ProcessId, ProcessInfo, Scanner, Size, Test,
+    ThreadId, Token, Type, TypeHint, Value, ValueExpr, ValueRef, Values,
 };
 use anyhow::{anyhow, bail, Context as _};
 use crossbeam_queue::SegQueue;
@@ -407,7 +407,7 @@ impl ProcessHandle {
     pub fn rescan_values(
         &self,
         thread_pool: &rayon::ThreadPool,
-        addresses: &mut Vec<Address>,
+        addresses: &mut Addresses,
         initial: &mut Values,
         values: &mut Values,
         cancel: Option<&Token>,
@@ -441,7 +441,7 @@ impl ProcessHandle {
     pub fn rescan_large(
         &self,
         thread_pool: &rayon::ThreadPool,
-        addresses: &mut Vec<Address>,
+        addresses: &mut Addresses,
         initial: &mut Values,
         values: &mut Values,
         cancel: Option<&Token>,
@@ -504,7 +504,7 @@ impl ProcessHandle {
             .map(|_| Vec::with_capacity(0x10))
             .collect::<Vec<_>>();
 
-        for (index, address) in addresses.iter().copied().enumerate() {
+        for (index, address) in addresses.iter().enumerate() {
             match AddressRange::find_index_in_range(&ranges, |r| r, address)
                 .and_then(|i| partitions.get_mut(i))
             {
@@ -569,7 +569,7 @@ impl ProcessHandle {
 
                                     count += 1;
 
-                                    let address = addresses[index];
+                                    let address = addresses.get(index).expect("missing address");
                                     let initial =
                                         initial.get_ref(index).expect("missing initial value");
                                     let mut value = unsafe { values.get_mutator_unsafe(index) }
@@ -701,7 +701,7 @@ impl ProcessHandle {
     fn rescan_small(
         &self,
         thread_pool: &rayon::ThreadPool,
-        addresses: &mut Vec<Address>,
+        addresses: &mut Addresses,
         initial: &mut Values,
         values: &mut Values,
         cancel: Option<&Token>,
@@ -799,7 +799,6 @@ impl ProcessHandle {
 
                 let mut it = addresses
                     .iter()
-                    .copied()
                     .zip(initial.iter().zip(values.iter_mut()))
                     .enumerate();
 
@@ -868,18 +867,15 @@ impl ProcessHandle {
     }
 
     /// Refresh a given set of existing values without a filter.
-    pub fn refresh_values<P>(
+    pub fn refresh_values(
         &self,
         thread_pool: &rayon::ThreadPool,
-        pointers: &[P],
+        addresses: &Addresses,
         values: &mut Values,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
         expr: &ValueExpr,
-    ) -> anyhow::Result<()>
-    where
-        P: Sync + FollowablePointer,
-    {
+    ) -> anyhow::Result<()> {
         let mut local_cancel = None;
 
         let cancel = match cancel {
@@ -887,12 +883,13 @@ impl ProcessHandle {
             None => local_cancel.get_or_insert(Token::new()),
         };
 
-        if pointers.is_empty() {
+        if addresses.is_empty() {
             return Ok(());
         }
 
         let mut last_error = None;
-        let mut reporter = ProgressReporter::new(progress, pointers.len(), cancel, &mut last_error);
+        let mut reporter =
+            ProgressReporter::new(progress, addresses.len(), cancel, &mut last_error);
 
         // how many tasks to run in parallel.
         let mut tasks = thread_pool.current_num_threads();
@@ -915,7 +912,7 @@ impl ProcessHandle {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<bool>>();
                 let (p_tx, p_rx) =
-                    crossbeam_channel::unbounded::<Option<(&P, values::Mutator<'_>)>>();
+                    crossbeam_channel::unbounded::<Option<(Address, values::Mutator<'_>)>>();
 
                 for _ in 0..tasks {
                     let tx = tx.clone();
@@ -931,7 +928,7 @@ impl ProcessHandle {
                             };
 
                             let mut work = move || {
-                                let mut proxy = self.address_proxy(pointer);
+                                let mut proxy = self.address_proxy(&pointer);
 
                                 let new_value =
                                     expr.eval(ValueRef::None, value.as_ref(), &mut proxy)?;
@@ -947,7 +944,7 @@ impl ProcessHandle {
                     });
                 }
 
-                let mut it = pointers.iter().zip(values.iter_mut());
+                let mut it = addresses.iter().zip(values.iter_mut());
 
                 for (base, value) in (&mut it).take(tasks) {
                     p_tx.send(Some((base, value))).expect("closed");
@@ -1125,7 +1122,7 @@ impl ProcessHandle {
         &self,
         thread_pool: &rayon::ThreadPool,
         filter: &FilterExpr,
-        addresses: &mut Vec<Address>,
+        addresses: &mut Addresses,
         values: &mut Values,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
@@ -1241,6 +1238,7 @@ impl ProcessHandle {
         }
 
         let queue = &queue;
+        let pointer_width = self.pointer_width();
 
         thread_pool.install(|| {
             rayon::scope(|s| {
@@ -1259,6 +1257,7 @@ impl ProcessHandle {
                             buffer_size,
                             cancel,
                             scanner,
+                            pointer_width,
                         });
 
                         let now = Instant::now();
@@ -1309,7 +1308,7 @@ impl ProcessHandle {
         return Ok(());
 
         enum Task {
-            Done(anyhow::Result<(Vec<Address>, Values)>, Duration, Instant),
+            Done(anyhow::Result<(Addresses, Values)>, Duration, Instant),
             Tick(usize, u64, Duration, Instant),
         }
 
@@ -1321,10 +1320,11 @@ impl ProcessHandle {
             buffer_size: usize,
             cancel: &'a Token,
             scanner: &'a dyn Scanner,
+            pointer_width: PointerWidth,
         }
 
         #[inline(always)]
-        fn work(work: Work<'_>) -> anyhow::Result<(Vec<Address>, Values)> {
+        fn work(work: Work<'_>) -> anyhow::Result<(Addresses, Values)> {
             let Work {
                 handle,
                 tx,
@@ -1333,9 +1333,10 @@ impl ProcessHandle {
                 buffer_size,
                 cancel,
                 scanner,
+                pointer_width,
             } = work;
 
-            let mut addresses = Vec::new();
+            let mut addresses = Addresses::new(pointer_width);
             let mut values = Values::new(value_type);
 
             let mut buffer = vec![0u8; buffer_size];

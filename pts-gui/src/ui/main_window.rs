@@ -4,7 +4,10 @@ use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 
 use anyhow::{anyhow, Context as _};
 use chrono::Utc;
-use ptscan::{Address, InitialScanConfig, ProcessId, TypeHint, Values};
+use ptscan::{
+    Address, Addresses, InitialScanConfig, PointerInfo as _, ProcessId, ProcessInfo as _, TypeHint,
+    Values,
+};
 
 struct Widgets {
     #[allow(unused)]
@@ -330,7 +333,7 @@ impl MainWindow {
             handle.update_threads(threads);
             let handle = RwLockWriteGuard::downgrade(handle);
 
-            let mut addresses = Vec::new();
+            let mut addresses = Addresses::new(handle.pointer_info().pointer_width());
             let mut values = Values::new(value_type);
 
             if suspend {

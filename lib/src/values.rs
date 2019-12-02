@@ -44,11 +44,12 @@ impl Values {
     /// Creates a values collection with the given capacity.
     pub fn with_capacity(ty: Type, cap: usize) -> Self {
         let element_size = ty.element_size();
+        let cap = element_size.checked_mul(cap).expect("capacity overflowed");
 
         Self {
             ty,
             element_size,
-            data: Vec::with_capacity(element_size * cap),
+            data: Vec::with_capacity(cap),
             len: 0,
         }
     }
@@ -58,43 +59,44 @@ impl Values {
     /// This allows for some neat optimizations, like avoiding an allocation in
     /// case we are shrinking the collection.
     pub fn convert_in_place(&mut self, pointer: &impl PointerInfo, ty: Type) {
-        if self.ty == ty {
-            return;
-        }
+        unsafe {
+            if self.ty == ty {
+                return;
+            }
 
-        let element_size = ty.element_size();
+            let element_size = ty.element_size();
 
-        // shrinking can be done in-place.
-        if element_size <= self.element_size {
-            let mut dst = self.data.as_mut_ptr();
-            let mut src = self.data.as_ptr();
+            // shrinking can be done in-place.
+            if element_size <= self.element_size {
+                let mut dst = self.data.as_mut_ptr();
+                let mut src = self.data.as_ptr();
 
-            for _ in 0..self.len {
-                unsafe {
+                let new_len = element_size
+                    .checked_mul(self.len)
+                    .expect("length overflowed");
+
+                for _ in 0..self.len {
                     let v = Accessor::read_unchecked(self.ty, src);
                     let v = ty.convert(pointer, v);
                     Mutator::write_unchecked(ty, dst, v);
                     src = src.add(self.element_size);
                     dst = dst.add(element_size);
-                };
+                }
+
+                self.ty = ty;
+                self.element_size = element_size;
+                self.data.set_len(new_len);
+            } else {
+                let mut new = Values::with_capacity(ty, self.len);
+
+                for v in self.iter() {
+                    let v = v.read();
+                    let v = ty.convert(pointer, v);
+                    new.push(v);
+                }
+
+                *self = new;
             }
-
-            self.ty = ty;
-            self.element_size = element_size;
-
-            unsafe {
-                self.data.set_len(element_size * self.len);
-            }
-        } else {
-            let mut new = Values::with_capacity(ty, self.len);
-
-            for v in self.iter() {
-                let v = v.read();
-                let v = ty.convert(pointer, v);
-                new.push(v);
-            }
-
-            *self = new;
         }
     }
 
@@ -139,27 +141,39 @@ impl Values {
 
     /// Get the value at the given location.
     pub fn get(&self, index: usize) -> Option<Value> {
-        if index >= self.len {
-            return None;
-        }
+        // Safety note: We need to make sure we don't perform an operation which
+        // overflows the data pointer.
+        //
+        // This is safe because the operation happens before a length check - if
+        // an overflow was possible, it would have happened when we appended to
+        // the collection.
+        unsafe {
+            if index >= self.len {
+                return None;
+            }
 
-        let size = self.element_size;
+            let size = self.element_size;
 
-        let value = unsafe {
             let ptr = self.data.as_ptr().add(index * size);
-            Accessor::read_unchecked(self.ty, ptr)
-        };
+            let value = Accessor::read_unchecked(self.ty, ptr);
 
-        Some(value)
+            Some(value)
+        }
     }
 
     /// Get accessor related to the given index.
     pub fn get_accessor(&self, index: usize) -> Option<Accessor<'_>> {
-        if index >= self.len {
-            return None;
-        }
-
+        // Safety note: We need to make sure we don't perform an operation which
+        // overflows the data pointer.
+        //
+        // This is safe because the operation happens before a length check - if
+        // an overflow was possible, it would have happened when we appended to
+        // the collection.
         unsafe {
+            if index >= self.len {
+                return None;
+            }
+
             let ptr = self.data.as_ptr().add(index * self.element_size);
 
             Some(Accessor {
@@ -181,6 +195,12 @@ impl Values {
             return None;
         }
 
+        // Safety note: We need to make sure we don't perform an operation which
+        // overflows the data pointer.
+        //
+        // This is safe because the operation happens before a length check - if
+        // an overflow was possible, it would have happened when we appended to
+        // the collection.
         let ptr = (self.data.as_ptr() as *mut u8).add(index * self.element_size);
 
         Some(Mutator {
@@ -192,18 +212,24 @@ impl Values {
 
     /// Get the value as a reference at the given location.
     pub fn get_ref(&self, index: usize) -> Option<ValueRef<'_>> {
-        if index >= self.len {
-            return None;
-        }
+        // Safety note: We need to make sure we don't perform an operation which
+        // overflows the data pointer.
+        //
+        // This is safe because the operation happens before a length check - if
+        // an overflow was possible, it would have happened when we appended to
+        // the collection.
+        unsafe {
+            if index >= self.len {
+                return None;
+            }
 
-        let size = self.element_size;
+            let size = self.element_size;
 
-        let value = unsafe {
             let ptr = self.data.as_ptr().add(index * size);
-            Accessor::as_ref_unchecked(self.ty, ptr)
-        };
+            let value = Accessor::as_ref_unchecked(self.ty, ptr);
 
-        Some(value)
+            Some(value)
+        }
     }
 
     /// Push the given value onto the values collection.
@@ -212,21 +238,28 @@ impl Values {
     ///
     /// This will panic if the value has an incompatible type.
     pub fn push(&mut self, value: Value) {
-        if self.element_size == 0 {
-            self.len += 1;
-            return;
-        }
-
-        self.data.reserve(self.element_size);
-        let pos = self.len * self.element_size;
-
         unsafe {
+            if self.element_size == 0 {
+                self.len = self.len.checked_add(1).expect("length overflowed");
+                return;
+            }
+
+            let pos = self
+                .len
+                .checked_mul(self.element_size)
+                .expect("position overflowed");
+
+            let new_len = pos
+                .checked_add(self.element_size)
+                .expect("length overflowed");
+
+            self.data.reserve(self.element_size);
+
             let ptr = self.data.as_mut_ptr().add(pos);
             Mutator::write_unchecked(self.ty, ptr, value);
-            self.data.set_len(pos + self.element_size);
+            self.data.set_len(new_len);
+            self.len += 1;
         };
-
-        self.len += 1;
     }
 
     /// Append values from one collection to another,
@@ -245,6 +278,12 @@ impl Values {
     /// Removes the element at the given index by swapping it with the element
     /// at the last place and truncating the collection.
     pub fn swap_remove(&mut self, index: usize) -> bool {
+        // Safety note: We need to make sure we don't perform an operation which
+        // overflows the data pointer.
+        //
+        // This is safe because the operation happens before a length check - if
+        // an overflow was possible, it would have happened when we appended to
+        // the collection.
         unsafe {
             if index >= self.len {
                 return false;

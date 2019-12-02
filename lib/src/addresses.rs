@@ -12,6 +12,7 @@ use std::{marker, mem, ptr};
 
 /// A dynamic collection of address, with the goal of supporting efficient delete
 /// operations (through swap_remove), and as much contiguous memory as possible.
+#[derive(Clone)]
 pub struct Addresses {
     pub ty: PointerWidth,
     pub element_size: usize,
@@ -44,11 +45,12 @@ impl Addresses {
     /// Creates a address collection with the given capacity.
     pub fn with_capacity(ty: PointerWidth, cap: usize) -> Self {
         let element_size = ty.size();
+        let cap = element_size.checked_mul(cap).expect("capacity overflowed");
 
         Self {
             ty,
             element_size,
-            data: Vec::with_capacity(element_size * cap),
+            data: Vec::with_capacity(cap),
             len: 0,
         }
     }
@@ -58,40 +60,41 @@ impl Addresses {
     /// This allows for some neat optimizations, like avoiding an allocation in
     /// case we are shrinking the collection.
     pub fn convert_in_place(&mut self, ty: PointerWidth) {
-        if self.ty == ty {
-            return;
-        }
+        unsafe {
+            if self.ty == ty {
+                return;
+            }
 
-        let element_size = ty.size();
+            let element_size = ty.size();
 
-        // shrinking can be done in-place.
-        if element_size <= self.element_size {
-            let mut dst = self.data.as_mut_ptr();
-            let mut src = self.data.as_ptr();
+            // shrinking can be done in-place.
+            if element_size <= self.element_size {
+                let mut dst = self.data.as_mut_ptr();
+                let mut src = self.data.as_ptr();
 
-            for _ in 0..self.len {
-                unsafe {
+                let new_len = element_size
+                    .checked_mul(self.len)
+                    .expect("length overflowed");
+
+                for _ in 0..self.len {
                     let v = self.ty.read_unchecked(src);
                     ty.write_unchecked(dst, v);
                     src = src.add(self.element_size);
                     dst = dst.add(element_size);
-                };
+                }
+
+                self.ty = ty;
+                self.element_size = element_size;
+                self.data.set_len(new_len);
+            } else {
+                let mut new = Addresses::with_capacity(ty, self.len);
+
+                for v in self.iter() {
+                    new.push(v);
+                }
+
+                *self = new;
             }
-
-            self.ty = ty;
-            self.element_size = element_size;
-
-            unsafe {
-                self.data.set_len(element_size * self.len);
-            }
-        } else {
-            let mut new = Addresses::with_capacity(ty, self.len);
-
-            for v in self.iter() {
-                new.push(v);
-            }
-
-            *self = new;
         }
     }
 
@@ -136,27 +139,37 @@ impl Addresses {
 
     /// Get the value at the given location.
     pub fn get(&self, index: usize) -> Option<Address> {
-        if index >= self.len {
-            return None;
+        // Safety note: We need to make sure we don't perform an operation which
+        // overflows the data pointer.
+        //
+        // This is safe because the operation happens before a length check - if
+        // an overflow was possible, it would have happened when we appended to
+        // the collection.
+        unsafe {
+            if index >= self.len {
+                return None;
+            }
+
+            let ptr = self.data.as_ptr().add(index * self.element_size);
+            let value = self.ty.read_unchecked(ptr);
+
+            Some(value)
         }
-
-        let size = self.element_size;
-
-        let value = unsafe {
-            let ptr = self.data.as_ptr().add(index * size);
-            self.ty.read_unchecked(ptr)
-        };
-
-        Some(value)
     }
 
     /// Get accessor related to the given index.
     pub fn get_accessor(&self, index: usize) -> Option<Accessor<'_>> {
-        if index >= self.len {
-            return None;
-        }
-
+        // Safety note: We need to make sure we don't perform an operation which
+        // overflows the data pointer.
+        //
+        // This is safe because the operation happens before a length check - if
+        // an overflow was possible, it would have happened when we appended to
+        // the collection.
         unsafe {
+            if index >= self.len {
+                return None;
+            }
+
             let ptr = self.data.as_ptr().add(index * self.element_size);
 
             Some(Accessor {
@@ -178,6 +191,12 @@ impl Addresses {
             return None;
         }
 
+        // Safety note: We need to make sure we don't perform an operation which
+        // overflows the data pointer.
+        //
+        // This is safe because the operation happens before a length check - if
+        // an overflow was possible, it would have happened when we appended to
+        // the collection.
         let ptr = (self.data.as_ptr() as *mut u8).add(index * self.element_size);
 
         Some(Mutator {
@@ -193,21 +212,28 @@ impl Addresses {
     ///
     /// This will panic if the value has an incompatible type.
     pub fn push(&mut self, value: Address) {
-        if self.element_size == 0 {
-            self.len += 1;
-            return;
-        }
-
-        self.data.reserve(self.element_size);
-        let pos = self.len * self.element_size;
-
         unsafe {
+            if self.element_size == 0 {
+                self.len = self.len.checked_add(1).expect("length overflowed");
+                return;
+            }
+
+            let pos = self
+                .len
+                .checked_mul(self.element_size)
+                .expect("position overflowed");
+
+            let new_len = pos
+                .checked_add(self.element_size)
+                .expect("length overflowed");
+
+            self.data.reserve(self.element_size);
+
             let ptr = self.data.as_mut_ptr().add(pos);
             self.ty.write_unchecked(ptr, value);
-            self.data.set_len(pos + self.element_size);
-        };
-
-        self.len += 1;
+            self.data.set_len(new_len);
+            self.len += 1;
+        }
     }
 
     /// Append address from one collection to another,
@@ -226,6 +252,9 @@ impl Addresses {
     /// Removes the element at the given index by swapping it with the element
     /// at the last place and truncating the collection.
     pub fn swap_remove(&mut self, index: usize) -> bool {
+        // Note: the multiplications in here are checked because if they could
+        // overflow, they would already have overflowed before the element was
+        // removed.
         unsafe {
             if index >= self.len {
                 return false;
@@ -236,16 +265,20 @@ impl Addresses {
                 return true;
             }
 
+            let hole_pos = index * self.element_size;
+
             let ptr = self.data.as_ptr();
-            let hole = self.data.as_mut_ptr().add(index * self.element_size);
+            let hole = self.data.as_mut_ptr().add(hole_pos);
             self.len -= 1;
 
+            let new_len = self.len * self.element_size;
+
             if self.len > 1 {
-                let from = ptr.add(self.len * self.element_size);
+                let from = ptr.add(new_len);
                 ptr::copy_nonoverlapping(from, hole, self.element_size);
             }
 
-            self.data.set_len(self.len * self.element_size);
+            self.data.set_len(new_len);
             true
         }
     }
@@ -273,17 +306,6 @@ impl Addresses {
             end: unsafe { self.data.as_mut_ptr().add(len) },
             element_size: self.element_size,
             _marker: marker::PhantomData,
-        }
-    }
-}
-
-impl Clone for Addresses {
-    fn clone(&self) -> Self {
-        Self {
-            ty: self.ty,
-            element_size: self.element_size,
-            data: self.data.clone(),
-            len: self.len,
         }
     }
 }

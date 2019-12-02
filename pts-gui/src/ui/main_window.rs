@@ -310,12 +310,12 @@ impl MainWindow {
                 }
             }
 
-            let value_type = value_expr
-                .value_type_of(TypeHint::NoHint)?
-                .unwrap_or(filter_expr.value_type_of(TypeHint::NoHint)?)
-                .ok_or_else(|| anyhow!("cannot determine type of value"))?;
-
             let handle = RwLockWriteGuard::downgrade_to_upgradable(handle.write());
+
+            let value_type = value_expr
+                .value_type_of(&*handle, TypeHint::NoHint)?
+                .unwrap_or(filter_expr.value_type_of(&*handle, TypeHint::NoHint)?)
+                .ok_or_else(|| anyhow!("cannot determine type of value"))?;
 
             let modules = handle
                 .get_modules()
@@ -331,7 +331,7 @@ impl MainWindow {
             let handle = RwLockWriteGuard::downgrade(handle);
 
             let mut addresses = Vec::new();
-            let mut values = Values::new(value_type, &*handle);
+            let mut values = Values::new(value_type);
 
             if suspend {
                 handle
@@ -436,21 +436,22 @@ impl MainWindow {
 
         let task = cascade! {
             task::Task::new(main, move |s| {
+                let handle = handle.read();
+
                 let value_type = match filter_expr {
-                    Some(filter_expr) => filter_expr.value_type_of(TypeHint::NoHint)?,
+                    Some(filter_expr) => filter_expr.value_type_of(&*handle, TypeHint::NoHint)?,
                     None => TypeHint::NoHint,
                 };
 
-                let value_type = value_expr.value_type_of(TypeHint::NoHint)?.unwrap_or(value_type);
+                let value_type = value_expr.value_type_of(&*handle, TypeHint::NoHint)?.unwrap_or(value_type);
 
-                let handle = handle.read();
                 let mut scan = scan.write();
                 let scan = optional!(&mut *scan, Ok(None));
 
-                let value_type = value_type.option().unwrap_or(scan.last.ty).unsize(scan.last.ty, &*handle);
+                let value_type = value_type.option().unwrap_or(scan.last.ty).unsize(scan.last.ty);
 
                 if value_type != scan.last.ty {
-                    scan.last.convert_in_place(value_type, &*handle);
+                    scan.last.convert_in_place(&*handle, value_type);
                 }
 
                 handle.refresh_values(

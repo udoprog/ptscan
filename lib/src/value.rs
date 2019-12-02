@@ -1,7 +1,7 @@
 use crate::{
     error::Error,
     utils::{EscapeString, Hex},
-    Address, Encoding, PointerInfo, Type,
+    Address, Encoding, PointerInfo, PointerWidth, Type,
 };
 use anyhow::bail;
 use num_bigint::Sign;
@@ -106,7 +106,7 @@ impl Value {
     pub fn is(&self, ty: Type) -> bool {
         match (self, ty) {
             (Self::None, Type::None) => true,
-            (Self::Pointer(..), Type::Pointer) => true,
+            (Self::Pointer(..), Type::Pointer(..)) => true,
             (Self::U8(..), Type::U8) => true,
             (Self::I8(..), Type::I8) => true,
             (Self::U16(..), Type::U16) => true,
@@ -232,7 +232,7 @@ impl Value {
     }
 
     /// Encode the given buffer into a value.
-    pub fn encode<P>(&self, process: &P, buf: &mut Vec<u8>) -> bool
+    pub fn encode<P>(&self, pointer: &P, buf: &mut Vec<u8>) -> bool
     where
         P: PointerInfo,
     {
@@ -249,8 +249,8 @@ impl Value {
         match *self {
             Self::None => (),
             Self::Pointer(Address(address)) => {
-                let width = process.pointer_width().size();
-                return process.encode_pointer(reserve!(width), address);
+                let width = pointer.pointer_width();
+                return width.encode_pointer::<P::ByteOrder>(reserve!(width.size()), address);
             }
             Self::U8(value) => {
                 buf.reserve(1);
@@ -322,10 +322,10 @@ impl Value {
     }
 
     /// Get the size in bytes of this value.
-    pub fn size(&self, process: &impl PointerInfo) -> Option<usize> {
+    pub fn size(&self, pointer: &impl PointerInfo) -> Option<usize> {
         Some(match self {
             Self::None => return None,
-            Self::Pointer(..) => process.pointer_width().size(),
+            Self::Pointer(..) => pointer.pointer_width().size(),
             Self::U8(..) => mem::size_of::<u8>(),
             Self::I8(..) => mem::size_of::<i8>(),
             Self::U16(..) => mem::size_of::<u16>(),
@@ -348,7 +348,12 @@ impl Value {
         use num::ToPrimitive;
 
         let out = match ty {
-            Type::Pointer => value.to_u64().map(|v| Value::Pointer(Address(v))),
+            Type::Pointer(PointerWidth::Pointer32) => {
+                value.to_u32().map(|v| Value::Pointer(Address(v as u64)))
+            }
+            Type::Pointer(PointerWidth::Pointer64) => {
+                value.to_u64().map(|v| Value::Pointer(Address(v)))
+            }
             Type::U8 => value.to_u8().map(Value::U8),
             Type::I8 => value.to_i8().map(Value::I8),
             Type::U16 => value.to_u16().map(Value::U16),

@@ -1,6 +1,8 @@
 use std::{convert::TryFrom, ffi::OsString, fmt, io, ptr, slice, sync::Arc};
 
-use crate::{error::Error, module, utils, Address, AddressRange, Endianness, ProcessId, Size};
+use crate::{
+    error::Error, module, utils, Address, AddressRange, Endianness, PointerInfo, ProcessId, Size,
+};
 
 use ntapi::ntpsapi;
 use serde::{Deserialize, Serialize};
@@ -13,7 +15,8 @@ use winapi::{
     um::{memoryapi, processthreadsapi, psapi, winnt},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PointerWidth {
     Pointer32,
     Pointer64,
@@ -27,36 +30,94 @@ impl PointerWidth {
             Self::Pointer64 => 8,
         }
     }
+
+    /// Decode the given buffer as a pointer.
+    pub fn decode_pointer<B>(&self, buf: &[u8]) -> Address
+    where
+        B: byteorder::ByteOrder,
+    {
+        assert!(
+            buf.len() == self.size(),
+            "{} (buffer length) != {} (pointer width)",
+            buf.len(),
+            self.size()
+        );
+
+        match self {
+            PointerWidth::Pointer64 => {
+                let address = B::read_u64(buf);
+                Address(address)
+            }
+            PointerWidth::Pointer32 => {
+                let address = B::read_u32(buf);
+                Address(address as u64)
+            }
+        }
+    }
+
+    /// Encode a pointer into the specified buffer.
+    ///
+    /// Returns a boolean indicating if the pointer could be encoded.
+    pub fn encode_pointer<B>(&self, buf: &mut [u8], value: u64) -> bool
+    where
+        B: byteorder::ByteOrder,
+    {
+        match self {
+            PointerWidth::Pointer64 => B::write_u64(buf, value),
+            PointerWidth::Pointer32 => {
+                let value = match u32::try_from(value) {
+                    Ok(value) => value,
+                    Err(..) => return false,
+                };
+
+                B::write_u32(buf, value);
+            }
+        }
+
+        true
+    }
+
+    pub unsafe fn write_unchecked(&self, ptr: *mut u8, value: Address) {
+        use std::ptr::write;
+
+        match *self {
+            Self::Pointer32 => write(ptr as *mut _, u64::from(value) as u32),
+            Self::Pointer64 => write(ptr as *mut _, value),
+        }
+    }
+
+    pub unsafe fn read_unchecked(&self, ptr: *const u8) -> Address {
+        use std::ptr::read;
+
+        Address(match *self {
+            Self::Pointer32 => read(ptr as *const u32) as u64,
+            Self::Pointer64 => read(ptr as *const _),
+        })
+    }
 }
 
 pub trait MemoryReader {
-    type Process: ProcessInfo;
+    type ByteOrder: byteorder::ByteOrder;
 
     fn read_memory(&self, address: Address, buf: &mut [u8]) -> anyhow::Result<usize>;
-
-    fn process(&self) -> &Self::Process;
 }
 
 impl MemoryReader for Process {
-    type Process = Process;
+    type ByteOrder = byteorder::NativeEndian;
 
     fn read_memory(&self, address: Address, buf: &mut [u8]) -> anyhow::Result<usize> {
         Ok(self.read_process_memory(address, buf)?)
-    }
-
-    fn process(&self) -> &Process {
-        self
     }
 }
 
 pub trait ProcessInfo {
     type Process: ProcessInfo;
     type ByteOrder: 'static + Send + Sync + byteorder::ByteOrder;
+    type PointerInfo: PointerInfo;
 
     fn process(&self) -> &Self::Process;
 
-    /// The pointer width of the process.
-    fn pointer_width(&self) -> PointerWidth;
+    fn pointer_info(&self) -> &Self::PointerInfo;
 
     /// Access information on virtual memory for the given address.
     fn virtual_query(&self, address: Address) -> anyhow::Result<Option<MemoryInformation>>;
@@ -67,48 +128,6 @@ pub trait ProcessInfo {
             process: self.process(),
             current: Address::null(),
         }
-    }
-
-    /// Decode the given buffer as a pointer.
-    fn decode_pointer(&self, buf: &[u8]) -> Address {
-        assert!(
-            buf.len() == self.pointer_width().size(),
-            "{} (buffer length) != {} (pointer width)",
-            buf.len(),
-            self.pointer_width().size()
-        );
-
-        match self.pointer_width() {
-            PointerWidth::Pointer64 => {
-                let address = <Self::ByteOrder as byteorder::ByteOrder>::read_u64(buf);
-                Address(address)
-            }
-            PointerWidth::Pointer32 => {
-                let address = <Self::ByteOrder as byteorder::ByteOrder>::read_u32(buf);
-                Address(address as u64)
-            }
-        }
-    }
-
-    /// Encode a pointer into the specified buffer.
-    ///
-    /// Returns a boolean indicating if the pointer could be encoded.
-    fn encode_pointer(&self, buf: &mut [u8], value: u64) -> bool {
-        match self.pointer_width() {
-            PointerWidth::Pointer64 => {
-                <Self::ByteOrder as byteorder::ByteOrder>::write_u64(buf, value)
-            }
-            PointerWidth::Pointer32 => {
-                let value = match u32::try_from(value) {
-                    Ok(value) => value,
-                    Err(..) => return false,
-                };
-
-                <Self::ByteOrder as byteorder::ByteOrder>::write_u32(buf, value);
-            }
-        }
-
-        true
     }
 }
 
@@ -312,16 +331,25 @@ impl Process {
     }
 }
 
+impl PointerInfo for Process {
+    type ByteOrder = <Process as ProcessInfo>::ByteOrder;
+
+    fn pointer_width(&self) -> PointerWidth {
+        self.pointer_width
+    }
+}
+
 impl ProcessInfo for Process {
     type Process = Process;
+    type PointerInfo = Process;
     type ByteOrder = byteorder::NativeEndian;
 
     fn process(&self) -> &Self::Process {
         self
     }
 
-    fn pointer_width(&self) -> PointerWidth {
-        self.pointer_width
+    fn pointer_info(&self) -> &Self::PointerInfo {
+        self
     }
 
     fn virtual_query(&self, address: Address) -> anyhow::Result<Option<MemoryInformation>> {

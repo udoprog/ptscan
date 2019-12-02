@@ -3,7 +3,7 @@ use crate::{
     process::Process,
     utils::{EscapeString, Hex},
     value::Value,
-    Address, Pointer, Proxy, Sign, Type, TypeHint, ValueRef,
+    Address, Pointer, PointerInfo, Proxy, Sign, Type, TypeHint, ValueRef,
 };
 use anyhow::{anyhow, bail};
 use bigdecimal::BigDecimal;
@@ -59,15 +59,15 @@ impl TypedValueExpr<'_> {
             }
             Self::Deref(expr_type, ref value) => {
                 let value = value.eval(initial, last, proxy)?;
-                let value = Type::Pointer.convert(proxy.handle(), value);
+                let value = proxy.handle().pointer_type().convert(proxy.handle(), value);
 
                 let address = match value.as_address() {
                     Some(address) => address,
                     None => return Ok(Value::None),
                 };
 
-                let pointer = Pointer::from(address);
-                let (value, _) = proxy.handle().address_proxy(&pointer).eval(expr_type)?;
+                let p = Pointer::from(address);
+                let (value, _) = proxy.handle().address_proxy(&p).eval(expr_type)?;
                 expr_type.convert(proxy.handle(), value)
             }
             Self::AddressOf(expr_type, ref value) => {
@@ -256,6 +256,7 @@ impl ValueExpr {
     /// Get the type of the expression.
     pub fn type_of(
         &self,
+        pointer: &impl PointerInfo,
         initial_type: TypeHint,
         last_type: TypeHint,
         value_type: TypeHint,
@@ -268,14 +269,16 @@ impl ValueExpr {
             Self::Last => last_type.unwrap_or(default_hint),
             Self::Value => value_type.unwrap_or(default_hint),
             Self::Deref { .. } => default_hint,
-            Self::AddressOf { .. } => Explicit(Type::Pointer),
+            Self::AddressOf { .. } => Explicit(pointer.pointer_type()),
             Self::Binary {
                 op,
                 ref lhs,
                 ref rhs,
             } => {
-                let lhs = lhs.type_of(initial_type, last_type, value_type, default_hint)?;
-                let rhs = rhs.type_of(initial_type, last_type, value_type, default_hint)?;
+                let lhs =
+                    lhs.type_of(pointer, initial_type, last_type, value_type, default_hint)?;
+                let rhs =
+                    rhs.type_of(pointer, initial_type, last_type, value_type, default_hint)?;
 
                 match (lhs, rhs) {
                     (Explicit(lhs), Explicit(rhs)) => {
@@ -311,14 +314,18 @@ impl ValueExpr {
     }
 
     /// Get a type hint for the value type.
-    pub fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
+    pub fn value_type_of(
+        &self,
+        pointer: &impl PointerInfo,
+        cast_type: TypeHint,
+    ) -> anyhow::Result<TypeHint> {
         use self::TypeHint::*;
 
         Ok(match *self {
             Self::Value => cast_type,
             Self::Deref { ref value, .. } => match &**value {
-                Self::Value => Explicit(Type::Pointer),
-                other => other.value_type_of(NoHint)?,
+                Self::Value => Explicit(pointer.pointer_type()),
+                other => other.value_type_of(pointer, NoHint)?,
             },
             Self::Binary {
                 op,
@@ -327,11 +334,11 @@ impl ValueExpr {
                 ..
             } => match (&**lhs, &**rhs) {
                 (Self::Value, other) | (other, Self::Value) => {
-                    other.type_of(NoHint, NoHint, NoHint, NoHint)?
+                    other.type_of(pointer, NoHint, NoHint, NoHint, NoHint)?
                 }
                 (lhs, rhs) => {
-                    let lhs = lhs.value_type_of(cast_type)?;
-                    let rhs = rhs.value_type_of(cast_type)?;
+                    let lhs = lhs.value_type_of(pointer, cast_type)?;
+                    let rhs = rhs.value_type_of(pointer, cast_type)?;
 
                     match (lhs, rhs) {
                         (Explicit(lhs), Explicit(rhs)) => {
@@ -352,7 +359,7 @@ impl ValueExpr {
                 cast_type: inner_type,
             } => match &**expr {
                 Self::Value => Explicit(inner_type),
-                ref other => other.value_type_of(Explicit(inner_type))?,
+                ref other => other.value_type_of(pointer, Explicit(inner_type))?,
             },
             _ => NoHint,
         })
@@ -361,6 +368,7 @@ impl ValueExpr {
     /// Evaluate the expression to return a value.
     pub fn type_check<'a>(
         &'a self,
+        pointer: &impl PointerInfo,
         initial_type: Type,
         last_type: Type,
         value_type: Type,
@@ -377,11 +385,23 @@ impl ValueExpr {
             Self::String { ref value } => TypedValueExpr::String(expr_type, value),
             Self::Bytes { ref value } => TypedValueExpr::Bytes(expr_type, value),
             Self::Deref { ref value } => {
-                let value = value.type_check(initial_type, last_type, value_type, Type::Pointer)?;
+                let value = value.type_check(
+                    pointer,
+                    initial_type,
+                    last_type,
+                    value_type,
+                    pointer.pointer_type(),
+                )?;
                 TypedValueExpr::Deref(expr_type, Box::new(value))
             }
             Self::AddressOf { ref value } => {
-                let value = value.type_check(initial_type, last_type, value_type, Type::Pointer)?;
+                let value = value.type_check(
+                    pointer,
+                    initial_type,
+                    last_type,
+                    value_type,
+                    pointer.pointer_type(),
+                )?;
                 TypedValueExpr::AddressOf(expr_type, Box::new(value))
             }
             Self::Cast {
@@ -390,6 +410,7 @@ impl ValueExpr {
             } => {
                 let inner_type = expr
                     .type_of(
+                        pointer,
                         Explicit(initial_type),
                         Explicit(last_type),
                         Explicit(value_type),
@@ -397,7 +418,8 @@ impl ValueExpr {
                     )?
                     .ok_or_else(|| anyhow!("cannot determine type of expression: {}", expr))?;
 
-                let expr = expr.type_check(initial_type, last_type, value_type, inner_type)?;
+                let expr =
+                    expr.type_check(pointer, initial_type, last_type, value_type, inner_type)?;
                 TypedValueExpr::Cast(expr_type, Box::new(expr))
             }
             Self::Binary {
@@ -405,8 +427,10 @@ impl ValueExpr {
                 ref lhs,
                 ref rhs,
             } => {
-                let lhs = lhs.type_check(initial_type, last_type, value_type, expr_type)?;
-                let rhs = rhs.type_check(initial_type, last_type, value_type, expr_type)?;
+                let lhs =
+                    lhs.type_check(pointer, initial_type, last_type, value_type, expr_type)?;
+                let rhs =
+                    rhs.type_check(pointer, initial_type, last_type, value_type, expr_type)?;
                 TypedValueExpr::Binary(expr_type, op, Box::new(lhs), Box::new(rhs))
             }
         })

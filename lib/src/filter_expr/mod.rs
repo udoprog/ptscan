@@ -1,7 +1,7 @@
 use crate::{
-    error::Error, process::MemoryInformation, scanner, value, AddressRange, Aligned, ProcessInfo,
-    Proxy, Scanner, Sign, Type, TypeHint, TypeSolveError, TypedValueExpr, Unaligned, Value,
-    ValueExpr, ValueRef,
+    error::Error, process::MemoryInformation, scanner, value, AddressRange, Aligned, PointerInfo,
+    ProcessInfo, Proxy, Scanner, Sign, Type, TypeHint, TypeSolveError, TypedValueExpr, Unaligned,
+    Value, ValueExpr, ValueRef,
 };
 use anyhow::bail;
 use hashbrown::HashSet;
@@ -77,65 +77,85 @@ impl FilterExpr {
 
     pub fn type_check(
         &self,
+        pointer: &impl PointerInfo,
         initial_type: Type,
         last_type: Type,
         value_type: Type,
     ) -> anyhow::Result<TypedFilterExpr<'_>> {
         Ok(match self {
-            Self::Binary(m) => {
-                TypedFilterExpr::Binary(m.type_check(initial_type, last_type, value_type)?)
-            }
+            Self::Binary(m) => TypedFilterExpr::Binary(m.type_check(
+                pointer,
+                initial_type,
+                last_type,
+                value_type,
+            )?),
             Self::All(m) => {
-                TypedFilterExpr::All(m.type_check(initial_type, last_type, value_type)?)
+                TypedFilterExpr::All(m.type_check(pointer, initial_type, last_type, value_type)?)
             }
             Self::Any(m) => {
-                TypedFilterExpr::Any(m.type_check(initial_type, last_type, value_type)?)
+                TypedFilterExpr::Any(m.type_check(pointer, initial_type, last_type, value_type)?)
             }
-            Self::IsPointer(m) => {
-                TypedFilterExpr::IsPointer(m.type_check(initial_type, last_type, value_type)?)
-            }
-            Self::IsType(m) => {
-                TypedFilterExpr::IsType(m.type_check(initial_type, last_type, value_type)?)
-            }
-            Self::IsNan(m) => {
-                TypedFilterExpr::IsNan(m.type_check(initial_type, last_type, value_type)?)
-            }
+            Self::IsPointer(m) => TypedFilterExpr::IsPointer(m.type_check(
+                pointer,
+                initial_type,
+                last_type,
+                value_type,
+            )?),
+            Self::IsType(m) => TypedFilterExpr::IsType(m.type_check(
+                pointer,
+                initial_type,
+                last_type,
+                value_type,
+            )?),
+            Self::IsNan(m) => TypedFilterExpr::IsNan(m.type_check(
+                pointer,
+                initial_type,
+                last_type,
+                value_type,
+            )?),
             Self::Not(m) => {
-                TypedFilterExpr::Not(m.type_check(initial_type, last_type, value_type)?)
+                TypedFilterExpr::Not(m.type_check(pointer, initial_type, last_type, value_type)?)
             }
-            Self::Regex(m) => {
-                TypedFilterExpr::Regex(m.type_check(initial_type, last_type, value_type)?)
-            }
+            Self::Regex(m) => TypedFilterExpr::Regex(m.type_check(
+                pointer,
+                initial_type,
+                last_type,
+                value_type,
+            )?),
         })
     }
 
-    pub fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
+    pub fn value_type_of(
+        &self,
+        pointer: &impl PointerInfo,
+        cast_type: TypeHint,
+    ) -> anyhow::Result<TypeHint> {
         match self {
-            Self::Binary(m) => m.value_type_of(cast_type),
-            Self::All(m) => m.value_type_of(cast_type),
-            Self::Any(m) => m.value_type_of(cast_type),
-            Self::IsPointer(m) => m.value_type_of(cast_type),
-            Self::IsType(m) => m.value_type_of(cast_type),
-            Self::IsNan(m) => m.value_type_of(cast_type),
-            Self::Not(m) => m.value_type_of(cast_type),
-            Self::Regex(m) => m.value_type_of(cast_type),
+            Self::Binary(m) => m.value_type_of(pointer, cast_type),
+            Self::All(m) => m.value_type_of(pointer, cast_type),
+            Self::Any(m) => m.value_type_of(pointer, cast_type),
+            Self::IsPointer(m) => m.value_type_of(pointer, cast_type),
+            Self::IsType(m) => m.value_type_of(pointer, cast_type),
+            Self::IsNan(m) => m.value_type_of(pointer, cast_type),
+            Self::Not(m) => m.value_type_of(pointer, cast_type),
+            Self::Regex(m) => m.value_type_of(pointer, cast_type),
         }
     }
 
     /// Construct a special filter.
     pub fn special(
         &self,
-        process: &impl ProcessInfo,
+        pointer: &impl PointerInfo,
         value_type: Type,
     ) -> anyhow::Result<Option<Special>> {
         match self {
-            Self::Binary(m) => m.special(process, value_type),
-            Self::All(m) => m.special(process, value_type),
-            Self::Any(m) => m.special(process, value_type),
-            Self::IsPointer(..) => Ok(Some(Special::NonZero(value_type.size(process)))),
+            Self::Binary(m) => m.special(pointer, value_type),
+            Self::All(m) => m.special(pointer, value_type),
+            Self::Any(m) => m.special(pointer, value_type),
+            Self::IsPointer(..) => Ok(Some(Special::NonZero(Some(pointer.pointer_width().size())))),
             Self::IsType(..) => Ok(None),
-            Self::IsNan(is_nan) => is_nan.special(process, value_type),
-            Self::Not(m) => m.special(process, value_type),
+            Self::IsNan(is_nan) => is_nan.special(pointer, value_type),
+            Self::Not(m) => m.special(pointer, value_type),
             Self::Regex(m) => m.special(),
         }
     }
@@ -144,11 +164,11 @@ impl FilterExpr {
     pub fn scanner(
         &self,
         alignment: Option<usize>,
-        process: &impl ProcessInfo,
+        pointer: &impl PointerInfo,
         value_type: Type,
     ) -> anyhow::Result<Option<Box<dyn Scanner>>> {
         match self {
-            Self::Binary(m) => m.scanner(alignment, process, value_type),
+            Self::Binary(m) => m.scanner(alignment, pointer, value_type),
             _ => Ok(None),
         }
     }
@@ -283,6 +303,7 @@ impl Binary {
     /// Type check the binary expression.
     pub fn type_check(
         &self,
+        pointer: &impl PointerInfo,
         initial_type: Type,
         last_type: Type,
         value_type: Type,
@@ -292,6 +313,7 @@ impl Binary {
         let Self(op, lhs, rhs) = self;
 
         let lhs_type = lhs.type_of(
+            pointer,
             Explicit(initial_type),
             Explicit(last_type),
             Explicit(value_type),
@@ -299,6 +321,7 @@ impl Binary {
         )?;
 
         let rhs_type = rhs.type_of(
+            pointer,
             Explicit(initial_type),
             Explicit(last_type),
             Explicit(value_type),
@@ -312,13 +335,17 @@ impl Binary {
             }
         };
 
-        let lhs = lhs.type_check(initial_type, last_type, value_type, expr_type)?;
-        let rhs = rhs.type_check(initial_type, last_type, value_type, expr_type)?;
+        let lhs = lhs.type_check(pointer, initial_type, last_type, value_type, expr_type)?;
+        let rhs = rhs.type_check(pointer, initial_type, last_type, value_type, expr_type)?;
 
         Ok(TypedBinary(*op, lhs, rhs))
     }
 
-    fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
+    fn value_type_of(
+        &self,
+        pointer: &impl PointerInfo,
+        cast_type: TypeHint,
+    ) -> anyhow::Result<TypeHint> {
         use self::TypeHint::*;
 
         // comparison including value.
@@ -326,18 +353,18 @@ impl Binary {
 
         let (lhs, rhs) = match (lhs, rhs) {
             (ValueExpr::Value, rhs) => {
-                let lhs = lhs.value_type_of(cast_type)?;
-                let rhs = rhs.type_of(NoHint, NoHint, cast_type, NoHint)?;
+                let lhs = lhs.value_type_of(pointer, cast_type)?;
+                let rhs = rhs.type_of(pointer, NoHint, NoHint, cast_type, NoHint)?;
                 (lhs, rhs)
             }
             (lhs, ValueExpr::Value) => {
-                let lhs = lhs.type_of(NoHint, NoHint, cast_type, NoHint)?;
-                let rhs = rhs.value_type_of(cast_type)?;
+                let lhs = lhs.type_of(pointer, NoHint, NoHint, cast_type, NoHint)?;
+                let rhs = rhs.value_type_of(pointer, cast_type)?;
                 (lhs, rhs)
             }
             (lhs, rhs) => {
-                let lhs = lhs.value_type_of(cast_type)?;
-                let rhs = rhs.value_type_of(cast_type)?;
+                let lhs = lhs.value_type_of(pointer, cast_type)?;
+                let rhs = rhs.value_type_of(pointer, cast_type)?;
                 (lhs, rhs)
             }
         };
@@ -358,7 +385,7 @@ impl Binary {
 
     fn special(
         &self,
-        process: &impl ProcessInfo,
+        pointer: &impl PointerInfo,
         value_type: Type,
     ) -> anyhow::Result<Option<Special>> {
         use self::FilterOp::*;
@@ -387,10 +414,10 @@ impl Binary {
         };
 
         if let Some(value) = exact {
-            let width = value.size(process).unwrap_or(16);
+            let width = value.size(pointer).unwrap_or(16);
             let mut buf = Vec::with_capacity(width);
 
-            value.encode(process, &mut buf);
+            value.encode(pointer, &mut buf);
 
             if buf.iter().all(|c| *c == 0) {
                 return Ok(Some(Special::Zero(width)));
@@ -421,7 +448,7 @@ impl Binary {
         };
 
         if non_zero {
-            return Ok(Some(Special::NonZero(value_type.size(process))));
+            return Ok(Some(Special::NonZero(value_type.size())));
         }
 
         Ok(None)
@@ -430,11 +457,11 @@ impl Binary {
     fn scanner<P>(
         &self,
         alignment: Option<usize>,
-        process: &P,
+        pointer: &P,
         value_type: Type,
     ) -> anyhow::Result<Option<Box<dyn Scanner>>>
     where
-        P: ProcessInfo,
+        P: PointerInfo,
     {
         use self::FilterOp::*;
         use self::ValueExpr::*;
@@ -458,19 +485,21 @@ impl Binary {
         };
 
         if let Some(value) = not_equal {
-            if let (Some(type_size), Some(alignment)) = (value.size(process), alignment) {
+            if let (Some(type_size), Some(alignment)) = (value.size(pointer), alignment) {
                 let mut buf = Vec::with_capacity(type_size);
-                value.encode(process, &mut buf);
+                value.encode(pointer, &mut buf);
 
                 if buf.iter().all(|c| *c == 0) {
-                    return Ok(Some(Box::new(
-                        scanner::BytesScanner::<_, P::ByteOrder, _>::new(
-                            scanner::FindNonZero,
-                            Aligned(alignment),
-                            type_size,
-                            value_type,
-                        ),
-                    )));
+                    return Ok(Some(Box::new(scanner::BytesScanner::<
+                        _,
+                        <P as PointerInfo>::ByteOrder,
+                        _,
+                    >::new(
+                        scanner::FindNonZero,
+                        Aligned(alignment),
+                        type_size,
+                        value_type,
+                    ))));
                 }
             }
         }
@@ -492,33 +521,39 @@ impl Binary {
         };
 
         if let Some(value) = equal {
-            if let Some(type_size) = value.size(process) {
+            if let Some(type_size) = value.size(pointer) {
                 let mut buffer = Vec::with_capacity(type_size);
-                value.encode(process, &mut buffer);
+                value.encode(pointer, &mut buffer);
 
                 if buffer.iter().all(|c| *c == 0) {
                     if let Some(alignment) = alignment {
-                        return Ok(Some(Box::new(
-                            scanner::BytesScanner::<_, P::ByteOrder, _>::new(
-                                scanner::FindZero,
-                                Aligned(alignment),
-                                type_size,
-                                value_type,
-                            ),
-                        )));
+                        return Ok(Some(Box::new(scanner::BytesScanner::<
+                            _,
+                            <P as PointerInfo>::ByteOrder,
+                            _,
+                        >::new(
+                            scanner::FindZero,
+                            Aligned(alignment),
+                            type_size,
+                            value_type,
+                        ))));
                     } else {
-                        return Ok(Some(Box::new(
-                            scanner::BytesScanner::<_, P::ByteOrder, _>::new(
-                                scanner::FindZero,
-                                Unaligned,
-                                type_size,
-                                value_type,
-                            ),
-                        )));
+                        return Ok(Some(Box::new(scanner::BytesScanner::<
+                            _,
+                            <P as PointerInfo>::ByteOrder,
+                            _,
+                        >::new(
+                            scanner::FindZero,
+                            Unaligned,
+                            type_size,
+                            value_type,
+                        ))));
                     }
                 } else {
-                    return Ok(Some(Box::new(scanner::BufferScanner::<P::ByteOrder>::new(
-                        value_type, buffer,
+                    return Ok(Some(Box::new(scanner::BufferScanner::<
+                        <P as PointerInfo>::ByteOrder,
+                    >::new(
+                        value_type, buffer
                     ))));
                 }
             }
@@ -569,6 +604,7 @@ impl All {
     /// Type check the all expression.
     fn type_check(
         &self,
+        pointer: &impl PointerInfo,
         initial_type: Type,
         last_type: Type,
         value_type: Type,
@@ -576,25 +612,29 @@ impl All {
         let mut all = Vec::new();
 
         for m in &self.0 {
-            all.push(m.type_check(initial_type, last_type, value_type)?);
+            all.push(m.type_check(pointer, initial_type, last_type, value_type)?);
         }
 
         Ok(TypedAll(all))
     }
 
-    fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
-        collection_value_type_of(self, &self.0, cast_type)
+    fn value_type_of(
+        &self,
+        pointer: &impl PointerInfo,
+        cast_type: TypeHint,
+    ) -> anyhow::Result<TypeHint> {
+        collection_value_type_of(self, pointer, &self.0, cast_type)
     }
 
     pub fn special(
         &self,
-        process: &impl ProcessInfo,
+        pointer: &impl PointerInfo,
         value_type: Type,
     ) -> anyhow::Result<Option<Special>> {
         let mut all = Vec::new();
 
         for e in &self.0 {
-            if let Some(special) = e.special(process, value_type)? {
+            if let Some(special) = e.special(pointer, value_type)? {
                 all.push(special);
             }
         }
@@ -658,6 +698,7 @@ impl Any {
     /// Type check the all expression.
     fn type_check(
         &self,
+        pointer: &impl PointerInfo,
         initial_type: Type,
         last_type: Type,
         value_type: Type,
@@ -665,25 +706,29 @@ impl Any {
         let mut any = Vec::new();
 
         for m in &self.0 {
-            any.push(m.type_check(initial_type, last_type, value_type)?);
+            any.push(m.type_check(pointer, initial_type, last_type, value_type)?);
         }
 
         Ok(TypedAny(any))
     }
 
-    fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
-        collection_value_type_of(self, &self.0, cast_type)
+    fn value_type_of(
+        &self,
+        pointer: &impl PointerInfo,
+        cast_type: TypeHint,
+    ) -> anyhow::Result<TypeHint> {
+        collection_value_type_of(self, pointer, &self.0, cast_type)
     }
 
     pub fn special(
         &self,
-        process: &impl ProcessInfo,
+        pointer: &impl PointerInfo,
         value_type: Type,
     ) -> anyhow::Result<Option<Special>> {
         let mut any = Vec::new();
 
         for e in &self.0 {
-            match e.special(process, value_type)? {
+            match e.special(pointer, value_type)? {
                 Some(special) => any.push(special),
                 None => return Ok(None),
             }
@@ -773,6 +818,7 @@ impl IsPointer {
     /// Type check the all expression.
     fn type_check(
         &self,
+        pointer: &impl PointerInfo,
         initial_type: Type,
         last_type: Type,
         value_type: Type,
@@ -780,6 +826,7 @@ impl IsPointer {
         let expr_type = self
             .expr
             .type_of(
+                pointer,
                 TypeHint::Explicit(initial_type),
                 TypeHint::Explicit(last_type),
                 TypeHint::Explicit(value_type),
@@ -789,7 +836,7 @@ impl IsPointer {
 
         let expr = self
             .expr
-            .type_check(initial_type, last_type, value_type, expr_type)?;
+            .type_check(pointer, initial_type, last_type, value_type, expr_type)?;
 
         Ok(TypedIsPointer {
             expr,
@@ -797,8 +844,9 @@ impl IsPointer {
         })
     }
 
-    fn value_type_of(&self, _: TypeHint) -> anyhow::Result<TypeHint> {
-        self.expr.value_type_of(TypeHint::Explicit(Type::Pointer))
+    fn value_type_of(&self, pointer: &impl PointerInfo, _: TypeHint) -> anyhow::Result<TypeHint> {
+        self.expr
+            .value_type_of(pointer, TypeHint::Explicit(pointer.pointer_type()))
     }
 }
 
@@ -844,6 +892,7 @@ impl IsType {
 
     pub fn type_check(
         &self,
+        pointer: &impl PointerInfo,
         initial_type: Type,
         last_type: Type,
         value_type: Type,
@@ -852,6 +901,7 @@ impl IsType {
 
         let expr_type = expr
             .type_of(
+                pointer,
                 TypeHint::Explicit(initial_type),
                 TypeHint::Explicit(last_type),
                 TypeHint::Explicit(value_type),
@@ -859,13 +909,14 @@ impl IsType {
             )?
             .ok_or_else(|| Error::TypeInference(expr.clone()))?;
 
-        let expr = expr.type_check(initial_type, last_type, value_type, expr_type)?;
+        let expr = expr.type_check(pointer, initial_type, last_type, value_type, expr_type)?;
 
         Ok(TypedIsType { expr, ty: *ty })
     }
 
-    fn value_type_of(&self, _: TypeHint) -> anyhow::Result<TypeHint> {
-        self.expr.value_type_of(TypeHint::Explicit(self.ty))
+    fn value_type_of(&self, pointer: &impl PointerInfo, _: TypeHint) -> anyhow::Result<TypeHint> {
+        self.expr
+            .value_type_of(pointer, TypeHint::Explicit(self.ty))
     }
 }
 
@@ -911,6 +962,7 @@ impl IsNan {
 
     fn type_check(
         &self,
+        pointer: &impl PointerInfo,
         initial_type: Type,
         last_type: Type,
         value_type: Type,
@@ -918,6 +970,7 @@ impl IsNan {
         let expr_type = self
             .expr
             .type_of(
+                pointer,
                 TypeHint::Explicit(initial_type),
                 TypeHint::Explicit(last_type),
                 TypeHint::Explicit(value_type),
@@ -927,21 +980,22 @@ impl IsNan {
 
         let expr = self
             .expr
-            .type_check(initial_type, last_type, value_type, expr_type)?;
+            .type_check(pointer, initial_type, last_type, value_type, expr_type)?;
 
         Ok(TypedIsNan { expr })
     }
 
     pub fn special(
         &self,
-        process: &impl ProcessInfo,
+        _: &impl PointerInfo,
         value_type: Type,
     ) -> anyhow::Result<Option<Special>> {
-        Ok(Some(Special::NonZero(value_type.size(process))))
+        Ok(Some(Special::NonZero(value_type.size())))
     }
 
-    fn value_type_of(&self, _: TypeHint) -> anyhow::Result<TypeHint> {
-        self.expr.value_type_of(TypeHint::Implicit(Type::F32))
+    fn value_type_of(&self, pointer: &impl PointerInfo, _: TypeHint) -> anyhow::Result<TypeHint> {
+        self.expr
+            .value_type_of(pointer, TypeHint::Implicit(Type::F32))
     }
 }
 
@@ -975,30 +1029,35 @@ pub struct Not {
 impl Not {
     fn type_check(
         &self,
+        pointer: &impl PointerInfo,
         initial_type: Type,
         last_type: Type,
         value_type: Type,
     ) -> anyhow::Result<TypedNot<'_>> {
         let filter = self
             .filter
-            .type_check(initial_type, last_type, value_type)?;
+            .type_check(pointer, initial_type, last_type, value_type)?;
 
         Ok(TypedNot {
             filter: Box::new(filter),
         })
     }
 
-    fn value_type_of(&self, cast_type: TypeHint) -> anyhow::Result<TypeHint> {
-        self.filter.value_type_of(cast_type)
+    fn value_type_of(
+        &self,
+        pointer: &impl PointerInfo,
+        cast_type: TypeHint,
+    ) -> anyhow::Result<TypeHint> {
+        self.filter.value_type_of(pointer, cast_type)
     }
 
     pub fn special(
         &self,
-        process: &impl ProcessInfo,
+        pointer: &impl PointerInfo,
         value_type: Type,
     ) -> anyhow::Result<Option<Special>> {
         // erase or fix specializations produced.
-        let special = match self.filter.special(process, value_type)? {
+        let special = match self.filter.special(pointer, value_type)? {
             Some(special) => special,
             None => return Ok(None),
         };
@@ -1066,6 +1125,7 @@ impl Regex {
 
     fn type_check(
         &self,
+        pointer: &impl PointerInfo,
         initial_type: Type,
         last_type: Type,
         value_type: Type,
@@ -1073,6 +1133,7 @@ impl Regex {
         let expr_type = self
             .expr
             .type_of(
+                pointer,
                 TypeHint::Explicit(initial_type),
                 TypeHint::Explicit(last_type),
                 TypeHint::Explicit(value_type),
@@ -1082,7 +1143,7 @@ impl Regex {
 
         let expr = self
             .expr
-            .type_check(initial_type, last_type, value_type, expr_type)?;
+            .type_check(pointer, initial_type, last_type, value_type, expr_type)?;
 
         Ok(TypedRegex {
             expr,
@@ -1090,9 +1151,11 @@ impl Regex {
         })
     }
 
-    fn value_type_of(&self, _: TypeHint) -> anyhow::Result<TypeHint> {
-        self.expr
-            .value_type_of(TypeHint::Implicit(Type::String(Default::default())))
+    fn value_type_of(&self, pointer: &impl PointerInfo, _: TypeHint) -> anyhow::Result<TypeHint> {
+        self.expr.value_type_of(
+            pointer,
+            TypeHint::Implicit(Type::String(Default::default())),
+        )
     }
 
     pub fn special(&self) -> anyhow::Result<Option<Special>> {
@@ -1130,6 +1193,7 @@ impl fmt::Display for Regex {
 /// Helper to figure out the value type of a collection of expressions.
 fn collection_value_type_of(
     expr: &impl fmt::Display,
+    pointer: &impl PointerInfo,
     exprs: &[FilterExpr],
     cast_type: TypeHint,
 ) -> anyhow::Result<TypeHint> {
@@ -1139,7 +1203,7 @@ fn collection_value_type_of(
     let mut implicits = HashSet::new();
 
     for v in exprs {
-        match v.value_type_of(cast_type)? {
+        match v.value_type_of(pointer, cast_type)? {
             Explicit(ty) => {
                 explicits.insert(ty);
             }

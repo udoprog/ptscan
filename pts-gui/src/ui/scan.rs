@@ -364,16 +364,16 @@ impl Scan {
                 };
 
                 let value_type = match filter_expr {
-                    Some(filter_expr) => filter_expr.value_type_of(TypeHint::NoHint)?.into_implicit(),
+                    Some(filter_expr) => filter_expr.value_type_of(&*handle, TypeHint::NoHint)?.into_implicit(),
                     None => TypeHint::NoHint,
                 };
 
-                let value_type = value_expr.value_type_of(TypeHint::NoHint)?.solve(value_type)?;
-                let value_type = value_type.option().unwrap_or(last_type).unsize(last_type, &*handle);
+                let value_type = value_expr.value_type_of(&*handle, TypeHint::NoHint)?.solve(value_type)?;
+                let value_type = value_type.option().unwrap_or(last_type).unsize(last_type);
 
                 // NB: need to convert the value storage in case current type differs.
                 let type_change = if value_type != current.ty {
-                    current.convert_in_place(value_type, &*handle);
+                    current.convert_in_place(&*handle, value_type);
                     true
                 } else {
                     false

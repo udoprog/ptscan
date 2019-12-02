@@ -2,9 +2,9 @@ use crate::{prelude::*, ui::EditScanResultDialog};
 use anyhow::anyhow;
 use parking_lot::RwLock;
 use ptscan::{
-    FilterExpr, FollowablePointer as _, PointerScan, PointerScanBackreferenceProgress,
-    PointerScanInitialProgress, PortablePointer, ProcessHandle, Size, Type, Value, ValueExpr,
-    Values,
+    FilterExpr, FollowablePointer as _, PointerInfo as _, PointerScan,
+    PointerScanBackreferenceProgress, PointerScanInitialProgress, PortablePointer, ProcessHandle,
+    Size, Type, Value, ValueExpr, Values,
 };
 use std::{
     cell::RefCell,
@@ -423,7 +423,7 @@ impl Scratch {
                 let token = c.as_token();
 
                 let mut addresses = Vec::new();
-                let mut values = Values::new(Type::Pointer, &handle.process);
+                let mut values = Values::new(handle.process.pointer_type());
 
                 handle.initial_scan(
                     &*thread_pool,

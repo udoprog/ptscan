@@ -1,6 +1,6 @@
 use crate::{
     address, encoding, error::Error, process::MemoryReader, Address, Encoding, PointerInfo,
-    ProcessHandle, ProcessInfo, Value,
+    PointerWidth, Value,
 };
 use anyhow::bail;
 use byteorder::ByteOrder as _;
@@ -56,7 +56,7 @@ macro_rules! convert {
     (@a $type_to:ident, $value_from:ident, {$([$variant:ident, $ty:ty]),*}, {$([$cast_variant:ident, $cast_ty:ty]),*}) => {
         match $type_to {
             $(
-                Self::$variant => convert!(@try_from $type_to, $value_from, $variant, $ty, {
+                Self::$variant{..} => convert!(@try_from $type_to, $value_from, $variant, $ty, {
                     Pointer,
                     U8,
                     I8,
@@ -122,7 +122,7 @@ macro_rules! convert {
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum Type {
     None,
-    Pointer,
+    Pointer(PointerWidth),
     U8,
     I8,
     U16,
@@ -149,9 +149,9 @@ impl Type {
     }
 
     /// If the type is unsized, try to complement it with an old type.
-    pub fn unsize(self, old: Type, process: &impl PointerInfo) -> Self {
+    pub fn unsize(self, old: Type) -> Self {
         match self {
-            Self::Bytes(None) => Self::Bytes(old.size(process)),
+            Self::Bytes(None) => Self::Bytes(old.size()),
             other => other,
         }
     }
@@ -160,7 +160,7 @@ impl Type {
     pub fn convert(self, pointer: &impl PointerInfo, other: Value) -> Value {
         match (self, other) {
             (Self::None, Value::None) => Value::None,
-            (Self::Pointer, other @ Value::Pointer(..)) => other,
+            (Self::Pointer(..), other @ Value::Pointer(..)) => other,
             (Self::U8, other @ Value::U8(..)) => other,
             (Self::I8, other @ Value::I8(..)) => other,
             (Self::U16, other @ Value::U16(..)) => other,
@@ -212,7 +212,7 @@ impl Type {
     pub fn default_value(&self) -> Value {
         match *self {
             Self::None => Value::None,
-            Self::Pointer => Value::Pointer(Default::default()),
+            Self::Pointer(..) => Value::Pointer(Default::default()),
             Self::U8 => Value::U8(Default::default()),
             Self::I8 => Value::I8(Default::default()),
             Self::U16 => Value::U16(Default::default()),
@@ -234,7 +234,7 @@ impl Type {
     /// Parse a string value of the type.
     pub fn parse(&self, input: &str) -> Result<Value, ValueParseError> {
         let value = match *self {
-            Self::Pointer => {
+            Self::Pointer(..) => {
                 return Ok(Value::Pointer(
                     str::parse::<Address>(input).map_err(ValueParseError::Address)?,
                 ));
@@ -270,7 +270,7 @@ impl Type {
         use std::str::FromStr as _;
 
         let value = match *self {
-            Self::Pointer => {
+            Self::Pointer(..) => {
                 return Address::from_str(input)
                     .map(Value::Pointer)
                     .map_err(ValueParseError::Address)
@@ -293,13 +293,13 @@ impl Type {
 
     /// The default alignment for every type.
     #[inline]
-    pub fn alignment<P>(&self, process: &P) -> Option<usize>
+    pub fn alignment<P>(&self, pointer: &P) -> Option<usize>
     where
-        P: ProcessInfo,
+        P: PointerInfo,
     {
         Some(match *self {
             Self::None => return None,
-            Self::Pointer => process.pointer_width().size(),
+            Self::Pointer(width) => width.size(),
             Self::U8 => mem::size_of::<u8>(),
             Self::I8 => mem::size_of::<i8>(),
             Self::U16 => mem::size_of::<u16>(),
@@ -312,17 +312,17 @@ impl Type {
             Self::I128 => mem::size_of::<i128>(),
             Self::F32 => mem::size_of::<f32>(),
             Self::F64 => mem::size_of::<f64>(),
-            Self::Bytes(..) => process.pointer_width().size(),
+            Self::Bytes(..) => pointer.pointer_width().size(),
             Self::String(encoding) => encoding.alignment(),
         })
     }
 
     /// The known in-memory size that a type has.
     #[inline]
-    pub fn size(&self, process: &impl PointerInfo) -> Option<usize> {
+    pub fn size(&self) -> Option<usize> {
         Some(match *self {
             Self::None => 0,
-            Self::Pointer => process.pointer_width().size(),
+            Self::Pointer(width) => width.size(),
             Self::U8 => mem::size_of::<u8>(),
             Self::I8 => mem::size_of::<i8>(),
             Self::U16 => mem::size_of::<u16>(),
@@ -342,10 +342,10 @@ impl Type {
 
     /// The known in-memory size that a type has.
     #[inline]
-    pub fn element_size(&self, pointer: &impl PointerInfo) -> usize {
+    pub fn element_size(&self) -> usize {
         match *self {
             Self::None => 0,
-            Self::Pointer => pointer.pointer_width().size(),
+            Self::Pointer(width) => width.size(),
             Self::U8 => mem::size_of::<u8>(),
             Self::I8 => mem::size_of::<i8>(),
             Self::U16 => mem::size_of::<u16>(),
@@ -378,7 +378,7 @@ impl Type {
                     );
                 }
 
-                <<R as MemoryReader>::Process as ProcessInfo>::ByteOrder::$reader($buf) as $ty
+                <R as MemoryReader>::ByteOrder::$reader($buf) as $ty
             }};
         }
 
@@ -392,7 +392,7 @@ impl Type {
             }};
         }
 
-        if let Some(size) = self.size(reader.process()) {
+        if let Some(size) = self.size() {
             let mut buf = vec![0u8; size];
 
             let len = reader.read_memory(address, &mut buf)?;
@@ -405,7 +405,7 @@ impl Type {
 
             let value = match self {
                 Self::None => Value::None,
-                Self::Pointer => Value::Pointer(reader.process().decode_pointer(buf)),
+                Self::Pointer(width) => Value::Pointer(width.decode_pointer::<R::ByteOrder>(buf)),
                 Self::U8 => Value::U8(decode_byte!(buf, u8)),
                 Self::I8 => Value::I8(decode_byte!(buf, i8)),
                 Self::U16 => Value::U16(decode_buf!(buf, u16, read_u16)),
@@ -432,11 +432,7 @@ impl Type {
     }
 
     /// Decode the given data as a fixed-length value.
-    pub fn decode_fixed<B: byteorder::ByteOrder>(
-        self,
-        handle: &ProcessHandle,
-        data: &[u8],
-    ) -> Value {
+    pub fn decode_fixed<B: byteorder::ByteOrder>(self, data: &[u8]) -> Value {
         macro_rules! decode_buf {
             ($ty:ty, $reader:ident) => {{
                 if data.len() < std::mem::size_of::<$ty>() {
@@ -459,7 +455,7 @@ impl Type {
 
         match self {
             Self::None => Value::None,
-            Self::Pointer => Value::Pointer(handle.process.decode_pointer(data)),
+            Self::Pointer(width) => Value::Pointer(width.decode_pointer::<B>(data)),
             Self::U8 => Value::U8(decode_byte!(u8)),
             Self::I8 => Value::I8(decode_byte!(i8)),
             Self::U16 => Value::U16(decode_buf!(u16, read_u16)),
@@ -493,7 +489,7 @@ impl fmt::Display for Type {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let o = match *self {
             Type::None => "none",
-            Type::Pointer => "pointer",
+            Type::Pointer(..) => "pointer",
             Type::U8 => "u8",
             Type::I8 => "i8",
             Type::U16 => "u16",
@@ -528,7 +524,8 @@ impl str::FromStr for Type {
         };
 
         let ty = match (first, ext) {
-            ("pointer", None) => Type::Pointer,
+            // TODO: get pointer information from process.
+            ("pointer", None) => Type::Pointer(PointerWidth::Pointer64),
             ("u8", None) => Type::U8,
             ("i8", None) => Type::I8,
             ("u16", None) => Type::U16,
@@ -577,7 +574,7 @@ impl fmt::Display for HumanDisplay {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.ty {
             Type::None => write!(fmt, "none"),
-            Type::Pointer => write!(fmt, "pointer"),
+            Type::Pointer(..) => write!(fmt, "pointer"),
             Type::U8 => write!(fmt, "unsigned 8-bit number"),
             Type::I8 => write!(fmt, "signed 8-bit number"),
             Type::U16 => write!(fmt, "unsigned 16-bit number"),

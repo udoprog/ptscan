@@ -6,8 +6,8 @@ lalrpop_util::lalrpop_mod!(
 );
 
 use crate::{
-    process_handle::ProcessHandle, utils::EscapeString, Address, Offset, PointerWidth, ProcessInfo,
-    Sign, Size,
+    process_handle::ProcessHandle, utils::EscapeString, Address, Offset, PointerWidth, Sign, Size,
+    Type,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -24,27 +24,13 @@ pub trait FollowablePointer {
 }
 
 pub trait PointerInfo {
-    type ByteOrder: byteorder::ByteOrder;
+    type ByteOrder: 'static + Send + Sync + byteorder::ByteOrder;
 
     /// Get the width of a pointer in the system.
     fn pointer_width(&self) -> PointerWidth;
 
-    /// Encode the pointer.
-    fn encode_pointer(&self, buf: &mut [u8], value: u64) -> bool;
-}
-
-impl<T> PointerInfo for T
-where
-    T: ProcessInfo,
-{
-    type ByteOrder = T::ByteOrder;
-
-    fn pointer_width(&self) -> PointerWidth {
-        ProcessInfo::pointer_width(self)
-    }
-
-    fn encode_pointer(&self, buf: &mut [u8], value: u64) -> bool {
-        ProcessInfo::encode_pointer(self, buf, value)
+    fn pointer_type(&self) -> Type {
+        Type::Pointer(self.pointer_width())
     }
 }
 
@@ -310,7 +296,10 @@ impl FollowablePointer for PortablePointer {
                 return Ok(None);
             }
 
-            current = handle.process.decode_pointer(&buf);
+            current = handle
+                .process
+                .pointer_width
+                .decode_pointer::<<ProcessHandle as PointerInfo>::ByteOrder>(&buf);
 
             current = match current.checked_offset(*o) {
                 Some(current) => current,
@@ -417,7 +406,9 @@ impl FollowablePointer for Pointer {
                 return Ok(None);
             }
 
-            current = handle.process.decode_pointer(&buf);
+            current = handle
+                .pointer_width()
+                .decode_pointer::<<ProcessHandle as PointerInfo>::ByteOrder>(&buf);
 
             current = match current.checked_offset(*o) {
                 Some(current) => current,

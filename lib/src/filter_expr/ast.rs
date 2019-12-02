@@ -48,7 +48,7 @@ impl FilterExpr {
                 let expr = expr.eval(process)?;
 
                 match ty {
-                    Type::Pointer => {
+                    Type::Pointer(..) => {
                         super::FilterExpr::IsPointer(super::IsPointer::new(expr, process)?)
                     }
                     ty => super::FilterExpr::IsType(super::IsType::new(expr, ty)?),

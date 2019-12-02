@@ -272,7 +272,7 @@ where
                 continue;
             }
 
-            let value = self.value_type.decode_fixed::<B>(handle, d);
+            let value = self.value_type.decode_fixed::<B>(d);
 
             let address = match address {
                 Some(address) => address,
@@ -322,7 +322,7 @@ where
     fn scan(
         &self,
         base: Address,
-        handle: &ProcessHandle,
+        _: &ProcessHandle,
         data: &[u8],
         addresses: &mut Vec<Address>,
         values: &mut Values,
@@ -352,7 +352,7 @@ where
                 continue;
             }
 
-            let value = self.value_type.decode_fixed::<B>(handle, d);
+            let value = self.value_type.decode_fixed::<B>(d);
             let address = match base.checked_add(o.try_into()?) {
                 Some(address) => address,
                 None => break,

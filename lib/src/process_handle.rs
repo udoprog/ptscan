@@ -3,9 +3,9 @@
 use crate::{
     error::Error, filter_expr::FilterExpr, progress_reporter::ProgressReporter, system,
     thread::Thread, utils::IteratorExtension as _, values, Address, AddressRange, Base, Cached,
-    DefaultScanner, FollowablePointer, MemoryInformation, MemoryReader, Pointer, PointerWidth,
-    PortableBase, Process, ProcessId, ProcessInfo, Scanner, Size, Test, ThreadId, Token, Type,
-    TypeHint, Value, ValueExpr, ValueRef, Values,
+    DefaultScanner, FollowablePointer, MemoryInformation, MemoryReader, Pointer, PointerInfo,
+    PointerWidth, PortableBase, Process, ProcessId, ProcessInfo, Scanner, Size, Test, ThreadId,
+    Token, Type, TypeHint, Value, ValueExpr, ValueRef, Values,
 };
 use anyhow::{anyhow, bail, Context as _};
 use crossbeam_queue::SegQueue;
@@ -359,7 +359,9 @@ impl ProcessHandle {
 
         for (n, w) in buf.chunks(ptr_width.as_usize()).enumerate().rev() {
             // TODO: make independent of host architecture (use u64).
-            let ptr = process.decode_pointer(w);
+            let ptr = process
+                .pointer_width
+                .decode_pointer::<byteorder::NativeEndian>(w);
 
             if kernel32.contains(ptr) {
                 let stack_offset = Size::try_from(n * ptr_width.as_usize())?;
@@ -473,7 +475,7 @@ impl ProcessHandle {
 
         let mut to_remove = Vec::new();
 
-        let filter = filter.type_check(initial.ty, values.ty, values.ty)?;
+        let filter = filter.type_check(self, initial.ty, values.ty, values.ty)?;
         let filter = &filter;
 
         let mut ranges = Vec::new();
@@ -733,7 +735,7 @@ impl ProcessHandle {
 
         let mut to_remove = Vec::new();
 
-        let filter = filter.type_check(initial.ty, values.ty, values.ty)?;
+        let filter = filter.type_check(self, initial.ty, values.ty, values.ty)?;
         let filter = &filter;
 
         let mut ranges = Vec::new();
@@ -898,6 +900,7 @@ impl ProcessHandle {
 
         let expr_type = expr
             .type_of(
+                self,
                 TypeHint::Explicit(Type::None),
                 TypeHint::Explicit(Type::None),
                 TypeHint::Explicit(values.ty),
@@ -905,7 +908,7 @@ impl ProcessHandle {
             )?
             .ok_or_else(|| Error::TypeInference(expr.clone()))?;
 
-        let expr = expr.type_check(Type::None, Type::None, values.ty, expr_type)?;
+        let expr = expr.type_check(self, Type::None, Type::None, values.ty, expr_type)?;
         let expr = &expr;
 
         thread_pool.install(|| {
@@ -1037,6 +1040,7 @@ impl ProcessHandle {
 
                                     let expr_type = expr
                                         .type_of(
+                                            self,
                                             TypeHint::Explicit(Type::None),
                                             TypeHint::Explicit(Type::None),
                                             TypeHint::Explicit(value_type),
@@ -1044,8 +1048,18 @@ impl ProcessHandle {
                                         )?
                                         .ok_or_else(|| Error::TypeInference(expr.clone()))?;
 
-                                    expr.type_check(Type::None, Type::None, value_type, expr_type)?
-                                        .eval(ValueRef::None, ValueRef::None, &mut proxy)?
+                                    expr.type_check(
+                                        self,
+                                        Type::None,
+                                        Type::None,
+                                        value_type,
+                                        expr_type,
+                                    )?
+                                    .eval(
+                                        ValueRef::None,
+                                        ValueRef::None,
+                                        &mut proxy,
+                                    )?
                                 };
 
                                 value.insert(new_value);
@@ -1134,14 +1148,14 @@ impl ProcessHandle {
             .unwrap_or_else(|| values.ty.is_default_aligned());
         let alignment = values
             .ty
-            .alignment(&self.process)
+            .alignment(self)
             .ok_or_else(|| anyhow!("cannot scan for none"))?;
         let step_size = if aligned { alignment } else { 1 };
         let alignment = config
             .alignment
             .or_else(|| if aligned { Some(alignment) } else { None });
 
-        let special = filter.special(&self.process, values.ty)?;
+        let special = filter.special(self, values.ty)?;
         let special = special.as_ref();
 
         let mut specialized_scanner = None;
@@ -1150,7 +1164,7 @@ impl ProcessHandle {
         let scanner: &dyn Scanner = match filter.scanner(alignment, self, value_type)? {
             Some(scanner) => &**specialized_scanner.get_or_insert(scanner),
             None => {
-                let filter = filter.type_check(Type::None, Type::None, values.ty)?;
+                let filter = filter.type_check(self, Type::None, Type::None, values.ty)?;
                 current_scanner.get_or_insert(DefaultScanner::new(
                     filter, special, alignment, step_size, value_type,
                 ))
@@ -1322,7 +1336,7 @@ impl ProcessHandle {
             } = work;
 
             let mut addresses = Vec::new();
-            let mut values = Values::new(value_type, &handle.process);
+            let mut values = Values::new(value_type);
 
             let mut buffer = vec![0u8; buffer_size];
 
@@ -1369,17 +1383,26 @@ impl ProcessHandle {
 impl ProcessInfo for ProcessHandle {
     type Process = Process;
     type ByteOrder = byteorder::NativeEndian;
+    type PointerInfo = Process;
 
     fn process(&self) -> &Self::Process {
         &self.process
     }
 
-    fn pointer_width(&self) -> PointerWidth {
-        ProcessInfo::pointer_width(&self.process)
+    fn pointer_info(&self) -> &Self::PointerInfo {
+        &self.process
     }
 
     fn virtual_query(&self, address: Address) -> anyhow::Result<Option<MemoryInformation>> {
         self.process.virtual_query(address)
+    }
+}
+
+impl PointerInfo for ProcessHandle {
+    type ByteOrder = <ProcessHandle as ProcessInfo>::ByteOrder;
+
+    fn pointer_width(&self) -> PointerWidth {
+        self.process.pointer_width
     }
 }
 
@@ -1481,7 +1504,6 @@ impl Proxy for BufferProxy<'_> {
         }
 
         let buffer_reader = BufferReader {
-            process: &self.handle.process,
             buffer: &self.buffer,
             address: self.address,
         };
@@ -1495,13 +1517,12 @@ impl Proxy for BufferProxy<'_> {
         return Ok(result);
 
         struct BufferReader<'a> {
-            process: &'a Process,
             buffer: &'a [u8],
             address: Address,
         }
 
         impl MemoryReader for BufferReader<'_> {
-            type Process = Process;
+            type ByteOrder = byteorder::NativeEndian;
 
             fn read_memory(&self, address: Address, buf: &mut [u8]) -> anyhow::Result<usize> {
                 let s = match usize::try_from(address.offset_of(self.address)) {
@@ -1516,10 +1537,6 @@ impl Proxy for BufferProxy<'_> {
                 let e = usize::min(s + buf.len(), self.buffer.len());
                 buf.clone_from_slice(&self.buffer[s..e]);
                 Ok(e - s)
-            }
-
-            fn process(&self) -> &Self::Process {
-                self.process
             }
         }
     }

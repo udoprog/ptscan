@@ -118,7 +118,6 @@ impl EditScanResultDialog {
                     let Self {
                         ref mut result,
                         ref widgets,
-                        ref handle,
                         ..
                     } = *slf;
 
@@ -139,13 +138,7 @@ impl EditScanResultDialog {
                         image.hide();
                     }
 
-                    let ty = if let Some(handle) = handle.as_ref().and_then(|h| h.try_read()) {
-                        ty.unsize(result.value_type, &*handle)
-                    } else {
-                        ty
-                    };
-
-                    result.value_type = ty;
+                    result.value_type = ty.unsize(result.value_type);
                     result.value = Value::None;
                 }
 

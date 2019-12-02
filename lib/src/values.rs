@@ -32,18 +32,18 @@ impl Values {
     }
 
     /// Construct a new values collection.
-    pub fn new(ty: Type, pointer: &impl PointerInfo) -> Self {
+    pub fn new(ty: Type) -> Self {
         Self {
             ty,
-            element_size: ty.element_size(pointer),
+            element_size: ty.element_size(),
             data: Vec::new(),
             len: 0,
         }
     }
 
     /// Creates a values collection with the given capacity.
-    pub fn with_capacity(ty: Type, pointer: &impl PointerInfo, cap: usize) -> Self {
-        let element_size = ty.element_size(pointer);
+    pub fn with_capacity(ty: Type, cap: usize) -> Self {
+        let element_size = ty.element_size();
 
         Self {
             ty,
@@ -57,12 +57,12 @@ impl Values {
     ///
     /// This allows for some neat optimizations, like avoiding an allocation in
     /// case we are shrinking the collection.
-    pub fn convert_in_place(&mut self, ty: Type, pointer: &impl PointerInfo) {
+    pub fn convert_in_place(&mut self, pointer: &impl PointerInfo, ty: Type) {
         if self.ty == ty {
             return;
         }
 
-        let element_size = ty.element_size(pointer);
+        let element_size = ty.element_size();
 
         // shrinking can be done in-place.
         if element_size <= self.element_size {
@@ -86,7 +86,7 @@ impl Values {
                 self.data.set_len(element_size * self.len);
             }
         } else {
-            let mut new = Values::with_capacity(ty, pointer, self.len);
+            let mut new = Values::with_capacity(ty, self.len);
 
             for v in self.iter() {
                 let v = v.read();
@@ -408,7 +408,7 @@ impl Accessor<'_> {
     unsafe fn read_unchecked(ty: Type, ptr: *const u8) -> Value {
         match ty {
             Type::None => Value::None,
-            Type::Pointer => Value::Pointer(ptr::read(ptr as *const _)),
+            Type::Pointer(width) => Value::Pointer(width.read_unchecked(ptr)),
             Type::U8 => Value::U8(ptr::read(ptr as *const _)),
             Type::I8 => Value::I8(ptr::read(ptr as *const _)),
             Type::U16 => Value::U16(ptr::read(ptr as *const _)),
@@ -443,7 +443,7 @@ impl Accessor<'_> {
             ($(($variant:ident, $variant_ty:ty)),*) => {
                 match ty {
                     Type::None => ValueRef::None,
-                    $(Type::$variant => ValueRef::$variant(*(ptr as *const $variant_ty)),)*
+                    $(Type::$variant{..} => ValueRef::$variant(*(ptr as *const $variant_ty)),)*
                     Type::String(..) => ValueRef::String(String::as_str(&*(ptr as *const _))),
                     Type::Bytes(None) => ValueRef::Bytes(<Vec<u8>>::as_slice(&*(ptr as *const _))),
                     Type::Bytes(Some(len)) => ValueRef::Bytes(slice::from_raw_parts(ptr, len)),
@@ -537,6 +537,12 @@ impl Mutator<'_> {
                             ptr::write(ptr as *mut _, <$ty>::default());
                         },
                     )*
+                    (Type::Pointer(width), Value::Pointer(value)) => {
+                        width.write_unchecked(ptr, value);
+                    },
+                    (Type::Pointer(..), ..) => {
+                        ptr::write(ptr as *mut _, Address::default());
+                    },
                     (Type::Bytes(None), Value::Bytes(b)) => {
                         ptr::write(ptr as *mut _, b);
                     },
@@ -554,7 +560,6 @@ impl Mutator<'_> {
         }
 
         write!(
-            (Pointer, Address),
             (U8, u8),
             (I8, i8),
             (U16, u16),

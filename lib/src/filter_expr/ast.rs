@@ -40,12 +40,12 @@ impl FilterExpr {
                 })
             }
             Self::Binary(op, lhs, rhs) => {
-                let lhs = lhs.eval(process)?;
-                let rhs = rhs.eval(process)?;
+                let lhs = lhs.eval()?;
+                let rhs = rhs.eval()?;
                 super::FilterExpr::Binary(super::Binary(op, lhs, rhs))
             }
             Self::IsType(expr, ty) => {
-                let expr = expr.eval(process)?;
+                let expr = expr.eval()?;
 
                 match ty {
                     Type::Pointer(..) => {
@@ -55,7 +55,7 @@ impl FilterExpr {
                 }
             }
             Self::IsNan(expr) => {
-                let expr = expr.eval(process)?;
+                let expr = expr.eval()?;
                 super::FilterExpr::IsNan(super::IsNan::new(expr)?)
             }
             Self::And(expressions) => {
@@ -73,7 +73,7 @@ impl FilterExpr {
                 super::FilterExpr::Any(super::Any::new(filters))
             }
             Self::Regex(expr, pattern) => {
-                let expr = expr.eval(process)?;
+                let expr = expr.eval()?;
 
                 let regex = match pattern {
                     ValueExpr::String(s) => regex::bytes::Regex::new(&s)?,

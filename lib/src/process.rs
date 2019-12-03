@@ -2,6 +2,7 @@ use std::{convert::TryFrom, ffi::OsString, fmt, io, ptr, slice, sync::Arc};
 
 use crate::{
     error::Error, module, utils, Address, AddressRange, Endianness, PointerInfo, ProcessId, Size,
+    Type,
 };
 
 use ntapi::ntpsapi;
@@ -31,6 +32,11 @@ impl PointerWidth {
         }
     }
 
+    /// Convert into a pointer type.
+    pub fn into_type(self) -> Type {
+        Type::Pointer(self)
+    }
+
     /// Decode the given buffer as a pointer.
     pub fn decode_pointer<B>(&self, buf: &[u8]) -> Address
     where
@@ -44,11 +50,11 @@ impl PointerWidth {
         );
 
         match self {
-            PointerWidth::Pointer64 => {
+            Self::Pointer64 => {
                 let address = B::read_u64(buf);
                 Address(address)
             }
-            PointerWidth::Pointer32 => {
+            Self::Pointer32 => {
                 let address = B::read_u32(buf);
                 Address(address as u64)
             }
@@ -63,8 +69,8 @@ impl PointerWidth {
         B: byteorder::ByteOrder,
     {
         match self {
-            PointerWidth::Pointer64 => B::write_u64(buf, value),
-            PointerWidth::Pointer32 => {
+            Self::Pointer64 => B::write_u64(buf, value),
+            Self::Pointer32 => {
                 let value = match u32::try_from(value) {
                     Ok(value) => value,
                     Err(..) => return false,
@@ -343,7 +349,7 @@ impl Process {
 impl PointerInfo for Process {
     type ByteOrder = <Process as ProcessInfo>::ByteOrder;
 
-    fn pointer_width(&self) -> PointerWidth {
+    fn width(&self) -> PointerWidth {
         self.pointer_width
     }
 }

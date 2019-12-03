@@ -249,7 +249,7 @@ impl Value {
         match *self {
             Self::None => (),
             Self::Pointer(Address(address)) => {
-                let width = pointer.pointer_width();
+                let width = pointer.width();
                 return width.encode_pointer::<P::ByteOrder>(reserve!(width.size()), address);
             }
             Self::U8(value) => {
@@ -325,7 +325,7 @@ impl Value {
     pub fn size(&self, pointer: &impl PointerInfo) -> Option<usize> {
         Some(match self {
             Self::None => return None,
-            Self::Pointer(..) => pointer.pointer_width().size(),
+            Self::Pointer(..) => pointer.width().size(),
             Self::U8(..) => mem::size_of::<u8>(),
             Self::I8(..) => mem::size_of::<i8>(),
             Self::U16(..) => mem::size_of::<u16>(),

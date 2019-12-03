@@ -312,7 +312,7 @@ impl Type {
             Self::I128 => mem::size_of::<i128>(),
             Self::F32 => mem::size_of::<f32>(),
             Self::F64 => mem::size_of::<f64>(),
-            Self::Bytes(..) => pointer.pointer_width().size(),
+            Self::Bytes(..) => pointer.width().size(),
             Self::String(encoding) => encoding.alignment(),
         })
     }

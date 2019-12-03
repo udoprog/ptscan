@@ -5,8 +5,7 @@ use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 use anyhow::{anyhow, Context as _};
 use chrono::Utc;
 use ptscan::{
-    Address, Addresses, InitialScanConfig, PointerInfo as _, ProcessId, ProcessInfo as _, TypeHint,
-    Values,
+    Address, Addresses, InitialScanConfig, PointerInfo as _, ProcessId, TypeHint, Values,
 };
 
 struct Widgets {
@@ -333,7 +332,7 @@ impl MainWindow {
             handle.update_threads(threads);
             let handle = RwLockWriteGuard::downgrade(handle);
 
-            let mut addresses = Addresses::new(handle.pointer_info().pointer_width());
+            let mut addresses = Addresses::new(handle.width());
             let mut values = Values::new(value_type);
 
             if suspend {

@@ -7,7 +7,6 @@ lalrpop_util::lalrpop_mod!(
 
 use crate::{
     process_handle::ProcessHandle, utils::EscapeString, Address, Offset, PointerWidth, Sign, Size,
-    Type,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -26,17 +25,14 @@ pub trait FollowablePointer {
 pub trait PointerInfo {
     type ByteOrder: 'static + Send + Sync + byteorder::ByteOrder;
 
-    /// Get the width of a pointer in the system.
-    fn pointer_width(&self) -> PointerWidth;
-
-    fn pointer_type(&self) -> Type {
-        Type::Pointer(self.pointer_width())
-    }
+    fn width(&self) -> PointerWidth;
 }
 
 #[cfg(test)]
-impl PointerInfo for usize {
-    fn pointer_width(&self) -> usize {
+impl PointerInfo for PointerWidth {
+    type ByteOrder = byteorder::NativeEndian;
+
+    fn width(&self) -> PointerWidth {
         *self
     }
 }
@@ -407,7 +403,8 @@ impl FollowablePointer for Pointer {
             }
 
             current = handle
-                .pointer_width()
+                .process
+                .pointer_width
                 .decode_pointer::<<ProcessHandle as PointerInfo>::ByteOrder>(&buf);
 
             current = match current.checked_offset(*o) {
@@ -434,17 +431,17 @@ impl fmt::Display for Pointer {
 
 #[cfg(test)]
 mod tests {
-    use super::Pointer;
+    use super::PortablePointer;
     use std::error;
 
     #[test]
     fn basic_parsing() -> Result<(), Box<dyn error::Error>> {
-        dbg!(Pointer::parse("0xABCDEF")?);
-        dbg!(Pointer::parse("\"Steam.exe\" + 0x0F")?);
-        dbg!(Pointer::parse("\"Steam.exe\" + 0x0F -> -0xFFAA")?);
-        dbg!(Pointer::parse("\"Steam.exe\" - 0xF0F -> -0xFFAA")?);
-        dbg!(Pointer::parse("\"Steam.exe\" - 0xF0F -> -0xFFAA")?);
-        dbg!(Pointer::parse("\"Steam.exe\" -> +0xFFAA")?);
+        dbg!(PortablePointer::parse("0xABCDEF")?);
+        dbg!(PortablePointer::parse("\"Steam.exe\" + 0x0F")?);
+        dbg!(PortablePointer::parse("\"Steam.exe\" + 0x0F -> -0xFFAA")?);
+        dbg!(PortablePointer::parse("\"Steam.exe\" - 0xF0F -> -0xFFAA")?);
+        dbg!(PortablePointer::parse("\"Steam.exe\" - 0xF0F -> -0xFFAA")?);
+        dbg!(PortablePointer::parse("\"Steam.exe\" -> +0xFFAA")?);
         Ok(())
     }
 }

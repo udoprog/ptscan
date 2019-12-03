@@ -152,7 +152,7 @@ impl FilterExpr {
             Self::Binary(m) => m.special(pointer, value_type),
             Self::All(m) => m.special(pointer, value_type),
             Self::Any(m) => m.special(pointer, value_type),
-            Self::IsPointer(..) => Ok(Some(Special::NonZero(Some(pointer.pointer_width().size())))),
+            Self::IsPointer(..) => Ok(Some(Special::NonZero(Some(pointer.width().size())))),
             Self::IsType(..) => Ok(None),
             Self::IsNan(is_nan) => is_nan.special(pointer, value_type),
             Self::Not(m) => m.special(pointer, value_type),
@@ -846,7 +846,7 @@ impl IsPointer {
 
     fn value_type_of(&self, pointer: &impl PointerInfo, _: TypeHint) -> anyhow::Result<TypeHint> {
         self.expr
-            .value_type_of(pointer, TypeHint::Explicit(pointer.pointer_type()))
+            .value_type_of(pointer, TypeHint::Explicit(pointer.width().into_type()))
     }
 }
 
@@ -1245,29 +1245,41 @@ fn collection_value_type_of(
 mod tests {
     use super::{ast::FilterExpr as F, lexer, parser, FilterOp, Special};
     use crate::{
-        process::MemoryInformation, value_expr::ast::ValueExpr as V, Address, ProcessInfo, Type,
+        process::MemoryInformation, value_expr::ast::ValueExpr as V, Address, PointerInfo,
+        PointerWidth, ProcessInfo, Type,
     };
 
     struct FakeProcess {
-        pointer_width: usize,
+        pointer_width: PointerWidth,
     }
 
     impl FakeProcess {
         pub fn new() -> Self {
-            Self { pointer_width: 8 }
+            Self {
+                pointer_width: PointerWidth::Pointer64,
+            }
+        }
+    }
+
+    impl PointerInfo for FakeProcess {
+        type ByteOrder = byteorder::NativeEndian;
+
+        fn width(&self) -> PointerWidth {
+            self.pointer_width
         }
     }
 
     impl ProcessInfo for FakeProcess {
         type Process = FakeProcess;
         type ByteOrder = byteorder::NativeEndian;
+        type PointerInfo = PointerWidth;
 
         fn process(&self) -> &Self::Process {
             self
         }
 
-        fn pointer_width(&self) -> usize {
-            self.pointer_width
+        fn pointer_info(&self) -> &Self::PointerInfo {
+            &self.pointer_width
         }
 
         fn virtual_query(&self, _: Address) -> anyhow::Result<Option<MemoryInformation>> {

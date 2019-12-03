@@ -422,8 +422,8 @@ impl Scratch {
 
                 let token = c.as_token();
 
-                let mut addresses = Addresses::new(handle.pointer_width());
-                let mut values = Values::new(handle.process.pointer_type());
+                let mut addresses = Addresses::new(handle.width());
+                let mut values = Values::new(handle.width().into_type());
 
                 handle.initial_scan(
                     &*thread_pool,

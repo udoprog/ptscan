@@ -9,7 +9,6 @@
 
 use crate::{Address, PointerInfo, Type, Value, ValueRef};
 use std::{marker, mem, ptr, slice};
-
 /// A dynamic collection of values, with the goal of supporting efficient delete
 /// operations (through swap_remove), and as much contiguous memory as possible.
 pub struct Values {
@@ -344,39 +343,6 @@ impl Values {
             _marker: marker::PhantomData,
         }
     }
-
-    /// Clone the internal data as type `T`.
-    unsafe fn clone_data<T>(&self) -> Vec<u8>
-    where
-        T: Clone,
-    {
-        let len = self.len * self.element_size;
-        let mut data = Vec::with_capacity(len);
-        let mut dst = data.as_mut_ptr() as *mut T;
-        let mut src = self.data.as_ptr() as *const T;
-
-        for _ in 0..self.len {
-            ptr::write(dst, T::clone(&*src));
-            dst = dst.add(1);
-            src = src.add(1);
-        }
-
-        data.set_len(len);
-        data
-    }
-
-    /// Drop all elements in the backing vector as type `T`.
-    unsafe fn drop_data<T>(&mut self) {
-        let mut ptr = self.data.as_mut_ptr() as *mut T;
-
-        for _ in 0..self.len {
-            ptr::drop_in_place(ptr);
-            ptr = ptr.add(1);
-        }
-
-        self.len = 0;
-        self.data.set_len(0);
-    }
 }
 
 impl Clone for Values {
@@ -386,13 +352,13 @@ impl Clone for Values {
             Type::String(..) => Self {
                 ty: self.ty,
                 element_size: self.element_size,
-                data: unsafe { self.clone_data::<String>() },
+                data: unsafe { clone_data::<String>(&self.data, self.len, self.element_size) },
                 len: self.len,
             },
             Type::Bytes(None) => Self {
                 ty: self.ty,
                 element_size: self.element_size,
-                data: unsafe { self.clone_data::<Vec<u8>>() },
+                data: unsafe { clone_data::<Vec<u8>>(&self.data, self.len, self.element_size) },
                 len: self.len,
             },
             _ => Self {
@@ -408,8 +374,8 @@ impl Clone for Values {
 impl Drop for Values {
     fn drop(&mut self) {
         match self.ty {
-            Type::String(..) => unsafe { self.drop_data::<String>() },
-            Type::Bytes(None) => unsafe { self.drop_data::<Vec<u8>>() },
+            Type::String(..) => unsafe { drop_data::<String>(&mut self.data, &mut self.len) },
+            Type::Bytes(None) => unsafe { drop_data::<Vec<u8>>(&mut self.data, &mut self.len) },
             _ => (),
         }
     }
@@ -643,6 +609,39 @@ impl<'a> Iterator for IterMut<'a> {
     }
 }
 
+/// Drop all elements in the backing vector as type `T`.
+unsafe fn drop_data<T>(data: &mut Vec<u8>, len: &mut usize) {
+    let mut ptr = data.as_mut_ptr() as *mut T;
+
+    for _ in 0..*len {
+        ptr::drop_in_place(ptr);
+        ptr = ptr.add(1);
+    }
+
+    *len = 0;
+    data.set_len(0);
+}
+
+/// Clone the internal data as type `T`.
+unsafe fn clone_data<T>(from: &Vec<u8>, len: usize, element_size: usize) -> Vec<u8>
+where
+    T: Clone,
+{
+    let len = len * element_size;
+    let mut data = Vec::with_capacity(len);
+    let mut dst = data.as_mut_ptr() as *mut T;
+    let mut src = from.as_ptr() as *const T;
+
+    for _ in 0..len {
+        ptr::write(dst, T::clone(&*src));
+        dst = dst.add(1);
+        src = src.add(1);
+    }
+
+    data.set_len(len);
+    data
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Value, Values};
@@ -651,7 +650,7 @@ mod tests {
     #[test]
     fn test_values() {
         let encoding = Encoding::default();
-        let mut values = Values::new(Type::String(encoding), &8usize);
+        let mut values = Values::new(Type::String(encoding));
         let string = String::from("hello world");
         values.push(Value::String(string.clone()));
         assert_eq!(Some(Value::String(string)), values.get(0));
@@ -660,7 +659,7 @@ mod tests {
 
     #[test]
     fn test_iterators() {
-        let mut values = Values::new(Type::U32, &8usize);
+        let mut values = Values::new(Type::U32);
         values.push(Value::U32(42));
 
         assert_eq!(

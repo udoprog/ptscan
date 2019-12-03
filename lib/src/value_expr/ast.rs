@@ -1,6 +1,6 @@
 use crate::{
     utils::{EscapeString, Hex},
-    ProcessInfo, Type,
+    Type,
 };
 use bigdecimal::BigDecimal;
 use num_bigint::BigInt;
@@ -34,7 +34,7 @@ pub enum ValueExpr {
 
 impl ValueExpr {
     /// Evaluate the expression.
-    pub fn eval(self, process: &impl ProcessInfo) -> anyhow::Result<super::ValueExpr> {
+    pub fn eval(self) -> anyhow::Result<super::ValueExpr> {
         use super::ValueExpr::*;
 
         Ok(match self {
@@ -42,8 +42,8 @@ impl ValueExpr {
             Self::Last => Last,
             Self::Initial => Initial,
             Self::Binary(op, lhs, rhs) => {
-                let lhs = lhs.eval(process)?;
-                let rhs = rhs.eval(process)?;
+                let lhs = lhs.eval()?;
+                let rhs = rhs.eval()?;
                 Binary {
                     op,
                     lhs: Box::new(lhs),
@@ -55,13 +55,13 @@ impl ValueExpr {
             Self::String(value) => String { value },
             Self::Bytes(value) => Bytes { value },
             Self::AddressOf(value) => AddressOf {
-                value: Box::new(value.eval(process)?),
+                value: Box::new(value.eval()?),
             },
             Self::Deref(value) => Deref {
-                value: Box::new(value.eval(process)?),
+                value: Box::new(value.eval()?),
             },
             Self::Cast(expr, cast_type) => {
-                let expr = expr.eval(process)?;
+                let expr = expr.eval()?;
                 Cast {
                     expr: Box::new(expr),
                     cast_type,

@@ -1238,7 +1238,7 @@ impl ProcessHandle {
         }
 
         let queue = &queue;
-        let pointer_width = self.pointer_width();
+        let pointer_width = self.process.pointer_width;
 
         thread_pool.install(|| {
             rayon::scope(|s| {
@@ -1402,7 +1402,7 @@ impl ProcessInfo for ProcessHandle {
 impl PointerInfo for ProcessHandle {
     type ByteOrder = <ProcessHandle as ProcessInfo>::ByteOrder;
 
-    fn pointer_width(&self) -> PointerWidth {
+    fn width(&self) -> PointerWidth {
         self.process.pointer_width
     }
 }

@@ -327,16 +327,13 @@ impl FilterOptions {
             let mut slf = slf.borrow_mut();
 
             let result = {
-                let handle = optional!(&slf.handle);
-                let handle = optional!(handle.try_read());
-
                 if slf.state.value_expr_text.is_empty() {
                     if let Some(error) = slf.widgets.value_expr_error.upgrade() {
                         error.hide();
                     }
                 }
 
-                ValueExpr::parse(&slf.state.value_expr_text, &handle.process)
+                ValueExpr::parse(&slf.state.value_expr_text)
             };
 
             match result {

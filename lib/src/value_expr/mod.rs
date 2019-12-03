@@ -1,6 +1,5 @@
 use crate::{
     filter_expr::{ast::ValueTrait, lexer, parser},
-    process::Process,
     utils::{EscapeString, Hex},
     value::Value,
     Address, Pointer, PointerInfo, Proxy, Sign, Type, TypeHint, ValueRef,
@@ -59,7 +58,11 @@ impl TypedValueExpr<'_> {
             }
             Self::Deref(expr_type, ref value) => {
                 let value = value.eval(initial, last, proxy)?;
-                let value = proxy.handle().pointer_type().convert(proxy.handle(), value);
+                let value = proxy
+                    .handle()
+                    .width()
+                    .into_type()
+                    .convert(proxy.handle(), value);
 
                 let address = match value.as_address() {
                     Some(address) => address,
@@ -202,9 +205,9 @@ impl ValueExpr {
     }
 
     /// Parse a value expression to use.
-    pub fn parse(input: &str, process: &Process) -> anyhow::Result<ValueExpr> {
+    pub fn parse(input: &str) -> anyhow::Result<ValueExpr> {
         let expr = parser::ValueExprParser::new().parse(lexer::Lexer::new(input))?;
-        Ok(expr.eval(process)?)
+        Ok(expr.eval()?)
     }
 
     /// Get relevant traits of the expression.
@@ -269,7 +272,7 @@ impl ValueExpr {
             Self::Last => last_type.unwrap_or(default_hint),
             Self::Value => value_type.unwrap_or(default_hint),
             Self::Deref { .. } => default_hint,
-            Self::AddressOf { .. } => Explicit(pointer.pointer_type()),
+            Self::AddressOf { .. } => Explicit(pointer.width().into_type()),
             Self::Binary {
                 op,
                 ref lhs,
@@ -324,7 +327,7 @@ impl ValueExpr {
         Ok(match *self {
             Self::Value => cast_type,
             Self::Deref { ref value, .. } => match &**value {
-                Self::Value => Explicit(pointer.pointer_type()),
+                Self::Value => Explicit(pointer.width().into_type()),
                 other => other.value_type_of(pointer, NoHint)?,
             },
             Self::Binary {
@@ -390,7 +393,7 @@ impl ValueExpr {
                     initial_type,
                     last_type,
                     value_type,
-                    pointer.pointer_type(),
+                    pointer.width().into_type(),
                 )?;
                 TypedValueExpr::Deref(expr_type, Box::new(value))
             }
@@ -400,7 +403,7 @@ impl ValueExpr {
                     initial_type,
                     last_type,
                     value_type,
-                    pointer.pointer_type(),
+                    pointer.width().into_type(),
                 )?;
                 TypedValueExpr::AddressOf(expr_type, Box::new(value))
             }

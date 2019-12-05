@@ -9,6 +9,7 @@ use crate::{
 };
 use anyhow::{anyhow, bail, Context as _};
 use crossbeam_queue::SegQueue;
+use dynamicvec::DynamicConverter;
 use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -1414,6 +1415,12 @@ impl PointerInfo for ProcessHandle {
 
     fn width(&self) -> PointerWidth {
         self.process.pointer_width
+    }
+}
+
+impl DynamicConverter<Type> for ProcessHandle {
+    fn convert(&self, ty: Type, from: Value) -> Value {
+        ty.convert(self, from)
     }
 }
 

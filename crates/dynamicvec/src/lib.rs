@@ -27,13 +27,17 @@ pub trait DynamicType: fmt::Display + Copy + PartialEq {
     fn element_size(self) -> usize;
 
     /// Clone the underlying data of a dynamic vector.
-    fn clone_data(self, data: &Vec<u8>, element_size: usize, len: usize) -> Vec<u8>;
+    fn clone_data(self, data: &Vec<u8>) -> Vec<u8>;
 
     /// Perform an unchecked read which will clone the inner value.
     unsafe fn read_unchecked(self, ptr: *const u8) -> Self::Value;
 
     /// Write the given value to the unchecked memory location.
     unsafe fn write_unchecked(self, ptr: *mut u8, value: Self::Value);
+
+    /// Replace whatever is at the given pointer location, making sure it is
+    /// dropped appropriately.
+    unsafe fn replace_unchecked(self, ptr: *mut u8, value: Self::Value);
 
     /// Drop a single element correctly.
     unsafe fn drop_element(self, hole: *mut u8);
@@ -281,19 +285,22 @@ where
                 return;
             }
 
-            let pos = self
+            if self.data.capacity() == self.data.len() {
+                self.data.reserve(self.element_size);
+            }
+
+            let write_pos = self
                 .len
                 .checked_mul(self.element_size)
                 .expect("position overflowed");
 
-            let new_len = pos
+            let new_len = write_pos
                 .checked_add(self.element_size)
                 .expect("length overflowed");
 
-            self.data.reserve(self.element_size);
-
-            let ptr = self.data.as_mut_ptr().add(pos);
+            let ptr = self.data.as_mut_ptr().add(write_pos);
             self.ty.write_unchecked(ptr, value);
+
             self.data.set_len(new_len);
             self.len += 1;
         };
@@ -393,7 +400,7 @@ where
     T: DynamicType,
 {
     fn clone(&self) -> Self {
-        let data = self.ty.clone_data(&self.data, self.element_size, self.len);
+        let data = self.ty.clone_data(&self.data);
 
         Self {
             ty: self.ty,
@@ -506,7 +513,7 @@ where
     /// Write the corresponding value to the mutator location.
     #[inline]
     pub fn write(&mut self, value: T::Value) {
-        unsafe { self.ty.write_unchecked(self.ptr, value) }
+        unsafe { self.ty.replace_unchecked(self.ptr, value) }
     }
 
     /// Read the corresponding value stored in the mutator location.

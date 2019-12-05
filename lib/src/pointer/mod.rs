@@ -7,9 +7,7 @@ lalrpop_util::lalrpop_mod!(
 
 use crate::{
     process_handle::ProcessHandle, utils::EscapeString, Address, Offset, PointerWidth, Sign, Size,
-    Type, Value,
 };
-use dynamicvec::DynamicConverter;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -28,12 +26,6 @@ pub trait PointerInfo {
     type ByteOrder: 'static + Send + Sync + byteorder::ByteOrder;
 
     fn width(&self) -> PointerWidth;
-}
-
-impl DynamicConverter<Type> for ProcessHandle {
-    fn convert(&self, ty: Type, from: Value) -> Value {
-        ty.convert(self, from)
-    }
 }
 
 #[cfg(test)]

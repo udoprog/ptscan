@@ -22,11 +22,11 @@ impl DynamicType for Type {
         Type::element_size(self)
     }
 
-    fn clone_data(self, data: &Vec<u8>, element_size: usize, len: usize) -> Vec<u8> {
+    fn clone_data(self, data: &Vec<u8>) -> Vec<u8> {
         match self {
             // Special cases where we need to take care to clone each element.
-            Type::String(..) => unsafe { clone_data::<String>(data, element_size, len) },
-            Type::Bytes(None) => unsafe { clone_data::<Vec<u8>>(data, element_size, len) },
+            Type::String(..) => unsafe { clone_data::<String>(data) },
+            Type::Bytes(None) => unsafe { clone_data::<Vec<u8>>(data) },
             _ => data.clone(),
         }
     }
@@ -113,6 +113,63 @@ impl DynamicType for Type {
             (F32, f32),
             (F64, f64),
             (String, String)
+        );
+    }
+
+    unsafe fn replace_unchecked(self, ptr: *mut u8, value: Self::Value) {
+        macro_rules! write {
+            ($(($variant:ident, $ty:ty)),*) => {
+                match (self, value) {
+                    (Type::None, ..) => (),
+                    $(
+                        (Type::$variant{..}, Value::$variant(value)) => {
+                            ptr::write(ptr as *mut _, value);
+                        },
+                        (Type::$variant{..}, ..) => {
+                            ptr::write(ptr as *mut _, <$ty>::default());
+                        },
+                    )*
+                    (Type::Pointer(width), Value::Pointer(value)) => {
+                        width.write_unchecked(ptr, value);
+                    },
+                    (Type::Pointer(..), ..) => {
+                        ptr::write(ptr as *mut _, Address::default());
+                    },
+                    (Type::String(..), Value::String(b)) => {
+                        let _ = ptr::replace(ptr as *mut _, b);
+                    },
+                    (Type::String(..), ..) => {
+                        let _ = ptr::replace(ptr as *mut _, <String>::default());
+                    },
+                    (Type::Bytes(None), Value::Bytes(b)) => {
+                        let _ = ptr::replace(ptr as *mut _, b);
+                    },
+                    (Type::Bytes(None), ..) => {
+                        let _ = ptr::replace(ptr as *mut _, <Vec<u8>>::default());
+                    },
+                    (Type::Bytes(Some(len)), Value::Bytes(b)) if b.len() >= len => {
+                        ptr::copy_nonoverlapping(b.as_ptr(), ptr, len);
+                    },
+                    (Type::Bytes(Some(len)), ..) => {
+                        ptr::write_bytes(ptr, 0u8, len);
+                    },
+                }
+            }
+        }
+
+        write!(
+            (U8, u8),
+            (I8, i8),
+            (U16, u16),
+            (I16, i16),
+            (U32, u32),
+            (I32, i32),
+            (U64, u64),
+            (I64, i64),
+            (U128, u128),
+            (I128, i128),
+            (F32, f32),
+            (F64, f64)
         );
     }
 
@@ -249,22 +306,22 @@ unsafe fn drop_data<T>(data: &mut Vec<u8>, len: &mut usize) {
 }
 
 /// Clone the internal data as type `T`.
-unsafe fn clone_data<T>(from: &Vec<u8>, element_size: usize, len: usize) -> Vec<u8>
+unsafe fn clone_data<T>(from: &Vec<u8>) -> Vec<u8>
 where
     T: Clone,
 {
-    let len = len * element_size;
-    let mut data = Vec::with_capacity(len);
+    let mut data = Vec::with_capacity(from.len());
     let mut dst = data.as_mut_ptr() as *mut T;
     let mut src = from.as_ptr() as *const T;
+    let end = from.as_ptr().add(from.len()) as *const T;
 
-    for _ in 0..len {
+    while src < end {
         ptr::write(dst, T::clone(&*src));
         dst = dst.add(1);
         src = src.add(1);
     }
 
-    data.set_len(len);
+    data.set_len(from.len());
     data
 }
 

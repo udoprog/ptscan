@@ -17,7 +17,7 @@ impl DynamicType for PointerWidth {
         PointerWidth::size(self)
     }
 
-    fn clone_data(self, data: &Vec<u8>, _: usize, _: usize) -> Vec<u8> {
+    fn clone_data(self, data: &Vec<u8>) -> Vec<u8> {
         data.clone()
     }
 
@@ -29,6 +29,11 @@ impl DynamicType for PointerWidth {
     #[inline]
     unsafe fn write_unchecked(self, ptr: *mut u8, value: Self::Value) {
         PointerWidth::write_unchecked(self, ptr, value)
+    }
+
+    #[inline]
+    unsafe fn replace_unchecked(self, ptr: *mut u8, value: Self::Value) {
+        self.write_unchecked(ptr, value)
     }
 
     /// No need to drop any kind since it's all inlined.

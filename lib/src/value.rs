@@ -286,7 +286,7 @@ impl Value {
                 P::ByteOrder::write_u128(reserve!(16), value as u128);
             }
             Self::F32(value) => P::ByteOrder::write_f32(reserve!(4), value),
-            Self::F64(value) => P::ByteOrder::write_f64(reserve!(4), value),
+            Self::F64(value) => P::ByteOrder::write_f64(reserve!(8), value),
             Self::String(ref s) => {
                 // TODO: use the proper encoding.
                 // Currently stops encoding when reaching an unmappable character.

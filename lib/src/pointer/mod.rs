@@ -46,6 +46,7 @@ static NULL_POINTER: Pointer = Pointer {
 ///
 /// Can either be a module identified by a string that has to be looked up from a `ProcessHandle`, or a fixed address.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
 pub enum PortableBase {
     Null,
     /// A non-portable module, who's indexed in a specific `Handle`.

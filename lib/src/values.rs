@@ -67,33 +67,34 @@ impl DynamicType for Type {
     unsafe fn write_unchecked(self, ptr: *mut u8, value: Self::Value) {
         macro_rules! write {
             ($(($variant:ident, $ty:ty)),*) => {
-                match (self, value) {
-                    (Type::None, ..) => (),
+                match self {
+                    Type::None => (),
                     $(
-                        (Type::$variant{..}, Value::$variant(value)) => {
-                            ptr::write(ptr as *mut _, value);
-                        },
-                        (Type::$variant{..}, ..) => {
-                            ptr::write(ptr as *mut _, <$ty>::default());
-                        },
+                    Type::$variant{..} => match value {
+                        Value::$variant(value) => ptr::write(ptr as *mut _, value),
+                        _ => ptr::write(ptr as *mut _, <$ty>::default()),
+                    },
                     )*
-                    (Type::Pointer(width), Value::Pointer(value)) => {
-                        width.write_unchecked(ptr, value);
+                    Type::Pointer(width) => match value {
+                        Value::Pointer(value) => width.write_unchecked(ptr, value),
+                        _ => ptr::write(ptr as *mut _, Address::default()),
                     },
-                    (Type::Pointer(..), ..) => {
-                        ptr::write(ptr as *mut _, Address::default());
+                    Type::Bytes(None) => match value {
+                        Value::Bytes(b) => ptr::write(ptr as *mut _, b),
+                        _ => ptr::write(ptr as *mut _, <Vec<u8>>::default()),
                     },
-                    (Type::Bytes(None), Value::Bytes(b)) => {
-                        ptr::write(ptr as *mut _, b);
-                    },
-                    (Type::Bytes(None), ..) => {
-                        ptr::write(ptr as *mut _, <Vec<u8>>::default());
-                    },
-                    (Type::Bytes(Some(len)), Value::Bytes(b)) if b.len() >= len => {
-                        ptr::copy_nonoverlapping(b.as_ptr(), ptr, len);
-                    },
-                    (Type::Bytes(Some(len)), ..) => {
-                        ptr::write_bytes(ptr, 0u8, len);
+                    Type::Bytes(Some(len)) => match value {
+                        Value::Bytes(b) if b.len() >= len => ptr::copy_nonoverlapping(b.as_ptr(), ptr, len),
+                        Value::Bytes(b) => {
+                            let copied = usize::min(b.len(), len);
+                            ptr::copy_nonoverlapping(b.as_ptr(), ptr, copied);
+                            let rest = b.len().saturating_sub(copied);
+
+                            if rest > 0 {
+                                ptr::write_bytes(ptr, 0u8, rest);
+                            }
+                        },
+                        _ => ptr::write_bytes(ptr, 0u8, len),
                     },
                 }
             }
@@ -119,39 +120,38 @@ impl DynamicType for Type {
     unsafe fn replace_unchecked(self, ptr: *mut u8, value: Self::Value) {
         macro_rules! write {
             ($(($variant:ident, $ty:ty)),*) => {
-                match (self, value) {
-                    (Type::None, ..) => (),
+                match self {
+                    Type::None => (),
                     $(
-                        (Type::$variant{..}, Value::$variant(value)) => {
-                            ptr::write(ptr as *mut _, value);
-                        },
-                        (Type::$variant{..}, ..) => {
-                            ptr::write(ptr as *mut _, <$ty>::default());
-                        },
+                    Type::$variant{..} => match value {
+                        Value::$variant(value) => ptr::write(ptr as *mut _, value),
+                        _ => ptr::write(ptr as *mut _, <$ty>::default()),
+                    },
                     )*
-                    (Type::Pointer(width), Value::Pointer(value)) => {
-                        width.write_unchecked(ptr, value);
+                    Type::Pointer(width) => match value {
+                        Value::Pointer(value) => width.write_unchecked(ptr, value),
+                        _ => ptr::write(ptr as *mut _, Address::default()),
                     },
-                    (Type::Pointer(..), ..) => {
-                        ptr::write(ptr as *mut _, Address::default());
+                    Type::String(..) => match value {
+                        Value::String(b) => drop(ptr::replace(ptr as *mut _, b)),
+                        _ => drop(ptr::replace(ptr as *mut _, <String>::default())),
                     },
-                    (Type::String(..), Value::String(b)) => {
-                        let _ = ptr::replace(ptr as *mut _, b);
+                    Type::Bytes(None) => match value {
+                        Value::Bytes(b) => drop(ptr::replace(ptr as *mut _, b)),
+                        _ => drop(ptr::replace(ptr as *mut _, <Vec<u8>>::default())),
                     },
-                    (Type::String(..), ..) => {
-                        let _ = ptr::replace(ptr as *mut _, <String>::default());
-                    },
-                    (Type::Bytes(None), Value::Bytes(b)) => {
-                        let _ = ptr::replace(ptr as *mut _, b);
-                    },
-                    (Type::Bytes(None), ..) => {
-                        let _ = ptr::replace(ptr as *mut _, <Vec<u8>>::default());
-                    },
-                    (Type::Bytes(Some(len)), Value::Bytes(b)) if b.len() >= len => {
-                        ptr::copy_nonoverlapping(b.as_ptr(), ptr, len);
-                    },
-                    (Type::Bytes(Some(len)), ..) => {
-                        ptr::write_bytes(ptr, 0u8, len);
+                    Type::Bytes(Some(len)) => match value {
+                        Value::Bytes(b) if b.len() >= len => ptr::copy_nonoverlapping(b.as_ptr(), ptr, len),
+                        Value::Bytes(b) => {
+                            let copied = usize::min(b.len(), len);
+                            ptr::copy_nonoverlapping(b.as_ptr(), ptr, copied);
+                            let rest = b.len().saturating_sub(copied);
+
+                            if rest > 0 {
+                                ptr::write_bytes(ptr, 0u8, rest);
+                            }
+                        }
+                        _ => ptr::write_bytes(ptr, 0u8, len),
                     },
                 }
             }
@@ -202,10 +202,10 @@ impl RawTypeDeserialize for Type {
         R: io::Read,
     {
         Ok(match self {
-            Type::String(..) => deserialize_dynamic::<R, _, String>(reader, len, |vec| {
-                String::from_utf8_unchecked(vec)
-            })?,
-            Type::Bytes(None) => deserialize_dynamic::<R, _, Vec<u8>>(reader, len, From::from)?,
+            Type::String(..) => {
+                deserialize_dynamic(reader, len, |vec| String::from_utf8_unchecked(vec))?
+            }
+            Type::Bytes(None) => deserialize_dynamic(reader, len, <Vec<u8>>::from)?,
             _ => Vec::new(),
         })
     }

@@ -4,9 +4,10 @@ use std::{cell::RefCell, rc::Rc, sync::Arc, time::Instant};
 
 use anyhow::{anyhow, Context as _};
 use chrono::Utc;
-use ptscan::{
-    Address, Addresses, InitialScanConfig, PointerInfo as _, ProcessId, TypeHint, Values,
-};
+use ptscan::{Addresses, InitialScanConfig, PointerInfo as _, ProcessId, TypeHint, Values};
+
+// 100 MB undo threshold
+const UNDO_THRESHOLD_BYTES: usize = 100_000_000;
 
 struct Widgets {
     #[allow(unused)]
@@ -30,7 +31,7 @@ struct Widgets {
 
 pub struct MainWindow {
     thread_pool: Arc<rayon::ThreadPool>,
-    scan: Arc<RwLock<Option<scan::Scan>>>,
+    session: Rc<RefCell<scan::Session>>,
     widgets: Widgets,
     handle: Option<Arc<RwLock<ptscan::ProcessHandle>>>,
     open_process_task: Option<task::Handle>,
@@ -81,7 +82,7 @@ impl MainWindow {
             ..add(&status_label);
         };
 
-        let scan = Arc::new(RwLock::new(None));
+        let session = Rc::new(RefCell::new(scan::Session::new()));
 
         let (error_dialog, error_dialog_window) = ui::ErrorDialog::new();
         let (connect_dialog, connect_dialog_window) = ui::ConnectDialog::new(error);
@@ -96,7 +97,7 @@ impl MainWindow {
             &builder,
             clipboard.clone(),
             settings.clone(),
-            scan.clone(),
+            session.clone(),
             thread_pool.clone(),
             show_scan_result_dialog.clone(),
             show_scan_result_dialog_window.downgrade(),
@@ -126,7 +127,7 @@ impl MainWindow {
 
         let slf = Rc::new(RefCell::new(MainWindow {
             thread_pool,
-            scan,
+            session,
             widgets: Widgets {
                 error_dialog_window,
                 connect_dialog_window,
@@ -156,6 +157,14 @@ impl MainWindow {
 
         main_menu.borrow_mut().on_detach(clone!(slf => move || {
             slf.borrow_mut().detach();
+        }));
+
+        main_menu.borrow_mut().on_undo(clone!(slf => move || {
+            slf.borrow_mut().undo();
+        }));
+
+        main_menu.borrow_mut().on_redo(clone!(slf => move || {
+            slf.borrow_mut().redo();
         }));
 
         ui_scan
@@ -234,17 +243,20 @@ impl MainWindow {
             return;
         }
 
-        let scan = slf.scan.clone();
+        let all_scans = slf.session.borrow().all();
 
         let task = cascade! {
             task::Task::oneshot(main, move |_| {
-                *scan.write() = None;
+                for scan in all_scans {
+                    scan.write().clear();
+                }
+
                 Ok(())
             });
-            ..then(|main, _| {
-                main.end_major_task();
-                main.ui_scan.borrow_mut().refresh();
-                main.filter_options.borrow_mut().has_results(false);
+            ..then(|slf, _| {
+                slf.session.borrow_mut().clear();
+                slf.end_major_task();
+                slf.update_components();
             });
         };
 
@@ -261,7 +273,7 @@ impl MainWindow {
 
         let handle = optional!(&slf.handle).clone();
 
-        let scan = slf.scan.clone();
+        let last_scan = slf.session.borrow().last().cloned();
         let thread_pool = slf.thread_pool.clone();
         let started = Instant::now();
 
@@ -277,39 +289,47 @@ impl MainWindow {
         };
 
         let mut task = task::Task::new(main, move |s| {
-            {
-                let mut scan = scan.write();
+            if let Some(last_scan) = last_scan {
+                let mut write_lock;
+                let mut new_scan = None;
 
-                if let Some(scan) = &mut *scan {
-                    let handle = handle.read();
+                let scan = if last_scan.read().bytes() < UNDO_THRESHOLD_BYTES {
+                    let mut new = (*last_scan.read()).clone();
+                    new.id = uuid::Uuid::new_v4();
+                    new_scan.get_or_insert(new)
+                } else {
+                    write_lock = last_scan.write();
+                    &mut *write_lock
+                };
 
-                    if suspend {
-                        handle
-                            .process
-                            .suspend()
-                            .context("failed to suspend process")?;
-                    }
+                let handle = handle.read();
 
-                    let result = handle.rescan_values(
-                        &*thread_pool,
-                        &mut scan.addresses,
-                        &mut scan.initial,
-                        &mut scan.last,
-                        Some(s.as_token()),
-                        ContextProgress::new(s),
-                        &filter_expr,
-                    );
-
-                    if suspend {
-                        handle
-                            .process
-                            .resume()
-                            .context("failed to resume process")?;
-                    }
-
-                    result?;
-                    return Ok(s.is_stopped());
+                if suspend {
+                    handle
+                        .process
+                        .suspend()
+                        .context("failed to suspend process")?;
                 }
+
+                let result = handle.rescan_values(
+                    &*thread_pool,
+                    &mut scan.addresses,
+                    &mut scan.initial,
+                    &mut scan.last,
+                    Some(s.as_token()),
+                    ContextProgress::new(s),
+                    &filter_expr,
+                );
+
+                if suspend {
+                    handle
+                        .process
+                        .resume()
+                        .context("failed to resume process")?;
+                }
+
+                result?;
+                return Ok((new_scan, s.is_stopped()));
             }
 
             let handle = RwLockWriteGuard::downgrade_to_upgradable(handle.write());
@@ -359,14 +379,15 @@ impl MainWindow {
                     .context("failed to resume process")?;
             }
 
-            *scan.write() = Some(scan::Scan {
+            let new_scan = scan::Scan {
+                id: uuid::Uuid::new_v4(),
                 addresses,
                 initial: values.clone(),
                 last: values,
-            });
+            };
 
             result?;
-            Ok(s.is_stopped())
+            Ok((Some(new_scan), s.is_stopped()))
         });
 
         task.emit(|main, (percentage, results)| {
@@ -377,37 +398,41 @@ impl MainWindow {
             }
         });
 
-        task.then(move |main, cancelled| {
+        task.then(move |main, result| {
             if let Some(status_label) = main.widgets.status_label.upgrade() {
                 let diff = Instant::now().duration_since(started);
 
-                let (text, error) = match cancelled {
+                let (new_scan, text, error) = match result {
                     Err(e) => (
+                        None,
                         format!(
                             "Scan failed after {:.3?} (<a href=\"#last-error\">error details</a>)",
                             diff
                         ),
                         Some(e),
                     ),
-                    Ok(true) => (
+                    Ok((new_scan, true)) => (
+                        new_scan,
                         format!(
                             "Scan cancelled after {:.3?} (<a href=\"#last-error\">error details</a>)",
                             diff
                         ),
                         Some(anyhow!("task was cancelled")),
                     ),
-                    Ok(false) => (format!("Scan completed in {:.3?}", diff), None),
+                    Ok((new_scan, false)) => (new_scan, format!("Scan completed in {:.3?}", diff), None),
                 };
 
                 status_label.set_markup(&text);
+
+                if let Some(new_scan) = new_scan {
+                    main.session.borrow_mut().push(new_scan);
+                }
 
                 if let Some(error) = error {
                     main.error_dialog.borrow_mut().add_error(Utc::now(), error);
                 }
             }
 
-            main.ui_scan.borrow_mut().refresh();
-            main.filter_options.borrow_mut().has_results(true);
             main.end_major_task();
             main.update_components();
         });
@@ -425,7 +450,7 @@ impl MainWindow {
 
         let handle = optional!(&slf.handle).clone();
 
-        let scan = slf.scan.clone();
+        let scan = slf.session.borrow().last().cloned();
         let thread_pool = slf.thread_pool.clone();
         let started = Instant::now();
 
@@ -447,8 +472,8 @@ impl MainWindow {
 
                 let value_type = value_expr.value_type_of(&*handle, TypeHint::NoHint)?.unwrap_or(value_type);
 
-                let mut scan = scan.write();
-                let scan = optional!(&mut *scan, Ok(None));
+                let scan = optional!(scan, Ok(None));
+                let scan = &mut *scan.write();
 
                 let value_type = value_type.option().unwrap_or(scan.last.ty()).unsize(scan.last.ty());
 
@@ -504,8 +529,6 @@ impl MainWindow {
                     }
                 }
 
-                slf.ui_scan.borrow_mut().refresh();
-                slf.filter_options.borrow_mut().has_results(true);
                 slf.end_major_task();
                 slf.update_components();
             });
@@ -582,29 +605,44 @@ impl MainWindow {
         self.update_components();
     }
 
+    /// An undo action was triggered.
+    fn undo(&mut self) {
+        self.session.borrow_mut().undo();
+        self.update_components();
+    }
+
+    /// A redo action was triggered
+    fn redo(&mut self) {
+        self.session.borrow_mut().redo();
+        self.update_components();
+    }
+
     /// Updates all relevant components.
     fn update_components(&mut self) {
+        let session = self.session.borrow();
         let label = upgrade!(self.widgets.attached_label);
         let attached = upgrade!(self.widgets.attached_image);
         let detached = upgrade!(self.widgets.detached_image);
 
         let scan_status = upgrade!(self.widgets.scan_status);
 
-        if let Some(scan) = self.scan.try_read() {
-            match scan.as_ref() {
+        if let Some(scan) = session.last() {
+            match scan.try_read() {
                 Some(scan) => {
-                    let initial = (scan.initial.bytes() as f64) / 1_000_000f64;
-                    let last = (scan.last.bytes() as f64) / 1_000_000f64;
-                    let addresses = (scan.addresses.len() * std::mem::size_of::<Address>()) as f64
-                        / 1_000_000f64;
-                    scan_status.set_text(&format!("Scan with {} result(s) (initial: {initial:.2}M / {initial_element}B, last: {last:.2}M / {last_element}B, addresses: {addresses:.2}M)", scan.len(), initial = initial, initial_element = scan.initial.element_size(), last = last, last_element = scan.last.element_size(), addresses = addresses));
+                    let size = (scan.bytes() as f64) / 1_000_000f64;
+                    scan_status.set_text(&format!(
+                        "Scan ({}) with {} result(s) (size: {:.2}M)",
+                        scan.id,
+                        scan.len(),
+                        size
+                    ));
                 }
                 None => {
-                    scan_status.set_text("No scan in progress");
+                    scan_status.set_text("Failed to lock scan");
                 }
             }
         } else {
-            scan_status.set_text("Failed to lock scan");
+            scan_status.set_text("No scan in progress");
         }
 
         if let Some(handle) = self.handle.as_ref().and_then(|h| h.try_read()) {
@@ -620,7 +658,19 @@ impl MainWindow {
         attached.set_visible(self.handle.is_some());
         detached.set_visible(self.handle.is_none());
 
-        self.ui_scan.borrow_mut().set_handle(self.handle.clone());
+        {
+            let mut ui_scan = self.ui_scan.borrow_mut();
+            ui_scan.set_handle(self.handle.clone());
+            ui_scan.refresh();
+        }
+
+        {
+            let session = self.session.borrow();
+            self.filter_options
+                .borrow_mut()
+                .has_results(!session.is_empty());
+        }
+
         self.scratch_results
             .borrow_mut()
             .set_handle(self.handle.clone());
@@ -630,9 +680,17 @@ impl MainWindow {
         self.show_scan_result_dialog
             .borrow_mut()
             .set_handle(self.handle.clone());
-        self.main_menu
-            .borrow_mut()
-            .set_attached(self.handle.is_some());
+
+        {
+            let session = self.session.borrow();
+
+            cascade! {
+                self.main_menu.borrow_mut();
+                ..set_attached(self.handle.is_some());
+                ..set_can_undo(session.can_undo());
+                ..set_can_redo(session.can_redo());
+            };
+        }
 
         let filter_options = &self.filter_options;
         let process_information = &self.process_information;

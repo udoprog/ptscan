@@ -3,12 +3,18 @@ use std::{cell::RefCell, rc::Rc};
 
 struct Widgets {
     detach_item: glib::WeakRef<MenuItem>,
+    undo_item: glib::WeakRef<MenuItem>,
+    redo_item: glib::WeakRef<MenuItem>,
 }
 
 pub struct MainMenu {
     widgets: Widgets,
     on_detach: Option<Box<dyn Fn()>>,
+    on_undo: Option<Box<dyn Fn()>>,
+    on_redo: Option<Box<dyn Fn()>>,
     attached: bool,
+    can_undo: bool,
+    can_redo: bool,
 }
 
 impl MainMenu {
@@ -31,6 +37,14 @@ impl MainMenu {
 
         let detach_item = cascade! {
             builder.get_object::<MenuItem>("detach_item");
+        };
+
+        let undo_item = cascade! {
+            builder.get_object::<MenuItem>("undo_item");
+        };
+
+        let redo_item = cascade! {
+            builder.get_object::<MenuItem>("redo_item");
         };
 
         cascade! {
@@ -155,15 +169,33 @@ impl MainMenu {
         let slf = Rc::new(RefCell::new(Self {
             widgets: Widgets {
                 detach_item: detach_item.downgrade(),
+                undo_item: undo_item.downgrade(),
+                redo_item: redo_item.downgrade(),
             },
             on_detach: None,
+            on_undo: None,
+            on_redo: None,
             attached: false,
+            can_undo: false,
+            can_redo: false,
         }));
 
         detach_item.connect_activate(clone!(slf => move |_| {
             let on_detach = optional!(slf.borrow_mut().on_detach.take());
             on_detach();
             slf.borrow_mut().on_detach = Some(on_detach);
+        }));
+
+        undo_item.connect_activate(clone!(slf => move |_| {
+            let on_undo = optional!(slf.borrow_mut().on_undo.take());
+            on_undo();
+            slf.borrow_mut().on_undo = Some(on_undo);
+        }));
+
+        redo_item.connect_activate(clone!(slf => move |_| {
+            let on_redo = optional!(slf.borrow_mut().on_redo.take());
+            on_redo();
+            slf.borrow_mut().on_redo = Some(on_redo);
         }));
 
         slf.borrow_mut().update_components();
@@ -175,13 +207,38 @@ impl MainMenu {
         self.on_detach = Some(Box::new(on_detach));
     }
 
+    /// Register a handle to call on undo actions.
+    pub fn on_undo(&mut self, on_undo: (impl Fn() + 'static)) {
+        self.on_undo = Some(Box::new(on_undo));
+    }
+
+    /// Register a handle to call on redo actions.
+    pub fn on_redo(&mut self, on_redo: (impl Fn() + 'static)) {
+        self.on_redo = Some(Box::new(on_redo));
+    }
+
     pub fn set_attached(&mut self, attached: bool) {
         self.attached = attached;
         self.update_components();
     }
 
+    pub fn set_can_redo(&mut self, can_redo: bool) {
+        self.can_redo = can_redo;
+        self.update_components();
+    }
+
+    pub fn set_can_undo(&mut self, can_undo: bool) {
+        self.can_undo = can_undo;
+        self.update_components();
+    }
+
     fn update_components(&mut self) {
         let detach_item = upgrade!(self.widgets.detach_item);
+        let undo_item = upgrade!(self.widgets.undo_item);
+        let redo_item = upgrade!(self.widgets.redo_item);
+
         detach_item.set_sensitive(self.attached);
+        undo_item.set_sensitive(self.can_undo);
+        redo_item.set_sensitive(self.can_redo);
     }
 }

@@ -19,7 +19,7 @@ struct Visible {
 }
 
 pub struct Scan {
-    scan: Arc<RwLock<Option<scan::Scan>>>,
+    session: Rc<RefCell<scan::Session>>,
     thread_pool: Arc<rayon::ThreadPool>,
     widgets: Widgets,
     settings: Arc<Settings>,
@@ -53,7 +53,7 @@ impl Scan {
         builder: &Builder,
         clipboard: Rc<Clipboard>,
         settings: Arc<Settings>,
-        scan: Arc<RwLock<Option<scan::Scan>>>,
+        session: Rc<RefCell<scan::Session>>,
         thread_pool: Arc<rayon::ThreadPool>,
         show_scan_result_dialog: Rc<RefCell<ui::ShowScanResultDialog>>,
         show_scan_result_dialog_window: glib::WeakRef<Window>,
@@ -67,7 +67,7 @@ impl Scan {
         let remove_item = builder.get_object::<MenuItem>("scan_remove_item");
 
         let slf = Rc::new(RefCell::new(Self {
-            scan,
+            session,
             thread_pool,
             widgets: Widgets {
                 model: model.downgrade(),
@@ -259,8 +259,9 @@ impl Scan {
         to_remove.sort_by(|a, b| b.cmp(a));
 
         {
-            let mut scan = optional!(self.scan.try_write());
-            let scan = optional!(&mut *scan);
+            let session = self.session.borrow();
+            let scan = optional!(session.last());
+            let mut scan = optional!(scan.try_write());
 
             for index in to_remove {
                 scan.swap_remove(index);
@@ -272,12 +273,14 @@ impl Scan {
 
     /// Refresh the collection of scan results being showed.
     pub fn refresh(&mut self) {
-        let scan = optional!(self.scan.try_read());
+        let session = self.session.borrow();
         let model = upgrade!(self.widgets.model);
 
+        // NB: make sure to clear the model regardless if a scan is available or not.
         model.clear();
 
-        let scan = optional!(&*scan);
+        let last_scan = optional!(session.last());
+        let scan = optional!(last_scan.try_read());
 
         let mut initial = Values::with_capacity(scan.initial.ty(), 100);
         initial.extend(scan.initial.iter().take(100));
@@ -324,6 +327,7 @@ impl Scan {
 
         self.visible = Some(Visible {
             scan: scan::Scan {
+                id: scan.id,
                 addresses,
                 initial,
                 last: last.clone(),

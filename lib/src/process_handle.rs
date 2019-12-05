@@ -2,10 +2,10 @@
 
 use crate::{
     error::Error, filter_expr::FilterExpr, progress_reporter::ProgressReporter, system,
-    thread::Thread, utils::IteratorExtension as _, values, Address, AddressRange, Addresses, Base,
-    Cached, DefaultScanner, FollowablePointer, MemoryInformation, MemoryReader, Pointer,
-    PointerInfo, PointerWidth, PortableBase, Process, ProcessId, ProcessInfo, Scanner, Size, Test,
-    ThreadId, Token, Type, TypeHint, Value, ValueExpr, ValueRef, Values,
+    thread::Thread, utils::IteratorExtension as _, Address, AddressRange, Addresses, Base, Cached,
+    DefaultScanner, FollowablePointer, MemoryInformation, MemoryReader, Pointer, PointerInfo,
+    PointerWidth, PortableBase, Process, ProcessId, ProcessInfo, Scanner, Size, Test, ThreadId,
+    Token, Type, TypeHint, Value, ValueExpr, ValueRef, Values,
 };
 use anyhow::{anyhow, bail, Context as _};
 use crossbeam_queue::SegQueue;
@@ -475,7 +475,7 @@ impl ProcessHandle {
 
         let mut to_remove = Vec::new();
 
-        let filter = filter.type_check(self, initial.ty, values.ty, values.ty)?;
+        let filter = filter.type_check(self, initial.ty(), values.ty(), values.ty())?;
         let filter = &filter;
 
         let mut ranges = Vec::new();
@@ -504,7 +504,7 @@ impl ProcessHandle {
             .map(|_| Vec::with_capacity(0x10))
             .collect::<Vec<_>>();
 
-        for (index, address) in addresses.iter().enumerate() {
+        for (index, address) in addresses.iter_copied().enumerate() {
             match AddressRange::find_index_in_range(&ranges, |r| r, address)
                 .and_then(|i| partitions.get_mut(i))
             {
@@ -704,8 +704,8 @@ impl ProcessHandle {
         &self,
         thread_pool: &rayon::ThreadPool,
         addresses: &mut Addresses,
-        initial: &mut Values<Type>,
-        values: &mut Values<Type>,
+        initial: &mut Values,
+        values: &mut Values,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
         filter: &FilterExpr,
@@ -737,7 +737,7 @@ impl ProcessHandle {
 
         let mut to_remove = Vec::new();
 
-        let filter = filter.type_check(self, initial.ty, values.ty, values.ty)?;
+        let filter = filter.type_check(self, initial.ty(), values.ty(), values.ty())?;
         let filter = &filter;
 
         let mut ranges = Vec::new();
@@ -767,8 +767,8 @@ impl ProcessHandle {
                     Option<(
                         usize,
                         Address,
-                        values::Accessor<'_, Type>,
-                        values::Mutator<'_, Type>,
+                        dynamicvec::Accessor<'_, Type>,
+                        dynamicvec::Mutator<'_, Type>,
                     )>,
                 >();
 
@@ -807,7 +807,7 @@ impl ProcessHandle {
                 }
 
                 let mut it = addresses
-                    .iter()
+                    .iter_copied()
                     .zip(initial.iter().zip(values.iter_mut()))
                     .enumerate();
 
@@ -909,19 +909,20 @@ impl ProcessHandle {
                 self,
                 TypeHint::Explicit(Type::None),
                 TypeHint::Explicit(Type::None),
-                TypeHint::Explicit(values.ty),
+                TypeHint::Explicit(values.ty()),
                 TypeHint::NoHint,
             )?
             .ok_or_else(|| Error::TypeInference(expr.clone()))?;
 
-        let expr = expr.type_check(self, Type::None, Type::None, values.ty, expr_type)?;
+        let expr = expr.type_check(self, Type::None, Type::None, values.ty(), expr_type)?;
         let expr = &expr;
 
         thread_pool.install(|| {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<bool>>();
-                let (p_tx, p_rx) =
-                    crossbeam_channel::unbounded::<Option<(Address, values::Mutator<'_, Type>)>>();
+                let (p_tx, p_rx) = crossbeam_channel::unbounded::<
+                    Option<(Address, dynamicvec::Mutator<'_, Type>)>,
+                >();
 
                 for _ in 0..tasks {
                     let tx = tx.clone();
@@ -953,7 +954,7 @@ impl ProcessHandle {
                     });
                 }
 
-                let mut it = addresses.iter().zip(values.iter_mut());
+                let mut it = addresses.iter_copied().zip(values.iter_mut());
 
                 for (base, value) in (&mut it).take(tasks) {
                     p_tx.send(Some((base, value))).expect("closed");
@@ -1148,12 +1149,12 @@ impl ProcessHandle {
 
         let mut last_error = None;
 
-        let value_type = values.ty;
+        let value_type = values.ty();
         let aligned = config
             .aligned
-            .unwrap_or_else(|| values.ty.is_default_aligned());
+            .unwrap_or_else(|| values.ty().is_default_aligned());
         let alignment = values
-            .ty
+            .ty()
             .alignment(self)
             .ok_or_else(|| anyhow!("cannot scan for none"))?;
         let step_size = if aligned { alignment } else { 1 };
@@ -1161,7 +1162,7 @@ impl ProcessHandle {
             .alignment
             .or_else(|| if aligned { Some(alignment) } else { None });
 
-        let special = filter.special(self, values.ty)?;
+        let special = filter.special(self, values.ty())?;
         let special = special.as_ref();
 
         let mut specialized_scanner = None;
@@ -1170,7 +1171,7 @@ impl ProcessHandle {
         let scanner: &dyn Scanner = match filter.scanner(alignment, self, value_type)? {
             Some(scanner) => &**specialized_scanner.get_or_insert(scanner),
             None => {
-                let filter = filter.type_check(self, Type::None, Type::None, values.ty)?;
+                let filter = filter.type_check(self, Type::None, Type::None, values.ty())?;
                 current_scanner.get_or_insert(DefaultScanner::new(
                     filter, special, alignment, step_size, value_type,
                 ))

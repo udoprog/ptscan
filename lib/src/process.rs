@@ -83,19 +83,19 @@ impl PointerWidth {
         true
     }
 
-    pub unsafe fn write_unchecked(&self, ptr: *mut u8, value: Address) {
+    pub unsafe fn write_unchecked(self, ptr: *mut u8, value: Address) {
         use std::ptr::write;
 
-        match *self {
+        match self {
             Self::Pointer32 => write(ptr as *mut _, u64::from(value) as u32),
             Self::Pointer64 => write(ptr as *mut _, value),
         }
     }
 
-    pub unsafe fn read_unchecked(&self, ptr: *const u8) -> Address {
+    pub unsafe fn read_unchecked(self, ptr: *const u8) -> Address {
         use std::ptr::read;
 
-        Address(match *self {
+        Address(match self {
             Self::Pointer32 => read(ptr as *const u32) as u64,
             Self::Pointer64 => read(ptr as *const _),
         })

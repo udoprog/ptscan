@@ -54,7 +54,7 @@ impl Scan {
         Some(ScanResult {
             pointer,
             last_address,
-            value_type: self.last.ty,
+            value_type: self.last.ty(),
             value: self.last.get(index)?,
         })
     }

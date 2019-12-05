@@ -4,6 +4,10 @@ members = [
     "pts-gui",
 ]
 
+exclude = [
+    "crates/dynamicvec"
+]
+
 [profile.dev]
 panic = "abort"
 

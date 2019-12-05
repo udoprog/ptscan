@@ -450,9 +450,9 @@ impl MainWindow {
                 let mut scan = scan.write();
                 let scan = optional!(&mut *scan, Ok(None));
 
-                let value_type = value_type.option().unwrap_or(scan.last.ty).unsize(scan.last.ty);
+                let value_type = value_type.option().unwrap_or(scan.last.ty()).unsize(scan.last.ty());
 
-                if value_type != scan.last.ty {
+                if value_type != scan.last.ty() {
                     scan.last.convert_in_place(&*handle, value_type);
                 }
 
@@ -597,7 +597,7 @@ impl MainWindow {
                     let last = (scan.last.bytes() as f64) / 1_000_000f64;
                     let addresses = (scan.addresses.len() * std::mem::size_of::<Address>()) as f64
                         / 1_000_000f64;
-                    scan_status.set_text(&format!("Scan with {} result(s) (initial: {initial:.2}M / {initial_element}B, last: {last:.2}M / {last_element}B, addresses: {addresses:.2}M)", scan.len(), initial = initial, initial_element = scan.initial.element_size, last = last, last_element = scan.last.element_size, addresses = addresses));
+                    scan_status.set_text(&format!("Scan with {} result(s) (initial: {initial:.2}M / {initial_element}B, last: {last:.2}M / {last_element}B, addresses: {addresses:.2}M)", scan.len(), initial = initial, initial_element = scan.initial.element_size(), last = last, last_element = scan.last.element_size(), addresses = addresses));
                 }
                 None => {
                     scan_status.set_text("No scan in progress");

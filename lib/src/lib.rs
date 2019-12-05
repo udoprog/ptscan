@@ -17,6 +17,7 @@ mod pointer_scan;
 mod process;
 mod process_handle;
 mod progress_reporter;
+mod raw_serde;
 mod scanner;
 mod sign;
 mod size;
@@ -69,6 +70,7 @@ pub use self::process_handle::{
     AddressProxy, BufferProxy, InitialScanConfig, Location, ModuleInfo, ModulesState,
     ProcessHandle, ProcessName, ProcessThread, Proxy, ScanProgress, ValueHolder,
 };
+pub use self::raw_serde::{RawDeserialize, RawSerialize};
 pub use self::scanner::{DefaultScanner, Scanner};
 pub use self::sign::Sign;
 pub use self::size::Size;

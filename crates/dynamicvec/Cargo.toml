@@ -1,0 +1,9 @@
+[package]
+name = "dynamicvec"
+version = "0.0.0"
+authors = ["John-John Tedro <udoprog@tedro.se>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]

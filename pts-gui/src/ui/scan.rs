@@ -204,7 +204,7 @@ impl Scan {
                     let iter = model.get_iter(&path)?;
                     let index = model.get_value(&iter, 0).get::<u64>().ok()?? as usize;
                     let result = visible.scan.get(&*handle, index)?.clone();
-                    let current = visible.current.get(index).clone().map(|v| (visible.current.ty, v));
+                    let current = visible.current.get(index).clone().map(|v| (visible.current.ty(), v));
                     results.push(CurrentScanResult { result, current });
                 }
 
@@ -279,16 +279,16 @@ impl Scan {
 
         let scan = optional!(&*scan);
 
-        let mut initial = Values::new_of(&scan.initial);
+        let mut initial = Values::with_capacity(scan.initial.ty(), 100);
         initial.extend(scan.initial.iter().take(100));
 
-        let mut last = Values::new_of(&scan.last);
+        let mut last = Values::with_capacity(scan.last.ty(), 100);
         last.extend(scan.last.iter().take(100));
 
-        let mut addresses = Addresses::new_of(&scan.addresses);
+        let mut addresses = Addresses::with_capacity(scan.addresses.ty(), 100);
         addresses.extend(scan.addresses.iter().take(100));
 
-        let it = addresses.iter().zip(initial.iter().zip(last.iter()));
+        let it = addresses.iter_copied().zip(initial.iter().zip(last.iter()));
 
         let handle = match &self.handle {
             Some(handle) => Some(handle.read()),
@@ -296,7 +296,7 @@ impl Scan {
         };
 
         for (index, (address, (initial, last))) in it.enumerate() {
-            let ty = scan.initial.ty.to_string();
+            let ty = scan.initial.ty().to_string();
 
             let pointer = match &handle {
                 Some(handle) => handle.address_to_portable_base(address).to_string(),
@@ -345,7 +345,7 @@ impl Scan {
 
         let handle = optional!(slf.handle.clone());
         let visible = optional!(&slf.visible);
-        let last_type = visible.scan.last.ty;
+        let last_type = visible.scan.last.ty();
         let mut current = visible.current.clone();
         let addresses = visible.scan.addresses.clone();
 
@@ -370,7 +370,7 @@ impl Scan {
                 let value_type = value_type.option().unwrap_or(last_type).unsize(last_type);
 
                 // NB: need to convert the value storage in case current type differs.
-                let type_change = if value_type != current.ty {
+                let type_change = if value_type != current.ty() {
                     current.convert_in_place(&*handle, value_type);
                     true
                 } else {
@@ -417,7 +417,7 @@ impl Scan {
         let model = upgrade!(self.widgets.model);
         let visible = optional!(&mut self.visible);
 
-        if visible.current.ty != values.ty {
+        if visible.current.ty() != values.ty() {
             return;
         }
 

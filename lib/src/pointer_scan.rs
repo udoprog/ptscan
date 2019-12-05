@@ -1,6 +1,6 @@
 use crate::{
-    values, Address, Base, FollowablePointer as _, Location, Offset, Pointer, ProcessHandle, Size,
-    Token, Type,
+    Address, Base, FollowablePointer as _, Location, Offset, Pointer, ProcessHandle, Size, Token,
+    Type,
 };
 use anyhow::anyhow;
 use hashbrown::{hash_map, HashMap};
@@ -64,7 +64,7 @@ impl<'a> PointerScan<'a> {
     pub fn build_references<'v, A, V>(&mut self, addresses: A, values: V) -> anyhow::Result<()>
     where
         A: IntoIterator<Item = Address>,
-        V: IntoIterator<Item = values::Accessor<'v, Type>>,
+        V: IntoIterator<Item = dynamicvec::Accessor<'v, Type>>,
     {
         for (from, value) in addresses.into_iter().zip(values.into_iter()) {
             let to = match value.read().as_address() {

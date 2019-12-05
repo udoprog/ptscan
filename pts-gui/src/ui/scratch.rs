@@ -441,7 +441,7 @@ impl Scratch {
 
                 let mut results = Vec::new();
 
-                pointer_scan.build_references(addresses.iter(), values.iter())?;
+                pointer_scan.build_references(addresses.iter_copied(), values.iter())?;
                 // TODO: implement into_iter
                 drop(addresses);
 

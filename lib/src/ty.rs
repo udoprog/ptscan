@@ -342,8 +342,8 @@ impl Type {
 
     /// The known in-memory size that a type has.
     #[inline]
-    pub fn element_size(&self) -> usize {
-        match *self {
+    pub fn element_size(self) -> usize {
+        match self {
             Self::None => 0,
             Self::Pointer(width) => width.size(),
             Self::U8 => mem::size_of::<u8>(),

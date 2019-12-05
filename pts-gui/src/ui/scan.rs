@@ -303,8 +303,8 @@ impl Scan {
                 None => address.to_string(),
             };
 
-            let initial = initial.as_ref().to_string();
-            let last = last.as_ref().to_string();
+            let initial = initial.read().to_string();
+            let last = last.read().to_string();
 
             let iter = model.insert_with_values(
                 None,
@@ -429,8 +429,8 @@ impl Scan {
             .enumerate()
         {
             {
-                let prev = prev.as_ref();
-                let new = new.as_ref();
+                let prev = prev.read();
+                let new = new.read();
 
                 if prev == new {
                     continue;
@@ -439,7 +439,7 @@ impl Scan {
                 if let Some(iter) = model.iter_nth_child(None, index as i32) {
                     model.set_value(&iter, 5, &new.to_string().to_value());
 
-                    let background = if new == last.as_ref() {
+                    let background = if new == last.read() {
                         &self.settings.default_cell_background
                     } else {
                         &self.settings.highlight_cell_background
@@ -466,12 +466,12 @@ impl Scan {
             .enumerate()
         {
             {
-                let current = current.as_ref();
+                let current = current.read();
 
                 if let Some(iter) = model.iter_nth_child(None, index as i32) {
                     model.set_value(&iter, 5, &current.to_string().to_value());
 
-                    let background = if current == last.as_ref() {
+                    let background = if current == last.read() {
                         &self.settings.default_cell_background
                     } else {
                         &self.settings.highlight_cell_background

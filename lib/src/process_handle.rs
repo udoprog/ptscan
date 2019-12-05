@@ -571,7 +571,7 @@ impl ProcessHandle {
 
                                     let address = addresses.get(index).expect("missing address");
                                     let initial =
-                                        initial.get_ref(index).expect("missing initial value");
+                                        initial.get(index).expect("missing initial value");
                                     let mut value = unsafe { values.get_mutator_unsafe(index) }
                                         .expect("missing value");
 
@@ -592,9 +592,11 @@ impl ProcessHandle {
                                     let buffer = &buffer[offset..];
                                     let mut proxy = BufferProxy::new(address, buffer, self);
 
-                                    if let Test::True =
-                                        filter.test(initial, value.as_ref(), &mut proxy)?
-                                    {
+                                    if let Test::True = filter.test(
+                                        initial.as_ref(),
+                                        value.read().as_ref(),
+                                        &mut proxy,
+                                    )? {
                                         accepted += 1;
                                         value.write(proxy.eval(value.ty)?.0);
                                     } else {
@@ -702,8 +704,8 @@ impl ProcessHandle {
         &self,
         thread_pool: &rayon::ThreadPool,
         addresses: &mut Addresses,
-        initial: &mut Values,
-        values: &mut Values,
+        initial: &mut Values<Type>,
+        values: &mut Values<Type>,
         cancel: Option<&Token>,
         progress: (impl ScanProgress + Send),
         filter: &FilterExpr,
@@ -762,7 +764,12 @@ impl ProcessHandle {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<Task>>();
                 let (p_tx, p_rx) = crossbeam_channel::unbounded::<
-                    Option<(usize, Address, values::Accessor<'_>, values::Mutator<'_>)>,
+                    Option<(
+                        usize,
+                        Address,
+                        values::Accessor<'_, Type>,
+                        values::Mutator<'_, Type>,
+                    )>,
                 >();
 
                 for _ in 0..tasks {
@@ -780,9 +787,11 @@ impl ProcessHandle {
                             let mut work = || {
                                 let mut proxy = self.address_proxy(&address);
 
-                                if let Test::True =
-                                    filter.test(initial.as_ref(), value.as_ref(), &mut proxy)?
-                                {
+                                if let Test::True = filter.test(
+                                    initial.read().as_ref(),
+                                    value.read().as_ref(),
+                                    &mut proxy,
+                                )? {
                                     value.write(proxy.eval(value.ty)?.0);
                                     return Ok(Task::Accepted);
                                 }
@@ -912,7 +921,7 @@ impl ProcessHandle {
             rayon::scope(|s| {
                 let (tx, rx) = mpsc::channel::<anyhow::Result<bool>>();
                 let (p_tx, p_rx) =
-                    crossbeam_channel::unbounded::<Option<(Address, values::Mutator<'_>)>>();
+                    crossbeam_channel::unbounded::<Option<(Address, values::Mutator<'_, Type>)>>();
 
                 for _ in 0..tasks {
                     let tx = tx.clone();
@@ -931,7 +940,7 @@ impl ProcessHandle {
                                 let mut proxy = self.address_proxy(&pointer);
 
                                 let new_value =
-                                    expr.eval(ValueRef::None, value.as_ref(), &mut proxy)?;
+                                    expr.eval(ValueRef::None, value.read().as_ref(), &mut proxy)?;
 
                                 value.write(new_value);
                                 Ok(false)

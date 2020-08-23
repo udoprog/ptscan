@@ -190,9 +190,7 @@ impl FilterOptions {
                 let alignment_text = upgrade!(slf.widgets.alignment_text);
 
                 let alignment = if btn.get_active() {
-                    alignment_text.get_text().as_ref().and_then(|s| {
-                        str::parse::<usize>(s.as_str()).ok()
-                    })
+                    str::parse::<usize>(alignment_text.get_text().as_str()).ok()
                 } else {
                     None
                 };
@@ -211,10 +209,7 @@ impl FilterOptions {
             let (cb, update) = {
                 let mut slf = slf.borrow_mut();
 
-                slf.state.alignment = entry.get_text().as_ref().and_then(|s| {
-                    str::parse::<usize>(s.as_str()).ok()
-                });
-
+                slf.state.alignment = str::parse::<usize>(entry.get_text().as_str()).ok();
                 let cb = optional!(slf.on_alignment_changed.take());
                 (cb, slf.state.alignment.clone())
             };

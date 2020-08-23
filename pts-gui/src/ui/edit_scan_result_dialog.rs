@@ -79,7 +79,7 @@ impl EditScanResultDialog {
         slf.borrow_mut().signals = Some(Signals {
             address_entry: address_entry.connect_changed(clone!(slf => move |entry| {
                 {
-                    let text = optional!(entry.get_text());
+                    let text = entry.get_text();
                     let mut slf = slf.borrow_mut();
 
                     let Self {
@@ -112,7 +112,7 @@ impl EditScanResultDialog {
             })),
             type_entry: type_entry.connect_changed(clone!(slf => move |entry| {
                 {
-                    let text = optional!(entry.get_text());
+                    let text = entry.get_text();
                     let mut slf = slf.borrow_mut();
 
                     let Self {

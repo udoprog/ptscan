@@ -54,7 +54,7 @@ impl ErrorDialog {
         let weak_window = window.downgrade();
 
         let close_button = cascade! {
-            gtk::Button::new_from_icon_name(Some("edit-delete"), IconSize::Button);
+            gtk::Button::from_icon_name(Some("edit-delete"), IconSize::Button);
             ..set_label("Close");
             ..connect_clicked(clone!(weak_window => move |_| {
                 upgrade!(weak_window).hide();

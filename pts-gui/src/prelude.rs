@@ -49,7 +49,7 @@ impl Resource {
 
     /// Convert resource into a builder.
     pub fn into_builder(&self) -> Builder {
-        let builder = gtk::Builder::new_from_string(self.as_str());
+        let builder = gtk::Builder::from_string(self.as_str());
         Builder(self.0, builder)
     }
 }

@@ -77,7 +77,6 @@ impl MainMenu {
                     ..set_title("About ptscan");
                     ..set_transient_for(Some(&window));
                     ..run();
-                    ..destroy();
                 };
             }));
         }
@@ -86,7 +85,10 @@ impl MainMenu {
             builder.get_object::<MenuItem>("quit_item");
             ..connect_activate(clone!(window => move |_| {
                 let window = upgrade!(window);
-                window.destroy();
+
+                unsafe {
+                    window.destroy();
+                }
             }));
         };
 

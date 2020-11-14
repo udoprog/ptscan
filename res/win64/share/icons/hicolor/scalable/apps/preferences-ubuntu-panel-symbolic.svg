@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+ <defs>
+  <polygon id="adwaita---appearance-icon---16x16-v1-a" points="0 5e-3 16 5e-3 16 12.006 0 12.006"/>
+  <polygon id="adwaita---appearance-icon---16x16-v1-c" points="0 15.995 16 15.995 16 1 0 1"/>
+ </defs>
+ <g fill="none" fill-rule="evenodd">
+  <path d="m9.998 8.0029c-0.553 0-1-0.448-1-1s0.447-1 1-1c0.552 0 1 0.448 1 1s-0.448 1-1 1m-7e-3 -3.001c-1.404 0-2.815 1.099-3.67 1.998 0.807 0.841 2.229 1.987 3.67 1.987 1.554 0 2.979-1.245 3.689-1.987-0.717-0.762-2.162-1.998-3.689-1.998" fill="#333"/>
+  <g transform="translate(0 .995)">
+   <mask id="adwaita---appearance-icon---16x16-v1-b" fill="#fff">
+    <use xlink:href="#adwaita---appearance-icon---16x16-v1-a"/>
+   </mask>
+   <path d="m9.9912 8.9931c-2.755 0-4.989-2.987-4.988-2.987 0.0010003 0 2.233-2.999 4.988-2.999s4.988 2.939 4.988 3.02c0 0.027-2.233 2.966-4.988 2.966zm-8.994-4.987h2v-2h-2v2zm0 2.998h2v-2h-2v2zm0 3.002h2v-2h-2v2zm13.386-10.001h-12.767c-0.889 0-1.616 0.728-1.616 1.617v8.767c0 0.888 0.727 1.617 1.616 1.617h12.767c0.889 0 1.617-0.729 1.617-1.617v-8.767c0-0.889-0.728-1.617-1.617-1.617z" fill="#333" mask="url(#adwaita---appearance-icon---16x16-v1-b)"/>
+  </g>
+  <mask id="adwaita---appearance-icon---16x16-v1-d" fill="#fff">
+   <use xlink:href="#adwaita---appearance-icon---16x16-v1-c"/>
+  </mask>
+  <polygon points="3.988 15.995 11.988 15.995 11.988 14.995 3.988 14.995" fill="#333" mask="url(#adwaita---appearance-icon---16x16-v1-d)"/>
+  <polygon points="5.998 15.003 9.998 15.003 9.998 13.003 5.998 13.003" fill="#333" mask="url(#adwaita---appearance-icon---16x16-v1-d)"/>
+ </g>
+</svg>

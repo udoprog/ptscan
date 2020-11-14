@@ -126,3 +126,10 @@ Checks that `<a>` is greater than or equal to the value `<b>`.
 
 For the initial scan, this allows for the following optimization:
 * `value >= 1` - scans for non-zero memory addresses.
+
+# License
+
+This project bundles Adwaita icons parts of the GNOME Project under the Creative
+Commons Attribution-Share Alike 3.0 license (see [licenses]).
+
+You can find them at http://www.gnome.org

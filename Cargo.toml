@@ -5,7 +5,8 @@ members = [
 ]
 
 exclude = [
-    "crates/dynamicvec"
+    "crates/dynamicvec",
+    "tools/builder"
 ]
 
 [profile.dev]

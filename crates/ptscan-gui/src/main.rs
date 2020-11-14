@@ -2,13 +2,13 @@
 
 use cascade::cascade;
 use gio::prelude::*;
-use pts_gui::{ui, Settings};
+use ptscan_gui::{ui, Settings};
 use std::sync::Arc;
 
 #[derive(Clone)]
 struct ErrorHandler;
 
-impl pts_gui::ErrorHandler for ErrorHandler {
+impl ptscan_gui::ErrorHandler for ErrorHandler {
     fn report<E>(&self, error: E)
     where
         E: Into<anyhow::Error>,

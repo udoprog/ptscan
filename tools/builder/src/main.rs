@@ -2,6 +2,28 @@ use std::env;
 use std::path::Path;
 use std::process::Command;
 
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+fn version() -> Result<String> {
+    use std::fs;
+    use toml::Value;
+
+    let value = fs::read_to_string(Path::new("crates").join("ptscan-gui").join("Cargo.toml"))?;
+    let value: Value = toml::from_str(&value)?;
+
+    let package = value
+        .get("package")
+        .ok_or_else(|| "missing [package] section")?;
+    let version = package
+        .get("version")
+        .ok_or_else(|| "missing version key")?;
+    let version = version
+        .as_str()
+        .ok_or_else(|| "version key is not a string")?;
+
+    Ok(version.to_owned())
+}
+
 #[cfg(windows)]
 fn build_project() {
     let path = env::var("PATH").unwrap();
@@ -31,12 +53,15 @@ fn build_project() {
 
     vars.push(("RUSTFLAGS", "-L res\\win64\\lib"));
 
-    let status = Command::new("cargo")
-        .args(&["+nightly", "build", "--release"])
-        .env("PATH", &path)
-        .envs(vars)
-        .status()
-        .unwrap();
+    let mut command = Command::new("cargo");
+
+    command.args(&["+nightly", "build", "--release"]);
+    command.env("PATH", &path);
+    command.envs(vars);
+
+    println!("{:?}", command);
+
+    let status = command.status().unwrap();
 
     assert!(status.success(), "cargo did not build successfully");
 }
@@ -44,7 +69,15 @@ fn build_project() {
 #[cfg(windows)]
 fn build_installer() {
     let path = Path::new("installer").join("ptscan.iss");
-    let status = Command::new("iscc").arg(&path).status().unwrap();
+    let mut command = Command::new("iscc");
+    command.arg(&path);
+
+    let version = version().expect("failed to get version");
+    let define = format!("/DVersion={}", version);
+    command.arg(&define);
+
+    println!("{:?}", command);
+    let status = command.status().unwrap();
 
     assert!(status.success(), "compiler did not execute successful");
 }

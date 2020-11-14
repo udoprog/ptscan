@@ -3,7 +3,13 @@ name = "dynamicvec"
 version = "0.0.0"
 authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition = "2018"
+license = "MIT/Apache-2.0"
+categories = ["data-structures"]
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = """
+A pointer scanner for Windows written in Rust.
+"""
 
-[dependencies]
+documentation = "https://docs.rs/ptscan"
+homepage = "https://github.com/udoprog/ptscan"
+repository = "https://github.com/udoprog/ptscan"

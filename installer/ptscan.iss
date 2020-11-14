@@ -4,7 +4,7 @@
 #define MyAppName "ptscan"
 #define MyAppPublisher "John-John Tedro"
 #define MyAppURL "https://github.com/udoprog"
-#define MyAppExeName "pts-gui.exe"
+#define MyAppExeName "ptscan-gui.exe"
 
 #ifndef Version  
 #define Version "0.0.0"
@@ -28,7 +28,7 @@ LicenseFile=..\LICENSE-MIT
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 OutputDir=..\target\inno
-OutputBaseFilename=ptscan-installer
+OutputBaseFilename=ptscan-win64-{#Version}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -40,7 +40,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "..\target\release\pts-gui.exe"; DestDir: "{app}\bin"; Flags: ignoreversion         
+Source: "..\target\release\ptscan-gui.exe"; DestDir: "{app}\bin"; Flags: ignoreversion         
 Source: "..\res\win64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "*.pdb,*.lib"
 ; NOTE: Don't use "Flags: ignoreversion" on any shared system files
 

@@ -2,7 +2,7 @@
 
 A memory scanner for Windows, written in Rust.
 
-![Main Window](pts-gui/gfx/main_window.png)
+![Main Window](https://raw.githubusercontent.com/udoprog/ptscan/main/gfx/main_window.png)
 
 ## Usage
 
@@ -84,6 +84,10 @@ The take the following forms (the earlier it is listed, the higher its precedenc
   * Example: `value - 42`
 
 ## Filters
+
+#### Regular expressions `<a> ~ <b>`
+
+Test if `<a>` matches the regular expression specified in `<b>`.
 
 #### Equality `<a> == <b>`
 

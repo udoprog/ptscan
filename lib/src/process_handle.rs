@@ -1552,9 +1552,10 @@ impl Proxy for BufferProxy<'_> {
                     return Ok(0);
                 }
 
-                let e = usize::min(s + buf.len(), self.buffer.len());
-                buf.clone_from_slice(&self.buffer[s..e]);
-                Ok(e - s)
+                let source = &self.buffer[s..];
+                let e = usize::min(buf.len(), source.len());
+                buf[..e].copy_from_slice(&source[..e]);
+                Ok(e)
             }
         }
     }

@@ -1,0 +1,2 @@
+[alias]
+x-builder = "run --manifest-path=tools/builder/Cargo.toml --"

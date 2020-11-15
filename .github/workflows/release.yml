@@ -23,8 +23,7 @@ jobs:
     - name: Build
       uses: actions-rs/cargo@v1
       with:
-        command: run
-        args: --manifest-path=tools/builder/Cargo.toml
+        command: x-builder
     - name: Create Release
       uses: softprops/action-gh-release@v1
       with:

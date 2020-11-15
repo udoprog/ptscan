@@ -1,5 +1,6 @@
 use std::env;
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -15,70 +16,112 @@ fn version() -> Result<String> {
         .get("package")
         .and_then(|v| v.get("version"))
         .and_then(|v| v.as_str())
-        .ok_or_else(|| "missing `[package] version` in manifest")?;
+        .ok_or_else(|| "missing `[package] version = \"..\"` in manifest")?;
 
     Ok(version.to_owned())
 }
 
 #[cfg(windows)]
-fn build_project() {
-    let path = env::var("PATH").unwrap();
-    let path = format!("res\\win64\\bin;{}", path);
+fn build_project(debug: bool) -> Result<()> {
+    let path = {
+        let mut b = OsString::from(Path::new("res").join("win64").join("bin"));
+        b.push(";");
 
-    let mut vars = Vec::new();
-    vars.push(("SYSTEM_DEPS_ATK_LIB", "atk-1.0"));
-    vars.push(("SYSTEM_DEPS_ATK_NO_PKG_CONFIG", "1"));
-    vars.push(("SYSTEM_DEPS_CAIRO_GOBJECT_LIB", "cairo-gobject"));
-    vars.push(("SYSTEM_DEPS_CAIRO_GOBJECT_NO_PKG_CONFIG", "1"));
-    vars.push(("SYSTEM_DEPS_CAIRO_LIB", "cairo"));
-    vars.push(("SYSTEM_DEPS_CAIRO_NO_PKG_CONFIG", "1"));
-    vars.push(("SYSTEM_DEPS_GDK_3_0_LIB", "gdk-3.0"));
-    vars.push(("SYSTEM_DEPS_GDK_3_0_NO_PKG_CONFIG", "1"));
-    vars.push(("SYSTEM_DEPS_GDK_PIXBUF_2_0_LIB", "gdk_pixbuf-2.0"));
-    vars.push(("SYSTEM_DEPS_GDK_PIXBUF_2_0_NO_PKG_CONFIG", "1"));
-    vars.push(("SYSTEM_DEPS_GIO_2_0_LIB", "gio-2.0"));
-    vars.push(("SYSTEM_DEPS_GIO_2_0_NO_PKG_CONFIG", "1"));
-    vars.push(("SYSTEM_DEPS_GLIB_2_0_LIB", "glib-2.0"));
-    vars.push(("SYSTEM_DEPS_GLIB_2_0_NO_PKG_CONFIG", "1"));
-    vars.push(("SYSTEM_DEPS_GOBJECT_2_0_LIB", "gobject-2.0"));
-    vars.push(("SYSTEM_DEPS_GOBJECT_2_0_NO_PKG_CONFIG", "1"));
-    vars.push(("SYSTEM_DEPS_GTK_3_0_LIB", "gtk-3.0"));
-    vars.push(("SYSTEM_DEPS_GTK_3_0_NO_PKG_CONFIG", "1"));
-    vars.push(("SYSTEM_DEPS_PANGO_LIB", "pango-1.0"));
-    vars.push(("SYSTEM_DEPS_PANGO_NO_PKG_CONFIG", "1"));
+        if let Some(path) = env::var_os("PATH") {
+            b.push(path);
+        }
 
-    vars.push(("RUSTFLAGS", "-L res\\win64\\lib"));
+        b
+    };
 
-    let mut command = Command::new("cargo");
+    let rust_flags = {
+        let mut b = OsString::from("-L ");
+        b.push(Path::new("res").join("win64").join("lib"));
+        b
+    };
 
-    command.args(&["+nightly", "build", "--release"]);
-    command.env("PATH", &path);
-    command.envs(vars);
+    let mut c = Command::new("cargo");
 
-    println!("{:?}", command);
+    macro_rules! lib {
+        ($s:literal, $lib:literal) => {{
+            c.env(concat!("SYSTEM_DEPS_", $s, "_LIB"), $lib);
+            c.env(concat!("SYSTEM_DEPS_", $s, "_NO_PKG_CONFIG"), "1");
+        }};
+    }
 
-    let status = command.status().unwrap();
+    lib!("ATK", "atk-1.0");
+    lib!("CAIRO_GOBJECT", "cairo-gobject");
+    lib!("CAIRO", "cairo");
+    lib!("GDK_3_0", "gdk-3.0");
+    lib!("GDK_PIXBUF_2_0", "gdk_pixbuf-2.0");
+    lib!("GIO_2_0", "gio-2.0");
+    lib!("GLIB_2_0", "glib-2.0");
+    lib!("GOBJECT_2_0", "gobject-2.0");
+    lib!("GTK_3_0", "gtk-3.0");
+    lib!("PANGO", "pango-1.0");
+    c.env("RUSTFLAGS", rust_flags);
+    c.env("PATH", path);
+    c.args(&["+nightly", "build"]);
 
-    assert!(status.success(), "cargo did not build successfully");
+    if !debug {
+        c.arg("--release");
+    }
+
+    println!("{:?}", c);
+
+    let status = c.status()?;
+
+    if !status.success() {
+        return Err("cargo did not build successfully".into());
+    }
+
+    Ok(())
 }
 
 #[cfg(windows)]
-fn build_installer() {
-    let path = Path::new("installer").join("ptscan.iss");
-    let mut command = Command::new("iscc");
-    command.arg(&path);
+fn build_installer(iscc: &Path) -> Result<()> {
+    let mut c = Command::new(iscc);
+    c.arg(Path::new("installer").join("ptscan.iss"));
+    c.arg(format!("/DVersion={}", version()?));
 
-    let version = version().expect("failed to get version");
-    let define = format!("/DVersion={}", version);
-    command.arg(&define);
+    println!("{:?}", c);
 
-    println!("{:?}", command);
-    let status = command.status().unwrap();
+    let status = c.status()?;
 
-    assert!(status.success(), "compiler did not execute successful");
+    if !status.success() {
+        return Err("cargo did not build successfully".into());
+    }
+
+    Ok(())
 }
 
-fn main() {
-    build_project();
-    build_installer();
+fn main() -> Result<()> {
+    let mut debug = false;
+    let mut iscc = PathBuf::from("iscc");
+
+    let mut it = env::args();
+    it.next();
+
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--debug" => {
+                debug = true;
+            }
+            "--iscc" => {
+                iscc = PathBuf::from(it.next().ok_or_else(|| "missing argument to `--iscc`")?);
+            }
+            "--help" => {
+                println!("Usage: builder [--iscc <path>] [--debug]");
+                return Ok(());
+            }
+            other => {
+                println!("Usage: builder [--iscc <path>] [--debug]");
+                return Err(format!("unsupported argument: {}", other).into());
+            }
+        }
+    }
+
+    build_project(debug)?;
+    build_installer(&iscc)?;
+    Ok(())
 }

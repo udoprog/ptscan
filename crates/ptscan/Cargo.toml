@@ -3,16 +3,14 @@ name = "ptscan"
 version = "0.0.0"
 authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition = "2018"
-license = "MIT/Apache-2.0"
-categories = ["data-structures"]
-
-description = """
-A pointer scanner for Windows written in Rust.
-"""
-
+description = "A pointer scanner for Windows written in Rust."
 documentation = "https://docs.rs/ptscan"
+readme = "README.md"
 homepage = "https://github.com/udoprog/ptscan"
 repository = "https://github.com/udoprog/ptscan"
+license = "MIT/Apache-2.0"
+keywords = ["memory-scanning"]
+categories = ["data-structures"]
 
 [dependencies]
 dynamicvec = {path = "../dynamicvec"}

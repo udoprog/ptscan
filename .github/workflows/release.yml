@@ -7,25 +7,18 @@ on:
 
 jobs:
   build:
-    name: Release
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [windows-latest]
     steps:
-    - name: Checkout
-      uses: actions/checkout@v1
-    - name: Setup Toolchain
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: nightly
-        override: true
-    - name: Build
-      uses: actions-rs/cargo@v1
+    - uses: actions/checkout@v1
+    - run: rustup toolchain install nightly --profile minimal
+    - run: rustup default nightly
+    - uses: actions-rs/cargo@v1
       with:
         command: x-builder
-    - name: Create Release
-      uses: softprops/action-gh-release@v1
+    - uses: softprops/action-gh-release@v1
       with:
         draft: true
         files: target/inno/*

@@ -374,7 +374,10 @@ where
 
     /// Iterate over the current collection, providing copies of the underlying
     /// value as we go.
-    pub fn iter_copied(&self) -> IterCopied<'_, T> where T::Value: Copy {
+    pub fn iter_copied(&self) -> IterCopied<'_, T>
+    where
+        T::Value: Copy,
+    {
         let len = self.len.checked_mul(self.element_size).expect("overflow");
 
         IterCopied {

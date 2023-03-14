@@ -40,7 +40,7 @@ fn build_project(debug: bool) -> Result<()> {
         b
     };
 
-    let mut c = Command::new("cargo");
+    let mut c = Command::new("rustup");
 
     macro_rules! lib {
         ($s:literal, $lib:literal) => {{
@@ -61,7 +61,7 @@ fn build_project(debug: bool) -> Result<()> {
     lib!("PANGO", "pango-1.0");
     c.env("RUSTFLAGS", rust_flags);
     c.env("PATH", path);
-    c.args(&["+nightly", "build"]);
+    c.args(&["run", "nightly", "cargo", "build"]);
 
     if !debug {
         c.arg("--release");

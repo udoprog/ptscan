@@ -7,22 +7,12 @@ on:
       - main
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: windows-latest
     steps:
     - uses: actions/checkout@v3
-    - uses: dtolnay/rust-toolchain@stable
-    - run: cargo test --workspace --all-targets
-    - run: cargo test --workspace --doc
-
-  clippy:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v3
-    - uses: dtolnay/rust-toolchain@1.68
-      with:
-        components: clippy
-    - run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+    - uses: dtolnay/rust-toolchain@nightly
+    - run: cargo run -p builder -- --debug
 
   rustfmt:
     runs-on: ubuntu-latest

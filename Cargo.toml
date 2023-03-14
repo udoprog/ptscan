@@ -1,10 +1,6 @@
 [workspace]
 members = [
     "crates/*",
-]
-
-exclude = [
-    "crates/dynamicvec",
     "tools/builder"
 ]
 

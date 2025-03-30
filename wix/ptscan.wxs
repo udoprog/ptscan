@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="windows-1252"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="Japanese Dictionary" UpgradeCode="8E9E1D20-1C0B-4ABE-8E05-E3A55376E9C6" Manufacturer="John-John Tedro" Language="1033" Codepage="1252" Version="$(var.Version)">
+    <Package Id="*" Keywords="Installer" Manufacturer="John-John Tedro" InstallerVersion="450" Languages="1033" Compressed="yes" InstallScope="perMachine" SummaryCodepage="1252" Platform="$(var.Platform)"/>
+
+    <MajorUpgrade
+      AllowDowngrades="no"
+      AllowSameVersionUpgrades="no"
+      DowngradeErrorMessage="A newer version of [ProductName] is already installed. Setup will now exit."
+      />
+
+    <Media Id="1" Cabinet="media1.cab" EmbedCab="yes" DiskPrompt="CD-ROM #1"/>
+    <Property Id="DiskPrompt" Value="Japanese Dictionary Installation"/>
+    <Property Id="START_VIA_REGISTRY">1</Property>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ApplicationProgramsFolder" Name="pstcan">
+          <Component Id="ApplicationShortcut" Guid="{986ABD5A-D1C8-4095-ACC4-CDAA51E2B549}" Win64="$(var.Win64)">
+            <Shortcut Id="ApplicationStartMenuShortcut" Name="Japanese Dictionary" Description="Japanese Dictionary by John-John Tedro" Target="[!$(var.BinaryName)]" WorkingDirectory="APPLICATIONFOLDER" />
+            <RemoveFolder Id="CleanUpShortCut" Directory="ApplicationProgramsFolder" On="uninstall"/>
+            <RegistryValue Root="HKCU" Key="Software\pstcan" Name="installed" Type="integer" Value="1" KeyPath="yes"/>
+          </Component>
+        </Directory>
+      </Directory>
+
+      <Directory Id="$(var.ProgramFilesFolder)" Name="PFiles">
+        <Directory Id="APPLICATIONFOLDER" Name="pstcan">
+          <Component Id="$(var.BinaryName)" Guid="{FA5BEB6A-C8E9-4D07-92FD-7DCE307B2C72}" Win64="$(var.Win64)">
+            <File Id="$(var.BinaryName)" Name="$(var.BinaryName)" DiskId="1" Source="$(var.BinaryPath)" KeyPath="yes"/>
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id="MainProgram" Title="Japanese Dictionary" Description="Installs Japanese Dictionary." Level="1" ConfigurableDirectory="APPLICATIONFOLDER" AllowAdvertise="no" Display="expand" Absent="disallow">
+      <ComponentRef Id="$(var.BinaryName)"/>
+      <ComponentRef Id="ApplicationShortcut"/>
+    </Feature>
+
+    <Feature Id="Autostart" Title="Start with Windows" Description="Starts Japanese Dictionary with Windows." Level="1" AllowAdvertise="no" Display="expand" Absent="allow">
+      <ComponentRef Id="RegistryAutostart" />
+    </Feature>
+
+    <SetProperty Id="ARPINSTALLLOCATION" Value="[APPLICATIONFOLDER]" After="CostFinalize"/>
+
+    <Property Id="ARPHELPLINK" Value="https://github.com/udoprog/ptscan"/>
+
+    <UI>
+      <UIRef Id="WixUI_FeatureTree"/>
+
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApplication">WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed</Publish>
+    </UI>
+
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch ptscan" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WixShellExecTarget" Value="[#$(var.BinaryName)]" />
+    <CustomAction Id="LaunchApplication" BinaryKey="WixCA" DllEntry="WixShellExec" Impersonate="yes" />
+  </Product>
+</Wix>

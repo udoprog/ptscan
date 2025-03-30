@@ -144,7 +144,7 @@ pub enum ValueExpr {
     #[serde(rename = "value")]
     Value,
     /// The last known value.
-    #[serde(rename = "value")]
+    #[serde(rename = "last")]
     Last,
     /// The initial value of the scan result.
     #[serde(rename = "initial")]
@@ -351,8 +351,8 @@ impl ValueExpr {
 
                             Explicit(lhs)
                         }
-                        (Explicit(ty), _) | (_, Explicit(ty)) => (Explicit(ty)),
-                        (Implicit(ty), _) | (_, Implicit(ty)) => (Implicit(ty)),
+                        (Explicit(ty), _) | (_, Explicit(ty)) => Explicit(ty),
+                        (Implicit(ty), _) | (_, Implicit(ty)) => Implicit(ty),
                         _ => NoHint,
                     }
                 }

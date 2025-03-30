@@ -56,7 +56,7 @@ For example, `*value + 1` would be `none` if `*value` is not a valid pointer.
 A value of type `none` still retains the old type information to make sure it can be successfully refresh if needed.
 Therefore you'll see things like:
 
-```rust
+```text
 none(u128)
 ```
 

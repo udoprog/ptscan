@@ -8,8 +8,6 @@
 //!
 //! ![Main Window](https://raw.githubusercontent.com/udoprog/ptscan/main/gfx/main_window.png)
 
-#![feature(backtrace)]
-
 #[macro_use]
 mod macros;
 mod clipboard;

@@ -17,8 +17,8 @@ jobs:
     runs-on: windows-latest
     steps:
     - uses: actions/checkout@v4
-    - uses: dtolnay/rust-toolchain@nightly
-    - run: cargo run -p builder -- --debug
+    - uses: dtolnay/rust-toolchain@stable
+    - run: cargo run -p builder -- test
 
   rustfmt:
     runs-on: ubuntu-latest

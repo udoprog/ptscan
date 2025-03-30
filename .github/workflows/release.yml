@@ -1,9 +1,26 @@
 name: Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release'
+        required: true
+        default: 'nightly'
+        type: choice
+        options:
+        - nightly
+        - "%date"
   push:
     tags:
       - '*'
+
+env:
+  KICK_VERSION: "%{git.tag} || ${{github.event.inputs.version}} || nightly"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -13,12 +30,10 @@ jobs:
         os: [windows-latest]
     steps:
     - uses: actions/checkout@v4
-    - run: rustup toolchain install nightly --profile minimal
-    - run: rustup default nightly
-    - run: cargo x-builder
-    - uses: softprops/action-gh-release@v1
-      with:
-        draft: true
-        files: target/inno/*
+    - uses: dtolnay/rust-toolchain@stable
+    - run: cargo run -p builder -- build --release
+    - uses: udoprog/kick@nightly
+    - run: kick msi --output dist
+    - run: kick gh release --github-action --upload "dist/*"
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}

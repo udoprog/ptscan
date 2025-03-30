@@ -7,7 +7,6 @@ pub use crate::{
 };
 pub use cascade::cascade;
 pub use gdk::EventType;
-pub use gio::prelude::*;
 pub use gtk::prelude::*;
 pub use gtk::{
     AboutDialog, AccelFlags, AccelGroup, Align, ApplicationWindow, Button, CellRendererText,

@@ -53,7 +53,7 @@
 //! A value of type `none` still retains the old type information to make sure it can be successfully refresh if needed.
 //! Therefore you'll see things like:
 //!
-//! ```
+//! ```text
 //! none(u128)
 //! ```
 //!

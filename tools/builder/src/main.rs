@@ -1,28 +1,12 @@
 use std::env;
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::ffi::{OsStr, OsString};
+use std::path::Path;
 use std::process::Command;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-fn version() -> Result<String> {
-    use std::fs;
-    use toml::Value;
-
-    let value = fs::read_to_string(Path::new("crates").join("ptscan-gui").join("Cargo.toml"))?;
-    let value: Value = toml::from_str(&value)?;
-
-    let version = value
-        .get("package")
-        .and_then(|v| v.get("version"))
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "missing `[package] version = \"..\"` in manifest")?;
-
-    Ok(version.to_owned())
-}
-
 #[cfg(windows)]
-fn build_project(debug: bool) -> Result<()> {
+fn build_project(remaining: impl IntoIterator<Item: AsRef<OsStr>>) -> Result<()> {
     let path = {
         let mut b = OsString::from(Path::new("res").join("win64").join("bin"));
         b.push(";");
@@ -40,7 +24,7 @@ fn build_project(debug: bool) -> Result<()> {
         b
     };
 
-    let mut c = Command::new("rustup");
+    let mut c = Command::new("cargo");
 
     macro_rules! lib {
         ($s:literal, $lib:literal) => {{
@@ -61,67 +45,18 @@ fn build_project(debug: bool) -> Result<()> {
     lib!("PANGO", "pango-1.0");
     c.env("RUSTFLAGS", rust_flags);
     c.env("PATH", path);
-    c.args(&["run", "nightly", "cargo", "build"]);
-
-    if !debug {
-        c.arg("--release");
-    }
-
-    println!("{:?}", c);
+    c.args(remaining);
 
     let status = c.status()?;
 
     if !status.success() {
-        return Err("cargo did not build successfully".into());
-    }
-
-    Ok(())
-}
-
-#[cfg(windows)]
-fn build_installer(iscc: &Path) -> Result<()> {
-    let mut c = Command::new(iscc);
-    c.arg(Path::new("installer").join("ptscan.iss"));
-    c.arg(format!("/DVersion={}", version()?));
-
-    println!("{:?}", c);
-
-    let status = c.status()?;
-
-    if !status.success() {
-        return Err("cargo did not build successfully".into());
+        return Err(status.to_string().into());
     }
 
     Ok(())
 }
 
 fn main() -> Result<()> {
-    let mut debug = false;
-    let mut iscc = PathBuf::from("iscc");
-
-    let mut it = env::args();
-    it.next();
-
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "--debug" => {
-                debug = true;
-            }
-            "--iscc" => {
-                iscc = PathBuf::from(it.next().ok_or_else(|| "missing argument to `--iscc`")?);
-            }
-            "--help" => {
-                println!("Usage: builder [--iscc <path>] [--debug]");
-                return Ok(());
-            }
-            other => {
-                println!("Usage: builder [--iscc <path>] [--debug]");
-                return Err(format!("unsupported argument: {}", other).into());
-            }
-        }
-    }
-
-    build_project(debug)?;
-    build_installer(&iscc)?;
+    build_project(env::args().skip(1))?;
     Ok(())
 }

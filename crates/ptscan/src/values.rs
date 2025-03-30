@@ -253,12 +253,7 @@ where
 
         self.ty()
             .raw_type_serialize(writer, self.as_bytes(), self.len())?;
-        return Ok(());
-
-        #[derive(Serialize)]
-        struct ImmediateValues<'a> {
-            data: &'a [u8],
-        }
+        Ok(())
     }
 }
 

@@ -696,7 +696,7 @@ impl MainWindow {
         let process_information = &self.process_information;
         let handle = &self.handle;
 
-        gtk::idle_add(
+        glib::idle_add_local(
             clone!(filter_options, process_information, handle => move || {
                 ui::FilterOptions::set_handle(&filter_options, handle.clone());
                 ui::ProcessInformation::set_handle(&process_information, handle.clone());

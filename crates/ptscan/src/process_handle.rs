@@ -12,13 +12,10 @@ use crossbeam_queue::SegQueue;
 use dynamicvec::DynamicConverter;
 use hashbrown::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
-use std::{
-    convert::{TryFrom as _, TryInto as _},
-    ffi::{OsStr, OsString},
-    fmt,
-    sync::mpsc,
-    time::{Duration, Instant},
-};
+use std::convert::{TryFrom as _, TryInto as _};
+use std::ffi::{OsStr, OsString};
+use std::fmt;
+use std::sync::mpsc;
 
 use winapi::shared::winerror;
 
@@ -1259,7 +1256,6 @@ impl ProcessHandle {
                     let tx = tx.clone();
 
                     s.spawn(move |_| {
-                        let start = Instant::now();
                         let result = work(Work {
                             handle: self,
                             tx: &tx,
@@ -1271,11 +1267,7 @@ impl ProcessHandle {
                             pointer_width,
                         });
 
-                        let now = Instant::now();
-                        let duration = now.duration_since(start);
-
-                        tx.send(Task::Done(result, duration, now))
-                            .expect("send done failed");
+                        tx.send(Task::Done(result)).expect("send done failed");
                     });
                 }
 
@@ -1319,8 +1311,8 @@ impl ProcessHandle {
         return Ok(());
 
         enum Task {
-            Done(anyhow::Result<(Addresses, Values)>, Duration, Instant),
-            Tick(usize, u64, Duration, Instant),
+            Done(anyhow::Result<(Addresses, Values)>),
+            Tick(usize, u64),
         }
 
         struct Work<'a> {
@@ -1360,7 +1352,6 @@ impl ProcessHandle {
                 let len = usize::min(buffer.len(), len);
                 let data = &mut buffer[..len];
 
-                let start = Instant::now();
                 let mut hits = 0;
 
                 let len = handle.process.read_process_memory(address, data)?;
@@ -1381,13 +1372,12 @@ impl ProcessHandle {
                     cancel,
                 )?;
 
-                let duration = Instant::now().duration_since(start);
-                tx.send(Task::Tick(data.len(), hits, duration, Instant::now()))
+                tx.send(Task::Tick(data.len(), hits))
                     .expect("send tick failed");
             }
 
             Ok((addresses, values))
-        };
+        }
     }
 }
 
@@ -1625,23 +1615,5 @@ impl fmt::Display for ProcessThread {
         }
 
         Ok(())
-    }
-}
-
-pub trait Decode: Sized {
-    fn decode(buf: &[u8]) -> Result<Self, anyhow::Error>;
-}
-
-impl Decode for u64 {
-    fn decode(buf: &[u8]) -> Result<Self, anyhow::Error> {
-        use byteorder::{ByteOrder, LittleEndian};
-        Ok(LittleEndian::read_u64(buf))
-    }
-}
-
-impl Decode for u32 {
-    fn decode(buf: &[u8]) -> Result<Self, anyhow::Error> {
-        use byteorder::{ByteOrder, LittleEndian};
-        Ok(LittleEndian::read_u32(buf))
     }
 }

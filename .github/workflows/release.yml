@@ -16,7 +16,8 @@ on:
       - '*'
 
 env:
-  KICK_VERSION: "%{git.tag} || ${{github.event.inputs.version}} || nightly"
+  KICK_VERSION: >-
+    ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.version || 'nightly' }}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

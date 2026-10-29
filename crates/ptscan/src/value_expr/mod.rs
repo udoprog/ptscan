@@ -507,7 +507,7 @@ mod tests {
         assert_eq!(V::Number(42.into(), None), parse("42")?);
         assert_eq!(V::Number(42.into(), Some(Type::U32)), parse("42u32")?);
         assert_eq!(
-            V::Decimal(42.42.into(), Some(Type::U32)),
+            V::Decimal("42.42".parse()?, Some(Type::U32)),
             parse("42.42u32")?
         );
         assert_eq!(

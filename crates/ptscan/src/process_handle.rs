@@ -1344,7 +1344,7 @@ impl ProcessHandle {
 
             let mut buffer = vec![0u8; buffer_size];
 
-            while let Ok((address, len)) = queue.pop() {
+            while let Some((address, len)) = queue.pop() {
                 if cancel.test() {
                     return Ok((addresses, values));
                 }

@@ -6,4 +6,4 @@ edition = "2018"
 publish = false
 
 [dependencies]
-toml = "0.5.7"
+toml = "1.1.8"

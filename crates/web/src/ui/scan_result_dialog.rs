@@ -17,6 +17,9 @@ pub enum Msg {
     ValueType(String),
     Add,
     Added(Result<ws::Packet<api::AddScratch>, ws::Error>),
+    Value(String),
+    Write,
+    Written(Result<ws::Packet<api::WriteScanValue>, ws::Error>),
 }
 
 pub struct ScanResultDialog {
@@ -26,6 +29,10 @@ pub struct ScanResultDialog {
     value_type_error: Option<String>,
     added: Option<api::ScratchEntry>,
     request: ws::Request,
+    value: String,
+    value_error: Option<String>,
+    written: Option<String>,
+    write: ws::Request,
 }
 
 impl Component for ScanResultDialog {
@@ -42,6 +49,10 @@ impl Component for ScanResultDialog {
             value_type_error: None,
             added: None,
             request: ws::Request::default(),
+            value: result.current.clone(),
+            value_error: None,
+            written: None,
+            write: ws::Request::default(),
         }
     }
 
@@ -84,6 +95,38 @@ impl Component for ScanResultDialog {
                     .props()
                     .on_error
                     .emit(format!("Adding to scratch: {error}")),
+            },
+            Msg::Value(text) => {
+                self.value = text;
+                self.value_error = None;
+            }
+            Msg::Write => {
+                self.written = None;
+                self.write = ctx
+                    .props()
+                    .ws
+                    .request()
+                    .body(api::WriteScanValueRequest {
+                        address: ctx.props().result.address,
+                        value_type: self.value_type.clone(),
+                        value: self.value.clone(),
+                    })
+                    .on_packet(ctx.link().callback(Msg::Written))
+                    .send();
+            }
+            Msg::Written(result) => match result.and_then(|p| p.decode_response()) {
+                Ok(response) => {
+                    self.value_type_error = response.value_type_error;
+                    self.value_error = response.value_error;
+
+                    if let Some(error) = response.error {
+                        ctx.props().on_error.emit(format!("Writing value: {error}"));
+                    } else if self.value_error.is_none() && self.value_type_error.is_none() {
+                        let value = response.current.as_deref().unwrap_or("?");
+                        self.written = Some(format!("Now {value}"));
+                    }
+                }
+                Err(error) => ctx.props().on_error.emit(format!("Writing value: {error}")),
             },
         }
 
@@ -150,6 +193,32 @@ impl Component for ScanResultDialog {
                                 oninput={link.callback(|e: InputEvent| Msg::ValueType(input_value(&e)))} />
                             if let Some(error) = &self.value_type_error {
                                 <span class="field-error">{error}</span>
+                            }
+                        </column>
+                        <label class="field-label" for="result-value">{"Value"}</label>
+                        <column style="gap: 2px">
+                            <row class="center">
+                                <input id="result-value"
+                                    class={classes!("mono", "fill", self.value_error.is_some().then_some("invalid"))}
+                                    value={self.value.clone()}
+                                    oninput={link.callback(|e: InputEvent| Msg::Value(input_value(&e)))}
+                                    onkeydown={link.batch_callback(|e: KeyboardEvent| {
+                                        (e.key() == "Enter").then(|| {
+                                            e.prevent_default();
+                                            Msg::Write
+                                        })
+                                    })} />
+                                <button type="button" title="Write the value as the type above at the address"
+                                    disabled={self.write.is_pending()}
+                                    onclick={link.callback(|_| Msg::Write)}>
+                                    {"Write"}
+                                </button>
+                            </row>
+                            if let Some(error) = &self.value_error {
+                                <span class="field-error">{error}</span>
+                            }
+                            if let Some(written) = &self.written {
+                                <span class="muted">{written}</span>
                             }
                         </column>
                         <span />

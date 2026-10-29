@@ -45,6 +45,8 @@ pub enum Msg {
     CloseDialog,
     AddSelected,
     Added(Result<ws::Packet<api::AddScratch>, ws::Error>),
+    RemoveSelected,
+    Removed(Result<ws::Packet<api::RemoveScanResults>, ws::Error>),
 }
 
 pub struct ScanView {
@@ -398,6 +400,35 @@ impl Component for ScanView {
                 }
                 Err(error) => on_error.emit(format!("Adding to scratch: {error}")),
             },
+            Msg::RemoveSelected => {
+                if self.selected.is_empty() || self.state.running {
+                    return false;
+                }
+
+                self.action = ws
+                    .request()
+                    .body(api::RemoveScanResultsRequest {
+                        addresses: self.selected.iter().copied().collect(),
+                    })
+                    .on_packet(ctx.link().callback(Msg::Removed))
+                    .send();
+            }
+            Msg::Removed(result) => match result.and_then(|p| p.decode_response()) {
+                Ok(response) => {
+                    if let Some(error) = response.error {
+                        on_error.emit(format!("Removing results: {error}"));
+                    } else {
+                        self.selected.clear();
+                        self.added = Some(match response.removed {
+                            1 => String::from("Removed 1 result"),
+                            n => format!("Removed {n} results"),
+                        });
+                    }
+
+                    self.set_state(ctx, response.state);
+                }
+                Err(error) => on_error.emit(format!("Removing results: {error}")),
+            },
         }
 
         true
@@ -545,6 +576,14 @@ impl Component for ScanView {
                         onclick={self.selected.first().copied().map(|a| link.callback(move |_| Msg::Show(a))).unwrap_or_default()}>
                         {"Show"}
                     </button>
+                    <button title="Remove the selected results from the current scan; this discards the scan to redo"
+                        disabled={self.selected.is_empty() || !ready || running || busy}
+                        onclick={link.callback(|_| Msg::RemoveSelected)}>
+                        {match self.selected.len() {
+                            0 | 1 => String::from("Remove"),
+                            n => format!("Remove {n}"),
+                        }}
+                    </button>
                     <button disabled={selected_here == 0 || !ready}
                         onclick={link.callback(|_| Msg::AddSelected)}>
                         {match selected_here {
@@ -553,7 +592,9 @@ impl Component for ScanView {
                         }}
                     </button>
                 </row>
-                <div class="list fill">
+                <div class="list fill" tabindex="0" onkeydown={link.batch_callback(|e: KeyboardEvent| {
+                    (e.key() == "Delete").then_some(Msg::RemoveSelected)
+                })}>
                     if self.results.is_empty() {
                         <div class="empty muted">{self.empty_label(ready)}</div>
                     } else {

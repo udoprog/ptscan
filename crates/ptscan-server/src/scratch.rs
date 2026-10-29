@@ -1,7 +1,7 @@
 //! The scratch list: pointers watched and edited outside of scans.
 
 use anyhow::{Result, anyhow};
-use ptscan::{PortablePointer, ProcessHandle, Proxy as _, Type, Value};
+use ptscan::{Address, PortablePointer, ProcessHandle, Proxy as _, Type, Value};
 
 use crate::{Shared, lock, read};
 
@@ -53,7 +53,7 @@ fn parse_pointer(input: &str) -> Result<PortablePointer, String> {
     PortablePointer::parse(input.trim()).map_err(|e| format!("{e:#}"))
 }
 
-fn parse_type(input: &str) -> Result<Type, String> {
+pub(crate) fn parse_type(input: &str) -> Result<Type, String> {
     input
         .trim()
         .parse::<Type>()
@@ -209,6 +209,10 @@ fn write_value(handle: &ProcessHandle, pointer: &PortablePointer, value: &Value)
         .address()?
         .ok_or_else(|| anyhow!("pointer `{pointer}` does not follow to an address"))?;
 
+    write_at(handle, address, value)
+}
+
+pub(crate) fn write_at(handle: &ProcessHandle, address: Address, value: &Value) -> Result<()> {
     let mut buf = Vec::new();
 
     if !value.encode(&handle.process, &mut buf) {

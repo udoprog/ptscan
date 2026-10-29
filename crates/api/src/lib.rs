@@ -158,6 +158,35 @@ pub struct ScanResult {
     pub current: String,
 }
 
+/// Remove results from the current generation, which is edited in place.
+#[derive(Debug, Clone, Default, Encode, Decode)]
+pub struct RemoveScanResultsRequest {
+    pub addresses: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct RemoveScanResultsResponse {
+    pub state: ScanState,
+    pub removed: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct WriteScanValueRequest {
+    pub address: u64,
+    pub value_type: String,
+    pub value: String,
+}
+
+/// The value at the address after a write, or why it was refused.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct WriteScanValueResponse {
+    pub current: Option<String>,
+    pub value_type_error: Option<String>,
+    pub value_error: Option<String>,
+    pub error: Option<String>,
+}
+
 /// An entry of the scratch list, with its value read now.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct ScratchEntry {
@@ -425,6 +454,18 @@ api::define! {
     impl Endpoint for ScanResults {
         impl Request for ScanResultsRequest;
         type Response<'de> = ScanResultsResponse;
+    }
+
+    pub type RemoveScanResults;
+    impl Endpoint for RemoveScanResults {
+        impl Request for RemoveScanResultsRequest;
+        type Response<'de> = RemoveScanResultsResponse;
+    }
+
+    pub type WriteScanValue;
+    impl Endpoint for WriteScanValue {
+        impl Request for WriteScanValueRequest;
+        type Response<'de> = WriteScanValueResponse;
     }
 
     pub type ScanStateChanged;

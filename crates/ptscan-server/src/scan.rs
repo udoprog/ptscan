@@ -1,16 +1,18 @@
 //! Scan generations of the attached process, with undo and redo.
 
+use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use anyhow::{Context as _, Result, anyhow};
 use ptscan::{
-    Addresses, FilterExpr, InitialScanConfig, PortablePointer, Process, ProcessHandle, Size, Token,
-    TypeHint, ValueExpr, Values,
+    Address, Addresses, FilterExpr, InitialScanConfig, PortablePointer, Process, ProcessHandle,
+    Proxy as _, Size, Token, TypeHint, Value, ValueExpr, Values,
 };
 use tokio::sync::watch;
 
+use crate::scratch::{parse_type, write_at};
 use crate::{Shared, lock, read, write};
 
 #[derive(Clone)]
@@ -352,6 +354,98 @@ impl Shared {
         }
 
         session.state()
+    }
+
+    /// Remove the results at `addresses` from the current generation in place,
+    /// like the GTK frontend. Generations redone from before the removal would
+    /// bring the removed results back, so the redo stack is discarded.
+    pub fn remove_scan_results(&self, addresses: &[u64]) -> api::RemoveScanResultsResponse {
+        let mut session = lock(&self.session);
+        let mut response = api::RemoveScanResultsResponse::default();
+
+        if session.running.is_some() {
+            response.error = Some("a scan is running".into());
+            response.state = session.state();
+            return response;
+        }
+
+        let addresses = addresses.iter().copied().collect::<HashSet<_>>();
+
+        let indices = session
+            .scans
+            .last()
+            .map(|g| {
+                g.addresses
+                    .iter_copied()
+                    .enumerate()
+                    .filter(|(_, a)| addresses.contains(&u64::from(*a)))
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        if indices.is_empty() {
+            response.state = session.state();
+            return response;
+        }
+
+        let generation = Arc::make_mut(session.scans.last_mut().unwrap());
+
+        // Descending, so that swap_remove only moves results which are kept.
+        for &index in indices.iter().rev() {
+            generation.addresses.swap_remove(index);
+            generation.initial.swap_remove(index);
+            generation.last.swap_remove(index);
+        }
+
+        session.undone.clear();
+        response.removed = indices.len() as u64;
+        response.state = self.publish_scan_state(&session);
+        response
+    }
+
+    /// Parse `value` as `value_type` and write it at a result's address.
+    pub fn write_scan_value(
+        &self,
+        request: api::WriteScanValueRequest,
+    ) -> api::WriteScanValueResponse {
+        let mut response = api::WriteScanValueResponse::default();
+
+        let value_type = match parse_type(&request.value_type) {
+            Ok(value_type) => value_type,
+            Err(e) => {
+                response.value_type_error = Some(e);
+                return response;
+            }
+        };
+
+        let value = match value_type.parse(request.value.trim()) {
+            Ok(value) => value,
+            Err(e) => {
+                response.value_error = Some(e.to_string());
+                return response;
+            }
+        };
+
+        let Some(handle) = lock(&self.handle).clone() else {
+            response.error = Some("not attached to a process".into());
+            return response;
+        };
+
+        let handle = read(&handle);
+        let address = Address::from(request.address);
+
+        if let Err(e) = write_at(&handle, address, &value) {
+            response.error = Some(format!("{e:#}"));
+        }
+
+        if let Ok((value, _)) = handle.address_proxy(&address).eval(value_type)
+            && !matches!(value, Value::None)
+        {
+            response.current = Some(value.to_string());
+        }
+
+        response
     }
 
     /// Read a page of the current generation along with the values in memory

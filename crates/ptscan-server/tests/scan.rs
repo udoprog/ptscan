@@ -78,6 +78,26 @@ async fn scan_needs_attached_process() {
     let page = results(&handle).await;
     assert_eq!(page.total, 0);
     assert!(page.results.is_empty());
+
+    let request = api::WriteScanValueRequest {
+        address: 0x1000,
+        value_type: "u32".into(),
+        value: "1".into(),
+    };
+    let response: api::WriteScanValueResponse = timeout!(handle.request().body(request).send())
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert!(response.error.is_some(), "{response:?}");
+
+    let request = api::RemoveScanResultsRequest {
+        addresses: vec![0x1000],
+    };
+    let response: api::RemoveScanResultsResponse = timeout!(handle.request().body(request).send())
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert_eq!(response, api::RemoveScanResultsResponse::default());
 }
 
 async fn process_information(
@@ -619,6 +639,93 @@ mod linux {
         .unwrap();
         assert!(list.entries.is_empty());
         assert!(scratch(&handle).await.entries.is_empty());
+    }
+
+    async fn write_scan_value(
+        handle: &Handle,
+        address: u64,
+        value_type: &str,
+        value: &str,
+    ) -> api::WriteScanValueResponse {
+        let request = api::WriteScanValueRequest {
+            address,
+            value_type: value_type.into(),
+            value: value.into(),
+        };
+
+        timeout!(handle.request().body(request).send())
+            .unwrap()
+            .decode()
+            .unwrap()
+    }
+
+    async fn remove_results(
+        handle: &Handle,
+        addresses: Vec<u64>,
+    ) -> api::RemoveScanResultsResponse {
+        timeout!(
+            handle
+                .request()
+                .body(api::RemoveScanResultsRequest { addresses })
+                .send()
+        )
+        .unwrap()
+        .decode()
+        .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_and_remove_results() {
+        let mut holder = Holder::spawn();
+        let handle = connect(server().await).await;
+        let mut changes = handle.on_broadcast::<api::ScanStateChanged>();
+        attach(&handle, holder.child.id()).await;
+
+        scan(&handle, &format!("value == {HELD}u64")).await;
+        let first = finished(&mut changes, 1).await;
+        let held = find_held(&handle, &holder).await.unwrap();
+
+        let response = write_scan_value(&handle, held.address, "nope", "1").await;
+        assert!(response.value_type_error.is_some(), "{response:?}");
+        let response = write_scan_value(&handle, held.address, "u64", "nope").await;
+        assert!(response.value_error.is_some(), "{response:?}");
+        assert_eq!(holder.now(), HELD);
+
+        let response = write_scan_value(&handle, held.address, "u64", &CHANGED.to_string()).await;
+        assert_eq!(response.error, None);
+        assert_eq!(response.current, Some(CHANGED.to_string()));
+        assert_eq!(holder.now(), CHANGED);
+        let held = find_held(&handle, &holder).await.unwrap();
+        assert_eq!(held.current, CHANGED.to_string());
+
+        scan(&handle, &format!("value == {CHANGED}u64")).await;
+        finished(&mut changes, 2).await;
+        let undone: api::ScanState = timeout!(handle.request().body(api::UndoScanRequest).send())
+            .unwrap()
+            .decode()
+            .unwrap();
+        assert_eq!((undone.generations, undone.undone), (1, 1));
+
+        let response = remove_results(&handle, vec![held.address, 0]).await;
+        assert_eq!(response.error, None);
+        assert_eq!(response.removed, 1);
+        assert_eq!(response.state.generations, 1);
+        assert_eq!(response.state.undone, 0, "removal discards the redo stack");
+        assert_eq!(response.state.results, first.results - 1);
+        assert!(find_held(&handle, &holder).await.is_none());
+
+        // The undo's broadcast may still be queued before the removal's.
+        loop {
+            let event = timeout!(changes.recv()).unwrap().unwrap();
+
+            if event.decode_event().unwrap() == response.state {
+                break;
+            }
+        }
+
+        let response = remove_results(&handle, vec![held.address]).await;
+        assert_eq!(response.removed, 0);
+        assert_eq!(response.state.results, first.results - 1);
     }
 
     async fn add_scratch(handle: &Handle, pointer: &str) -> api::ScratchEntry {

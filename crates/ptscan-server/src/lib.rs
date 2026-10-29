@@ -330,6 +330,28 @@ impl ws::Handler for Handler {
 
                 outgoing.write(response);
             }
+            api::Request::RemoveScanResults => {
+                let Some(request) = incoming.read::<api::RemoveScanResultsRequest>() else {
+                    return Ok(false);
+                };
+
+                let shared = self.shared.clone();
+                let response = tokio::task::spawn_blocking(move || {
+                    shared.remove_scan_results(&request.addresses)
+                })
+                .await?;
+                outgoing.write(response);
+            }
+            api::Request::WriteScanValue => {
+                let Some(request) = incoming.read::<api::WriteScanValueRequest>() else {
+                    return Ok(false);
+                };
+
+                let shared = self.shared.clone();
+                let response =
+                    tokio::task::spawn_blocking(move || shared.write_scan_value(request)).await?;
+                outgoing.write(response);
+            }
             api::Request::GetScratch => {
                 let shared = self.shared.clone();
                 outgoing.write(tokio::task::spawn_blocking(move || shared.scratch()).await?);

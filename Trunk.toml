@@ -6,3 +6,4 @@ dist = "target/dist"
 rewrite = "/ws"
 backend = "ws://127.0.0.1:7431/ws"
 ws = true
+request_headers = { Host = "127.0.0.1:7431" }

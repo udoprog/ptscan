@@ -1,0 +1,8 @@
+[package]
+name = "api"
+edition = "2024"
+publish = false
+
+[dependencies]
+musli = "0.2.0"
+musli-web = { version = "0.5.0", features = ["api", "format-descriptive"] }

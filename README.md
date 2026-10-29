@@ -16,8 +16,11 @@ web UI.
 `127.0.0.1:7431`, and opens the UI in the default browser on launch:
 
 ```sh
-ptscan-server [--bind ADDR] [--no-browser]
+ptscan-server [--bind ADDR] [--no-browser] [--no-tray]
 ```
+
+On Windows it also shows a notification area icon whose menu opens the UI,
+shows the attached process and quits the server; `--no-tray` leaves it out.
 
 Scans and watches select values using _filters_, the expression language
 described below.

@@ -92,6 +92,10 @@ impl Shared {
         self.state.borrow().clone()
     }
 
+    pub fn subscribe_attach_state(&self) -> watch::Receiver<api::AttachState> {
+        self.state.subscribe()
+    }
+
     fn attach(&self, pid: u32) -> Result<api::AttachState> {
         let handle = ProcessHandle::open(pid)?
             .ok_or_else(|| anyhow!("process {pid} does not exist or cannot be opened"))?;
@@ -157,8 +161,20 @@ fn router(shared: Arc<Shared>) -> Router {
 }
 
 pub async fn serve(listener: TcpListener, shared: Arc<Shared>) -> Result<()> {
+    serve_until(listener, shared, std::future::pending()).await
+}
+
+/// Serve until `shutdown` completes, then stop accepting connections and wait
+/// for open requests to finish.
+pub async fn serve_until(
+    listener: TcpListener,
+    shared: Arc<Shared>,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<()> {
     let service = router(shared).into_make_service_with_connect_info::<origin::Connection>();
-    axum::serve(listener, service).await?;
+    axum::serve(listener, service)
+        .with_graceful_shutdown(shutdown)
+        .await?;
     Ok(())
 }
 

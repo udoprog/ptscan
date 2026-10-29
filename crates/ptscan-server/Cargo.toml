@@ -17,5 +17,15 @@ tokio = { version = "1.45", features = ["rt-multi-thread", "macros", "net", "syn
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["fmt", "env-filter"] }
 
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.61.2"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
+
 [dev-dependencies]
 musli-web = { version = "0.5.0", default-features = false, features = ["axum08", "client", "tungstenite029", "format-descriptive"] }

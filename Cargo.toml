@@ -1,9 +1,6 @@
 [workspace]
 resolver = "1"
-members = [
-    "crates/*",
-    "tools/builder"
-]
+members = ["crates/*"]
 
 [profile.dev]
 panic = "abort"

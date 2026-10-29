@@ -13,12 +13,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  windows:
     runs-on: windows-latest
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
-    - run: cargo run -p builder -- test
+    - run: cargo test --workspace --exclude web
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - run: cargo test -p ptscan -p ptscan-server -p api -p dynamicvec
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+    - uses: jetli/trunk-action@v0.5.0
+      with:
+        version: v0.22.1
+    - run: trunk build --release
 
   rustfmt:
     runs-on: ubuntu-latest

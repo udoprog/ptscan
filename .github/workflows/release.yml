@@ -32,7 +32,13 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
-    - run: cargo run -p builder -- build --release
+      with:
+        targets: wasm32-unknown-unknown
+    - uses: jetli/trunk-action@v0.5.0
+      with:
+        version: v0.22.1
+    - run: trunk build --release
+    - run: cargo build --release -p ptscan-server
     - uses: udoprog/kick@nightly
     - run: kick msi --output dist
     - run: kick gh release --github-action --upload "dist/*"

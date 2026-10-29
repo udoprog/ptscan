@@ -1,4 +1,4 @@
-# GUI
+# Web UI
 
 * ~~Want a functional address list.~~
 * Ability to edit type in address list.

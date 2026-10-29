@@ -350,3 +350,24 @@ label.check {
     flex: 1 1 0;
     min-width: 0;
 }
+
+.dialog.wide {
+    width: min(960px, calc(100% - 32px));
+    height: 80%;
+}
+
+.tabs {
+    gap: 4px;
+    padding-bottom: 0;
+}
+
+.tabs .tab {
+    border-radius: 4px 4px 0 0;
+    border-bottom-color: transparent;
+}
+
+.tabs .tab.active {
+    background: var(--selected);
+    border-color: var(--accent);
+    border-bottom-color: transparent;
+}

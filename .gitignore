@@ -8,3 +8,4 @@ build-*
 /*/Makefile.Release
 /*/debug/
 /*/release/
+crates/web/dist/

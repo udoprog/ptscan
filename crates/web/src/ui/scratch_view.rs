@@ -33,6 +33,8 @@ pub enum Msg {
     CopyJson,
     PointerScan(u64),
     PointerScanStarted(Result<ws::Packet<api::PointerScan>, ws::Error>),
+    PointerScanState(Result<ws::Packet<api::GetPointerScanState>, ws::Error>),
+    PointerScanChanged(Result<ws::Packet<api::PointerScanStateChanged>, ws::Error>),
 }
 
 pub struct ScratchView {
@@ -42,7 +44,10 @@ pub struct ScratchView {
     load: ws::Request,
     remove: ws::Request,
     pointer_scan: ws::Request,
+    pointer_scan_state: ws::Request,
+    pointer_scan_running: bool,
     _listener: ws::Listener,
+    _pointer_scan_listener: ws::Listener,
     _timer: Interval,
 }
 
@@ -54,6 +59,16 @@ impl ScratchView {
             .request()
             .body(api::GetScratchRequest)
             .on_packet(ctx.link().callback(Msg::Loaded))
+            .send();
+    }
+
+    fn load_pointer_scan_state(&mut self, ctx: &Context<Self>) {
+        self.pointer_scan_state = ctx
+            .props()
+            .ws
+            .request()
+            .body(api::GetPointerScanStateRequest)
+            .on_packet(ctx.link().callback(Msg::PointerScanState))
             .send();
     }
 
@@ -91,15 +106,22 @@ impl Component for ScratchView {
             load: ws::Request::default(),
             remove: ws::Request::default(),
             pointer_scan: ws::Request::default(),
+            pointer_scan_state: ws::Request::default(),
+            pointer_scan_running: false,
             _listener: ctx
                 .props()
                 .ws
                 .on_broadcast(ctx.link().callback(Msg::Changed)),
+            _pointer_scan_listener: ctx
+                .props()
+                .ws
+                .on_broadcast(ctx.link().callback(Msg::PointerScanChanged)),
             _timer: Interval::new(REFRESH_MS, move || link.send_message(Msg::Tick)),
         };
 
         if ctx.props().open {
             this.load(ctx);
+            this.load_pointer_scan_state(ctx);
         }
 
         this
@@ -110,6 +132,7 @@ impl Component for ScratchView {
 
         if props.open && (!old.open || props.attached != old.attached) {
             self.load(ctx);
+            self.load_pointer_scan_state(ctx);
         }
 
         true
@@ -222,6 +245,14 @@ impl Component for ScratchView {
                 Ok(_) => {}
                 Err(error) => on_error.emit(format!("Starting pointer scan: {error}")),
             },
+            Msg::PointerScanState(result) => match result.and_then(|p| p.decode_response()) {
+                Ok(state) => self.pointer_scan_running = state.running,
+                Err(error) => on_error.emit(format!("Reading pointer scan state: {error}")),
+            },
+            Msg::PointerScanChanged(result) => match result.and_then(|p| p.decode_event()) {
+                Ok(state) => self.pointer_scan_running = state.running,
+                Err(error) => on_error.emit(format!("Pointer scan state update: {error}")),
+            },
         }
 
         true
@@ -286,8 +317,8 @@ impl Component for ScratchView {
                         onclick={self.selected.first().copied().map(|id| link.callback(move |_| Msg::Edit(id))).unwrap_or_default()}>
                         {"Edit"}
                     </button>
-                    <button title="Find pointer paths to the selected entry's address"
-                        disabled={self.selected.len() != 1 || !props.open || !props.attached || self.pointer_scan.is_pending()}
+                    <button title={if self.pointer_scan_running { "A pointer scan is running" } else { "Find pointer paths to the selected entry's address" }}
+                        disabled={self.selected.len() != 1 || !props.open || !props.attached || self.pointer_scan.is_pending() || self.pointer_scan_running}
                         onclick={self.selected.first().copied().map(|id| link.callback(move |_| Msg::PointerScan(id))).unwrap_or_default()}>
                         {"Pointer scan"}
                     </button>

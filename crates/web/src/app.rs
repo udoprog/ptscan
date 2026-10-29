@@ -4,6 +4,7 @@ use yew::prelude::*;
 use crate::error::ErrorEntry;
 use crate::ui::error_log::ErrorLog;
 use crate::ui::pointer_scan_view::PointerScanView;
+use crate::ui::process_information::ProcessInformation;
 use crate::ui::process_picker::ProcessPicker;
 use crate::ui::scan_view::ScanView;
 use crate::ui::scratch_view::ScratchView;
@@ -15,6 +16,7 @@ pub enum Msg {
     AttachChanged(Result<ws::Packet<api::AttachStateChanged>, ws::Error>),
     Error(String),
     ToggleErrors,
+    ToggleProcessInformation,
     ClearErrors,
 }
 
@@ -27,6 +29,7 @@ pub struct App {
     attach: api::AttachState,
     errors: Vec<ErrorEntry>,
     show_errors: bool,
+    show_process_information: bool,
     on_error: Callback<String>,
 }
 
@@ -76,6 +79,7 @@ impl Component for App {
             attach: api::AttachState::default(),
             errors: Vec::new(),
             show_errors: false,
+            show_process_information: false,
             on_error: ctx.link().callback(Msg::Error),
         };
 
@@ -126,6 +130,10 @@ impl Component for App {
                 self.show_errors = !self.show_errors;
                 true
             }
+            Msg::ToggleProcessInformation => {
+                self.show_process_information = !self.show_process_information;
+                true
+            }
             Msg::ClearErrors => {
                 self.errors.clear();
                 true
@@ -163,6 +171,9 @@ impl Component for App {
                     <span class={classes!("status", class)}>{label}</span>
                     {attached}
                     <div class="fill" />
+                    <button disabled={self.attach.process.is_none()}
+                        title="Show the attached process's modules, threads and memory regions"
+                        onclick={ctx.link().callback(|_| Msg::ToggleProcessInformation)}>{"Process info"}</button>
                     <button onclick={ctx.link().callback(|_| Msg::ToggleErrors)}>{errors}</button>
                 </row>
                 <row class="body fill">
@@ -197,6 +208,15 @@ impl Component for App {
                         </row>
                     </column>
                 </row>
+                if self.show_process_information {
+                    <ProcessInformation
+                        ws={self.service.handle().clone()}
+                        open={self.connection.is_open()}
+                        process={self.attach.process.clone()}
+                        on_error={self.on_error.clone()}
+                        on_close={ctx.link().callback(|()| Msg::ToggleProcessInformation)}
+                    />
+                }
                 if self.show_errors {
                     <ErrorLog
                         errors={self.errors.clone()}

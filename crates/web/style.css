@@ -220,3 +220,121 @@ input {
     word-break: break-word;
     font: inherit;
 }
+
+.body {
+    gap: var(--gutter);
+}
+
+.side {
+    flex: 0 0 320px;
+    min-height: 0;
+}
+
+.main {
+    min-width: 0;
+}
+
+.mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.scan-form {
+    margin: 0;
+}
+
+.fields {
+    padding: var(--gap) var(--gutter);
+    border-bottom: 1px solid var(--border);
+}
+
+.field-label {
+    flex: 0 0 6em;
+    color: var(--muted);
+}
+
+input.narrow {
+    width: 6em;
+}
+
+input.invalid {
+    border-color: var(--bad);
+}
+
+.field-error {
+    color: var(--bad);
+    font-size: 12px;
+}
+
+label.check {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.options {
+    flex-wrap: wrap;
+}
+
+.scan-status {
+    padding: var(--gap) var(--gutter);
+    border-bottom: 1px solid var(--border);
+}
+
+.scan-status.warn {
+    color: var(--warn);
+}
+
+.scan-status.bad {
+    color: var(--bad);
+}
+
+.scan-status progress {
+    flex: 0 0 200px;
+}
+
+.results-bar .added {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: right;
+}
+
+.side .toolbar {
+    flex-wrap: wrap;
+}
+
+.side input[type=search] {
+    flex: 1 1 8em;
+    min-width: 0;
+}
+
+.list td.num, .list th.num {
+    width: 4em;
+    font-variant-numeric: tabular-nums;
+}
+
+.list td.changed, .details .changed {
+    color: var(--bad);
+    font-weight: 600;
+}
+
+.details {
+    display: grid;
+    grid-template-columns: 8em 1fr;
+    gap: var(--gap);
+    align-items: center;
+    margin: 0;
+    padding: var(--gutter);
+}
+
+@media (max-width: 800px) {
+    .body {
+        flex-direction: column;
+    }
+
+    .side {
+        flex: 0 0 240px;
+    }
+}

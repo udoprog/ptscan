@@ -4,6 +4,7 @@ use yew::prelude::*;
 use crate::error::ErrorEntry;
 use crate::ui::error_log::ErrorLog;
 use crate::ui::process_picker::ProcessPicker;
+use crate::ui::scan_view::ScanView;
 
 pub enum Msg {
     Connection(ws::State),
@@ -162,14 +163,24 @@ impl Component for App {
                     <div class="fill" />
                     <button onclick={ctx.link().callback(|_| Msg::ToggleErrors)}>{errors}</button>
                 </row>
-                <column class="body fill">
-                    <ProcessPicker
-                        ws={self.service.handle().clone()}
-                        open={self.connection.is_open()}
-                        attach={self.attach.clone()}
-                        on_error={self.on_error.clone()}
-                    />
-                </column>
+                <row class="body fill">
+                    <column class="side">
+                        <ProcessPicker
+                            ws={self.service.handle().clone()}
+                            open={self.connection.is_open()}
+                            attach={self.attach.clone()}
+                            on_error={self.on_error.clone()}
+                        />
+                    </column>
+                    <column class="fill main">
+                        <ScanView
+                            ws={self.service.handle().clone()}
+                            open={self.connection.is_open()}
+                            attached={self.attach.process.is_some()}
+                            on_error={self.on_error.clone()}
+                        />
+                    </column>
+                </row>
                 if self.show_errors {
                     <ErrorLog
                         errors={self.errors.clone()}

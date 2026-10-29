@@ -3038,6 +3038,7 @@ version = "0.0.0"
 dependencies = [
  "api",
  "console_error_panic_hook",
+ "gloo-timers",
  "js-sys",
  "musli-web",
  "wasm-bindgen",

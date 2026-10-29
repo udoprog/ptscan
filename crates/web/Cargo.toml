@@ -10,4 +10,5 @@ wasm-bindgen = "0.2.100"
 js-sys = "0.3.77"
 yew = { version = "0.23.0", features = ["csr"] }
 console_error_panic_hook = "0.1.7"
-web-sys = { version = "0.3.77", features = ["HtmlInputElement"] }
+gloo-timers = "0.3.0"
+web-sys = { version = "0.3.77", features = ["HtmlInputElement", "MouseEvent", "SubmitEvent"] }

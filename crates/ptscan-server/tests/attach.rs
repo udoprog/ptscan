@@ -58,6 +58,8 @@ async fn list_attach_detach() {
         .find(|p| p.pid == pid)
         .expect("child in process list");
     assert_eq!(info.name.as_deref(), Some("sleep"));
+    // Processes of other users and kernel threads are unavailable, not errors.
+    assert!(list.errors.is_empty(), "{:?}", list.errors);
 
     let packet = timeout!(handle.request().body(api::GetAttachStateRequest).send()).unwrap();
     assert_eq!(packet.decode().unwrap(), api::AttachState::default());

@@ -4,6 +4,7 @@ mod origin;
 
 pub use self::origin::DevOrigin;
 mod pointer_scan;
+mod process_information;
 mod scan;
 mod scratch;
 
@@ -130,7 +131,6 @@ pub fn list_processes() -> Result<api::ListProcessesResponse> {
             .query_information()
             .vm_read()
             .build(pid)
-            .map_err(anyhow::Error::from)
             .and_then(|p| Ok(p.module_base_name()?));
 
         match result {
@@ -138,6 +138,7 @@ pub fn list_processes() -> Result<api::ListProcessesResponse> {
                 pid,
                 name: name.into_string().ok(),
             }),
+            Err(e) if e.is_process_unavailable() => {}
             Err(e) => response.errors.push(format!("process {pid}: {e:#}")),
         }
     }
@@ -400,6 +401,18 @@ impl ws::Handler for Handler {
                 let shared = self.shared.clone();
                 let response = tokio::task::spawn_blocking(move || {
                     shared.pointer_scan_results(request.offset, request.limit)
+                })
+                .await?;
+                outgoing.write(response);
+            }
+            api::Request::GetProcessInformation => {
+                let Some(request) = incoming.read::<api::ProcessInformationRequest>() else {
+                    return Ok(false);
+                };
+
+                let shared = self.shared.clone();
+                let response = tokio::task::spawn_blocking(move || {
+                    shared.process_information(&request.filter)
                 })
                 .await?;
                 outgoing.write(response);

@@ -80,6 +80,29 @@ async fn scan_needs_attached_process() {
     assert!(page.results.is_empty());
 }
 
+async fn process_information(
+    handle: &Handle,
+    filter: api::MemoryFilter,
+) -> api::ProcessInformation {
+    timeout!(
+        handle
+            .request()
+            .body(api::ProcessInformationRequest { filter })
+            .send()
+    )
+    .unwrap()
+    .decode()
+    .unwrap()
+}
+
+#[tokio::test]
+async fn process_information_needs_attached_process() {
+    let handle = connect(server().await).await;
+    let info = process_information(&handle, api::MemoryFilter::default()).await;
+    assert!(info.error.is_some());
+    assert!(info.regions.is_empty());
+}
+
 async fn upgrade(addr: SocketAddr, host: &str, origin: Option<&str>) -> String {
     let mut socket = TcpStream::connect(addr).await.unwrap();
 
@@ -736,5 +759,99 @@ mod linux {
         .unwrap();
         assert_eq!(state, api::PointerScanState::default());
         assert_eq!(pointer_results(&handle, 0, 10).await.total, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn process_information_of_child() {
+        let holder = Holder::spawn();
+        let pid = holder.child.id();
+        let handle = connect(server().await).await;
+        attach(&handle, pid).await;
+
+        let all = process_information(&handle, api::MemoryFilter::default()).await;
+        assert_eq!(all.error, None);
+
+        let exe = std::env::current_exe().unwrap();
+        let exe = exe.file_name().unwrap().to_str().unwrap();
+        assert_eq!(all.name.as_deref(), Some(exe));
+        let module = all
+            .modules
+            .iter()
+            .find(|m| m.name == exe)
+            .expect("executable module");
+        assert!(module.size > 0);
+
+        let main = all
+            .threads
+            .iter()
+            .find(|t| t.id == pid)
+            .expect("main thread");
+        assert!(main.stack_size > 0);
+
+        let contains =
+            |r: &api::MemoryRegion, address: u64| r.base <= address && address < r.base + r.size;
+
+        let held = all
+            .regions
+            .iter()
+            .find(|r| contains(r, holder.address))
+            .expect("region holding the value");
+        assert!(held.readable && held.writable);
+        assert_eq!(held.module, None);
+        assert!(
+            all.regions
+                .iter()
+                .any(|r| r.module.as_deref() == Some(exe) && contains(r, module.base))
+        );
+        assert!(
+            all.regions
+                .iter()
+                .any(|r| r.thread_stack == Some(pid) && contains(r, main.stack_base))
+        );
+
+        let filter = api::MemoryFilter {
+            readable: true,
+            writable: true,
+            ..Default::default()
+        };
+        let writable = process_information(&handle, filter).await;
+        assert_eq!(writable.error, None);
+        assert!(writable.regions.iter().all(|r| r.readable && r.writable));
+        assert!(writable.regions.contains(held));
+        assert!(writable.regions.len() < all.regions.len());
+
+        let filter = api::MemoryFilter {
+            modules: true,
+            executable: true,
+            ..Default::default()
+        };
+        let code = process_information(&handle, filter).await;
+        assert!(!code.regions.is_empty());
+        assert!(
+            code.regions
+                .iter()
+                .all(|r| r.module.is_some() && r.executable)
+        );
+
+        let filter = api::MemoryFilter {
+            thread_stacks: true,
+            ..Default::default()
+        };
+        let stacks = process_information(&handle, filter).await;
+        assert!(stacks.regions.iter().any(|r| r.thread_stack == Some(pid)));
+        assert!(stacks.regions.iter().all(|r| r.thread_stack.is_some()));
+
+        let filter = api::MemoryFilter {
+            other: true,
+            readable: true,
+            ..Default::default()
+        };
+        let other = process_information(&handle, filter).await;
+        assert!(
+            other
+                .regions
+                .iter()
+                .all(|r| { !r.readable && !r.writable && !r.executable && r.module.is_none() })
+        );
     }
 }

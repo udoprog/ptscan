@@ -59,6 +59,11 @@ impl Error {
             _ => None,
         }
     }
+
+    /// The process does not exist or may not be opened by this user.
+    pub fn is_process_unavailable(&self) -> bool {
+        crate::platform::process_unavailable(self)
+    }
 }
 
 impl From<io::Error> for Error {

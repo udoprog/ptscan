@@ -24,7 +24,8 @@ pub struct ListProcessesRequest;
 #[derive(Debug, Clone, Default, Encode, Decode)]
 pub struct ListProcessesResponse {
     pub processes: Vec<ProcessInfo>,
-    /// Processes which could not be queried, with the reason.
+    /// Processes which exist and may be opened but could not be queried, with
+    /// the reason.
     pub errors: Vec<String>,
 }
 
@@ -289,6 +290,72 @@ pub struct PointerScanResultsResponse {
     pub value_type: Option<String>,
 }
 
+/// Which memory regions [`GetProcessInformation`] returns; every set flag
+/// must hold.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct MemoryFilter {
+    pub readable: bool,
+    pub writable: bool,
+    pub executable: bool,
+    pub modules: bool,
+    pub thread_stacks: bool,
+    /// Only regions which are neither accessible nor part of a module or
+    /// thread stack; overrides the other flags.
+    pub other: bool,
+}
+
+#[derive(Debug, Clone, Default, Encode, Decode)]
+pub struct ProcessInformationRequest {
+    pub filter: MemoryFilter,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct ModuleInformation {
+    pub name: String,
+    pub file_name: Option<String>,
+    pub base: u64,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct ThreadInformation {
+    pub id: u32,
+    pub stack_base: u64,
+    pub stack_size: u64,
+    pub stack_exit: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct MemoryRegion {
+    pub base: u64,
+    pub size: u64,
+    /// Such as `MEM_COMMIT`.
+    pub state: String,
+    /// Such as `MEM_PRIVATE`, if known.
+    pub ty: Option<String>,
+    /// Such as `PAGE_READWRITE`.
+    pub protect: Vec<String>,
+    pub readable: bool,
+    pub writable: bool,
+    pub executable: bool,
+    /// The module the region belongs to.
+    pub module: Option<String>,
+    /// The thread whose stack the region holds.
+    pub thread_stack: Option<u32>,
+}
+
+/// The attached process's modules, threads and filtered memory regions, read
+/// when requested.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct ProcessInformation {
+    pub name: Option<String>,
+    pub file_name: Option<String>,
+    pub modules: Vec<ModuleInformation>,
+    pub threads: Vec<ThreadInformation>,
+    pub regions: Vec<MemoryRegion>,
+    pub error: Option<String>,
+}
+
 api::define! {
     pub type ListProcesses;
     impl Endpoint for ListProcesses {
@@ -437,5 +504,11 @@ api::define! {
     pub type PointerScanProgressed;
     impl Broadcast for PointerScanProgressed {
         impl Event for PointerScanProgress;
+    }
+
+    pub type GetProcessInformation;
+    impl Endpoint for GetProcessInformation {
+        impl Request for ProcessInformationRequest;
+        type Response<'de> = ProcessInformation;
     }
 }

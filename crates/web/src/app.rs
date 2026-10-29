@@ -5,6 +5,7 @@ use crate::error::ErrorEntry;
 use crate::ui::error_log::ErrorLog;
 use crate::ui::process_picker::ProcessPicker;
 use crate::ui::scan_view::ScanView;
+use crate::ui::scratch_view::ScratchView;
 
 pub enum Msg {
     Connection(ws::State),
@@ -174,6 +175,12 @@ impl Component for App {
                     </column>
                     <column class="fill main">
                         <ScanView
+                            ws={self.service.handle().clone()}
+                            open={self.connection.is_open()}
+                            attached={self.attach.process.is_some()}
+                            on_error={self.on_error.clone()}
+                        />
+                        <ScratchView
                             ws={self.service.handle().clone()}
                             open={self.connection.is_open()}
                             attached={self.attach.process.is_some()}

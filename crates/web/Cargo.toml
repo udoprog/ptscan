@@ -11,4 +11,4 @@ js-sys = "0.3.77"
 yew = { version = "0.23.0", features = ["csr"] }
 console_error_panic_hook = "0.1.7"
 gloo-timers = "0.3.0"
-web-sys = { version = "0.3.77", features = ["HtmlInputElement", "MouseEvent", "SubmitEvent"] }
+web-sys = { version = "0.3.77", features = ["Clipboard", "HtmlInputElement", "MouseEvent", "Navigator", "SubmitEvent", "Window"] }

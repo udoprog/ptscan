@@ -6,6 +6,7 @@ use wasm_bindgen::JsCast;
 use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
+use crate::clipboard;
 use crate::ui::scan_result_dialog::ScanResultDialog;
 
 const PAGE: u32 = 100;
@@ -47,6 +48,8 @@ pub enum Msg {
     Added(Result<ws::Packet<api::AddScratch>, ws::Error>),
     RemoveSelected,
     Removed(Result<ws::Packet<api::RemoveScanResults>, ws::Error>),
+    CopyText,
+    CopyJson,
 }
 
 pub struct ScanView {
@@ -148,6 +151,13 @@ impl ScanView {
             suspend: self.suspend,
             modules_only: self.modules_only,
         })
+    }
+
+    /// Selected results on the current page.
+    fn picked(&self) -> impl Iterator<Item = &api::ScanResult> {
+        self.results
+            .iter()
+            .filter(|r| self.selected.contains(&r.address))
     }
 
     fn add_to_scratch(&mut self, ctx: &Context<Self>, pointer: String, value_type: String) {
@@ -429,6 +439,38 @@ impl Component for ScanView {
                 }
                 Err(error) => on_error.emit(format!("Removing results: {error}")),
             },
+            Msg::CopyText => {
+                let text = clipboard::text(self.picked().map(|r| {
+                    vec![
+                        r.pointer.as_str(),
+                        r.value_type.as_str(),
+                        r.last.as_str(),
+                        r.current.as_str(),
+                    ]
+                }));
+
+                clipboard::copy(text, on_error);
+                return false;
+            }
+            Msg::CopyJson => {
+                let addresses = self
+                    .picked()
+                    .map(|r| format!("{:#x}", r.address))
+                    .collect::<Vec<_>>();
+
+                let json = clipboard::json(self.picked().zip(&addresses).map(|(r, address)| {
+                    vec![
+                        ("address", Some(address.as_str())),
+                        ("pointer", Some(r.pointer.as_str())),
+                        ("type", Some(r.value_type.as_str())),
+                        ("last", Some(r.last.as_str())),
+                        ("current", Some(r.current.as_str())),
+                    ]
+                }));
+
+                clipboard::copy(json, on_error);
+                return false;
+            }
         }
 
         true
@@ -584,6 +626,10 @@ impl Component for ScanView {
                             n => format!("Remove {n}"),
                         }}
                     </button>
+                    <button title="Copy the selected results on this page as tab-separated text"
+                        disabled={selected_here == 0} onclick={link.callback(|_| Msg::CopyText)}>{"Copy"}</button>
+                    <button title="Copy the selected results on this page as JSON"
+                        disabled={selected_here == 0} onclick={link.callback(|_| Msg::CopyJson)}>{"Copy JSON"}</button>
                     <button disabled={selected_here == 0 || !ready}
                         onclick={link.callback(|_| Msg::AddSelected)}>
                         {match selected_here {

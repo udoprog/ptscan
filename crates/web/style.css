@@ -338,3 +338,9 @@ label.check {
         flex: 0 0 240px;
     }
 }
+
+.scratch {
+    flex: 0 0 auto;
+    height: 30%;
+    min-height: 160px;
+}

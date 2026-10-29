@@ -61,5 +61,8 @@ features = [
 [target.'cfg(windows)'.dependencies.ntapi]
 version = "0.4.0"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.191"
+
 [build-dependencies]
 lalrpop = "0.23.2"

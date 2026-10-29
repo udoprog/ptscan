@@ -159,6 +159,23 @@
 //!
 //! <br>
 //!
+//! ## Linux
+//!
+//! On Linux, ptscan reads process memory with `process_vm_readv`, falling back to
+//! `/proc/<pid>/mem`. Both need ptrace access to the target process:
+//!
+//! * With `kernel.yama.ptrace_scope = 0`, any process owned by the same user can be
+//!   read. Set it with `sudo sysctl kernel.yama.ptrace_scope=0`, and put
+//!   `kernel.yama.ptrace_scope = 0` in a file under `/etc/sysctl.d/` to keep it
+//!   across reboots.
+//! * With the common default of `1`, only processes started by ptscan can be read.
+//! * Processes owned by other users, or any process under `ptrace_scope = 2`, need
+//!   `CAP_SYS_PTRACE`: run ptscan as root or grant it with
+//!   `sudo setcap cap_sys_ptrace=ep /path/to/ptscan`.
+//! * `ptrace_scope = 3` forbids reading other processes entirely.
+//!
+//! <br>
+//!
 //! ## License
 //!
 //! This project bundles Adwaita icons parts of the GNOME Project under the Creative

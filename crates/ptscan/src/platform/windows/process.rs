@@ -111,6 +111,10 @@ impl RawProcess {
         }
     }
 
+    pub(crate) fn memory_regions(&self) -> anyhow::Result<Option<Vec<MemoryInformation>>> {
+        Ok(None)
+    }
+
     pub(crate) fn virtual_query(
         &self,
         address: Address,

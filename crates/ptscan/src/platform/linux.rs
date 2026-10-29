@@ -1,11 +1,12 @@
-//! Linux support through `/proc`. Memory access and threads are not yet
-//! implemented.
+//! Linux support through `/proc` and `process_vm_readv`. Writing memory and
+//! threads are not yet implemented.
 
 use std::{
-    convert::TryInto,
+    collections::HashSet,
+    convert::{TryFrom, TryInto},
     ffi::{OsStr, OsString},
     fs, io,
-    os::unix::ffi::OsStrExt,
+    os::unix::{ffi::OsStrExt, fs::FileExt},
     path::{Path, PathBuf},
 };
 
@@ -98,8 +99,58 @@ impl RawProcess {
         Err(Error::Unsupported)
     }
 
-    pub(crate) fn read_memory(&self, _: Address, _: &mut [u8]) -> Result<usize, Error> {
-        Err(Error::Unsupported)
+    /// Read as much of `buffer` as is mapped from `address` onwards, returning
+    /// the number of bytes read; `0` if `address` itself is unmapped.
+    pub(crate) fn read_memory(&self, address: Address, buffer: &mut [u8]) -> Result<usize, Error> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+
+        let remote = usize::try_from(address.0).map_err(|_| Error::PointerConversionError)?;
+
+        let local = libc::iovec {
+            iov_base: buffer.as_mut_ptr().cast(),
+            iov_len: buffer.len(),
+        };
+
+        let remote = libc::iovec {
+            iov_base: remote as *mut libc::c_void,
+            iov_len: buffer.len(),
+        };
+
+        // SAFETY: `local` covers exactly `buffer`, which we hold mutably.
+        let n = unsafe {
+            libc::process_vm_readv(self.process_id as libc::pid_t, &local, 1, &remote, 1, 0)
+        };
+
+        if n >= 0 {
+            return Ok(n as usize);
+        }
+
+        let e = io::Error::last_os_error();
+
+        match e.raw_os_error() {
+            Some(libc::EFAULT) => Ok(0),
+            Some(libc::ENOSYS) => self.read_proc_mem(address.0, buffer),
+            _ => Err(e.into()),
+        }
+    }
+
+    fn read_proc_mem(&self, address: u64, buffer: &mut [u8]) -> Result<usize, Error> {
+        let file = fs::File::open(self.proc_path("mem"))?;
+        let mut read = 0;
+
+        while read < buffer.len() {
+            match file.read_at(&mut buffer[read..], address + read as u64) {
+                Ok(0) => break,
+                Ok(n) => read += n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) if matches!(e.raw_os_error(), Some(libc::EIO) | Some(libc::EFAULT)) => break,
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        Ok(read)
     }
 
     /// Query the region containing `address`, which is a free region when it
@@ -120,36 +171,30 @@ impl RawProcess {
 
         if address < map.start {
             let start = index.checked_sub(1).map(|i| maps[i].end).unwrap_or(0);
-
-            return Ok(Some(MemoryInformation {
-                range: range(start, map.start),
-                state: MemoryState::Free,
-                ty: None,
-                protect: fixed_map::Set::new(),
-            }));
+            return Ok(Some(free(start, map.start)));
         }
 
-        let ty = match &map.path {
-            Some(path)
-                if maps
-                    .iter()
-                    .any(|m| m.path.as_ref() == Some(path) && m.execute) =>
-            {
-                MemoryType::Image
+        Ok(Some(map.information(&image_paths(&maps))))
+    }
+
+    /// Every region from address zero in order, the same as walking with
+    /// [`virtual_query`](Self::virtual_query), from a single read of the maps.
+    pub(crate) fn memory_regions(&self) -> anyhow::Result<Option<Vec<MemoryInformation>>> {
+        let maps = self.maps()?;
+        let images = image_paths(&maps);
+        let mut regions = Vec::with_capacity(maps.len() * 2);
+        let mut end = 0;
+
+        for map in &maps {
+            if end < map.start {
+                regions.push(free(end, map.start));
             }
-            _ if map.path.is_some() || map.shared => MemoryType::Mapped,
-            _ => MemoryType::Private,
-        };
 
-        let mut protect = fixed_map::Set::new();
-        protect.insert(map.protect());
+            regions.push(map.information(&images));
+            end = map.end;
+        }
 
-        Ok(Some(MemoryInformation {
-            range: range(map.start, map.end),
-            state: MemoryState::Commit,
-            ty: Some(ty),
-            protect,
-        }))
+        Ok(Some(regions))
     }
 
     fn maps(&self) -> io::Result<Vec<Map>> {
@@ -168,6 +213,23 @@ impl RawProcess {
     pub(crate) fn resume(&self) -> Result<(), Error> {
         Err(Error::Unsupported)
     }
+}
+
+fn free(start: u64, end: u64) -> MemoryInformation {
+    MemoryInformation {
+        range: range(start, end),
+        state: MemoryState::Free,
+        ty: None,
+        protect: fixed_map::Set::new(),
+    }
+}
+
+/// Files with an executable mapping, whose every mapping is part of an image.
+fn image_paths(maps: &[Map]) -> HashSet<&Path> {
+    maps.iter()
+        .filter(|m| m.execute)
+        .filter_map(|m| m.path.as_deref())
+        .collect()
 }
 
 fn range(start: u64, end: u64) -> AddressRange {
@@ -230,6 +292,24 @@ impl Map {
             shared: perms[3] == b's',
             path,
         })
+    }
+
+    fn information(&self, images: &HashSet<&Path>) -> MemoryInformation {
+        let ty = match &self.path {
+            Some(path) if images.contains(path.as_path()) => MemoryType::Image,
+            _ if self.path.is_some() || self.shared => MemoryType::Mapped,
+            _ => MemoryType::Private,
+        };
+
+        let mut protect = fixed_map::Set::new();
+        protect.insert(self.protect());
+
+        MemoryInformation {
+            range: range(self.start, self.end),
+            state: MemoryState::Commit,
+            ty: Some(ty),
+            protect,
+        }
     }
 
     fn protect(&self) -> MemoryProtect {
@@ -424,10 +504,17 @@ impl OpenThreadBuilder {
 
 #[cfg(test)]
 mod tests {
-    use std::process::{Child, Command};
+    use std::{
+        io::{BufRead, BufReader, Write},
+        process::{Child, Command, Stdio},
+        time::Duration,
+    };
 
     use super::*;
-    use crate::{process::ProcessInfo, Process};
+    use crate::{
+        process::ProcessInfo, Addresses, FilterExpr, Process, ProcessHandle, ScanProgress, Type,
+        ValueExpr, Values,
+    };
 
     /// Kills the scratch child when dropped, so a failing test cleans up.
     struct Scratch(Child);
@@ -439,13 +526,28 @@ mod tests {
         }
     }
 
+    /// A `sleep` child, returned once the loader has mapped libc.
     fn scratch() -> Scratch {
-        Scratch(
+        let child = Scratch(
             Command::new("sleep")
                 .arg("30")
                 .spawn()
                 .expect("spawn sleep"),
-        )
+        );
+
+        let maps = Path::new("/proc")
+            .join(child.0.id().to_string())
+            .join("maps");
+
+        for _ in 0..500 {
+            if fs::read_to_string(&maps).is_ok_and(|m| m.contains("/libc")) {
+                return child;
+            }
+
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        panic!("sleep never mapped libc");
     }
 
     #[test]
@@ -554,5 +656,176 @@ mod tests {
         assert!(modules
             .iter()
             .any(|m| m.file_name().unwrap() == exe.as_os_str()));
+    }
+
+    const HOLD_ENV: &str = "PTSCAN_TEST_HOLD_VALUE";
+    const HELD: u64 = 0x5eed_c0de_f00d_7a11;
+
+    /// Run in a re-executed test binary by [`Holder::spawn`]: keeps `HELD` and
+    /// a pointer to it on the heap and prints both addresses.
+    #[test]
+    fn hold_value_child() {
+        if std::env::var_os(HOLD_ENV).is_none() {
+            return;
+        }
+
+        let value = Box::new(std::hint::black_box(HELD));
+        let pointer = Box::new(&*value as *const u64 as usize);
+        println!(
+            "held {:x} {:x}",
+            &*value as *const u64 as usize, &*pointer as *const usize as usize
+        );
+        io::stdout().flush().unwrap();
+        std::thread::sleep(Duration::from_secs(60));
+        std::hint::black_box((value, pointer));
+    }
+
+    struct Holder {
+        child: Scratch,
+        value: u64,
+        pointer: u64,
+    }
+
+    impl Holder {
+        fn spawn() -> Self {
+            let mut child = Scratch(
+                Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "platform::linux::tests::hold_value_child",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ])
+                    .env(HOLD_ENV, "1")
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .expect("spawn holder"),
+            );
+
+            let stdout = BufReader::new(child.0.stdout.take().unwrap());
+
+            for line in stdout.lines() {
+                let line = line.unwrap();
+
+                if let Some((_, rest)) = line.split_once("held ") {
+                    let mut it = rest.split(' ').map(|a| u64::from_str_radix(a, 16).unwrap());
+                    let value = it.next().unwrap();
+                    let pointer = it.next().unwrap();
+                    return Self {
+                        child,
+                        value,
+                        pointer,
+                    };
+                }
+            }
+
+            panic!("holder exited without printing its addresses");
+        }
+
+        fn handle(&self) -> ProcessHandle {
+            ProcessHandle::open(self.child.0.id()).unwrap().unwrap()
+        }
+    }
+
+    struct NoProgress;
+
+    impl ScanProgress for NoProgress {
+        fn report_bytes(&mut self, _: Size) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn report(&mut self, _: usize, _: u64) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn scan(handle: &ProcessHandle, filter: &FilterExpr, ty: Type) -> Vec<Address> {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        let mut addresses = Addresses::new(handle.process.pointer_width);
+        let mut values = Values::new(ty);
+        handle
+            .initial_scan(
+                &pool,
+                filter,
+                &mut addresses,
+                &mut values,
+                None,
+                NoProgress,
+                Default::default(),
+            )
+            .unwrap();
+        addresses.iter_copied().collect()
+    }
+
+    #[test]
+    fn read_child_memory() {
+        let holder = Holder::spawn();
+        let raw = &holder.handle().process.handle;
+
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            raw.read_memory(Address::new(holder.value), &mut buf)
+                .unwrap(),
+            8
+        );
+        assert_eq!(u64::from_ne_bytes(buf), HELD);
+
+        let mut buf = [0u8; 8];
+        assert_eq!(raw.read_proc_mem(holder.value, &mut buf).unwrap(), 8);
+        assert_eq!(u64::from_ne_bytes(buf), HELD);
+
+        let mut buf = [0u8; 8];
+        assert_eq!(raw.read_memory(Address::new(0), &mut buf).unwrap(), 0);
+        assert_eq!(raw.read_proc_mem(0, &mut buf).unwrap(), 0);
+
+        // A read running off the end of a mapping stops at its end.
+        let regions = raw.memory_regions().unwrap().unwrap();
+        let region = regions
+            .windows(2)
+            .find(|w| w[0].is_writable() && w[1].state == MemoryState::Free)
+            .map(|w| &w[0])
+            .unwrap();
+        let end = region.range.base.0 + region.range.size.into_inner();
+        let mut buf = [0u8; 16];
+        assert_eq!(raw.read_memory(Address::new(end - 8), &mut buf).unwrap(), 8);
+        assert_eq!(raw.read_proc_mem(end - 8, &mut buf).unwrap(), 8);
+    }
+
+    #[test]
+    fn snapshot_matches_query_walk() {
+        let holder = Holder::spawn();
+        let process = holder.handle().process;
+
+        let mut walked = Vec::new();
+        let mut address = 0;
+
+        while let Some(region) = process.virtual_query(Address::new(address)).unwrap() {
+            address = region.range.base.0 + region.range.size.into_inner();
+            walked.push(region);
+        }
+
+        let snapshot = process.handle.memory_regions().unwrap().unwrap();
+        assert_eq!(format!("{:?}", snapshot), format!("{:?}", walked));
+    }
+
+    #[test]
+    fn value_scan_finds_child_value() {
+        let holder = Holder::spawn();
+        let handle = holder.handle();
+        let filter = FilterExpr::parse(&format!("value == {}u64", HELD), &handle).unwrap();
+        let found = scan(&handle, &filter, Type::U64);
+        assert!(found.contains(&Address::new(holder.value)), "{:?}", found);
+    }
+
+    #[test]
+    fn pointer_scan_finds_child_pointer() {
+        let holder = Holder::spawn();
+        let handle = holder.handle();
+        let filter = FilterExpr::pointer(ValueExpr::Value, &handle.process).unwrap();
+        let found = scan(&handle, &filter, handle.process.pointer_width.into_type());
+        assert!(found.contains(&Address::new(holder.pointer)));
     }
 }

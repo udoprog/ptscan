@@ -128,11 +128,17 @@ pub trait ProcessInfo {
     /// Access information on virtual memory for the given address.
     fn virtual_query(&self, address: Address) -> anyhow::Result<Option<MemoryInformation>>;
 
+    /// Every virtual memory region in address order, when the platform lists
+    /// them more cheaply than walking with [`virtual_query`](Self::virtual_query).
+    fn virtual_memory_snapshot(&self) -> anyhow::Result<Option<Vec<MemoryInformation>>> {
+        Ok(None)
+    }
+
     /// Access virtual memory regions of the process.
     fn virtual_memory_regions(&self) -> VirtualMemoryRegions<'_, Self::Process> {
         VirtualMemoryRegions {
             process: self.process(),
-            current: Address::null(),
+            walk: Walk::Start,
         }
     }
 }
@@ -241,6 +247,10 @@ impl ProcessInfo for Process {
 
     fn virtual_query(&self, address: Address) -> anyhow::Result<Option<MemoryInformation>> {
         Process::virtual_query(self, address)
+    }
+
+    fn virtual_memory_snapshot(&self) -> anyhow::Result<Option<Vec<MemoryInformation>>> {
+        self.handle.memory_regions()
     }
 }
 
@@ -484,7 +494,13 @@ impl fmt::Display for MemoryInformation {
 /// Iterator over virtual memory regions.
 pub struct VirtualMemoryRegions<'a, P> {
     process: &'a P,
-    current: Address,
+    walk: Walk,
+}
+
+enum Walk {
+    Start,
+    Snapshot(std::vec::IntoIter<MemoryInformation>),
+    Query(Address),
 }
 
 impl<'a, P> Iterator for VirtualMemoryRegions<'a, P>
@@ -494,11 +510,23 @@ where
     type Item = anyhow::Result<MemoryInformation>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let m = try_iter!(self.process.virtual_query(self.current))?;
-        self.current = self
-            .current
-            .checked_size(m.range.size)?
-            .checked_size(Size::new(1))?;
-        Some(Ok(m))
+        loop {
+            match &mut self.walk {
+                Walk::Start => {
+                    self.walk = match try_iter!(self.process.virtual_memory_snapshot()) {
+                        Some(regions) => Walk::Snapshot(regions.into_iter()),
+                        None => Walk::Query(Address::null()),
+                    };
+                }
+                Walk::Snapshot(regions) => return regions.next().map(Ok),
+                Walk::Query(current) => {
+                    let m = try_iter!(self.process.virtual_query(*current))?;
+                    *current = current
+                        .checked_size(m.range.size)?
+                        .checked_size(Size::new(1))?;
+                    return Some(Ok(m));
+                }
+            }
+        }
     }
 }

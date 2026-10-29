@@ -1750,6 +1750,7 @@ dependencies = [
  "hex",
  "lalrpop",
  "lalrpop-util",
+ "libc",
  "log",
  "lru",
  "memchr",

@@ -251,7 +251,7 @@ where
             let (d, address) = if d.len() < self.type_size {
                 tmp = vec![0u8; self.type_size];
 
-                let address = match base.checked_add(o.try_into()?) {
+                let address = match base.checked_add(offset.try_into()?) {
                     Some(address) => address,
                     None => break,
                 };
@@ -276,7 +276,7 @@ where
 
             let address = match address {
                 Some(address) => address,
-                None => match base.checked_add(o.try_into()?) {
+                None => match base.checked_add(offset.try_into()?) {
                     Some(address) => address,
                     None => break,
                 },
@@ -348,12 +348,12 @@ where
             let d = &d[..self.buffer.len()];
 
             if d != &self.buffer[..] {
-                offset += self.buffer.len() + 1;
+                offset += 1;
                 continue;
             }
 
             let value = self.value_type.decode_fixed::<B>(d);
-            let address = match base.checked_add(o.try_into()?) {
+            let address = match base.checked_add(offset.try_into()?) {
                 Some(address) => address,
                 None => break,
             };
@@ -361,7 +361,7 @@ where
             addresses.push(address);
             values.push(value);
             *hits += 1;
-            offset += self.buffer.len() + 1;
+            offset += self.buffer.len();
         }
 
         Ok(())

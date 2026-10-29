@@ -1,6 +1,7 @@
 use std::{convert::TryFrom, fmt, io, mem, sync::Arc};
 
-use crate::{error::Error, process, utils, Address, AddressRange, ThreadId};
+use super::utils;
+use crate::{error::Error, process, Address, AddressRange, ThreadId};
 
 use anyhow::bail;
 use windows_sys::{

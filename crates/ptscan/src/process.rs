@@ -1,24 +1,11 @@
-use std::{convert::TryFrom, ffi::OsString, fmt, io, ptr, slice, sync::Arc};
+use std::{convert::TryFrom, ffi::OsString, fmt, io, slice, sync::Arc};
 
 use crate::{
-    error::Error, module, utils, Address, AddressRange, Endianness, PointerInfo, ProcessId, Size,
-    Type,
+    error::Error, module, platform::RawProcess, Address, AddressRange, Endianness, PointerInfo,
+    ProcessId, Size, Type,
 };
 
-use ntapi::ntpsapi;
 use serde::{Deserialize, Serialize};
-use std::ffi::c_void;
-use windows_sys::{
-    core::BOOL,
-    Win32::{
-        Foundation::{self as winerror, FALSE, TRUE},
-        System::{
-            Diagnostics::Debug,
-            Memory as memoryapi, ProcessStatus as psapi,
-            Threading::{self, PROCESS_ACCESS_RIGHTS},
-        },
-    },
-};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -157,22 +144,17 @@ pub struct Process {
     pub is_64bit: bool,
     pub pointer_width: PointerWidth,
     pub endianness: Endianness,
-    pub(crate) handle: Arc<utils::Handle>,
+    pub(crate) handle: Arc<RawProcess>,
 }
 
 impl Process {
     pub fn builder() -> OpenProcessBuilder {
-        OpenProcessBuilder {
-            desired_access: Default::default(),
-            inherit_handles: FALSE,
-        }
+        OpenProcessBuilder::default()
     }
 
     /// Get the name of the process.
     pub fn module_base_name(&self) -> io::Result<OsString> {
-        crate::utils::fixed_string(|buf, len| unsafe {
-            psapi::GetModuleBaseNameW(**self.handle, ptr::null_mut(), buf, len)
-        })
+        self.handle.module_base_name()
     }
 
     /// Get the process ID.
@@ -181,18 +163,8 @@ impl Process {
     }
 
     /// Enumerate all modules.
-    pub fn modules<'a>(&'a self) -> Result<Vec<module::Module>, Error> {
-        let modules = utils::array(0x400, |buf, size, needed| unsafe {
-            psapi::EnumProcessModules(**self.handle, buf, size, needed)
-        })?;
-
-        let mut out = Vec::new();
-
-        for module in modules {
-            out.push(module::Module::new(module))
-        }
-
-        Ok(out)
+    pub fn modules(&self) -> Result<Vec<module::Module>, Error> {
+        self.handle.modules()
     }
 
     /// Read the given structure from the given address.
@@ -218,28 +190,8 @@ impl Process {
     }
 
     /// Write to process memory at the specified address.
-    pub fn write_process_memory<'a>(
-        &self,
-        address: Address,
-        buffer: &'a [u8],
-    ) -> Result<bool, Error> {
-        let mut bytes_written: usize = 0;
-
-        let result = checked!(Debug::WriteProcessMemory(
-            **self.handle,
-            address.convert::<*mut c_void>()?,
-            buffer.as_ptr() as *const c_void,
-            buffer.len(),
-            &mut bytes_written as *mut usize,
-        ));
-
-        match result {
-            Ok(()) => Ok(bytes_written == buffer.len()),
-            Err(ref e) if e.raw_os_error() == Some(winerror::ERROR_PARTIAL_COPY as i32) => {
-                Ok(false)
-            }
-            Err(e) => Err(e),
-        }
+    pub fn write_process_memory(&self, address: Address, buffer: &[u8]) -> Result<bool, Error> {
+        self.handle.write_memory(address, buffer)
     }
 
     /// Read process memory at the specified address.
@@ -247,106 +199,22 @@ impl Process {
     /// Returns `true` if the region was successfully read.
     /// Returns `false` if there was not enough space in the region that we attempted to read.
     pub fn read_process_memory(&self, address: Address, buffer: &mut [u8]) -> Result<usize, Error> {
-        let mut bytes_read: usize = 0;
-
-        let result = checked!(Debug::ReadProcessMemory(
-            **self.handle,
-            address.convert::<*const c_void>()?,
-            buffer.as_mut_ptr() as *mut c_void,
-            buffer.len(),
-            &mut bytes_read as *mut usize,
-        ));
-
-        match result {
-            Ok(()) => Ok(bytes_read),
-            Err(ref e) if e.raw_os_error() == Some(winerror::ERROR_PARTIAL_COPY as i32) => Ok(0),
-            Err(ref e) if e.raw_os_error() == Some(winerror::ERROR_NOACCESS as i32) => Ok(0),
-            Err(e) => Err(e),
-        }
+        self.handle.read_memory(address, buffer)
     }
 
     /// Retrieve information about the memory page that corresponds to the given virtual `address`.
     pub fn virtual_query(&self, address: Address) -> anyhow::Result<Option<MemoryInformation>> {
-        const LENGTH: usize = mem::size_of::<memoryapi::MEMORY_BASIC_INFORMATION>();
-
-        use std::mem;
-        let mut mbi: memoryapi::MEMORY_BASIC_INFORMATION = unsafe { mem::zeroed() };
-
-        let b = unsafe {
-            memoryapi::VirtualQueryEx(
-                **self.handle,
-                address.convert()?,
-                &mut mbi as *mut memoryapi::MEMORY_BASIC_INFORMATION,
-                LENGTH,
-            )
-        };
-
-        if b == 0 {
-            let e = Error::last_system_error();
-
-            if e.raw_os_error() == Some(winerror::ERROR_INVALID_PARAMETER as i32) {
-                return Ok(None);
-            }
-
-            return Err(e.into());
-        }
-
-        let state = match mbi.State {
-            memoryapi::MEM_COMMIT => MemoryState::Commit,
-            memoryapi::MEM_FREE => MemoryState::Free,
-            memoryapi::MEM_RESERVE => MemoryState::Reserve,
-            state => {
-                return Err(Error::BadRegionState(state).into());
-            }
-        };
-
-        let ty = match (state, mbi.Type) {
-            (MemoryState::Free, _) => None,
-            (_, memoryapi::MEM_IMAGE) => Some(MemoryType::Image),
-            (_, memoryapi::MEM_MAPPED) => Some(MemoryType::Mapped),
-            (_, memoryapi::MEM_PRIVATE) => Some(MemoryType::Private),
-            (_, ty) => {
-                return Err(Error::BadRegionType(ty).into());
-            }
-        };
-
-        let mut protect = fixed_map::Set::new();
-
-        if state != MemoryState::Free {
-            MemoryProtect::decode(mbi.Protect, &mut protect);
-        }
-
-        Ok(Some(MemoryInformation {
-            range: AddressRange {
-                base: Address::try_from(mbi.BaseAddress)?,
-                size: Size::try_from(mbi.RegionSize)?,
-            },
-            state,
-            ty,
-            protect,
-        }))
+        self.handle.virtual_query(address)
     }
 
     /// Suspend the process.
     pub fn suspend(&self) -> Result<(), Error> {
-        let status = unsafe { ntpsapi::NtSuspendProcess(**self.handle as _) };
-
-        if status != 0 {
-            return Err(Error::last_system_error());
-        }
-
-        Ok(())
+        self.handle.suspend()
     }
 
     /// Resume the process.
     pub fn resume(&self) -> Result<(), Error> {
-        let status = unsafe { ntpsapi::NtResumeProcess(**self.handle as _) };
-
-        if status != 0 {
-            return Err(Error::last_system_error());
-        }
-
-        Ok(())
+        self.handle.resume()
     }
 }
 
@@ -386,16 +254,19 @@ impl fmt::Debug for Process {
 
 /// Builder to open a process.
 #[derive(Default)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub struct OpenProcessBuilder {
-    desired_access: PROCESS_ACCESS_RIGHTS,
-    inherit_handles: BOOL,
+    pub(crate) all_access: bool,
+    pub(crate) query_information: bool,
+    pub(crate) vm_read: bool,
+    pub(crate) inherit_handles: bool,
 }
 
 impl OpenProcessBuilder {
     /// Open process with all access.
     pub fn all_access(self) -> Self {
         OpenProcessBuilder {
-            desired_access: self.desired_access | Threading::PROCESS_ALL_ACCESS,
+            all_access: true,
             ..self
         }
     }
@@ -403,7 +274,7 @@ impl OpenProcessBuilder {
     /// Set the query information flag.
     pub fn query_information(self) -> Self {
         OpenProcessBuilder {
-            desired_access: self.desired_access | Threading::PROCESS_QUERY_INFORMATION,
+            query_information: true,
             ..self
         }
     }
@@ -411,7 +282,7 @@ impl OpenProcessBuilder {
     /// Set the VM Read flag.
     pub fn vm_read(self) -> Self {
         OpenProcessBuilder {
-            desired_access: self.desired_access | Threading::PROCESS_VM_READ,
+            vm_read: true,
             ..self
         }
     }
@@ -419,22 +290,14 @@ impl OpenProcessBuilder {
     /// Indicate that the process should inherit handles.
     pub fn inherit_handles(self) -> Self {
         OpenProcessBuilder {
-            inherit_handles: TRUE,
+            inherit_handles: true,
             ..self
         }
     }
 
     /// Build the process handle.
     pub fn build(self, process_id: ProcessId) -> Result<Process, Error> {
-        let handle = unsafe {
-            Threading::OpenProcess(self.desired_access, self.inherit_handles, process_id)
-        };
-
-        if handle.is_null() {
-            return Err(Error::last_system_error());
-        }
-
-        let handle = utils::Handle::new(handle);
+        let handle = RawProcess::open(&self, process_id)?;
         let is_64bit = handle.is_64bit()?;
         let handle = Arc::new(handle);
 
@@ -529,14 +392,6 @@ pub enum MemoryProtect {
     WriteCombine,
 }
 
-macro_rules! protect_bits {
-    ($flag:expr, $set:expr, {$($flag_from:ident => $flag_to:ident,)*}) => {
-        $(if $flag & memoryapi::$flag_from != 0 {
-            $set.insert(MemoryProtect::$flag_to);
-        })*
-    }
-}
-
 macro_rules! as_str {
     ($slf:expr, {$($flag_from:ident => $flag_to:ident,)*}) => {
         match $slf {
@@ -546,24 +401,6 @@ macro_rules! as_str {
 }
 
 impl MemoryProtect {
-    fn decode(protect: memoryapi::PAGE_PROTECTION_FLAGS, set: &mut fixed_map::Set<MemoryProtect>) {
-        protect_bits!(protect, set, {
-            PAGE_EXECUTE => Execute,
-            PAGE_EXECUTE_READ => ExecuteRead,
-            PAGE_EXECUTE_READWRITE => ExecuteReadWrite,
-            PAGE_EXECUTE_WRITECOPY => ExecuteWriteCopy,
-            PAGE_NOACCESS => NoAccess,
-            PAGE_READONLY => ReadOnly,
-            PAGE_READWRITE => ReadWrite,
-            PAGE_WRITECOPY => WriteCopy,
-            PAGE_TARGETS_INVALID => TargetsInvalid,
-            PAGE_TARGETS_NO_UPDATE => TargetsNoUpdate,
-            PAGE_GUARD => Guard,
-            PAGE_NOCACHE => NoCache,
-            PAGE_WRITECOMBINE => WriteCombine,
-        });
-    }
-
     /// Get the string representation of this proection mode.
     pub fn as_str(self) -> &'static str {
         as_str!(self, {

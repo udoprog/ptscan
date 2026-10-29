@@ -1,11 +1,16 @@
 //! High-level interface to processes.
 
 use crate::{
-    error::Error, filter_expr::FilterExpr, progress_reporter::ProgressReporter, system,
-    thread::Thread, utils::IteratorExtension as _, Address, AddressRange, Addresses, Base, Cached,
-    DefaultScanner, FollowablePointer, MemoryInformation, MemoryReader, Pointer, PointerInfo,
-    PointerWidth, PortableBase, Process, ProcessId, ProcessInfo, Scanner, Size, Test, ThreadId,
-    Token, Type, TypeHint, Value, ValueExpr, ValueRef, Values,
+    error::Error,
+    filter_expr::FilterExpr,
+    platform::{self, Thread},
+    progress_reporter::ProgressReporter,
+    system,
+    utils::IteratorExtension as _,
+    Address, AddressRange, Addresses, Base, Cached, DefaultScanner, FollowablePointer,
+    MemoryInformation, MemoryReader, Pointer, PointerInfo, PointerWidth, PortableBase, Process,
+    ProcessId, ProcessInfo, Scanner, Size, Test, ThreadId, Token, Type, TypeHint, Value, ValueExpr,
+    ValueRef, Values,
 };
 use anyhow::{anyhow, bail, Context as _};
 use crossbeam_queue::SegQueue;
@@ -16,8 +21,6 @@ use std::convert::{TryFrom as _, TryInto as _};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::sync::mpsc;
-
-use windows_sys::Win32::Foundation;
 
 #[derive(Debug, Clone, Default)]
 pub struct InitialScanConfig {
@@ -91,13 +94,8 @@ impl ProcessHandle {
 
         let process = match Process::builder().all_access().build(pid) {
             Ok(process) => process,
-            Err(e) => match e.raw_os_error().map(|n| n as u32) {
-                // NB: process no longer exists.
-                Some(Foundation::ERROR_INVALID_PARAMETER) => return Ok(None),
-                // NB: we don't have access to the process.
-                Some(Foundation::ERROR_ACCESS_DENIED) => return Ok(None),
-                _ => return Err(e),
-            },
+            Err(e) if platform::process_unavailable(&e) => return Ok(None),
+            Err(e) => return Err(e),
         };
 
         let name = process.module_base_name()?;

@@ -2,8 +2,6 @@ use crate::{filter_expr::Binary, ProcessId, ThreadId, ValueExpr};
 use std::io;
 use thiserror::Error;
 
-use windows_sys::Win32::Foundation::NTSTATUS;
-
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("system error: {0}")]
@@ -25,7 +23,7 @@ pub enum Error {
     #[error("failed to scan for thread exit")]
     ScanForExit,
     #[error("failed to resolved address through thread teb with status: {0}")]
-    ThreadTebError(NTSTATUS),
+    ThreadTebError(i32),
     #[error("failed to convert number to address")]
     AddressConversion,
     #[error("failed to convert string to address")]
@@ -42,6 +40,8 @@ pub enum Error {
     TypeInference(ValueExpr),
     #[error("cannot determine type of: {0}")]
     BinaryTypeInference(Binary),
+    #[error("not supported on this platform")]
+    Unsupported,
     #[error("this error literally cannot happen")]
     Infallible,
 }

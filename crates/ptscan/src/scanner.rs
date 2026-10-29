@@ -242,6 +242,11 @@ where
 
             self.alignment.align(&mut offset);
 
+            // The element at or past the end belongs to the next chunk.
+            if offset >= data.len() {
+                break;
+            }
+
             let d = &data[offset..];
 
             let mut tmp;

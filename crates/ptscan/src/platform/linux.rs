@@ -632,6 +632,7 @@ mod tests {
     use std::{
         io::{BufRead, BufReader, Write},
         process::{Child, Command, Stdio},
+        sync::atomic::AtomicU64,
         time::Duration,
     };
 
@@ -797,10 +798,12 @@ mod tests {
 
     const HOLD_ENV: &str = "PTSCAN_TEST_HOLD_VALUE";
     const HELD: u64 = 0x5eed_c0de_f00d_7a11;
+    static HELD_PAIR: [AtomicU64; 2] = [AtomicU64::new(HELD), AtomicU64::new(HELD)];
 
     /// Run in a re-executed test binary by [`Holder::spawn`]: keeps `HELD` and
-    /// a pointer to it on the heap, prints both addresses, then answers each
-    /// line on stdin with the value it now holds.
+    /// a pointer to it on the heap, prints their addresses and that of
+    /// `HELD_PAIR` in the image's writable data, then answers each line on
+    /// stdin with the value it now holds.
     #[test]
     fn hold_value_child() {
         if std::env::var_os(HOLD_ENV).is_none() {
@@ -810,8 +813,10 @@ mod tests {
         let value = Box::new(std::hint::black_box(HELD));
         let pointer = Box::new(&*value as *const u64 as usize);
         println!(
-            "held {:x} {:x}",
-            &*value as *const u64 as usize, &*pointer as *const usize as usize
+            "held {:x} {:x} {:x}",
+            &*value as *const u64 as usize,
+            &*pointer as *const usize as usize,
+            HELD_PAIR.as_ptr() as usize
         );
         io::stdout().flush().unwrap();
 
@@ -824,7 +829,7 @@ mod tests {
             io::stdout().flush().unwrap();
         }
 
-        std::hint::black_box((value, pointer));
+        std::hint::black_box((value, pointer, &HELD_PAIR));
     }
 
     struct Holder {
@@ -832,6 +837,7 @@ mod tests {
         stdout: io::Lines<BufReader<std::process::ChildStdout>>,
         value: u64,
         pointer: u64,
+        pair: u64,
     }
 
     impl Holder {
@@ -860,11 +866,13 @@ mod tests {
                     let mut it = rest.split(' ').map(|a| u64::from_str_radix(a, 16).unwrap());
                     let value = it.next().unwrap();
                     let pointer = it.next().unwrap();
+                    let pair = it.next().unwrap();
                     return Self {
                         child,
                         stdout,
                         value,
                         pointer,
+                        pair,
                     };
                 }
             }
@@ -989,6 +997,22 @@ mod tests {
         let filter = FilterExpr::parse(&format!("value == {}u64", HELD), &handle).unwrap();
         let found = scan(&handle, &filter, Type::U64);
         assert!(found.contains(&Address::new(holder.value)), "{:?}", found);
+    }
+
+    #[test]
+    fn value_scan_reports_each_address_once() {
+        let holder = Holder::spawn();
+        let mut handle = holder.handle();
+        handle.refresh_modules().unwrap();
+        let filter = FilterExpr::parse(&format!("value == {}u64", HELD), &handle).unwrap();
+        let found = scan(&handle, &filter, Type::U64);
+
+        for address in [holder.pair, holder.pair + 8] {
+            assert!(found.contains(&Address::new(address)), "{:?}", found);
+        }
+
+        let unique = found.iter().collect::<HashSet<_>>();
+        assert_eq!(unique.len(), found.len(), "{:?}", found);
     }
 
     #[test]

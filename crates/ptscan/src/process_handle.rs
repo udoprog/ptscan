@@ -1193,19 +1193,25 @@ impl ProcessHandle {
                 .map(|t| t.stack.clone())
                 .collect::<HashSet<_>>();
 
-            if config.modules_only {
-                ranges.extend(self.modules.modules.iter().map(|m| m.range));
-            } else {
+            let mut modules = self
+                .modules
+                .modules
+                .iter()
+                .map(|m| m.range)
+                .collect::<Vec<_>>();
+            modules.sort();
+
+            if !config.modules_only {
                 for m in self.process.virtual_memory_regions().only_relevant() {
                     let m = m?;
 
                     if !thread_stacks.contains(&m.range) {
-                        ranges.push(m.range);
+                        uncovered_ranges(m.range, &modules, &mut ranges);
                     }
                 }
-
-                ranges.extend(self.modules.modules.iter().map(|m| m.range));
             }
+
+            ranges.extend(modules);
         }
 
         let mut total = 0;
@@ -1378,6 +1384,37 @@ impl ProcessHandle {
 
             Ok((addresses, values))
         }
+    }
+}
+
+/// Push the parts of `range` not covered by any of `covered`, which is
+/// sorted by base, so memory inside a module is only scanned once.
+fn uncovered_ranges(range: AddressRange, covered: &[AddressRange], out: &mut Vec<AddressRange>) {
+    let end = range.base.0.saturating_add(range.size.0);
+    let mut start = range.base.0;
+
+    for c in covered {
+        let c_end = c.base.0.saturating_add(c.size.0);
+
+        if c_end <= start || c.base.0 >= end {
+            continue;
+        }
+
+        if c.base.0 > start {
+            out.push(AddressRange {
+                base: Address(start),
+                size: Size(c.base.0 - start),
+            });
+        }
+
+        start = start.max(c_end);
+    }
+
+    if start < end {
+        out.push(AddressRange {
+            base: Address(start),
+            size: Size(end - start),
+        });
     }
 }
 

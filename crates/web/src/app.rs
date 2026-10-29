@@ -3,6 +3,7 @@ use yew::prelude::*;
 
 use crate::error::ErrorEntry;
 use crate::ui::error_log::ErrorLog;
+use crate::ui::pointer_scan_view::PointerScanView;
 use crate::ui::process_picker::ProcessPicker;
 use crate::ui::scan_view::ScanView;
 use crate::ui::scratch_view::ScratchView;
@@ -180,12 +181,20 @@ impl Component for App {
                             attached={self.attach.process.is_some()}
                             on_error={self.on_error.clone()}
                         />
-                        <ScratchView
-                            ws={self.service.handle().clone()}
-                            open={self.connection.is_open()}
-                            attached={self.attach.process.is_some()}
-                            on_error={self.on_error.clone()}
-                        />
+                        <row class="lower">
+                            <ScratchView
+                                ws={self.service.handle().clone()}
+                                open={self.connection.is_open()}
+                                attached={self.attach.process.is_some()}
+                                on_error={self.on_error.clone()}
+                            />
+                            <PointerScanView
+                                ws={self.service.handle().clone()}
+                                open={self.connection.is_open()}
+                                attached={self.attach.process.is_some()}
+                                on_error={self.on_error.clone()}
+                            />
+                        </row>
                     </column>
                 </row>
                 if self.show_errors {

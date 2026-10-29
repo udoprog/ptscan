@@ -31,6 +31,8 @@ pub enum Msg {
     Removed(Result<ws::Packet<api::RemoveScratch>, ws::Error>),
     CopyText,
     CopyJson,
+    PointerScan(u64),
+    PointerScanStarted(Result<ws::Packet<api::PointerScan>, ws::Error>),
 }
 
 pub struct ScratchView {
@@ -39,6 +41,7 @@ pub struct ScratchView {
     dialog: Option<u64>,
     load: ws::Request,
     remove: ws::Request,
+    pointer_scan: ws::Request,
     _listener: ws::Listener,
     _timer: Interval,
 }
@@ -87,6 +90,7 @@ impl Component for ScratchView {
             dialog: None,
             load: ws::Request::default(),
             remove: ws::Request::default(),
+            pointer_scan: ws::Request::default(),
             _listener: ctx
                 .props()
                 .ws
@@ -202,6 +206,22 @@ impl Component for ScratchView {
                 clipboard::copy(json, on_error);
                 return false;
             }
+            Msg::PointerScan(id) => {
+                self.pointer_scan = ctx
+                    .props()
+                    .ws
+                    .request()
+                    .body(api::PointerScanRequest { id })
+                    .on_packet(ctx.link().callback(Msg::PointerScanStarted))
+                    .send();
+            }
+            Msg::PointerScanStarted(result) => match result.and_then(|p| p.decode_response()) {
+                Ok(api::PointerScanResponse { error: Some(error) }) => {
+                    on_error.emit(format!("Starting pointer scan: {error}"))
+                }
+                Ok(_) => {}
+                Err(error) => on_error.emit(format!("Starting pointer scan: {error}")),
+            },
         }
 
         true
@@ -265,6 +285,11 @@ impl Component for ScratchView {
                     <button disabled={self.selected.len() != 1}
                         onclick={self.selected.first().copied().map(|id| link.callback(move |_| Msg::Edit(id))).unwrap_or_default()}>
                         {"Edit"}
+                    </button>
+                    <button title="Find pointer paths to the selected entry's address"
+                        disabled={self.selected.len() != 1 || !props.open || !props.attached || self.pointer_scan.is_pending()}
+                        onclick={self.selected.first().copied().map(|id| link.callback(move |_| Msg::PointerScan(id))).unwrap_or_default()}>
+                        {"Pointer scan"}
                     </button>
                     <button title="Copy the selected entries as tab-separated text"
                         disabled={none} onclick={link.callback(|_| Msg::CopyText)}>{"Copy"}</button>

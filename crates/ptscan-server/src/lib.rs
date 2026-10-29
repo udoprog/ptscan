@@ -25,6 +25,7 @@ pub struct Shared {
     scan_state: watch::Sender<api::ScanState>,
     progress: watch::Sender<api::ScanProgress>,
     pool: rayon::ThreadPool,
+    rescan_copy_limit: usize,
 }
 
 impl Default for Shared {
@@ -38,6 +39,7 @@ impl Default for Shared {
             pool: rayon::ThreadPoolBuilder::new()
                 .build()
                 .expect("building scan thread pool"),
+            rescan_copy_limit: 100_000_000,
         }
     }
 }
@@ -55,6 +57,13 @@ fn write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 }
 
 impl Shared {
+    /// Generations of more bytes than this are rescanned in place rather than
+    /// copied, which means the rescan cannot be undone.
+    pub fn with_rescan_copy_limit(mut self, bytes: usize) -> Self {
+        self.rescan_copy_limit = bytes;
+        self
+    }
+
     pub fn attach_state(&self) -> api::AttachState {
         self.state.borrow().clone()
     }

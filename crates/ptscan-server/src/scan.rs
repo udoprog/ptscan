@@ -4,9 +4,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context as _, Result, anyhow};
 use ptscan::{
-    Addresses, FilterExpr, InitialScanConfig, PortablePointer, ProcessHandle, Size, Token,
+    Addresses, FilterExpr, InitialScanConfig, PortablePointer, Process, ProcessHandle, Size, Token,
     TypeHint, ValueExpr, Values,
 };
 use tokio::sync::watch;
@@ -21,12 +21,28 @@ struct Generation {
     value: ValueExpr,
 }
 
+impl Generation {
+    fn bytes(&self) -> usize {
+        self.addresses.bytes() + self.initial.bytes() + self.last.bytes()
+    }
+}
+
+struct Plan {
+    filter: FilterExpr,
+    value: ValueExpr,
+    config: InitialScanConfig,
+    suspend: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct Session {
     scans: Vec<Arc<Generation>>,
     undone: Vec<Arc<Generation>>,
     running: Option<Arc<AtomicBool>>,
     last: Option<api::ScanOutcome>,
+    /// Results of the current generation while it is taken out to be rescanned
+    /// in place.
+    in_place: Option<u64>,
     /// Bumped whenever the generations are discarded, so that a scan started
     /// before that does not add its result.
     epoch: u64,
@@ -35,9 +51,12 @@ pub(crate) struct Session {
 impl Session {
     fn state(&self) -> api::ScanState {
         api::ScanState {
-            generations: self.scans.len() as u32,
+            generations: (self.scans.len() + usize::from(self.in_place.is_some())) as u32,
             undone: self.undone.len() as u32,
-            results: self.scans.last().map_or(0, |g| g.addresses.len() as u64),
+            results: self
+                .in_place
+                .or_else(|| self.scans.last().map(|g| g.addresses.len() as u64))
+                .unwrap_or(0),
             running: self.running.is_some(),
             last: self.last.clone(),
         }
@@ -51,6 +70,8 @@ impl Session {
 
     pub(crate) fn reset(&mut self) {
         self.cancel();
+        self.running = None;
+        self.in_place = None;
         self.scans.clear();
         self.undone.clear();
         self.last = None;
@@ -98,7 +119,8 @@ impl Shared {
     }
 
     /// Parse the request and start a scan in the background: an initial scan
-    /// without generations, otherwise a rescan of the current one.
+    /// without generations, otherwise a rescan of the current one. A current
+    /// generation larger than the copy limit is rescanned in place.
     pub fn start_scan(self: &Arc<Self>, request: api::ScanRequest) -> api::ScanResponse {
         let mut response = api::ScanResponse::default();
 
@@ -136,7 +158,16 @@ impl Shared {
             return response;
         };
 
-        let alignment = request.alignment.map(|a| a as usize);
+        let plan = Plan {
+            filter,
+            value,
+            config: InitialScanConfig {
+                alignment: request.alignment.map(|a| a as usize),
+                modules_only: request.modules_only,
+                ..Default::default()
+            },
+            suspend: request.suspend,
+        };
 
         let mut session = lock(&self.session);
 
@@ -147,7 +178,19 @@ impl Shared {
 
         let token = Arc::new(AtomicBool::new(false));
         session.running = Some(token.clone());
-        let previous = session.scans.last().cloned();
+        let in_place = session
+            .scans
+            .last()
+            .is_some_and(|g| g.bytes() > self.rescan_copy_limit);
+
+        let previous = if in_place {
+            let previous = session.scans.pop();
+            session.in_place = previous.as_ref().map(|g| g.addresses.len() as u64);
+            previous
+        } else {
+            session.scans.last().cloned()
+        };
+
         let epoch = session.epoch;
         self.progress.send_replace(api::ScanProgress::default());
         self.publish_scan_state(&session);
@@ -159,7 +202,10 @@ impl Shared {
             let started = Instant::now();
             let token_ref = Token::from_raw(&token);
 
-            let result = shared.run_scan(&handle, filter, value, alignment, previous, token_ref);
+            // Without other references this takes the generation, which is
+            // the case when it is rescanned in place.
+            let mut generation = previous.map(Arc::unwrap_or_clone);
+            let result = shared.run_scan(&handle, plan, &mut generation, token_ref);
 
             let cancelled = token_ref.test();
             let mut session = lock(&shared.session);
@@ -169,21 +215,28 @@ impl Shared {
             }
 
             session.running = None;
+            session.in_place = None;
 
             let mut outcome = api::ScanOutcome {
                 cancelled,
+                in_place,
                 duration_ms: started.elapsed().as_millis() as u64,
                 ..Default::default()
             };
 
-            match result {
-                Ok(generation) if !cancelled => {
-                    outcome.results = generation.addresses.len() as u64;
-                    session.scans.push(Arc::new(generation));
-                    session.undone.clear();
+            if let Err(e) = result {
+                outcome.error = Some(format!("{e:#}"));
+
+                // A generation rescanned in place is the only copy left.
+                if !in_place {
+                    generation = None;
                 }
-                Ok(..) => {}
-                Err(e) => outcome.error = Some(format!("{e:#}")),
+            }
+
+            if let Some(generation) = generation {
+                outcome.results = generation.addresses.len() as u64;
+                session.scans.push(Arc::new(generation));
+                session.undone.clear();
             }
 
             session.last = Some(outcome);
@@ -193,32 +246,39 @@ impl Shared {
         response
     }
 
+    /// Rescan `generation`, or store a new one from an initial scan in it. A
+    /// cancelled scan leaves its partial results.
     fn run_scan(
         &self,
         handle: &RwLock<ProcessHandle>,
-        filter: FilterExpr,
-        value: ValueExpr,
-        alignment: Option<usize>,
-        previous: Option<Arc<Generation>>,
+        plan: Plan,
+        generation: &mut Option<Generation>,
         token: &Token,
-    ) -> Result<Generation> {
+    ) -> Result<()> {
+        let Plan {
+            filter,
+            value,
+            config,
+            suspend,
+        } = plan;
+
         let progress = Progress(self.progress.clone());
 
-        if let Some(previous) = previous {
-            let mut generation = (*previous).clone();
+        if let Some(generation) = generation {
             generation.value = value;
+            let handle = read(handle);
 
-            read(handle).rescan_values(
-                &self.pool,
-                &mut generation.addresses,
-                &mut generation.initial,
-                &mut generation.last,
-                Some(token),
-                progress,
-                &filter,
-            )?;
-
-            return Ok(generation);
+            return suspended(&handle.process, suspend, || {
+                handle.rescan_values(
+                    &self.pool,
+                    &mut generation.addresses,
+                    &mut generation.initial,
+                    &mut generation.last,
+                    Some(token),
+                    progress,
+                    &filter,
+                )
+            });
         }
 
         let (value_type, modules, threads) = {
@@ -251,27 +311,26 @@ impl Shared {
         let mut addresses = Addresses::new(handle.process.pointer_width);
         let mut values = Values::new(value_type);
 
-        let config = InitialScanConfig {
-            alignment,
-            ..Default::default()
-        };
+        let result = suspended(&handle.process, suspend, || {
+            handle.initial_scan(
+                &self.pool,
+                &filter,
+                &mut addresses,
+                &mut values,
+                Some(token),
+                progress,
+                config,
+            )
+        });
 
-        handle.initial_scan(
-            &self.pool,
-            &filter,
-            &mut addresses,
-            &mut values,
-            Some(token),
-            progress,
-            config,
-        )?;
-
-        Ok(Generation {
+        *generation = Some(Generation {
             addresses,
             initial: values.clone(),
             last: values,
             value,
-        })
+        });
+
+        result
     }
 
     pub fn cancel_scan(&self) -> api::ScanState {
@@ -314,7 +373,20 @@ impl Shared {
     /// Read a page of the current generation along with the values in memory
     /// now.
     pub fn scan_results(&self, offset: u64, limit: u32) -> Result<api::ScanResultsResponse> {
-        let generation = lock(&self.session).scans.last().cloned();
+        let generation = {
+            let session = lock(&self.session);
+
+            if let Some(total) = session.in_place {
+                return Ok(api::ScanResultsResponse {
+                    total,
+                    offset,
+                    error: Some("the current generation is being rescanned".into()),
+                    ..Default::default()
+                });
+            }
+
+            session.scans.last().cloned()
+        };
         let handle = lock(&self.handle).clone();
 
         let (Some(generation), Some(handle)) = (generation, handle) else {
@@ -386,4 +458,28 @@ impl Shared {
             error,
         })
     }
+}
+
+/// Run `f` with the process suspended if `suspend` is set.
+fn suspended<T>(process: &Process, suspend: bool, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    struct Resume<'a>(&'a Process);
+
+    impl Drop for Resume<'_> {
+        fn drop(&mut self) {
+            _ = self.0.resume();
+        }
+    }
+
+    if !suspend {
+        return f();
+    }
+
+    process.suspend().context("failed to suspend process")?;
+    let guard = Resume(process);
+    let result = f();
+    std::mem::forget(guard);
+    let resumed = process.resume().context("failed to resume process");
+    let value = result?;
+    resumed?;
+    Ok(value)
 }

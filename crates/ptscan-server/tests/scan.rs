@@ -18,10 +18,13 @@ macro_rules! timeout {
 }
 
 async fn server() -> SocketAddr {
+    server_with(ptscan_server::Shared::default()).await
+}
+
+async fn server_with(shared: ptscan_server::Shared) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let shared = Arc::new(ptscan_server::Shared::default());
-    tokio::spawn(ptscan_server::serve(listener, shared));
+    tokio::spawn(ptscan_server::serve(listener, Arc::new(shared)));
     addr
 }
 
@@ -33,13 +36,21 @@ async fn connect(addr: SocketAddr) -> Handle {
     handle
 }
 
-async fn scan(handle: &Handle, filter: &str) -> api::ScanResponse {
-    let request = api::ScanRequest {
+fn request(filter: &str) -> api::ScanRequest {
+    api::ScanRequest {
         filter: filter.into(),
         value: String::new(),
         alignment: Some(8),
-    };
+        suspend: false,
+        modules_only: false,
+    }
+}
 
+async fn scan(handle: &Handle, filter: &str) -> api::ScanResponse {
+    scan_with(handle, request(filter)).await
+}
+
+async fn scan_with(handle: &Handle, request: api::ScanRequest) -> api::ScanResponse {
     timeout!(handle.request().body(request).send())
         .unwrap()
         .decode()
@@ -199,6 +210,12 @@ mod linux {
             }
         }
 
+        fn state(&self) -> char {
+            let stat = std::fs::read_to_string(format!("/proc/{}/stat", self.child.id())).unwrap();
+            let (_, rest) = stat.rsplit_once(')').unwrap();
+            rest.trim_start().chars().next().unwrap()
+        }
+
         fn change(&mut self) {
             writeln!(self.stdin).unwrap();
             read_until(&mut self.stdout, "changed");
@@ -309,5 +326,120 @@ mod linux {
             .decode()
             .unwrap();
         assert_eq!(reset, api::ScanState::default());
+    }
+
+    async fn attach(handle: &Handle, pid: u32) {
+        let response: api::AttachResponse =
+            timeout!(handle.request().body(api::AttachRequest { pid }).send())
+                .unwrap()
+                .decode()
+                .unwrap();
+        assert_eq!(response.error, None);
+    }
+
+    async fn find_held(handle: &Handle, holder: &Holder) -> Option<api::ScanResult> {
+        let page = results(handle).await;
+        assert_eq!(page.error, None);
+        page.results
+            .into_iter()
+            .find(|r| r.address == holder.address)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn suspend_and_modules_only() {
+        let mut holder = Holder::spawn();
+        let handle = connect(server().await).await;
+        let mut changes = handle.on_broadcast::<api::ScanStateChanged>();
+        attach(&handle, holder.child.id()).await;
+
+        let response = scan_with(
+            &handle,
+            api::ScanRequest {
+                modules_only: true,
+                ..request(&format!("value == {HELD}u64"))
+            },
+        )
+        .await;
+        assert_eq!(response, api::ScanResponse::default());
+        let state = finished(&mut changes, 1).await;
+        assert_eq!(state.last.unwrap().error, None);
+        assert!(
+            find_held(&handle, &holder).await.is_none(),
+            "heap value is outside modules"
+        );
+
+        let reset: api::ScanState = timeout!(handle.request().body(api::ResetScanRequest).send())
+            .unwrap()
+            .decode()
+            .unwrap();
+        assert_eq!(reset, api::ScanState::default());
+
+        let response = scan_with(
+            &handle,
+            api::ScanRequest {
+                suspend: true,
+                ..request(&format!("value == {HELD}u64"))
+            },
+        )
+        .await;
+        assert_eq!(response, api::ScanResponse::default());
+        let state = finished(&mut changes, 1).await;
+        assert_eq!(state.last.unwrap().error, None);
+        assert!(find_held(&handle, &holder).await.is_some());
+
+        // The process is resumed after the scan.
+        assert_ne!(holder.state(), 'T');
+        holder.change();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn large_generation_is_rescanned_in_place() {
+        let mut holder = Holder::spawn();
+        let shared = ptscan_server::Shared::default().with_rescan_copy_limit(0);
+        let handle = connect(server_with(shared).await).await;
+        let mut changes = handle.on_broadcast::<api::ScanStateChanged>();
+        attach(&handle, holder.child.id()).await;
+
+        scan(&handle, &format!("value == {HELD}u64")).await;
+        let state = finished(&mut changes, 1).await;
+        assert!(!state.last.unwrap().in_place);
+
+        holder.change();
+        scan(&handle, &format!("value == {CHANGED}u64")).await;
+        let state = finished(&mut changes, 1).await;
+        let outcome = state.last.clone().unwrap();
+        assert_eq!(outcome.error, None);
+        assert!(outcome.in_place);
+        assert_eq!((state.generations, state.undone), (1, 0));
+        assert_eq!(outcome.results, state.results);
+
+        let held = find_held(&handle, &holder)
+            .await
+            .expect("changed value survives rescan");
+        assert_eq!(held.last, CHANGED.to_string());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancelled_scan_keeps_partial_results() {
+        let holder = Holder::spawn();
+        let handle = connect(server().await).await;
+        let mut changes = handle.on_broadcast::<api::ScanStateChanged>();
+        attach(&handle, holder.child.id()).await;
+
+        // Matches nearly everything, so the scan is still running when the
+        // cancellation arrives.
+        let response = scan(&handle, "value != 1u8").await;
+        assert_eq!(response, api::ScanResponse::default());
+        let _: api::ScanState = timeout!(handle.request().body(api::CancelScanRequest).send())
+            .unwrap()
+            .decode()
+            .unwrap();
+
+        let state = finished(&mut changes, 1).await;
+        let outcome = state.last.clone().unwrap();
+        assert_eq!(outcome.error, None);
+        assert!(outcome.cancelled, "{outcome:?}");
+        assert_eq!(outcome.results, state.results);
+        assert_eq!(results(&handle).await.total, state.results);
     }
 }

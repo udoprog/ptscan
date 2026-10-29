@@ -59,6 +59,10 @@ pub struct ScanRequest {
     /// Value expression; empty means the value itself.
     pub value: String,
     pub alignment: Option<u32>,
+    /// Suspend the process for the duration of the scan.
+    pub suspend: bool,
+    /// Only scan the memory of loaded modules. Applies to initial scans.
+    pub modules_only: bool,
 }
 
 /// Whether a scan was started, and if not why.
@@ -111,7 +115,11 @@ impl ScanState {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
 pub struct ScanOutcome {
     pub results: u64,
+    /// The scan was cancelled and its partial results kept.
     pub cancelled: bool,
+    /// The rescan replaced the current generation instead of adding one, since
+    /// it was too large to copy.
+    pub in_place: bool,
     pub error: Option<String>,
     pub duration_ms: u64,
 }

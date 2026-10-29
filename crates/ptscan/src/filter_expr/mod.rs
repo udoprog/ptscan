@@ -14,6 +14,8 @@ pub use self::special::Special;
 pub mod ast;
 mod filter_op;
 pub(crate) mod lexer;
+#[cfg(test)]
+mod parser_tests;
 pub mod special;
 lalrpop_util::lalrpop_mod!(#[allow(clippy::all, non_fmt_panics)] pub parser, "/filter_expr/parser.rs");
 

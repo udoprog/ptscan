@@ -1,4 +1,6 @@
 mod lexer;
+#[cfg(test)]
+mod parser_tests;
 lalrpop_util::lalrpop_mod!(
     #[allow(clippy::all, non_fmt_panics)]
     parser,

@@ -1804,6 +1804,7 @@ dependencies = [
  "clap",
  "musli-web",
  "ptscan",
+ "rayon",
  "tokio",
  "tracing",
  "tracing-subscriber",

@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::process::{Child, Command};
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,8 +17,10 @@ macro_rules! timeout {
     };
 }
 
+#[cfg(unix)]
 struct KillOnDrop(Child);
 
+#[cfg(unix)]
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
         _ = self.0.kill();

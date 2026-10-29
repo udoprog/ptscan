@@ -415,4 +415,25 @@ mod tests {
             values.iter().map(|v| v.read()).collect::<Vec<_>>()
         );
     }
+
+    #[test]
+    fn test_swap_remove() {
+        let mut values = Values::new(Type::U32);
+
+        for n in 0..4 {
+            values.push(Value::U32(n));
+        }
+
+        let read = |values: &Values| values.iter().map(|v| v.read()).collect::<Vec<_>>();
+
+        assert!(values.swap_remove(3));
+        assert_eq!(read(&values), [Value::U32(0), Value::U32(1), Value::U32(2)]);
+        assert!(values.swap_remove(0));
+        assert_eq!(read(&values), [Value::U32(2), Value::U32(1)]);
+        assert!(values.swap_remove(0));
+        assert_eq!(read(&values), [Value::U32(1)]);
+        assert!(values.swap_remove(0));
+        assert!(values.is_empty());
+        assert!(!values.swap_remove(0));
+    }
 }

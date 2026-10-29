@@ -348,7 +348,7 @@ where
 
             self.len -= 1;
 
-            if self.len > 1 {
+            if index < self.len {
                 let from = ptr.add(self.len * self.element_size);
                 ptr::copy_nonoverlapping(from, hole, self.element_size);
             }

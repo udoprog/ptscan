@@ -6,6 +6,9 @@ use musli_web::api;
 /// The default address the server binds to.
 pub const DEFAULT_BIND: &str = "127.0.0.1:7431";
 
+/// Most scan results a single page read returns.
+pub const MAX_SCAN_PAGE: u32 = 1000;
+
 #[derive(Debug, Clone, Default, Encode, Decode)]
 pub struct Empty;
 
@@ -49,6 +52,103 @@ pub struct AttachState {
     pub process: Option<ProcessInfo>,
 }
 
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct ScanRequest {
+    /// Filter expression, such as `value == 42u32`.
+    pub filter: String,
+    /// Value expression; empty means the value itself.
+    pub value: String,
+    pub alignment: Option<u32>,
+}
+
+/// Whether a scan was started, and if not why.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct ScanResponse {
+    pub filter_error: Option<String>,
+    pub value_error: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Encode, Decode)]
+pub struct CancelScanRequest;
+
+#[derive(Debug, Clone, Default, Encode, Decode)]
+pub struct ResetScanRequest;
+
+#[derive(Debug, Clone, Default, Encode, Decode)]
+pub struct UndoScanRequest;
+
+#[derive(Debug, Clone, Default, Encode, Decode)]
+pub struct RedoScanRequest;
+
+#[derive(Debug, Clone, Default, Encode, Decode)]
+pub struct GetScanStateRequest;
+
+/// The scan generations held by the server.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct ScanState {
+    /// Number of scan generations, the last one being current.
+    pub generations: u32,
+    /// Number of undone generations which can be redone.
+    pub undone: u32,
+    /// Number of results in the current generation.
+    pub results: u64,
+    pub running: bool,
+    /// The outcome of the last finished scan.
+    pub last: Option<ScanOutcome>,
+}
+
+impl ScanState {
+    pub fn can_undo(&self) -> bool {
+        self.generations > 1
+    }
+
+    pub fn can_redo(&self) -> bool {
+        self.undone > 0
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct ScanOutcome {
+    pub results: u64,
+    pub cancelled: bool,
+    pub error: Option<String>,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct ScanProgress {
+    pub percentage: u32,
+    pub results: u64,
+}
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct ScanResultsRequest {
+    pub offset: u64,
+    pub limit: u32,
+}
+
+/// A page of the current generation, with values read now.
+#[derive(Debug, Clone, Default, Encode, Decode)]
+pub struct ScanResultsResponse {
+    pub total: u64,
+    pub offset: u64,
+    pub results: Vec<ScanResult>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct ScanResult {
+    pub address: u64,
+    /// The address relative to its module or thread stack, if any.
+    pub pointer: String,
+    pub value_type: String,
+    /// The value recorded by the last scan.
+    pub last: String,
+    /// The value in memory when the page was read.
+    pub current: String,
+}
+
 api::define! {
     pub type ListProcesses;
     impl Endpoint for ListProcesses {
@@ -77,5 +177,56 @@ api::define! {
     pub type AttachStateChanged;
     impl Broadcast for AttachStateChanged {
         impl Event for AttachState;
+    }
+    pub type Scan;
+    impl Endpoint for Scan {
+        impl Request for ScanRequest;
+        type Response<'de> = ScanResponse;
+    }
+
+    pub type CancelScan;
+    impl Endpoint for CancelScan {
+        impl Request for CancelScanRequest;
+        type Response<'de> = ScanState;
+    }
+
+    pub type ResetScan;
+    impl Endpoint for ResetScan {
+        impl Request for ResetScanRequest;
+        type Response<'de> = ScanState;
+    }
+
+    pub type UndoScan;
+    impl Endpoint for UndoScan {
+        impl Request for UndoScanRequest;
+        type Response<'de> = ScanState;
+    }
+
+    pub type RedoScan;
+    impl Endpoint for RedoScan {
+        impl Request for RedoScanRequest;
+        type Response<'de> = ScanState;
+    }
+
+    pub type GetScanState;
+    impl Endpoint for GetScanState {
+        impl Request for GetScanStateRequest;
+        type Response<'de> = ScanState;
+    }
+
+    pub type ScanResults;
+    impl Endpoint for ScanResults {
+        impl Request for ScanResultsRequest;
+        type Response<'de> = ScanResultsResponse;
+    }
+
+    pub type ScanStateChanged;
+    impl Broadcast for ScanStateChanged {
+        impl Event for ScanState;
+    }
+
+    pub type ScanProgressed;
+    impl Broadcast for ScanProgressed {
+        impl Event for ScanProgress;
     }
 }

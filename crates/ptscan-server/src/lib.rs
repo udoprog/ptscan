@@ -1,11 +1,15 @@
 //! Websocket server owning the scanner and the attached process.
 
-use std::sync::{Arc, Mutex};
+mod origin;
+mod scan;
+
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use anyhow::{Result, anyhow};
 use axum::Router;
 use axum::extract::State;
 use axum::extract::ws::{WebSocket, WebSocketUpgrade};
+use axum::middleware;
 use axum::response::Response;
 use axum::routing::any;
 use musli_web::{axum08, ws};
@@ -15,8 +19,12 @@ use tokio::sync::watch;
 
 /// State shared by every connection.
 pub struct Shared {
-    handle: Mutex<Option<ProcessHandle>>,
+    handle: Mutex<Option<Arc<RwLock<ProcessHandle>>>>,
     state: watch::Sender<api::AttachState>,
+    session: Mutex<scan::Session>,
+    scan_state: watch::Sender<api::ScanState>,
+    progress: watch::Sender<api::ScanProgress>,
+    pool: rayon::ThreadPool,
 }
 
 impl Default for Shared {
@@ -24,8 +32,26 @@ impl Default for Shared {
         Self {
             handle: Mutex::new(None),
             state: watch::Sender::new(api::AttachState::default()),
+            session: Mutex::default(),
+            scan_state: watch::Sender::new(api::ScanState::default()),
+            progress: watch::Sender::new(api::ScanProgress::default()),
+            pool: rayon::ThreadPoolBuilder::new()
+                .build()
+                .expect("building scan thread pool"),
         }
     }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Shared {
@@ -44,16 +70,18 @@ impl Shared {
             }),
         };
 
-        let mut current = self.handle.lock().unwrap_or_else(|e| e.into_inner());
-        *current = Some(handle);
+        let mut current = lock(&self.handle);
+        *current = Some(Arc::new(RwLock::new(handle)));
+        self.reset_scan();
         self.state.send_replace(state.clone());
         Ok(state)
     }
 
     fn detach(&self) -> api::AttachState {
-        let mut current = self.handle.lock().unwrap_or_else(|e| e.into_inner());
+        let mut current = lock(&self.handle);
 
         if current.take().is_some() {
+            self.reset_scan();
             self.state.send_replace(api::AttachState::default());
         }
 
@@ -84,12 +112,17 @@ pub fn list_processes() -> Result<api::ListProcessesResponse> {
     Ok(response)
 }
 
-pub fn router(shared: Arc<Shared>) -> Router {
-    Router::new().route("/ws", any(handler).with_state(shared))
+/// The router; it must be served with [`origin::Connection`] connect info,
+/// as [`serve`] does.
+fn router(shared: Arc<Shared>) -> Router {
+    Router::new()
+        .route("/ws", any(handler).with_state(shared))
+        .layer(middleware::from_fn(origin::check))
 }
 
 pub async fn serve(listener: TcpListener, shared: Arc<Shared>) -> Result<()> {
-    axum::serve(listener, router(shared)).await?;
+    let service = router(shared).into_make_service_with_connect_info::<origin::Connection>();
+    axum::serve(listener, service).await?;
     Ok(())
 }
 
@@ -103,6 +136,8 @@ async fn handler(ws: WebSocketUpgrade, State(shared): State<Arc<Shared>>) -> Res
 
 async fn run(socket: WebSocket, shared: Arc<Shared>) -> Result<()> {
     let mut state = shared.state.subscribe();
+    let mut scan_state = shared.scan_state.subscribe();
+    let mut progress = shared.progress.subscribe();
     let handler = Handler {
         shared: shared.clone(),
     };
@@ -117,6 +152,22 @@ async fn run(socket: WebSocket, shared: Arc<Shared>) -> Result<()> {
                 }
 
                 let event = state.borrow_and_update().clone();
+                server.broadcast(event)?;
+            }
+            changed = scan_state.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+
+                let event = scan_state.borrow_and_update().clone();
+                server.broadcast(event)?;
+            }
+            changed = progress.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+
+                let event = progress.borrow_and_update().clone();
                 server.broadcast(event)?;
             }
             result = server.run() => {
@@ -173,6 +224,50 @@ impl ws::Handler for Handler {
             }
             api::Request::GetAttachState => {
                 outgoing.write(self.shared.attach_state());
+            }
+            api::Request::Scan => {
+                let Some(request) = incoming.read::<api::ScanRequest>() else {
+                    return Ok(false);
+                };
+
+                let shared = self.shared.clone();
+                let response =
+                    tokio::task::spawn_blocking(move || shared.start_scan(request)).await?;
+                outgoing.write(response);
+            }
+            api::Request::CancelScan => {
+                outgoing.write(self.shared.cancel_scan());
+            }
+            api::Request::ResetScan => {
+                outgoing.write(self.shared.reset_scan());
+            }
+            api::Request::UndoScan => {
+                outgoing.write(self.shared.undo_scan());
+            }
+            api::Request::RedoScan => {
+                outgoing.write(self.shared.redo_scan());
+            }
+            api::Request::GetScanState => {
+                outgoing.write(self.shared.scan_state());
+            }
+            api::Request::ScanResults => {
+                let Some(request) = incoming.read::<api::ScanResultsRequest>() else {
+                    return Ok(false);
+                };
+
+                let shared = self.shared.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    shared.scan_results(request.offset, request.limit)
+                })
+                .await?;
+
+                let response = result.unwrap_or_else(|e| api::ScanResultsResponse {
+                    offset: request.offset,
+                    error: Some(format!("{e:#}")),
+                    ..Default::default()
+                });
+
+                outgoing.write(response);
             }
             _ => return Ok(false),
         }

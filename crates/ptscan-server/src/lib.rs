@@ -3,6 +3,7 @@
 mod origin;
 
 pub use self::origin::DevOrigin;
+mod pointer_scan;
 mod scan;
 mod scratch;
 
@@ -29,6 +30,9 @@ pub struct Shared {
     progress: watch::Sender<api::ScanProgress>,
     scratch: Mutex<scratch::Scratch>,
     scratch_list: watch::Sender<api::ScratchList>,
+    pointer_session: Mutex<pointer_scan::PointerSession>,
+    pointer_scan_state: watch::Sender<api::PointerScanState>,
+    pointer_progress: watch::Sender<api::PointerScanProgress>,
     pool: rayon::ThreadPool,
     rescan_copy_limit: usize,
     dev_origins: Vec<DevOrigin>,
@@ -44,6 +48,9 @@ impl Default for Shared {
             progress: watch::Sender::new(api::ScanProgress::default()),
             scratch: Mutex::default(),
             scratch_list: watch::Sender::new(api::ScratchList::default()),
+            pointer_session: Mutex::default(),
+            pointer_scan_state: watch::Sender::new(api::PointerScanState::default()),
+            pointer_progress: watch::Sender::new(api::PointerScanProgress::default()),
             pool: rayon::ThreadPoolBuilder::new()
                 .build()
                 .expect("building scan thread pool"),
@@ -97,6 +104,7 @@ impl Shared {
         let mut current = lock(&self.handle);
         *current = Some(Arc::new(RwLock::new(handle)));
         self.reset_scan();
+        self.reset_pointer_scan();
         self.state.send_replace(state.clone());
         Ok(state)
     }
@@ -106,6 +114,7 @@ impl Shared {
 
         if current.take().is_some() {
             self.reset_scan();
+            self.reset_pointer_scan();
             self.state.send_replace(api::AttachState::default());
         }
 
@@ -163,6 +172,8 @@ async fn run(socket: WebSocket, shared: Arc<Shared>) -> Result<()> {
     let mut scan_state = shared.scan_state.subscribe();
     let mut progress = shared.progress.subscribe();
     let mut scratch = shared.scratch_list.subscribe();
+    let mut pointer_state = shared.pointer_scan_state.subscribe();
+    let mut pointer_progress = shared.pointer_progress.subscribe();
     let handler = Handler {
         shared: shared.clone(),
     };
@@ -201,6 +212,22 @@ async fn run(socket: WebSocket, shared: Arc<Shared>) -> Result<()> {
                 }
 
                 let event = scratch.borrow_and_update().clone();
+                server.broadcast(event)?;
+            }
+            changed = pointer_state.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+
+                let event = pointer_state.borrow_and_update().clone();
+                server.broadcast(event)?;
+            }
+            changed = pointer_progress.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+
+                let event = pointer_progress.borrow_and_update().clone();
                 server.broadcast(event)?;
             }
             result = server.run() => {
@@ -346,6 +373,35 @@ impl ws::Handler for Handler {
                 let response =
                     tokio::task::spawn_blocking(move || shared.remove_scratch(&request.ids))
                         .await?;
+                outgoing.write(response);
+            }
+            api::Request::PointerScan => {
+                let Some(request) = incoming.read::<api::PointerScanRequest>() else {
+                    return Ok(false);
+                };
+
+                let shared = self.shared.clone();
+                let response =
+                    tokio::task::spawn_blocking(move || shared.start_pointer_scan(request.id))
+                        .await?;
+                outgoing.write(response);
+            }
+            api::Request::CancelPointerScan => {
+                outgoing.write(self.shared.cancel_pointer_scan());
+            }
+            api::Request::GetPointerScanState => {
+                outgoing.write(self.shared.pointer_scan_state());
+            }
+            api::Request::PointerScanResults => {
+                let Some(request) = incoming.read::<api::PointerScanResultsRequest>() else {
+                    return Ok(false);
+                };
+
+                let shared = self.shared.clone();
+                let response = tokio::task::spawn_blocking(move || {
+                    shared.pointer_scan_results(request.offset, request.limit)
+                })
+                .await?;
                 outgoing.write(response);
             }
             _ => return Ok(false),

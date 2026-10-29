@@ -129,6 +129,7 @@ async fn upgrades_from_other_origins_are_refused() {
 mod linux {
     use std::io::{BufRead as _, BufReader, Write as _};
     use std::process::{Child, ChildStdin, Command, Stdio};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 
@@ -150,9 +151,12 @@ mod linux {
     const HOLD_ENV: &str = "PTSCAN_SERVER_TEST_HOLD_VALUE";
     const HELD: u64 = 0x5eed_c0de_f00d_7a11;
     const CHANGED: u64 = 0x7a11_f00d_c0de_5eed;
+    /// Points at the held value from the image's writable data, for pointer
+    /// scans to find; nonzero so that it is not in `.bss`.
+    static HELD_POINTER: AtomicUsize = AtomicUsize::new(1);
 
     /// Run in a re-executed test binary by [`Holder::spawn`]: holds `HELD` on the
-    /// heap and prints its address, then on each line of stdin either stores
+    /// heap, points `HELD_POINTER` at it and prints its address, then on each line of stdin either stores
     /// `CHANGED` in it (`change`) or prints the value it now holds (`read`).
     #[test]
     fn hold_value_child() {
@@ -162,6 +166,7 @@ mod linux {
 
         let mut value = Box::new(std::hint::black_box(HELD));
         let address = &*value as *const u64 as usize;
+        HELD_POINTER.store(address, Ordering::SeqCst);
         println!("held {address:x}");
         std::io::stdout().flush().unwrap();
 
@@ -591,5 +596,145 @@ mod linux {
         .unwrap();
         assert!(list.entries.is_empty());
         assert!(scratch(&handle).await.entries.is_empty());
+    }
+
+    async fn add_scratch(handle: &Handle, pointer: &str) -> api::ScratchEntry {
+        let request = api::AddScratchRequest {
+            pointer: pointer.into(),
+            value_type: "u64".into(),
+        };
+
+        let response: api::ScratchResponse = timeout!(handle.request().body(request).send())
+            .unwrap()
+            .decode()
+            .unwrap();
+        response.entry.expect("added entry")
+    }
+
+    async fn pointer_scan(handle: &Handle, id: u64) -> api::PointerScanResponse {
+        timeout!(handle.request().body(api::PointerScanRequest { id }).send())
+            .unwrap()
+            .decode()
+            .unwrap()
+    }
+
+    async fn pointer_finished(
+        changes: &mut musli_web::client::Listener<api::PointerScanStateChanged>,
+    ) -> api::PointerScanState {
+        loop {
+            let event = timeout!(changes.recv()).unwrap().unwrap();
+            let state = event.decode_event().unwrap();
+
+            if !state.running && state.last.is_some() {
+                return state;
+            }
+        }
+    }
+
+    async fn pointer_results(
+        handle: &Handle,
+        offset: u64,
+        limit: u32,
+    ) -> api::PointerScanResultsResponse {
+        let request = api::PointerScanResultsRequest { offset, limit };
+
+        timeout!(handle.request().body(request).send())
+            .unwrap()
+            .decode()
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pointer_scan_finds_static_path() {
+        let holder = Holder::spawn();
+        let handle = connect(server().await).await;
+        let mut changes = handle.on_broadcast::<api::PointerScanStateChanged>();
+        let mut progress = handle.on_broadcast::<api::PointerScanProgressed>();
+
+        let response = pointer_scan(&handle, 0).await;
+        assert!(response.error.is_some(), "{response:?}");
+
+        attach(&handle, holder.child.id()).await;
+        let response = pointer_scan(&handle, 0).await;
+        assert!(response.error.is_some(), "no such entry: {response:?}");
+
+        let entry = add_scratch(&handle, &format!("{:#x}", holder.address)).await;
+        assert_eq!(entry.value, Some(HELD.to_string()));
+
+        let response = pointer_scan(&handle, entry.id).await;
+        assert_eq!(response, api::PointerScanResponse::default());
+
+        let state = pointer_finished(&mut changes).await;
+        let outcome = state.last.clone().unwrap();
+        assert_eq!(outcome.error, None);
+        assert!(!outcome.cancelled);
+        assert_eq!(state.entry, Some(entry.id));
+        assert_eq!(state.value_type.as_deref(), Some("u64"));
+        assert!(state.results > 0);
+        assert_eq!(outcome.results, state.results);
+        timeout!(progress.recv()).unwrap().unwrap();
+
+        let mut found = Vec::new();
+        let mut offset = 0;
+
+        while offset < state.results {
+            let page = pointer_results(&handle, offset, api::MAX_SCAN_PAGE).await;
+            assert_eq!(page.total, state.results);
+            assert_eq!(page.offset, offset);
+            assert_eq!(page.value_type.as_deref(), Some("u64"));
+            offset += page.results.len() as u64;
+            found.extend(page.results);
+        }
+
+        let page = pointer_results(&handle, state.results + 5, 10).await;
+        assert!(page.results.is_empty());
+
+        // The path through `HELD_POINTER` is the only one with a single
+        // dereference and no offset.
+        let path = found
+            .iter()
+            .find(|p| p.matches(" -> ").count() == 1 && p.ends_with(" -> 0x0"))
+            .unwrap_or_else(|| panic!("no path through the static in {} paths", found.len()));
+        let added = add_scratch(&handle, path).await;
+        assert_eq!(added.address, Some(holder.address), "{path}");
+        assert_eq!(added.value, Some(HELD.to_string()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pointer_scan_cancel_and_detach() {
+        let holder = Holder::spawn();
+        let handle = connect(server().await).await;
+        let mut changes = handle.on_broadcast::<api::PointerScanStateChanged>();
+        attach(&handle, holder.child.id()).await;
+        let entry = add_scratch(&handle, &format!("{:#x}", holder.address)).await;
+
+        assert_eq!(
+            pointer_scan(&handle, entry.id).await,
+            api::PointerScanResponse::default()
+        );
+        let cancelled: api::PointerScanState =
+            timeout!(handle.request().body(api::CancelPointerScanRequest).send())
+                .unwrap()
+                .decode()
+                .unwrap();
+        assert_eq!(cancelled.entry, Some(entry.id));
+
+        let state = pointer_finished(&mut changes).await;
+        let outcome = state.last.unwrap();
+        assert_eq!(outcome.error, None);
+        assert_eq!(outcome.results, state.results);
+
+        timeout!(handle.request().body(api::DetachRequest).send()).unwrap();
+        let state: api::PointerScanState = timeout!(
+            handle
+                .request()
+                .body(api::GetPointerScanStateRequest)
+                .send()
+        )
+        .unwrap()
+        .decode()
+        .unwrap();
+        assert_eq!(state, api::PointerScanState::default());
+        assert_eq!(pointer_results(&handle, 0, 10).await.total, 0);
     }
 }

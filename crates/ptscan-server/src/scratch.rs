@@ -42,6 +42,13 @@ pub(crate) struct Scratch {
     next_id: u64,
 }
 
+impl Scratch {
+    pub(crate) fn get(&self, id: u64) -> Option<(PortablePointer, Type)> {
+        let entry = self.entries.iter().find(|e| e.id == id)?;
+        Some((entry.pointer.clone(), entry.value_type))
+    }
+}
+
 fn parse_pointer(input: &str) -> Result<PortablePointer, String> {
     PortablePointer::parse(input.trim()).map_err(|e| format!("{e:#}"))
 }

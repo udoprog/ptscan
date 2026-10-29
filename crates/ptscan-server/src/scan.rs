@@ -281,32 +281,16 @@ impl Shared {
             });
         }
 
-        let (value_type, modules, threads) = {
+        let value_type = {
             let handle = read(handle);
 
-            let value_type = value
+            value
                 .value_type_of(&*handle, TypeHint::NoHint)?
                 .unwrap_or(filter.value_type_of(&*handle, TypeHint::NoHint)?)
-                .ok_or_else(|| anyhow!("cannot determine type of value"))?;
-
-            let modules = handle.get_modules()?;
-            // Threads only name stack-relative results, so a platform without
-            // thread listing scans without them.
-            let threads = match handle.get_threads_with_modules(&modules) {
-                Err(e) if matches!(e.downcast_ref(), Some(ptscan::Error::Unsupported)) => {
-                    Vec::new()
-                }
-                result => result?,
-            };
-            (value_type, modules, threads)
+                .ok_or_else(|| anyhow!("cannot determine type of value"))?
         };
 
-        {
-            let mut handle = write(handle);
-            handle.update_modules(modules);
-            handle.update_threads(threads);
-        }
-
+        refresh_modules(handle)?;
         let handle = read(handle);
         let mut addresses = Addresses::new(handle.process.pointer_width);
         let mut values = Values::new(value_type);
@@ -458,6 +442,25 @@ impl Shared {
             error,
         })
     }
+}
+
+pub(crate) fn refresh_modules(handle: &RwLock<ProcessHandle>) -> Result<()> {
+    let (modules, threads) = {
+        let handle = read(handle);
+        let modules = handle.get_modules()?;
+        // Threads only name stack-relative results, so a platform without
+        // thread listing scans without them.
+        let threads = match handle.get_threads_with_modules(&modules) {
+            Err(e) if matches!(e.downcast_ref(), Some(ptscan::Error::Unsupported)) => Vec::new(),
+            result => result?,
+        };
+        (modules, threads)
+    };
+
+    let mut handle = write(handle);
+    handle.update_modules(modules);
+    handle.update_threads(threads);
+    Ok(())
 }
 
 /// Run `f` with the process suspended if `suspend` is set.

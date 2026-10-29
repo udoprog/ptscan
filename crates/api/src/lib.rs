@@ -212,6 +212,83 @@ pub struct ScratchResponse {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct PointerScanRequest {
+    /// The scratch entry whose address to find pointer paths to.
+    pub id: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct PointerScanResponse {
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Encode, Decode)]
+pub struct CancelPointerScanRequest;
+
+#[derive(Debug, Clone, Default, Encode, Decode)]
+pub struct GetPointerScanStateRequest;
+
+/// The last pointer scan held by the server.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct PointerScanState {
+    /// The scratch entry scanned for.
+    pub entry: Option<u64>,
+    /// The scanned entry's type, to add found paths to the scratch list with.
+    pub value_type: Option<String>,
+    /// Number of paths found by the last finished scan.
+    pub results: u64,
+    pub running: bool,
+    pub last: Option<PointerScanOutcome>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct PointerScanOutcome {
+    pub results: u64,
+    /// The scan was cancelled and the paths found so far kept.
+    pub cancelled: bool,
+    pub error: Option<String>,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Encode, Decode)]
+pub enum PointerScanStage {
+    /// Scanning memory for pointers.
+    #[default]
+    Initial,
+    /// Following pointers back from the address.
+    Paths,
+    /// Adding paths through already visited pointers.
+    Backreferences,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct PointerScanProgress {
+    pub stage: PointerScanStage,
+    /// Progress of the initial stage.
+    pub percentage: u32,
+    /// Pointers queued or paths left to visit in the later stages.
+    pub remaining: u64,
+    pub results: u64,
+}
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct PointerScanResultsRequest {
+    pub offset: u64,
+    pub limit: u32,
+}
+
+/// A page of the paths found by the last pointer scan, at most
+/// [`MAX_SCAN_PAGE`] long.
+#[derive(Debug, Clone, Default, Encode, Decode)]
+pub struct PointerScanResultsResponse {
+    pub total: u64,
+    pub offset: u64,
+    /// Pointers in the syntax [`AddScratchRequest::pointer`] takes.
+    pub results: Vec<String>,
+    pub value_type: Option<String>,
+}
+
 api::define! {
     pub type ListProcesses;
     impl Endpoint for ListProcesses {
@@ -326,5 +403,39 @@ api::define! {
     pub type ScratchChanged;
     impl Broadcast for ScratchChanged {
         impl Event for ScratchList;
+    }
+
+    pub type PointerScan;
+    impl Endpoint for PointerScan {
+        impl Request for PointerScanRequest;
+        type Response<'de> = PointerScanResponse;
+    }
+
+    pub type CancelPointerScan;
+    impl Endpoint for CancelPointerScan {
+        impl Request for CancelPointerScanRequest;
+        type Response<'de> = PointerScanState;
+    }
+
+    pub type GetPointerScanState;
+    impl Endpoint for GetPointerScanState {
+        impl Request for GetPointerScanStateRequest;
+        type Response<'de> = PointerScanState;
+    }
+
+    pub type PointerScanResults;
+    impl Endpoint for PointerScanResults {
+        impl Request for PointerScanResultsRequest;
+        type Response<'de> = PointerScanResultsResponse;
+    }
+
+    pub type PointerScanStateChanged;
+    impl Broadcast for PointerScanStateChanged {
+        impl Event for PointerScanState;
+    }
+
+    pub type PointerScanProgressed;
+    impl Broadcast for PointerScanProgressed {
+        impl Event for PointerScanProgress;
     }
 }

@@ -1,6 +1,6 @@
 mod lexer;
 lalrpop_util::lalrpop_mod!(
-    #[allow(clippy::all)]
+    #[allow(clippy::all, non_fmt_panics)]
     parser,
     "/pointer/parser.rs"
 );

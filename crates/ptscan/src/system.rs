@@ -4,9 +4,11 @@ use std::{fmt, io};
 
 use crate::{error::Error, utils, ProcessId, ThreadId};
 
-use winapi::{
-    shared::minwindef::{DWORD, FALSE},
-    um::{handleapi, psapi, sysinfoapi, tlhelp32, winnt},
+use windows_sys::Win32::{
+    Foundation::{FALSE, INVALID_HANDLE_VALUE},
+    System::{
+        Diagnostics::ToolHelp as tlhelp32, ProcessStatus as psapi, SystemInformation as sysinfoapi,
+    },
 };
 
 /// Enumerate all processes, returning their corresponding pids.
@@ -22,7 +24,7 @@ pub fn threads() -> Result<Threads, Error> {
 
     let handle = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
 
-    if handle == handleapi::INVALID_HANDLE_VALUE {
+    if handle == INVALID_HANDLE_VALUE {
         return Err(Error::System(io::Error::last_os_error()));
     }
 
@@ -38,10 +40,10 @@ pub fn threads() -> Result<Threads, Error> {
 pub fn info() -> Result<Info, Error> {
     use std::mem;
     let mut out: sysinfoapi::SYSTEM_INFO = unsafe { mem::zeroed() };
-    unsafe { sysinfoapi::GetNativeSystemInfo(&mut out as sysinfoapi::LPSYSTEM_INFO) };
+    unsafe { sysinfoapi::GetNativeSystemInfo(&mut out as *mut sysinfoapi::SYSTEM_INFO) };
 
-    let arch = match unsafe { out.u.s() }.wProcessorArchitecture {
-        winnt::PROCESSOR_ARCHITECTURE_AMD64 => Arch::Amd64,
+    let arch = match unsafe { out.Anonymous.Anonymous }.wProcessorArchitecture {
+        sysinfoapi::PROCESSOR_ARCHITECTURE_AMD64 => Arch::Amd64,
         _ => Arch::Other,
     };
 
@@ -106,13 +108,14 @@ impl<'a> Iterator for Threads {
 
     fn next(&mut self) -> Option<Self::Item> {
         use std::mem;
-        use tlhelp32::{LPTHREADENTRY32, THREADENTRY32};
+        use tlhelp32::THREADENTRY32;
 
         let e = match self.entry.as_mut() {
             Some(e) => {
-                e.dwSize = mem::size_of::<THREADENTRY32>() as DWORD;
+                e.dwSize = mem::size_of::<THREADENTRY32>() as u32;
 
-                if unsafe { tlhelp32::Thread32Next(*self.handle, e as LPTHREADENTRY32) } == FALSE {
+                if unsafe { tlhelp32::Thread32Next(*self.handle, e as *mut THREADENTRY32) } == FALSE
+                {
                     return None;
                 }
 
@@ -120,10 +123,12 @@ impl<'a> Iterator for Threads {
             }
             None => {
                 let mut e: tlhelp32::THREADENTRY32 = unsafe { mem::zeroed() };
-                e.dwSize = mem::size_of::<THREADENTRY32>() as DWORD;
+                e.dwSize = mem::size_of::<THREADENTRY32>() as u32;
                 let e = self.entry.get_or_insert(e);
 
-                if unsafe { tlhelp32::Thread32First(*self.handle, e as LPTHREADENTRY32) } == FALSE {
+                if unsafe { tlhelp32::Thread32First(*self.handle, e as *mut THREADENTRY32) }
+                    == FALSE
+                {
                     return None;
                 }
 

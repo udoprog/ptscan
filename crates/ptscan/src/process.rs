@@ -7,13 +7,17 @@ use crate::{
 
 use ntapi::ntpsapi;
 use serde::{Deserialize, Serialize};
-use winapi::{
-    shared::{
-        basetsd::SIZE_T,
-        minwindef::{BOOL, DWORD, FALSE, LPCVOID, LPVOID, TRUE},
-        winerror,
+use std::ffi::c_void;
+use windows_sys::{
+    core::BOOL,
+    Win32::{
+        Foundation::{self as winerror, FALSE, TRUE},
+        System::{
+            Diagnostics::Debug,
+            Memory as memoryapi, ProcessStatus as psapi,
+            Threading::{self, PROCESS_ACCESS_RIGHTS},
+        },
     },
-    um::{memoryapi, processthreadsapi, psapi, winnt},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -219,14 +223,14 @@ impl Process {
         address: Address,
         buffer: &'a [u8],
     ) -> Result<bool, Error> {
-        let mut bytes_written: SIZE_T = 0;
+        let mut bytes_written: usize = 0;
 
-        let result = checked!(memoryapi::WriteProcessMemory(
+        let result = checked!(Debug::WriteProcessMemory(
             **self.handle,
-            address.convert::<LPVOID>()?,
-            buffer.as_ptr() as LPCVOID,
-            buffer.len() as SIZE_T,
-            &mut bytes_written as *mut SIZE_T,
+            address.convert::<*mut c_void>()?,
+            buffer.as_ptr() as *const c_void,
+            buffer.len(),
+            &mut bytes_written as *mut usize,
         ));
 
         match result {
@@ -243,14 +247,14 @@ impl Process {
     /// Returns `true` if the region was successfully read.
     /// Returns `false` if there was not enough space in the region that we attempted to read.
     pub fn read_process_memory(&self, address: Address, buffer: &mut [u8]) -> Result<usize, Error> {
-        let mut bytes_read: SIZE_T = 0;
+        let mut bytes_read: usize = 0;
 
-        let result = checked!(memoryapi::ReadProcessMemory(
+        let result = checked!(Debug::ReadProcessMemory(
             **self.handle,
-            address.convert::<LPCVOID>()?,
-            buffer.as_mut_ptr() as LPVOID,
-            buffer.len() as SIZE_T,
-            &mut bytes_read as *mut SIZE_T,
+            address.convert::<*const c_void>()?,
+            buffer.as_mut_ptr() as *mut c_void,
+            buffer.len(),
+            &mut bytes_read as *mut usize,
         ));
 
         match result {
@@ -263,17 +267,17 @@ impl Process {
 
     /// Retrieve information about the memory page that corresponds to the given virtual `address`.
     pub fn virtual_query(&self, address: Address) -> anyhow::Result<Option<MemoryInformation>> {
-        const LENGTH: SIZE_T = mem::size_of::<winnt::MEMORY_BASIC_INFORMATION>() as SIZE_T;
+        const LENGTH: usize = mem::size_of::<memoryapi::MEMORY_BASIC_INFORMATION>();
 
         use std::mem;
-        let mut mbi: winnt::MEMORY_BASIC_INFORMATION = unsafe { mem::zeroed() };
+        let mut mbi: memoryapi::MEMORY_BASIC_INFORMATION = unsafe { mem::zeroed() };
 
         let b = unsafe {
             memoryapi::VirtualQueryEx(
                 **self.handle,
                 address.convert()?,
-                &mut mbi as *mut _ as winnt::PMEMORY_BASIC_INFORMATION,
-                LENGTH as SIZE_T,
+                &mut mbi as *mut memoryapi::MEMORY_BASIC_INFORMATION,
+                LENGTH,
             )
         };
 
@@ -288,9 +292,9 @@ impl Process {
         }
 
         let state = match mbi.State {
-            winnt::MEM_COMMIT => MemoryState::Commit,
-            winnt::MEM_FREE => MemoryState::Free,
-            winnt::MEM_RESERVE => MemoryState::Reserve,
+            memoryapi::MEM_COMMIT => MemoryState::Commit,
+            memoryapi::MEM_FREE => MemoryState::Free,
+            memoryapi::MEM_RESERVE => MemoryState::Reserve,
             state => {
                 return Err(Error::BadRegionState(state).into());
             }
@@ -298,9 +302,9 @@ impl Process {
 
         let ty = match (state, mbi.Type) {
             (MemoryState::Free, _) => None,
-            (_, winnt::MEM_IMAGE) => Some(MemoryType::Image),
-            (_, winnt::MEM_MAPPED) => Some(MemoryType::Mapped),
-            (_, winnt::MEM_PRIVATE) => Some(MemoryType::Private),
+            (_, memoryapi::MEM_IMAGE) => Some(MemoryType::Image),
+            (_, memoryapi::MEM_MAPPED) => Some(MemoryType::Mapped),
+            (_, memoryapi::MEM_PRIVATE) => Some(MemoryType::Private),
             (_, ty) => {
                 return Err(Error::BadRegionType(ty).into());
             }
@@ -325,7 +329,7 @@ impl Process {
 
     /// Suspend the process.
     pub fn suspend(&self) -> Result<(), Error> {
-        let status = unsafe { ntpsapi::NtSuspendProcess(**self.handle) };
+        let status = unsafe { ntpsapi::NtSuspendProcess(**self.handle as _) };
 
         if status != 0 {
             return Err(Error::last_system_error());
@@ -336,7 +340,7 @@ impl Process {
 
     /// Resume the process.
     pub fn resume(&self) -> Result<(), Error> {
-        let status = unsafe { ntpsapi::NtResumeProcess(**self.handle) };
+        let status = unsafe { ntpsapi::NtResumeProcess(**self.handle as _) };
 
         if status != 0 {
             return Err(Error::last_system_error());
@@ -383,7 +387,7 @@ impl fmt::Debug for Process {
 /// Builder to open a process.
 #[derive(Default)]
 pub struct OpenProcessBuilder {
-    desired_access: DWORD,
+    desired_access: PROCESS_ACCESS_RIGHTS,
     inherit_handles: BOOL,
 }
 
@@ -391,7 +395,7 @@ impl OpenProcessBuilder {
     /// Open process with all access.
     pub fn all_access(self) -> Self {
         OpenProcessBuilder {
-            desired_access: self.desired_access | winnt::PROCESS_ALL_ACCESS,
+            desired_access: self.desired_access | Threading::PROCESS_ALL_ACCESS,
             ..self
         }
     }
@@ -399,7 +403,7 @@ impl OpenProcessBuilder {
     /// Set the query information flag.
     pub fn query_information(self) -> Self {
         OpenProcessBuilder {
-            desired_access: self.desired_access | winnt::PROCESS_QUERY_INFORMATION,
+            desired_access: self.desired_access | Threading::PROCESS_QUERY_INFORMATION,
             ..self
         }
     }
@@ -407,7 +411,7 @@ impl OpenProcessBuilder {
     /// Set the VM Read flag.
     pub fn vm_read(self) -> Self {
         OpenProcessBuilder {
-            desired_access: self.desired_access | winnt::PROCESS_VM_READ,
+            desired_access: self.desired_access | Threading::PROCESS_VM_READ,
             ..self
         }
     }
@@ -423,7 +427,7 @@ impl OpenProcessBuilder {
     /// Build the process handle.
     pub fn build(self, process_id: ProcessId) -> Result<Process, Error> {
         let handle = unsafe {
-            processthreadsapi::OpenProcess(self.desired_access, self.inherit_handles, process_id)
+            Threading::OpenProcess(self.desired_access, self.inherit_handles, process_id)
         };
 
         if handle.is_null() {
@@ -527,7 +531,7 @@ pub enum MemoryProtect {
 
 macro_rules! protect_bits {
     ($flag:expr, $set:expr, {$($flag_from:ident => $flag_to:ident,)*}) => {
-        $(if $flag & winnt::$flag_from != 0 {
+        $(if $flag & memoryapi::$flag_from != 0 {
             $set.insert(MemoryProtect::$flag_to);
         })*
     }
@@ -542,7 +546,7 @@ macro_rules! as_str {
 }
 
 impl MemoryProtect {
-    fn decode(protect: DWORD, set: &mut fixed_map::Set<MemoryProtect>) {
+    fn decode(protect: memoryapi::PAGE_PROTECTION_FLAGS, set: &mut fixed_map::Set<MemoryProtect>) {
         protect_bits!(protect, set, {
             PAGE_EXECUTE => Execute,
             PAGE_EXECUTE_READ => ExecuteRead,

@@ -10,19 +10,19 @@ use crate::{
 
 pub use self::words::Words;
 
-use winapi::{
-    shared::{
-        minwindef::{BOOL, DWORD, FALSE, LPDWORD, PBOOL, TRUE},
-        winerror,
+use windows_sys::{
+    core::{BOOL, PWSTR},
+    Win32::{
+        Foundation::{self, GetLastError, FALSE, HANDLE, TRUE},
+        System::Threading::IsWow64Process,
     },
-    um::{errhandlingapi, winnt, wow64apiset},
 };
 
 /// Evaluate the checked expression.
 macro_rules! checked {
     ($expr:expr) => {
         match unsafe { $expr } {
-            winapi::shared::minwindef::TRUE => Ok(()),
+            windows_sys::Win32::Foundation::TRUE => Ok(()),
             _ => Err($crate::error::Error::last_system_error()),
         }
     };
@@ -39,12 +39,12 @@ macro_rules! try_iter {
 }
 
 /// Fixed string length.
-pub fn fixed_string(cb: impl Fn(winnt::LPWSTR, DWORD) -> DWORD) -> io::Result<OsString> {
+pub fn fixed_string(cb: impl Fn(PWSTR, u32) -> u32) -> io::Result<OsString> {
     use std::os::windows::ffi::OsStringExt;
 
-    let mut buf: [winnt::WCHAR; 1024] = [0u16; 1024];
+    let mut buf: [u16; 1024] = [0u16; 1024];
 
-    let out = cb(buf.as_mut_ptr(), buf.len() as DWORD);
+    let out = cb(buf.as_mut_ptr(), buf.len() as u32);
 
     if out == 0 {
         return Err(io::Error::last_os_error());
@@ -55,25 +55,25 @@ pub fn fixed_string(cb: impl Fn(winnt::LPWSTR, DWORD) -> DWORD) -> io::Result<Os
 
 /// Call a function that returns a string, indicating with error code if it is
 /// longer than the default buffer and grow it appropriately.
-pub fn growable_string(cb: impl Fn(winnt::LPWSTR, DWORD) -> DWORD) -> io::Result<OsString> {
+pub fn growable_string(cb: impl Fn(PWSTR, u32) -> u32) -> io::Result<OsString> {
     use std::os::windows::ffi::OsStringExt;
 
     let mut buf = vec![0u16; 64];
 
     let len = loop {
-        let len = cb(buf.as_mut_ptr(), buf.len() as DWORD);
+        let len = cb(buf.as_mut_ptr(), buf.len() as u32);
 
-        let last_error = unsafe { errhandlingapi::GetLastError() };
+        let last_error = unsafe { GetLastError() };
 
         match last_error {
-            winerror::ERROR_INSUFFICIENT_BUFFER => {
+            Foundation::ERROR_INSUFFICIENT_BUFFER => {
                 buf.extend(std::iter::repeat(0u16).take(64));
                 continue;
             }
-            winerror::ERROR_ACCESS_DENIED => {
+            Foundation::ERROR_ACCESS_DENIED => {
                 return Err(io::Error::last_os_error());
             }
-            winerror::ERROR_SUCCESS => break len as usize,
+            Foundation::ERROR_SUCCESS => break len as usize,
             _ => {
                 return Err(io::Error::last_os_error());
             }
@@ -86,19 +86,19 @@ pub fn growable_string(cb: impl Fn(winnt::LPWSTR, DWORD) -> DWORD) -> io::Result
 /// Call a function that returns an array.
 pub fn array<T>(
     initial: usize,
-    cb: impl Fn(*mut T, DWORD, LPDWORD) -> BOOL,
+    cb: impl Fn(*mut T, u32, *mut u32) -> BOOL,
 ) -> Result<Vec<T>, Error> {
     use std::mem;
 
     let mut buf = vec![0u8; initial * mem::size_of::<T>()];
 
     loop {
-        let mut needed: DWORD = 0u32;
+        let mut needed: u32 = 0u32;
 
         let ok = cb(
             buf.as_mut_ptr() as *mut T,
-            buf.capacity() as DWORD,
-            &mut needed as LPDWORD,
+            buf.capacity() as u32,
+            &mut needed as *mut u32,
         );
 
         if ok != TRUE {
@@ -126,10 +126,10 @@ pub fn array<T>(
 }
 
 /// Wrapper for handle that takes care of drop.
-pub struct Handle(winnt::HANDLE);
+pub struct Handle(HANDLE);
 
 impl Handle {
-    pub fn new(handle: winnt::HANDLE) -> Self {
+    pub fn new(handle: HANDLE) -> Self {
         Handle(handle)
     }
 
@@ -145,13 +145,13 @@ impl Handle {
     /// Test if the process is a 32-bit process running under WOW64 compatibility.
     fn is_wow64(&self) -> Result<bool, Error> {
         let mut out: BOOL = FALSE;
-        checked!(wow64apiset::IsWow64Process(self.0, &mut out as PBOOL))?;
+        checked!(IsWow64Process(self.0, &mut out as *mut BOOL))?;
         Ok(out == TRUE)
     }
 }
 
 impl ops::Deref for Handle {
-    type Target = winnt::HANDLE;
+    type Target = HANDLE;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -160,9 +160,7 @@ impl ops::Deref for Handle {
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        use winapi::um::handleapi;
-
-        let ok = unsafe { handleapi::CloseHandle(self.0) };
+        let ok = unsafe { Foundation::CloseHandle(self.0) };
 
         if ok != TRUE {
             panic!(

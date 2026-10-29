@@ -17,7 +17,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::sync::mpsc;
 
-use winapi::shared::winerror;
+use windows_sys::Win32::Foundation;
 
 #[derive(Debug, Clone, Default)]
 pub struct InitialScanConfig {
@@ -93,9 +93,9 @@ impl ProcessHandle {
             Ok(process) => process,
             Err(e) => match e.raw_os_error().map(|n| n as u32) {
                 // NB: process no longer exists.
-                Some(winerror::ERROR_INVALID_PARAMETER) => return Ok(None),
+                Some(Foundation::ERROR_INVALID_PARAMETER) => return Ok(None),
                 // NB: we don't have access to the process.
-                Some(winerror::ERROR_ACCESS_DENIED) => return Ok(None),
+                Some(Foundation::ERROR_ACCESS_DENIED) => return Ok(None),
                 _ => return Err(e),
             },
         };

@@ -166,8 +166,6 @@
 //!
 //! You can find them at http://www.gnome.org
 
-use winapi::shared::minwindef::DWORD;
-
 #[macro_use]
 pub mod utils;
 mod address;
@@ -198,8 +196,8 @@ mod value;
 mod value_expr;
 mod values;
 
-pub type ProcessId = DWORD;
-pub type ThreadId = DWORD;
+pub type ProcessId = u32;
+pub type ThreadId = u32;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The endianness of a number.

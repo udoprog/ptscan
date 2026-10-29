@@ -2,16 +2,16 @@ use crate::{filter_expr::Binary, ProcessId, ThreadId, ValueExpr};
 use std::io;
 use thiserror::Error;
 
-use winapi::shared::{minwindef::DWORD, ntdef::NTSTATUS};
+use windows_sys::Win32::Foundation::NTSTATUS;
 
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("system error: {0}")]
     System(#[source] io::Error),
     #[error("bad region state: {0}")]
-    BadRegionState(DWORD),
+    BadRegionState(u32),
     #[error("bad region type: {0}")]
-    BadRegionType(DWORD),
+    BadRegionType(u32),
     #[error("read underflow")]
     ReadUnderflow,
     #[error("buffer too small, expected {0} bytes but got {1}")]

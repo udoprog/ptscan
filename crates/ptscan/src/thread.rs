@@ -3,13 +3,22 @@ use std::{convert::TryFrom, fmt, io, mem, sync::Arc};
 use crate::{error::Error, process, utils, Address, AddressRange, ThreadId};
 
 use anyhow::bail;
-use winapi::{
-    shared::{
-        minwindef::{BOOL, DWORD, FALSE, TRUE},
-        ntdef,
+use windows_sys::{
+    core::BOOL,
+    Win32::{
+        Foundation::{FALSE, TRUE},
+        System::{
+            Diagnostics::Debug::{self, CONTEXT, LDT_ENTRY},
+            SystemServices::{NT_TIB32, NT_TIB64},
+            Threading::{self, THREAD_ACCESS_RIGHTS},
+        },
     },
-    um::{processthreadsapi, winbase, winnt},
 };
+
+#[cfg(target_arch = "x86_64")]
+const CONTEXT_SEGMENTS: Debug::CONTEXT_FLAGS = Debug::CONTEXT_SEGMENTS_AMD64;
+#[cfg(target_arch = "x86")]
+const CONTEXT_SEGMENTS: Debug::CONTEXT_FLAGS = Debug::CONTEXT_SEGMENTS_X86;
 
 /// A thread in the system.
 #[derive(Clone)]
@@ -28,13 +37,13 @@ impl Thread {
     }
 
     /// Get the specified thread selector entry.
-    pub fn thread_selector_entry(&self, selector: DWORD) -> Result<winnt::LDT_ENTRY, Error> {
-        let mut entry: winnt::LDT_ENTRY = unsafe { mem::zeroed() };
+    pub fn thread_selector_entry(&self, selector: u32) -> Result<LDT_ENTRY, Error> {
+        let mut entry: LDT_ENTRY = unsafe { mem::zeroed() };
 
-        checked!(winbase::GetThreadSelectorEntry(
+        checked!(Debug::GetThreadSelectorEntry(
             **self.handle,
             selector,
-            &mut entry as *mut _ as winbase::LPLDT_ENTRY,
+            &mut entry as *mut LDT_ENTRY,
         ))?;
 
         Ok(entry)
@@ -52,7 +61,7 @@ impl Thread {
 
     /// Access the thread stack from a 64-bit process.
     pub fn thread_stack(&self, process: &process::Process) -> anyhow::Result<AddressRange> {
-        let tib = self.thread_teb::<winnt::NT_TIB64>(process)?;
+        let tib = self.thread_teb::<NT_TIB64>(process)?;
 
         let stack_base = Address::from(tib.StackBase);
         let stack_limit = Address::from(tib.StackLimit);
@@ -74,19 +83,20 @@ impl Thread {
 
     /// Access the private address range of a thread to decode its stack.
     fn thread_teb<T>(&self, process: &process::Process) -> Result<T, Error> {
-        use ntapi::ntpsapi::{
-            NtQueryInformationThread, ThreadBasicInformation, THREAD_BASIC_INFORMATION,
+        use ntapi::ntpsapi::THREAD_BASIC_INFORMATION;
+        use windows_sys::Wdk::System::Threading::{
+            NtQueryInformationThread, ThreadBasicInformation,
         };
 
         let mut thread_info: THREAD_BASIC_INFORMATION = unsafe { mem::zeroed() };
-        let mut length: DWORD = 0;
+        let mut length: u32 = 0;
 
         let status = unsafe {
             NtQueryInformationThread(
                 **self.handle,
                 ThreadBasicInformation,
-                &mut thread_info as *mut _ as ntdef::PVOID,
-                mem::size_of::<THREAD_BASIC_INFORMATION>() as DWORD,
+                &mut thread_info as *mut _ as *mut core::ffi::c_void,
+                mem::size_of::<THREAD_BASIC_INFORMATION>() as u32,
                 &mut length as *mut _,
             )
         };
@@ -101,12 +111,12 @@ impl Thread {
 
     /// Get the context for a thread.
     pub fn get_context(&self) -> Result<ThreadContext<'_>, Error> {
-        let mut context: winnt::CONTEXT = unsafe { mem::zeroed() };
-        context.ContextFlags = winnt::CONTEXT_SEGMENTS;
+        let mut context: CONTEXT = unsafe { mem::zeroed() };
+        context.ContextFlags = CONTEXT_SEGMENTS;
 
-        checked!(processthreadsapi::GetThreadContext(
+        checked!(Debug::GetThreadContext(
             **self.handle,
-            &mut context as winnt::PCONTEXT
+            &mut context as *mut CONTEXT
         ))?;
 
         Ok(ThreadContext {
@@ -126,7 +136,7 @@ impl fmt::Debug for Thread {
 
 pub struct ThreadContext<'a> {
     thread: &'a Thread,
-    context: winnt::CONTEXT,
+    context: CONTEXT,
 }
 
 impl ThreadContext<'_> {
@@ -134,16 +144,16 @@ impl ThreadContext<'_> {
     pub fn thread_stack(&self, process: &process::Process) -> anyhow::Result<AddressRange> {
         let entry = self
             .thread
-            .thread_selector_entry(self.context.SegFs as DWORD)?;
+            .thread_selector_entry(self.context.SegFs as u32)?;
 
         let address = Address::from(unsafe {
-            let bytes = entry.HighWord.Bytes();
+            let bytes = entry.HighWord.Bytes;
             entry.BaseLow as u32
                 + ((bytes.BaseMid as u32) << 0x10)
                 + ((bytes.BaseHi as u32) << 0x18)
         });
 
-        let tib = unsafe { process.read::<winnt::NT_TIB32>(address)? };
+        let tib = unsafe { process.read::<NT_TIB32>(address)? };
         let stack_base = Address::from(tib.StackBase);
         let stack_limit = Address::from(tib.StackLimit);
 
@@ -172,7 +182,7 @@ impl fmt::Debug for ThreadContext<'_> {
 /// Builder to open a process.
 #[derive(Default)]
 pub struct OpenThreadBuilder {
-    desired_access: DWORD,
+    desired_access: THREAD_ACCESS_RIGHTS,
     inherit_handles: BOOL,
 }
 
@@ -180,7 +190,7 @@ impl OpenThreadBuilder {
     /// Access everything.
     pub fn all_access(self) -> Self {
         OpenThreadBuilder {
-            desired_access: self.desired_access | winnt::THREAD_ALL_ACCESS,
+            desired_access: self.desired_access | Threading::THREAD_ALL_ACCESS,
             ..self
         }
     }
@@ -188,7 +198,7 @@ impl OpenThreadBuilder {
     /// Set the THREAD_GET_CONTEXT desired access flag.
     pub fn get_context(self) -> Self {
         OpenThreadBuilder {
-            desired_access: self.desired_access | winnt::THREAD_GET_CONTEXT,
+            desired_access: self.desired_access | Threading::THREAD_GET_CONTEXT,
             ..self
         }
     }
@@ -196,7 +206,7 @@ impl OpenThreadBuilder {
     /// Set the query information flag.
     pub fn query_information(self) -> Self {
         OpenThreadBuilder {
-            desired_access: self.desired_access | winnt::THREAD_QUERY_INFORMATION,
+            desired_access: self.desired_access | Threading::THREAD_QUERY_INFORMATION,
             ..self
         }
     }
@@ -211,9 +221,8 @@ impl OpenThreadBuilder {
 
     /// Build the process handle.
     pub fn build(self, thread_id: ThreadId) -> Result<Thread, Error> {
-        let handle = unsafe {
-            processthreadsapi::OpenThread(self.desired_access, self.inherit_handles, thread_id)
-        };
+        let handle =
+            unsafe { Threading::OpenThread(self.desired_access, self.inherit_handles, thread_id) };
 
         if handle.is_null() {
             return Err(Error::System(io::Error::last_os_error()));

@@ -2,9 +2,9 @@ use std::{convert::TryFrom, ffi::OsString, fmt, io};
 
 use crate::{Address, Process, Size};
 
-use winapi::{
-    shared::minwindef::{DWORD, HMODULE},
-    um::{libloaderapi, psapi},
+use windows_sys::Win32::{
+    Foundation::HMODULE,
+    System::{LibraryLoader, ProcessStatus as psapi},
 };
 
 pub struct Module {
@@ -35,7 +35,7 @@ impl Module {
     /// Get the file name corresponding to the module.
     pub fn file_name(&self) -> io::Result<OsString> {
         crate::utils::growable_string(|buf, len| unsafe {
-            libloaderapi::GetModuleFileNameW(self.module, buf, len)
+            LibraryLoader::GetModuleFileNameW(self.module, buf, len)
         })
     }
 
@@ -49,8 +49,8 @@ impl Module {
             psapi::GetModuleInformation(
                 **process.handle,
                 self.module,
-                &mut out as psapi::LPMODULEINFO,
-                mem::size_of::<psapi::MODULEINFO>() as DWORD,
+                &mut out as *mut psapi::MODULEINFO,
+                mem::size_of::<psapi::MODULEINFO>() as u32,
             )
         };
 

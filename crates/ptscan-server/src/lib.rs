@@ -1,6 +1,8 @@
 //! Websocket server owning the scanner and the attached process.
 
 mod origin;
+
+pub use self::origin::DevOrigin;
 mod scan;
 mod scratch;
 
@@ -29,6 +31,7 @@ pub struct Shared {
     scratch_list: watch::Sender<api::ScratchList>,
     pool: rayon::ThreadPool,
     rescan_copy_limit: usize,
+    dev_origins: Vec<DevOrigin>,
 }
 
 impl Default for Shared {
@@ -45,6 +48,7 @@ impl Default for Shared {
                 .build()
                 .expect("building scan thread pool"),
             rescan_copy_limit: 100_000_000,
+            dev_origins: Vec::new(),
         }
     }
 }
@@ -66,6 +70,12 @@ impl Shared {
     /// copied, which means the rescan cannot be undone.
     pub fn with_rescan_copy_limit(mut self, bytes: usize) -> Self {
         self.rescan_copy_limit = bytes;
+        self
+    }
+
+    /// Also accept websocket connections from pages served at `origin`.
+    pub fn with_dev_origin(mut self, origin: DevOrigin) -> Self {
+        self.dev_origins.push(origin);
         self
     }
 
@@ -130,8 +140,8 @@ pub fn list_processes() -> Result<api::ListProcessesResponse> {
 /// as [`serve`] does.
 fn router(shared: Arc<Shared>) -> Router {
     Router::new()
-        .route("/ws", any(handler).with_state(shared))
-        .layer(middleware::from_fn(origin::check))
+        .route("/ws", any(handler).with_state(shared.clone()))
+        .layer(middleware::from_fn_with_state(shared, origin::check))
 }
 
 pub async fn serve(listener: TcpListener, shared: Arc<Shared>) -> Result<()> {

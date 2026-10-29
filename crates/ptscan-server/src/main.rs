@@ -12,6 +12,10 @@ struct Args {
     /// Address to listen on.
     #[arg(long, default_value = api::DEFAULT_BIND)]
     bind: SocketAddr,
+    /// Also accept connections from pages served at this origin, such as
+    /// `http://127.0.0.1:8080` for `trunk serve`. Can be repeated.
+    #[arg(long, value_name = "ORIGIN")]
+    dev_origin: Vec<ptscan_server::DevOrigin>,
 }
 
 #[tokio::main]
@@ -29,5 +33,12 @@ async fn main() -> Result<()> {
         .with_context(|| format!("binding {}", args.bind))?;
 
     tracing::info!("Listening on ws://{}/ws", listener.local_addr()?);
-    ptscan_server::serve(listener, Arc::new(ptscan_server::Shared::default())).await
+    let shared = args
+        .dev_origin
+        .into_iter()
+        .fold(ptscan_server::Shared::default(), |shared, origin| {
+            shared.with_dev_origin(origin)
+        });
+
+    ptscan_server::serve(listener, Arc::new(shared)).await
 }

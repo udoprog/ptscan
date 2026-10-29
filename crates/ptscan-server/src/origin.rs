@@ -2,12 +2,17 @@
 //!
 //! A browser always sends `Origin` on websocket upgrades, so a page on another
 //! site (or one using DNS rebinding to reach this port) is refused, while
-//! native clients which send no `Origin` are allowed.
+//! native clients which send no `Origin` are allowed. Origins added with
+//! [`crate::Shared::with_dev_origin`], such as a `trunk serve` page proxying
+//! `/ws`, are also allowed.
 
+use std::fmt;
 use std::net::{IpAddr, SocketAddr};
+use std::str::FromStr;
+use std::sync::Arc;
 
 use axum::extract::connect_info::Connected;
-use axum::extract::{ConnectInfo, Request};
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::middleware::Next;
 use axum::response::Response;
@@ -78,9 +83,32 @@ impl Authority {
     }
 }
 
+/// An additional `http` origin allowed to connect.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DevOrigin(Authority);
+
+impl FromStr for DevOrigin {
+    type Err = InvalidOrigin;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Authority::origin(value).map(Self).ok_or(InvalidOrigin)
+    }
+}
+
+#[derive(Debug)]
+pub struct InvalidOrigin;
+
+impl fmt::Display for InvalidOrigin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("expected an origin such as http://127.0.0.1:8080")
+    }
+}
+
+impl std::error::Error for InvalidOrigin {}
+
 /// Allow a request whose `Host` names the socket it arrived on, and whose
-/// `Origin`, when present, is that same host.
-fn allows(headers: &HeaderMap, local: Option<SocketAddr>) -> bool {
+/// `Origin`, when present, is that same host or one of `dev`.
+fn allows(headers: &HeaderMap, local: Option<SocketAddr>, dev: &[DevOrigin]) -> bool {
     let Some(local) = local else {
         return false;
     };
@@ -97,7 +125,11 @@ fn allows(headers: &HeaderMap, local: Option<SocketAddr>) -> bool {
         return true;
     }
 
-    single(headers, header::ORIGIN).and_then(Authority::origin) == Some(host)
+    let Some(origin) = single(headers, header::ORIGIN).and_then(Authority::origin) else {
+        return false;
+    };
+
+    origin == host || dev.iter().any(|dev| dev.0 == origin)
 }
 
 fn single(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
@@ -107,11 +139,12 @@ fn single(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
 }
 
 pub async fn check(
+    State(shared): State<Arc<crate::Shared>>,
     ConnectInfo(connection): ConnectInfo<Connection>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    if !allows(request.headers(), connection.local) {
+    if !allows(request.headers(), connection.local, &shared.dev_origins) {
         return Err(StatusCode::FORBIDDEN);
     }
 
@@ -143,13 +176,15 @@ mod tests {
 
         assert!(allows(
             &headers("localhost:7431", Some("http://localhost:7431")),
-            local
+            local,
+            &[]
         ));
         assert!(allows(
             &headers("127.0.0.1:7431", Some("http://127.0.0.1:7431")),
-            local
+            local,
+            &[]
         ));
-        assert!(allows(&headers("127.0.0.1:7431", None), local));
+        assert!(allows(&headers("127.0.0.1:7431", None), local, &[]));
 
         for origin in [
             "http://evil.example",
@@ -163,7 +198,7 @@ mod tests {
             "http://127.0.0.1:7431",
         ] {
             assert!(
-                !allows(&headers("localhost:7431", Some(origin)), local),
+                !allows(&headers("localhost:7431", Some(origin)), local, &[]),
                 "{origin}"
             );
         }
@@ -175,18 +210,18 @@ mod tests {
             "user@localhost:7431",
             "localhost:99999",
         ] {
-            assert!(!allows(&headers(host, None), local), "{host}");
+            assert!(!allows(&headers(host, None), local, &[]), "{host}");
         }
 
         let rebound = headers("evil.example:7431", Some("http://evil.example:7431"));
-        assert!(!allows(&rebound, local));
+        assert!(!allows(&rebound, local, &[]));
 
         let mut duplicate = headers("localhost:7431", Some("http://localhost:7431"));
         duplicate.append(header::ORIGIN, "http://evil.example".parse().unwrap());
-        assert!(!allows(&duplicate, local));
+        assert!(!allows(&duplicate, local, &[]));
 
-        assert!(!allows(&HeaderMap::new(), local));
-        assert!(!allows(&headers("localhost:7431", None), None));
+        assert!(!allows(&HeaderMap::new(), local, &[]));
+        assert!(!allows(&headers("localhost:7431", None), None, &[]));
     }
 
     #[test]
@@ -205,12 +240,42 @@ mod tests {
             ),
             ("127.0.0.1:80", "localhost", "http://localhost"),
         ] {
-            assert!(allows(&headers(host, Some(origin)), local(local_addr)));
+            assert!(allows(&headers(host, Some(origin)), local(local_addr), &[]));
         }
 
         assert!(!allows(
             &headers("localhost:7431", None),
-            local("192.168.1.20:7431")
+            local("192.168.1.20:7431"),
+            &[]
         ));
+    }
+
+    #[test]
+    fn dev_origins_are_allowed_explicitly() {
+        let local = local("127.0.0.1:7431");
+        let dev = ["http://127.0.0.1:8080".parse::<DevOrigin>().unwrap()];
+        let proxied = headers("127.0.0.1:7431", Some("http://127.0.0.1:8080"));
+
+        assert!(!allows(&proxied, local, &[]));
+        assert!(allows(&proxied, local, &dev));
+        assert!(allows(
+            &headers("127.0.0.1:7431", Some("http://127.0.0.1:7431")),
+            local,
+            &dev
+        ));
+
+        for origin in ["http://127.0.0.1:8081", "http://localhost:8080"] {
+            assert!(
+                !allows(&headers("127.0.0.1:7431", Some(origin)), local, &dev),
+                "{origin}"
+            );
+        }
+
+        let rebound = headers("evil.example:7431", Some("http://127.0.0.1:8080"));
+        assert!(!allows(&rebound, local, &dev));
+
+        for invalid in ["127.0.0.1:8080", "https://127.0.0.1:8080", "http://x:1/"] {
+            assert!(invalid.parse::<DevOrigin>().is_err(), "{invalid}");
+        }
     }
 }

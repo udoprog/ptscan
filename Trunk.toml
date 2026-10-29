@@ -1,0 +1,8 @@
+[build]
+target = "crates/web/index.html"
+dist = "target/dist"
+
+[[proxy]]
+rewrite = "/ws"
+backend = "ws://127.0.0.1:7431/ws"
+ws = true

@@ -1,4 +1,5 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::process::Command;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
@@ -16,6 +17,9 @@ struct Args {
     /// `http://127.0.0.1:8080` for `trunk serve`. Can be repeated.
     #[arg(long, value_name = "ORIGIN")]
     dev_origin: Vec<ptscan_server::DevOrigin>,
+    /// Do not open the web UI in the default browser on launch.
+    #[arg(long)]
+    no_browser: bool,
 }
 
 #[tokio::main]
@@ -32,7 +36,21 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("binding {}", args.bind))?;
 
-    tracing::info!("Listening on ws://{}/ws", listener.local_addr()?);
+    let url = url(listener.local_addr()?);
+    tracing::info!("Serving the web UI on {url}");
+
+    if !ptscan_server::web::is_embedded() {
+        tracing::warn!(
+            "The web UI is not embedded; run `trunk build --release` and rebuild ptscan-server"
+        );
+    }
+
+    if !args.no_browser
+        && let Err(error) = open_browser(&url)
+    {
+        tracing::warn!("Could not open a browser at {url}: {error:#}");
+    }
+
     let shared = args
         .dev_origin
         .into_iter()
@@ -41,4 +59,36 @@ async fn main() -> Result<()> {
         });
 
     ptscan_server::serve(listener, Arc::new(shared)).await
+}
+
+/// The URL a local browser reaches the server at, using loopback for an
+/// unspecified bind address.
+fn url(mut addr: SocketAddr) -> String {
+    match addr.ip() {
+        IpAddr::V4(ip) if ip.is_unspecified() => addr.set_ip(Ipv4Addr::LOCALHOST.into()),
+        IpAddr::V6(ip) if ip.is_unspecified() => addr.set_ip(Ipv6Addr::LOCALHOST.into()),
+        _ => {}
+    }
+
+    format!("http://{addr}/")
+}
+
+fn open_browser(url: &str) -> Result<()> {
+    let mut command = if cfg!(windows) {
+        let mut command = Command::new("rundll32");
+        command.args(["url.dll,FileProtocolHandler", url]);
+        command
+    } else if cfg!(target_os = "macos") {
+        let mut command = Command::new("open");
+        command.arg(url);
+        command
+    } else {
+        let mut command = Command::new("xdg-open");
+        command.arg(url);
+        command
+    };
+
+    let mut child = command.spawn().context("spawning browser")?;
+    std::thread::spawn(move || child.wait());
+    Ok(())
 }

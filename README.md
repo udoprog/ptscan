@@ -19,6 +19,23 @@ These filters are used in commands such as `scan` and `watch`.
 
 <br>
 
+## Web UI
+
+`ptscan-server` embeds the web UI and opens it in the default browser on
+launch (pass `--no-browser` to skip that). Build the UI with
+[trunk](https://trunkrs.dev) before building the server, so that it is
+embedded:
+
+```sh
+trunk build --release
+cargo build --release -p ptscan-server
+```
+
+Without the first step the server still builds, but serves a page saying
+the UI is missing.
+
+<br>
+
 ## Types
 
 All expressions support the following types:

@@ -7,6 +7,7 @@ mod pointer_scan;
 mod process_information;
 mod scan;
 mod scratch;
+pub mod web;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -151,6 +152,7 @@ pub fn list_processes() -> Result<api::ListProcessesResponse> {
 fn router(shared: Arc<Shared>) -> Router {
     Router::new()
         .route("/ws", any(handler).with_state(shared.clone()))
+        .fallback(axum::routing::get(web::handler))
         .layer(middleware::from_fn_with_state(shared, origin::check))
 }
 

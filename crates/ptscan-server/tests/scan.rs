@@ -152,7 +152,8 @@ mod linux {
     const CHANGED: u64 = 0x7a11_f00d_c0de_5eed;
 
     /// Run in a re-executed test binary by [`Holder::spawn`]: holds `HELD` on the
-    /// heap, prints its address, and stores `CHANGED` in it on a line of stdin.
+    /// heap and prints its address, then on each line of stdin either stores
+    /// `CHANGED` in it (`change`) or prints the value it now holds (`read`).
     #[test]
     fn hold_value_child() {
         if std::env::var_os(HOLD_ENV).is_none() {
@@ -164,14 +165,20 @@ mod linux {
         println!("held {address:x}");
         std::io::stdout().flush().unwrap();
 
-        let mut line = String::new();
-        std::io::stdin().read_line(&mut line).unwrap();
-        // SAFETY: the box is live and the write must not be optimized away.
-        unsafe { std::ptr::write_volatile(&mut *value, CHANGED) };
-        println!("changed");
-        std::io::stdout().flush().unwrap();
+        for line in std::io::stdin().lines() {
+            if line.unwrap() == "read" {
+                // SAFETY: the box is live; the parent writes it behind our back.
+                let now = unsafe { std::ptr::read_volatile(&*value) };
+                println!("now {now:x}");
+            } else {
+                // SAFETY: the box is live and the write must not be optimized away.
+                unsafe { std::ptr::write_volatile(&mut *value, CHANGED) };
+                println!("changed");
+            }
 
-        std::thread::sleep(Duration::from_secs(60));
+            std::io::stdout().flush().unwrap();
+        }
+
         std::hint::black_box(value);
     }
 
@@ -217,8 +224,14 @@ mod linux {
         }
 
         fn change(&mut self) {
-            writeln!(self.stdin).unwrap();
+            writeln!(self.stdin, "change").unwrap();
             read_until(&mut self.stdout, "changed");
+        }
+
+        fn now(&mut self) -> u64 {
+            writeln!(self.stdin, "read").unwrap();
+            let now = read_until(&mut self.stdout, "now ");
+            u64::from_str_radix(&now, 16).unwrap()
         }
     }
 
@@ -441,5 +454,142 @@ mod linux {
         assert!(outcome.cancelled, "{outcome:?}");
         assert_eq!(outcome.results, state.results);
         assert_eq!(results(&handle).await.total, state.results);
+    }
+
+    async fn edit(handle: &Handle, request: api::EditScratchRequest) -> api::ScratchResponse {
+        timeout!(handle.request().body(request).send())
+            .unwrap()
+            .decode()
+            .unwrap()
+    }
+
+    async fn write_value(handle: &Handle, id: u64, value: &str) -> api::ScratchResponse {
+        let request = api::WriteScratchValueRequest {
+            id,
+            value: value.into(),
+        };
+
+        timeout!(handle.request().body(request).send())
+            .unwrap()
+            .decode()
+            .unwrap()
+    }
+
+    async fn scratch(handle: &Handle) -> api::ScratchList {
+        timeout!(handle.request().body(api::GetScratchRequest).send())
+            .unwrap()
+            .decode()
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scratch_list() {
+        let mut holder = Holder::spawn();
+        let handle = connect(server().await).await;
+        let mut changes = handle.on_broadcast::<api::ScanStateChanged>();
+        let mut scratch_changes = handle.on_broadcast::<api::ScratchChanged>();
+        attach(&handle, holder.child.id()).await;
+
+        scan(&handle, &format!("value == {HELD}u64")).await;
+        finished(&mut changes, 1).await;
+        let held = find_held(&handle, &holder).await.unwrap();
+
+        let response: api::ScratchResponse = timeout!(
+            handle
+                .request()
+                .body(api::AddScratchRequest {
+                    pointer: "0x10 +".into(),
+                    value_type: "nope".into(),
+                })
+                .send()
+        )
+        .unwrap()
+        .decode()
+        .unwrap();
+        assert!(response.pointer_error.is_some(), "{response:?}");
+        assert!(response.value_type_error.is_some(), "{response:?}");
+        assert_eq!(response.entry, None);
+
+        let response: api::ScratchResponse = timeout!(
+            handle
+                .request()
+                .body(api::AddScratchRequest {
+                    pointer: held.pointer.clone(),
+                    value_type: held.value_type.clone(),
+                })
+                .send()
+        )
+        .unwrap()
+        .decode()
+        .unwrap();
+        let entry = response.entry.clone().expect("added entry");
+        assert_eq!(response.error, None);
+        assert_eq!(entry.address, Some(holder.address));
+        assert_eq!(entry.value_type, "u64");
+        assert_eq!(entry.value, Some(HELD.to_string()));
+
+        let event = timeout!(scratch_changes.recv()).unwrap().unwrap();
+        let list = event.decode_event().unwrap();
+        assert_eq!(list.entries, std::slice::from_ref(&entry));
+
+        holder.change();
+        let list = scratch(&handle).await;
+        assert_eq!(list.entries[0].value, Some(CHANGED.to_string()));
+
+        let response = write_value(&handle, entry.id, "nope").await;
+        assert!(response.value_error.is_some(), "{response:?}");
+        assert_eq!(holder.now(), CHANGED);
+
+        let response = write_value(&handle, entry.id, "42").await;
+        assert_eq!(response.error, None);
+        assert_eq!(response.entry.unwrap().value, Some("42".into()));
+        assert_eq!(holder.now(), 42);
+
+        let response = edit(
+            &handle,
+            api::EditScratchRequest {
+                id: entry.id,
+                pointer: Some("0x10 +".into()),
+                value_type: None,
+            },
+        )
+        .await;
+        assert!(response.pointer_error.is_some(), "{response:?}");
+
+        write_value(&handle, entry.id, &CHANGED.to_string()).await;
+        let response = edit(
+            &handle,
+            api::EditScratchRequest {
+                id: entry.id,
+                pointer: None,
+                value_type: Some("i32".into()),
+            },
+        )
+        .await;
+        let edited = response.entry.unwrap();
+        assert_eq!(edited.value_type, "i32");
+        assert_eq!(edited.value, Some((CHANGED as u32 as i32).to_string()));
+
+        // Only the four bytes of the i32 are written.
+        let response = write_value(&handle, entry.id, "-1").await;
+        assert_eq!(response.error, None);
+        assert_eq!(holder.now(), CHANGED | 0xffff_ffff);
+
+        let response = write_value(&handle, entry.id + 1, "1").await;
+        assert!(response.error.is_some());
+
+        let list: api::ScratchList = timeout!(
+            handle
+                .request()
+                .body(api::RemoveScratchRequest {
+                    ids: vec![entry.id],
+                })
+                .send()
+        )
+        .unwrap()
+        .decode()
+        .unwrap();
+        assert!(list.entries.is_empty());
+        assert!(scratch(&handle).await.entries.is_empty());
     }
 }

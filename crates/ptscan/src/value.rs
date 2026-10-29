@@ -270,7 +270,6 @@ impl Value {
                 P::ByteOrder::write_u32(reserve!(4), value);
             }
             Self::I32(value) => {
-                _ = reserve!(4);
                 P::ByteOrder::write_u32(reserve!(4), value as u32);
             }
             Self::U64(value) => {

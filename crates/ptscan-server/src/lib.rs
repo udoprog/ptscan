@@ -2,6 +2,7 @@
 
 mod origin;
 mod scan;
+mod scratch;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -24,6 +25,8 @@ pub struct Shared {
     session: Mutex<scan::Session>,
     scan_state: watch::Sender<api::ScanState>,
     progress: watch::Sender<api::ScanProgress>,
+    scratch: Mutex<scratch::Scratch>,
+    scratch_list: watch::Sender<api::ScratchList>,
     pool: rayon::ThreadPool,
     rescan_copy_limit: usize,
 }
@@ -36,6 +39,8 @@ impl Default for Shared {
             session: Mutex::default(),
             scan_state: watch::Sender::new(api::ScanState::default()),
             progress: watch::Sender::new(api::ScanProgress::default()),
+            scratch: Mutex::default(),
+            scratch_list: watch::Sender::new(api::ScratchList::default()),
             pool: rayon::ThreadPoolBuilder::new()
                 .build()
                 .expect("building scan thread pool"),
@@ -147,6 +152,7 @@ async fn run(socket: WebSocket, shared: Arc<Shared>) -> Result<()> {
     let mut state = shared.state.subscribe();
     let mut scan_state = shared.scan_state.subscribe();
     let mut progress = shared.progress.subscribe();
+    let mut scratch = shared.scratch_list.subscribe();
     let handler = Handler {
         shared: shared.clone(),
     };
@@ -177,6 +183,14 @@ async fn run(socket: WebSocket, shared: Arc<Shared>) -> Result<()> {
                 }
 
                 let event = progress.borrow_and_update().clone();
+                server.broadcast(event)?;
+            }
+            changed = scratch.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+
+                let event = scratch.borrow_and_update().clone();
                 server.broadcast(event)?;
             }
             result = server.run() => {
@@ -276,6 +290,52 @@ impl ws::Handler for Handler {
                     ..Default::default()
                 });
 
+                outgoing.write(response);
+            }
+            api::Request::GetScratch => {
+                let shared = self.shared.clone();
+                outgoing.write(tokio::task::spawn_blocking(move || shared.scratch()).await?);
+            }
+            api::Request::AddScratch => {
+                let Some(request) = incoming.read::<api::AddScratchRequest>() else {
+                    return Ok(false);
+                };
+
+                let shared = self.shared.clone();
+                let response =
+                    tokio::task::spawn_blocking(move || shared.add_scratch(request)).await?;
+                outgoing.write(response);
+            }
+            api::Request::EditScratch => {
+                let Some(request) = incoming.read::<api::EditScratchRequest>() else {
+                    return Ok(false);
+                };
+
+                let shared = self.shared.clone();
+                let response =
+                    tokio::task::spawn_blocking(move || shared.edit_scratch(request)).await?;
+                outgoing.write(response);
+            }
+            api::Request::WriteScratchValue => {
+                let Some(request) = incoming.read::<api::WriteScratchValueRequest>() else {
+                    return Ok(false);
+                };
+
+                let shared = self.shared.clone();
+                let response =
+                    tokio::task::spawn_blocking(move || shared.write_scratch_value(request))
+                        .await?;
+                outgoing.write(response);
+            }
+            api::Request::RemoveScratch => {
+                let Some(request) = incoming.read::<api::RemoveScratchRequest>() else {
+                    return Ok(false);
+                };
+
+                let shared = self.shared.clone();
+                let response =
+                    tokio::task::spawn_blocking(move || shared.remove_scratch(&request.ids))
+                        .await?;
                 outgoing.write(response);
             }
             _ => return Ok(false),

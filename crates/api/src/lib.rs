@@ -157,6 +157,61 @@ pub struct ScanResult {
     pub current: String,
 }
 
+/// An entry of the scratch list, with its value read now.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct ScratchEntry {
+    pub id: u64,
+    pub pointer: String,
+    pub value_type: String,
+    /// The address the pointer currently follows to.
+    pub address: Option<u64>,
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct ScratchList {
+    pub entries: Vec<ScratchEntry>,
+}
+
+#[derive(Debug, Clone, Default, Encode, Decode)]
+pub struct GetScratchRequest;
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct AddScratchRequest {
+    /// A pointer such as `0x1234` or a scan result's `pointer`.
+    pub pointer: String,
+    pub value_type: String,
+}
+
+/// Change the pointer or type of an entry; `None` keeps it.
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct EditScratchRequest {
+    pub id: u64,
+    pub pointer: Option<String>,
+    pub value_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct WriteScratchValueRequest {
+    pub id: u64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Default, Encode, Decode)]
+pub struct RemoveScratchRequest {
+    pub ids: Vec<u64>,
+}
+
+/// The entry after a change, or why the change was refused.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct ScratchResponse {
+    pub entry: Option<ScratchEntry>,
+    pub pointer_error: Option<String>,
+    pub value_type_error: Option<String>,
+    pub value_error: Option<String>,
+    pub error: Option<String>,
+}
+
 api::define! {
     pub type ListProcesses;
     impl Endpoint for ListProcesses {
@@ -236,5 +291,40 @@ api::define! {
     pub type ScanProgressed;
     impl Broadcast for ScanProgressed {
         impl Event for ScanProgress;
+    }
+
+    pub type GetScratch;
+    impl Endpoint for GetScratch {
+        impl Request for GetScratchRequest;
+        type Response<'de> = ScratchList;
+    }
+
+    pub type AddScratch;
+    impl Endpoint for AddScratch {
+        impl Request for AddScratchRequest;
+        type Response<'de> = ScratchResponse;
+    }
+
+    pub type EditScratch;
+    impl Endpoint for EditScratch {
+        impl Request for EditScratchRequest;
+        type Response<'de> = ScratchResponse;
+    }
+
+    pub type WriteScratchValue;
+    impl Endpoint for WriteScratchValue {
+        impl Request for WriteScratchValueRequest;
+        type Response<'de> = ScratchResponse;
+    }
+
+    pub type RemoveScratch;
+    impl Endpoint for RemoveScratch {
+        impl Request for RemoveScratchRequest;
+        type Response<'de> = ScratchList;
+    }
+
+    pub type ScratchChanged;
+    impl Broadcast for ScratchChanged {
+        impl Event for ScratchList;
     }
 }

@@ -14,7 +14,6 @@ pub struct Thread {
 }
 
 impl Thread {
-    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn new(process_id: ProcessId, thread_id: ThreadId) -> Self {
         Self {
             process_id,

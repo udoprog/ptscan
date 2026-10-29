@@ -238,7 +238,7 @@ impl ProcessHandle {
     ) -> anyhow::Result<()> {
         threads.clear();
 
-        for t in system::threads()? {
+        for t in system::threads(process.process_id())? {
             if t.process_id() != process.process_id() {
                 continue;
             }
@@ -252,9 +252,11 @@ impl ProcessHandle {
                 .build(id)
                 .with_context(|| Error::BuildThread(id))?;
 
-            let stack = thread
-                .thread_stack(process)
-                .with_context(|| Error::ThreadStack(thread.thread_id()))?;
+            // Threads whose stack the platform cannot find are left out.
+            let stack = match thread.thread_stack(process) {
+                Err(e) if matches!(e.downcast_ref(), Some(Error::Unsupported)) => continue,
+                result => result.with_context(|| Error::ThreadStack(thread.thread_id()))?,
+            };
 
             let stack_exit = Self::scan_for_exit(process, stack, kernel32)
                 .with_context(|| Error::ScanForExit)?;

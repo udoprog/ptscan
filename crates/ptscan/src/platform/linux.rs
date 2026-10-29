@@ -1,5 +1,4 @@
-//! Linux support through `/proc` and `process_vm_readv`. Writing memory and
-//! threads are not yet implemented.
+//! Linux support through `/proc` and `process_vm_readv`/`process_vm_writev`.
 
 use std::{
     collections::HashSet,
@@ -95,8 +94,64 @@ impl RawProcess {
         Ok(modules)
     }
 
-    pub(crate) fn write_memory(&self, _: Address, _: &[u8]) -> Result<bool, Error> {
-        Err(Error::Unsupported)
+    /// Write all of `buffer` at `address`, returning `false` if only part of
+    /// it (or none) is mapped writable.
+    pub(crate) fn write_memory(&self, address: Address, buffer: &[u8]) -> Result<bool, Error> {
+        if buffer.is_empty() {
+            return Ok(true);
+        }
+
+        let remote = usize::try_from(address.0).map_err(|_| Error::PointerConversionError)?;
+
+        let local = libc::iovec {
+            iov_base: buffer.as_ptr() as *mut libc::c_void,
+            iov_len: buffer.len(),
+        };
+
+        let remote = libc::iovec {
+            iov_base: remote as *mut libc::c_void,
+            iov_len: buffer.len(),
+        };
+
+        // SAFETY: `local` covers exactly `buffer`, which is only read from.
+        let n = unsafe {
+            libc::process_vm_writev(self.process_id as libc::pid_t, &local, 1, &remote, 1, 0)
+        };
+
+        if n >= 0 && n as usize == buffer.len() {
+            return Ok(true);
+        }
+
+        if n < 0 {
+            let e = io::Error::last_os_error();
+
+            if !matches!(e.raw_os_error(), Some(libc::EFAULT) | Some(libc::ENOSYS)) {
+                return Err(e.into());
+            }
+        }
+
+        // process_vm_writev stops at read-only pages, which `/proc/<pid>/mem`
+        // writes through like WriteProcessMemory does.
+        self.write_proc_mem(address.0, buffer)
+    }
+
+    fn write_proc_mem(&self, address: u64, buffer: &[u8]) -> Result<bool, Error> {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(self.proc_path("mem"))?;
+        let mut written = 0;
+
+        while written < buffer.len() {
+            match file.write_at(&buffer[written..], address + written as u64) {
+                Ok(0) => break,
+                Ok(n) => written += n,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) if matches!(e.raw_os_error(), Some(libc::EIO) | Some(libc::EFAULT)) => break,
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        Ok(written == buffer.len())
     }
 
     /// Read as much of `buffer` as is mapped from `address` onwards, returning
@@ -207,12 +262,64 @@ impl RawProcess {
     }
 
     pub(crate) fn suspend(&self) -> Result<(), Error> {
-        Err(Error::Unsupported)
+        self.signal(libc::SIGSTOP)
     }
 
     pub(crate) fn resume(&self) -> Result<(), Error> {
-        Err(Error::Unsupported)
+        self.signal(libc::SIGCONT)
     }
+
+    fn signal(&self, signal: libc::c_int) -> Result<(), Error> {
+        // SAFETY: kill only takes plain integers.
+        if unsafe { libc::kill(self.process_id as libc::pid_t, signal) } != 0 {
+            return Err(Error::last_system_error());
+        }
+
+        Ok(())
+    }
+
+    /// The mapping holding the stack of thread `tid`, found from the stack
+    /// pointer it is blocked with, or the `[stack]` mapping for the main
+    /// thread when it is running.
+    fn thread_stack(&self, tid: ThreadId) -> Result<AddressRange, Error> {
+        let path = self.proc_path("task").join(tid.to_string()).join("syscall");
+        let maps = fs::read(self.proc_path("maps"))?;
+        let mut lines = maps.split(|&b| b == b'\n').filter(|l| !l.is_empty());
+
+        let map = match stack_pointer(&fs::read(path)?)? {
+            Some(sp) => lines
+                .map(Map::parse)
+                .find(|m| m.as_ref().map_or(true, |m| m.start <= sp && sp < m.end)),
+            None if tid == self.process_id => {
+                lines.find(|l| l.ends_with(b" [stack]")).map(Map::parse)
+            }
+            None => None,
+        };
+
+        let map = map.ok_or(Error::Unsupported)??;
+        Ok(range(map.start, map.end))
+    }
+}
+
+/// The stack pointer in `/proc/<pid>/task/<tid>/syscall`, which is the
+/// second to last field unless the thread is running.
+fn stack_pointer(syscall: &[u8]) -> io::Result<Option<u64>> {
+    let bad = || invalid_data("malformed /proc/<pid>/task/<tid>/syscall");
+    let syscall = std::str::from_utf8(syscall).map_err(|_| bad())?.trim();
+
+    if syscall == "running" {
+        return Ok(None);
+    }
+
+    let fields = syscall.split(' ').collect::<Vec<_>>();
+
+    let sp = match fields.len().checked_sub(2) {
+        Some(index) if index > 0 => fields[index],
+        _ => return Err(bad()),
+    };
+
+    let sp = sp.strip_prefix("0x").ok_or_else(bad)?;
+    Ok(Some(u64::from_str_radix(sp, 16).map_err(|_| bad())?))
 }
 
 fn free(start: u64, end: u64) -> MemoryInformation {
@@ -409,8 +516,18 @@ pub fn processes() -> Result<Vec<ProcessId>, Error> {
     Ok(processes)
 }
 
-pub(crate) fn threads() -> Result<std::iter::Empty<system::Thread>, Error> {
-    Err(Error::Unsupported)
+/// Threads of `process_id`, from `/proc/<pid>/task`.
+pub(crate) fn threads(process_id: ProcessId) -> Result<Vec<system::Thread>, Error> {
+    let mut threads = Vec::new();
+
+    for entry in fs::read_dir(Path::new("/proc").join(process_id.to_string()).join("task"))? {
+        if let Some(tid) = entry?.file_name().to_str().and_then(|s| s.parse().ok()) {
+            threads.push(system::Thread::new(process_id, tid));
+        }
+    }
+
+    threads.sort_unstable_by_key(|t| t.thread_id());
+    Ok(threads)
 }
 
 /// A file mapped into a process with at least one executable mapping.
@@ -470,8 +587,11 @@ impl Thread {
         self.thread_id
     }
 
-    pub fn thread_stack(&self, _: &Process) -> anyhow::Result<AddressRange> {
-        Err(Error::Unsupported.into())
+    /// The mapping holding the thread's stack. [`Error::Unsupported`] if it
+    /// cannot be found, which is when a thread other than the main thread is
+    /// running rather than blocked.
+    pub fn thread_stack(&self, process: &Process) -> anyhow::Result<AddressRange> {
+        Ok(process.handle.thread_stack(self.thread_id)?)
     }
 }
 
@@ -497,8 +617,13 @@ impl OpenThreadBuilder {
         self
     }
 
-    pub fn build(self, _: ThreadId) -> Result<Thread, Error> {
-        Err(Error::Unsupported)
+    pub fn build(self, thread_id: ThreadId) -> Result<Thread, Error> {
+        // Threads are hidden from listing `/proc` but reachable by their id.
+        if !fs::metadata(Path::new("/proc").join(thread_id.to_string()))?.is_dir() {
+            return Err(io::Error::from(io::ErrorKind::NotFound).into());
+        }
+
+        Ok(Thread { thread_id })
     }
 }
 
@@ -583,6 +708,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_syscall_stack_pointer() {
+        let blocked = b"0 0x3 0x7ffd1000 0x1 0x0 0x0 0x0 0x7ffc2a10 0x7f0011223344\n";
+        assert_eq!(stack_pointer(blocked).unwrap(), Some(0x7ffc2a10));
+        assert_eq!(
+            stack_pointer(b"-1 0x7ffc2a10 0x7f00\n").unwrap(),
+            Some(0x7ffc2a10)
+        );
+        assert_eq!(stack_pointer(b"running\n").unwrap(), None);
+        assert!(stack_pointer(b"0x7ffc2a10\n").is_err());
+    }
+
+    #[test]
     fn processes_include_self_and_child() {
         let child = scratch();
         let processes = processes().unwrap();
@@ -662,7 +799,8 @@ mod tests {
     const HELD: u64 = 0x5eed_c0de_f00d_7a11;
 
     /// Run in a re-executed test binary by [`Holder::spawn`]: keeps `HELD` and
-    /// a pointer to it on the heap and prints both addresses.
+    /// a pointer to it on the heap, prints both addresses, then answers each
+    /// line on stdin with the value it now holds.
     #[test]
     fn hold_value_child() {
         if std::env::var_os(HOLD_ENV).is_none() {
@@ -676,12 +814,22 @@ mod tests {
             &*value as *const u64 as usize, &*pointer as *const usize as usize
         );
         io::stdout().flush().unwrap();
-        std::thread::sleep(Duration::from_secs(60));
+
+        for line in io::stdin().lines() {
+            line.unwrap();
+            // SAFETY: the box is live; the read is volatile since the parent
+            // writes it behind our back.
+            let now = unsafe { std::ptr::read_volatile(&*value) };
+            println!("now {:x}", now);
+            io::stdout().flush().unwrap();
+        }
+
         std::hint::black_box((value, pointer));
     }
 
     struct Holder {
         child: Scratch,
+        stdout: io::Lines<BufReader<std::process::ChildStdout>>,
         value: u64,
         pointer: u64,
     }
@@ -697,14 +845,15 @@ mod tests {
                         "--test-threads=1",
                     ])
                     .env(HOLD_ENV, "1")
+                    .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .spawn()
                     .expect("spawn holder"),
             );
 
-            let stdout = BufReader::new(child.0.stdout.take().unwrap());
+            let mut stdout = BufReader::new(child.0.stdout.take().unwrap()).lines();
 
-            for line in stdout.lines() {
+            while let Some(line) = stdout.next() {
                 let line = line.unwrap();
 
                 if let Some((_, rest)) = line.split_once("held ") {
@@ -713,6 +862,7 @@ mod tests {
                     let pointer = it.next().unwrap();
                     return Self {
                         child,
+                        stdout,
                         value,
                         pointer,
                     };
@@ -724,6 +874,27 @@ mod tests {
 
         fn handle(&self) -> ProcessHandle {
             ProcessHandle::open(self.child.0.id()).unwrap().unwrap()
+        }
+
+        /// The value the child itself now reads.
+        fn held(&mut self) -> u64 {
+            let stdin = self.child.0.stdin.as_mut().unwrap();
+            stdin.write_all(b"\n").unwrap();
+            stdin.flush().unwrap();
+
+            for line in &mut self.stdout {
+                if let Some(now) = line.unwrap().strip_prefix("now ") {
+                    return u64::from_str_radix(now, 16).unwrap();
+                }
+            }
+
+            panic!("holder exited without answering");
+        }
+
+        fn state(&self) -> char {
+            let stat = fs::read_to_string(format!("/proc/{}/stat", self.child.0.id())).unwrap();
+            let (_, rest) = stat.rsplit_once(") ").unwrap();
+            rest.chars().next().unwrap()
         }
     }
 
@@ -827,5 +998,107 @@ mod tests {
         let filter = FilterExpr::pointer(ValueExpr::Value, &handle.process).unwrap();
         let found = scan(&handle, &filter, handle.process.pointer_width.into_type());
         assert!(found.contains(&Address::new(holder.pointer)));
+    }
+
+    #[test]
+    fn write_child_memory() {
+        let mut holder = Holder::spawn();
+        let raw = holder.handle().process.handle;
+        let value = Address::new(holder.value);
+
+        let written = 0x0123_4567_89ab_cdefu64;
+        assert!(raw.write_memory(value, &written.to_ne_bytes()).unwrap());
+        let mut buf = [0u8; 8];
+        assert_eq!(raw.read_memory(value, &mut buf).unwrap(), 8);
+        assert_eq!(u64::from_ne_bytes(buf), written);
+        assert_eq!(holder.held(), written);
+
+        assert!(raw
+            .write_proc_mem(holder.value, &HELD.to_ne_bytes())
+            .unwrap());
+        assert_eq!(holder.held(), HELD);
+
+        assert!(!raw.write_memory(Address::new(0), &[0; 8]).unwrap());
+        assert!(!raw.write_proc_mem(0, &[0; 8]).unwrap());
+
+        // A write running off the end of a mapping is incomplete.
+        let regions = raw.memory_regions().unwrap().unwrap();
+        let region = regions
+            .windows(2)
+            .find(|w| w[0].is_writable() && w[1].state == MemoryState::Free)
+            .map(|w| &w[0])
+            .unwrap();
+        let end = region.range.base.0 + region.range.size.into_inner();
+        let mut buf = [0u8; 16];
+        assert_eq!(raw.read_memory(Address::new(end - 8), &mut buf).unwrap(), 8);
+        assert!(!raw.write_memory(Address::new(end - 8), &buf).unwrap());
+
+        // Read-only private mappings are written through, as on Windows;
+        // writing back the same bytes leaves the child unchanged.
+        let maps = raw.maps().unwrap();
+        let map = maps
+            .iter()
+            .find(|m| m.read && !m.write && !m.shared && m.path.is_some())
+            .unwrap();
+        let mut buf = [0u8; 8];
+        assert_eq!(
+            raw.read_memory(Address::new(map.start), &mut buf).unwrap(),
+            8
+        );
+        assert!(raw.write_memory(Address::new(map.start), &buf).unwrap());
+    }
+
+    #[test]
+    fn child_threads_and_stacks() {
+        let holder = Holder::spawn();
+        let pid = holder.child.0.id();
+        let handle = holder.handle();
+
+        let threads = threads(pid).unwrap();
+        assert!(threads.iter().all(|t| t.process_id() == pid));
+        assert!(threads.iter().any(|t| t.thread_id() == pid));
+
+        let regions = handle.process.handle.memory_regions().unwrap().unwrap();
+        // The child is blocked reading stdin, so every thread has a stack.
+        let modules = handle.get_modules().unwrap();
+        let stacks = handle.get_threads_with_modules(&modules).unwrap();
+        assert_eq!(stacks.len(), threads.len());
+
+        for thread in &stacks {
+            assert!(regions
+                .iter()
+                .any(|r| r.range == thread.stack && r.is_writable()));
+        }
+
+        let main = Thread::open(pid)
+            .unwrap()
+            .thread_stack(&handle.process)
+            .unwrap();
+        assert!(stacks.iter().any(|t| t.stack == main));
+        assert!(Thread::open(u32::MAX).is_err());
+    }
+
+    #[test]
+    fn suspend_and_resume_child() {
+        let mut holder = Holder::spawn();
+        let process = holder.handle().process;
+
+        let wait_for = |holder: &Holder, stopped: bool| {
+            for _ in 0..100 {
+                if (holder.state() == 'T') == stopped {
+                    return;
+                }
+
+                std::thread::sleep(Duration::from_millis(10));
+            }
+
+            panic!("child did not reach stopped = {}", stopped);
+        };
+
+        process.suspend().unwrap();
+        wait_for(&holder, true);
+        process.resume().unwrap();
+        wait_for(&holder, false);
+        assert_eq!(holder.held(), HELD);
     }
 }

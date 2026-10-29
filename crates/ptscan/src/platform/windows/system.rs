@@ -17,8 +17,9 @@ pub fn processes() -> Result<Vec<ProcessId>, Error> {
     })
 }
 
-/// Enumerate all threads of the system.
-pub fn threads() -> Result<Threads, Error> {
+/// Enumerate all threads of the system, since a thread snapshot ignores the
+/// process id it is given.
+pub fn threads(_: ProcessId) -> Result<Threads, Error> {
     use tlhelp32::{CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD};
 
     let handle = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };

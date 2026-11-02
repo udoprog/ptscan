@@ -79,7 +79,7 @@ fn module_bases() {
 }
 
 #[test]
-fn unquoted_module_names_end_at_space_or_sign() {
+fn unquoted_module_names_end_at_space_or_offset() {
     assert_eq!(parse("Steam.exe"), module("Steam.exe", 0, &[]));
     assert_eq!(parse("Steam.exe + 0x0F"), module("Steam.exe", 0xF, &[]));
     assert_eq!(parse("Steam.exe+0x0F"), module("Steam.exe", 0xF, &[]));
@@ -89,6 +89,9 @@ fn unquoted_module_names_end_at_space_or_sign() {
         parse("\"my-game.exe\"+0x1"),
         module("my-game.exe", 0x1, &[])
     );
+    assert_eq!(parse("my-game.exe+0x1"), module("my-game.exe", 0x1, &[]));
+    assert_eq!(parse("my-game.exe-0x1"), module("my-game.exe", -0x1, &[]));
+    assert_eq!(parse("my-game.exe->0x8"), module("my-game.exe", 0, &[0x8]));
 }
 
 #[test]

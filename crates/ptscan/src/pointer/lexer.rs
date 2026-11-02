@@ -234,7 +234,12 @@ impl<'a> Lexer<'a> {
         self.buf.clear();
 
         while let Some((_, c)) = self.peek() {
-            if matches!(c, ' ' | '+' | '-') {
+            let after = (self.c2.map(|c| c.1), self.c3.map(|c| c.1));
+
+            // `-` ends the name only before `->` or `-0x`, so names like my-game.exe stay whole.
+            if matches!(c, ' ' | '+')
+                || c == '-' && matches!(after, (Some('>'), _) | (Some('0'), Some('x')))
+            {
                 break;
             }
 

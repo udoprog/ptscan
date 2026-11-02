@@ -1,11 +1,7 @@
 mod lexer;
+mod parser;
 #[cfg(test)]
 mod parser_tests;
-lalrpop_util::lalrpop_mod!(
-    #[allow(clippy::all, non_fmt_panics)]
-    parser,
-    "/pointer/parser.rs"
-);
 
 use crate::{
     process_handle::ProcessHandle, utils::EscapeString, Address, Offset, PointerWidth, Sign, Size,
@@ -234,7 +230,7 @@ impl PortablePointer {
 
     /// Parse a a string into a portable pointer.
     pub fn parse(input: &str) -> Result<Self, anyhow::Error> {
-        let portable = self::parser::PointerParser::new().parse(lexer::Lexer::new(input))?;
+        let portable = self::parser::parse(input)?;
         Ok(portable)
     }
 

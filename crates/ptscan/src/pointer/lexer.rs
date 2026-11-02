@@ -3,12 +3,21 @@ use std::{borrow::Cow, fmt, str};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-#[error("{}", description)]
+#[error("{description} at position {pos}")]
 pub struct Error {
     /// Description of the error.
     description: Cow<'static, str>,
     /// Offset into the expression which caused the error.
     pos: usize,
+}
+
+impl Error {
+    pub fn new(description: impl Into<Cow<'static, str>>, pos: usize) -> Self {
+        Self {
+            description: description.into(),
+            pos,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -53,7 +62,13 @@ pub enum Token {
 
 impl fmt::Display for Token {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self, fmt)
+        match self {
+            Token::String(..) => write!(fmt, "module name"),
+            Token::Rocket => write!(fmt, "`->`"),
+            Token::Hex(..) => write!(fmt, "hex number"),
+            Token::Minus => write!(fmt, "`-`"),
+            Token::Plus => write!(fmt, "`+`"),
+        }
     }
 }
 
@@ -137,10 +152,7 @@ impl<'a> Lexer<'a> {
 
     /// Format an error with a correct description and position.
     pub fn err(&self, description: impl Into<Cow<'static, str>>) -> Error {
-        Error {
-            description: description.into(),
-            pos: self.pos(),
-        }
+        Error::new(description, self.pos())
     }
 
     /// Scan an identifier.
@@ -149,7 +161,7 @@ impl<'a> Lexer<'a> {
 
         while let Some((_, c)) = self.peek() {
             match c {
-                '+' | '-' | '0'..='9' | 'A'..='F' | 'a'..='f' => {
+                '0'..='9' | 'A'..='F' | 'a'..='f' => {
                     self.step();
                     self.buf.push(c);
                     continue;
@@ -158,12 +170,17 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        let value = i128::from_str_radix(&self.buf, 16).map_err(|_| self.err("illegal hex"))?;
+        if self.buf.is_empty() {
+            return Err(self.err("expected hex digits after `0x`"));
+        }
+
+        let value =
+            i128::from_str_radix(&self.buf, 16).map_err(|_| self.err("hex number too large"))?;
         Ok(Hex(value))
     }
 
-    /// Scan a quoted string.
-    pub fn scan_quoted(&mut self) -> Result<String, Error> {
+    /// Scan a quoted string, starting after the opening quote at `start`.
+    pub fn scan_quoted(&mut self, start: usize) -> Result<String, Error> {
         self.buf.clear();
 
         let mut escape = false;
@@ -191,7 +208,7 @@ impl<'a> Lexer<'a> {
             match c {
                 '"' => {
                     self.step();
-                    break;
+                    return Ok(self.buf.to_string());
                 }
                 '\\' => {
                     self.step();
@@ -209,7 +226,7 @@ impl<'a> Lexer<'a> {
             return Err(self.err("escape sequence incomplete"));
         }
 
-        Ok(self.buf.to_string())
+        Err(Error::new("unclosed quoted module name", start))
     }
 
     /// Scan an identifier.
@@ -217,16 +234,12 @@ impl<'a> Lexer<'a> {
         self.buf.clear();
 
         while let Some((_, c)) = self.peek() {
-            self.step();
-
-            match c {
-                ' ' => {
-                    break;
-                }
-                c => {
-                    self.buf.push(c);
-                }
+            if matches!(c, ' ' | '+' | '-') {
+                break;
             }
+
+            self.step();
+            self.buf.push(c);
         }
 
         Ok(self.buf.to_string())
@@ -278,7 +291,7 @@ impl<'a> Iterator for Lexer<'a> {
                 }
                 '"' => {
                     self.step();
-                    let string = try_iter!(self.scan_quoted());
+                    let string = try_iter!(self.scan_quoted(s));
                     let e = self.pos();
                     return Some(Ok((s, Token::String(string), e)));
                 }

@@ -2,15 +2,15 @@
 //! of the parser implementation. Only `parse_filter` and `parse_value` know
 //! which parser is used.
 
-use super::{ast::FilterExpr as F, lexer, parser, FilterOp};
+use super::{ast::FilterExpr as F, parser, FilterOp};
 use crate::{value_expr::ast::ValueExpr as V, value_expr::ValueOp, PointerWidth, Type};
 
 fn parse_filter(input: &str) -> anyhow::Result<F> {
-    Ok(parser::FilterExprParser::new().parse(lexer::Lexer::new(input))?)
+    Ok(parser::parse_filter(input)?)
 }
 
 fn parse_value(input: &str) -> anyhow::Result<V> {
-    Ok(parser::ValueExprParser::new().parse(lexer::Lexer::new(input))?)
+    Ok(parser::parse_value(input)?)
 }
 
 #[track_caller]
@@ -414,8 +414,92 @@ fn rejected_filters() {
 }
 
 #[test]
-fn only_spaces_are_whitespace() {
+fn all_whitespace_separates() {
     assert_eq!(filter("  value   ==  1  "), eq(V::Value, n(1)));
-    rejects_filter("value\t== 1");
-    rejects_filter("value ==\n1");
+    assert_eq!(filter("value\t== 1"), eq(V::Value, n(1)));
+    assert_eq!(filter("value ==\n1"), eq(V::Value, n(1)));
+    assert_eq!(
+        filter("\r\nvalue == 1\n\tand\tvalue == 2\n"),
+        F::And(vec![eq(V::Value, n(1)), eq(V::Value, n(2))])
+    );
+    assert_eq!(value("{01\tab\nFF}"), V::Bytes(vec![0x01, 0xab, 0xff]));
+}
+
+fn error(input: &str) -> String {
+    match parse_filter(input) {
+        Ok(expr) => panic!("expected {:?} to be rejected, got {:?}", input, expr),
+        Err(e) => e.to_string(),
+    }
+}
+
+#[test]
+fn errors_name_what_was_expected_and_where() {
+    assert_eq!(
+        error(""),
+        "expected value, found end of input at position 0"
+    );
+    assert_eq!(
+        error("value"),
+        "expected `is` or a comparison operator, found end of input at position 5"
+    );
+    assert_eq!(
+        error("value == 1 == 2"),
+        "expected `and`, `or` or end of input, found `==` at position 11"
+    );
+    assert_eq!(
+        error("value is foo"),
+        "expected type, `not` or `nan`, found `foo` at position 9"
+    );
+    assert_eq!(
+        error("value is not \"x\""),
+        "expected type or `nan`, found `\"x\"` at position 13"
+    );
+    assert_eq!(
+        error("value as 1 == 1"),
+        "expected type, found `1` at position 9"
+    );
+    assert_eq!(
+        error("(value == 1"),
+        "expected `and`, `or` or `)`, found end of input at position 11"
+    );
+    assert_eq!(
+        error("(value + 1 == 2"),
+        "expected `and`, `or` or `)`, found end of input at position 15"
+    );
+    assert_eq!(
+        error("(value) =="),
+        "expected value, found end of input at position 10"
+    );
+    assert_eq!(
+        error("value == 1 && value == 2"),
+        "expected `and`, `or` or end of input, found `&` at position 11"
+    );
+    assert_eq!(error("value @ 1"), "unexpected character `@` at position 6");
+    assert_eq!(
+        parse_value("value value").unwrap_err().to_string(),
+        "expected `+`, `-`, `*`, `/`, `as` or end of input, found `value` at position 6"
+    );
+}
+
+#[test]
+fn grouped_values_in_filters() {
+    use ValueOp::*;
+
+    assert_eq!(filter("(value) == 1"), eq(V::Value, n(1)));
+    assert_eq!(
+        filter("(value + 1) * 2 == 4"),
+        eq(bin(Mul, bin(Add, V::Value, n(1)), n(2)), n(4))
+    );
+    assert_eq!(
+        filter("((value)) is u8 and (value == 1)"),
+        F::And(vec![F::IsType(V::Value, Type::U8), eq(V::Value, n(1))])
+    );
+}
+
+#[test]
+fn deep_nesting_is_rejected() {
+    let input = format!("{}value{} == 1", "(".repeat(10_000), ")".repeat(10_000));
+    assert!(error(&input).starts_with("expression is nested too deeply"));
+    let input = format!("{}value == 1", "*".repeat(10_000));
+    assert!(error(&input).starts_with("expression is nested too deeply"));
 }

@@ -14,10 +14,10 @@ pub use self::special::Special;
 pub mod ast;
 mod filter_op;
 pub(crate) mod lexer;
+pub(crate) mod parser;
 #[cfg(test)]
 mod parser_tests;
 pub mod special;
-lalrpop_util::lalrpop_mod!(#[allow(clippy::all, non_fmt_panics)] pub parser, "/filter_expr/parser.rs");
 
 #[derive(Clone, Copy)]
 pub struct ValueInfo<'a> {
@@ -69,7 +69,7 @@ pub enum FilterExpr {
 impl FilterExpr {
     /// Parse a a string into a filter.
     pub fn parse(input: &str, process: &impl ProcessInfo) -> anyhow::Result<Self> {
-        let expr = parser::FilterExprParser::new().parse(lexer::Lexer::new(input))?;
+        let expr = parser::parse_filter(input)?;
         Ok(expr.into_filter(process)?)
     }
 
@@ -1245,7 +1245,7 @@ fn collection_value_type_of(
 
 #[cfg(test)]
 mod tests {
-    use super::{ast::FilterExpr as F, lexer, parser, FilterOp, Special};
+    use super::{ast::FilterExpr as F, parser, FilterOp, Special};
     use crate::{
         process::MemoryInformation, value_expr::ast::ValueExpr as V, Address, PointerInfo,
         PointerWidth, ProcessInfo, Type,
@@ -1309,15 +1309,14 @@ mod tests {
     }
 
     fn parse(input: &str) -> anyhow::Result<F> {
-        Ok(parser::FilterExprParser::new().parse(lexer::Lexer::new(input))?)
+        Ok(parser::parse_filter(input)?)
     }
 
     #[test]
     fn test_basic_parsing() -> anyhow::Result<()> {
-        let parser = parser::FilterExprParser::new();
-        let a = parser.parse(lexer::Lexer::new("value == 1"))?;
-        let b = parser.parse(lexer::Lexer::new("value == 1 and value == 2"))?;
-        let c = parser.parse(lexer::Lexer::new("value == 1 and value == 2 or value == 3"))?;
+        let a = parser::parse_filter("value == 1")?;
+        let b = parser::parse_filter("value == 1 and value == 2")?;
+        let c = parser::parse_filter("value == 1 and value == 2 or value == 3")?;
 
         dbg!(a);
         dbg!(b);

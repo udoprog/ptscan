@@ -1,5 +1,5 @@
 use crate::{
-    filter_expr::{ast::ValueTrait, lexer, parser},
+    filter_expr::{ast::ValueTrait, parser},
     utils::{EscapeString, Hex},
     value::Value,
     Address, Pointer, PointerInfo, Proxy, Sign, Type, TypeHint, ValueRef,
@@ -206,7 +206,7 @@ impl ValueExpr {
 
     /// Parse a value expression to use.
     pub fn parse(input: &str) -> anyhow::Result<ValueExpr> {
-        let expr = parser::ValueExprParser::new().parse(lexer::Lexer::new(input))?;
+        let expr = parser::parse_value(input)?;
         Ok(expr.eval()?)
     }
 
@@ -490,13 +490,10 @@ impl fmt::Display for ValueExpr {
 #[cfg(test)]
 mod tests {
     use super::{ast::ValueExpr as V, ValueOp};
-    use crate::{
-        filter_expr::{lexer, parser},
-        Type,
-    };
+    use crate::{filter_expr::parser, Type};
 
     fn parse(input: &str) -> anyhow::Result<V> {
-        Ok(parser::ValueExprParser::new().parse(lexer::Lexer::new(input))?)
+        Ok(parser::parse_value(input)?)
     }
 
     #[test]

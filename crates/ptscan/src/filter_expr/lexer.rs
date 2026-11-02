@@ -5,12 +5,25 @@ use std::{borrow::Cow, fmt, str};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-#[error("{}", description)]
+#[error("{description} at position {pos}")]
 pub struct Error {
     /// Description of the error.
     description: Cow<'static, str>,
     /// Offset into the expression which caused the error.
     pos: usize,
+}
+
+impl Error {
+    pub fn new(description: impl Into<Cow<'static, str>>, pos: usize) -> Self {
+        Self {
+            description: description.into(),
+            pos,
+        }
+    }
+
+    pub fn pos(&self) -> usize {
+        self.pos
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -184,10 +197,7 @@ impl<'a> Lexer<'a> {
 
     /// Format an error with a correct description and position.
     pub fn err(&self, description: impl Into<Cow<'static, str>>) -> Error {
-        Error {
-            description: description.into(),
-            pos: self.pos(),
-        }
+        Error::new(description, self.pos())
     }
 
     // decode a sequence of 4 unicode characters
@@ -250,7 +260,7 @@ impl<'a> Lexer<'a> {
 
         while let Some((_, c)) = self.peek() {
             match c {
-                ' ' => (),
+                c if c.is_whitespace() => (),
                 'a'..='f' => {
                     self.buf.extend(c.to_uppercase());
                 }
@@ -439,7 +449,7 @@ impl<'a> Iterator for Lexer<'a> {
             };
 
             match c {
-                ' ' => {
+                c if c.is_whitespace() => {
                     self.step();
                     continue;
                 }
@@ -518,6 +528,10 @@ impl<'a> Iterator for Lexer<'a> {
                 _ => {
                     let ident = try_iter!(self.scan_ident());
                     let e = self.pos();
+
+                    if ident.is_empty() {
+                        return Some(Err(Error::new(format!("unexpected character `{}`", c), s)));
+                    }
 
                     if let Ok(ty) = str::parse::<Type>(&ident) {
                         return Some(Ok((s, Token::Type(ty), e)));

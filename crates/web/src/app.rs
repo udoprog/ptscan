@@ -83,7 +83,7 @@ impl Component for App {
             on_error: ctx.link().callback(Msg::Error),
         };
 
-        if connection.is_open() {
+        if this.connection.is_open() {
             this.request_attach_state(ctx);
         }
 
@@ -96,7 +96,7 @@ impl Component for App {
                 let lost = self.connection.is_open() && !state.is_open();
                 self.connection = state;
 
-                if state.is_open() {
+                if self.connection.is_open() {
                     self.request_attach_state(ctx);
                 } else {
                     self.attach = api::AttachState::default();

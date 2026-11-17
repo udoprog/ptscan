@@ -12,7 +12,7 @@ rust-embed = { version = "8.7.2", default-features = false }
 mime_guess = { version = "2.0.5", default-features = false }
 axum = { version = "0.8", default-features = false, features = ["ws", "tokio", "http1"] }
 clap = { version = "4.6.7", features = ["derive"] }
-musli-web = { version = "0.5.0", default-features = false, features = ["axum08", "format-descriptive", "format-json"] }
+musli-web = { version = "0.6.0", default-features = false, features = ["axum08", "format-descriptive", "format-json"] }
 tokio = { version = "1.45", features = ["rt-multi-thread", "macros", "net", "sync"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["fmt", "env-filter"] }
@@ -28,4 +28,4 @@ features = [
 ]
 
 [dev-dependencies]
-musli-web = { version = "0.5.0", default-features = false, features = ["axum08", "client", "tungstenite029", "format-descriptive"] }
+musli-web = { version = "0.6.0", default-features = false, features = ["axum08", "client", "tungstenite029", "format-descriptive"] }

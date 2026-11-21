@@ -2,15 +2,30 @@
 //! [<img alt="crates.io" src="https://img.shields.io/crates/v/ptscan.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/ptscan)
 //! [<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-ptscan-66c2a5?style=for-the-badge&logoColor=white&logo=data:image/svg+xml;base64,PHN2ZyByb2xlPSJpbWciIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgdmlld0JveD0iMCAwIDUxMiA1MTIiPjxwYXRoIGZpbGw9IiNmNWY1ZjUiIGQ9Ik00ODguNiAyNTAuMkwzOTIgMjE0VjEwNS41YzAtMTUtOS4zLTI4LjQtMjMuNC0zMy43bC0xMDAtMzcuNWMtOC4xLTMuMS0xNy4xLTMuMS0yNS4zIDBsLTEwMCAzNy41Yy0xNC4xIDUuMy0yMy40IDE4LjctMjMuNCAzMy43VjIxNGwtOTYuNiAzNi4yQzkuMyAyNTUuNSAwIDI2OC45IDAgMjgzLjlWMzk0YzAgMTMuNiA3LjcgMjYuMSAxOS45IDMyLjJsMTAwIDUwYzEwLjEgNS4xIDIyLjEgNS4xIDMyLjIgMGwxMDMuOS01MiAxMDMuOSA1MmMxMC4xIDUuMSAyMi4xIDUuMSAzMi4yIDBsMTAwLTUwYzEyLjItNi4xIDE5LjktMTguNiAxOS45LTMyLjJWMjgzLjljMC0xNS05LjMtMjguNC0yMy40LTMzLjd6TTM1OCAyMTQuOGwtODUgMzEuOXYtNjguMmw4NS0zN3Y3My4zek0xNTQgMTA0LjFsMTAyLTM4LjIgMTAyIDM4LjJ2LjZsLTEwMiA0MS40LTEwMi00MS40di0uNnptODQgMjkxLjFsLTg1IDQyLjV2LTc5LjFsODUtMzguOHY3NS40em0wLTExMmwtMTAyIDQxLjQtMTAyLTQxLjR2LS42bDEwMi0zOC4yIDEwMiAzOC4ydi42em0yNDAgMTEybC04NSA0Mi41di03OS4xbDg1LTM4Ljh2NzUuNHptMC0xMTJsLTEwMiA0MS40LTEwMi00MS40di0uNmwxMDItMzguMiAxMDIgMzguMnYuNnoiPjwvcGF0aD48L3N2Zz4K" height="20">](https://docs.rs/ptscan)
 //!
-//! A memory and pointer scanning library for Windows and Linux, written in Rust.
-//! It powers the `ptscan-server` web UI.
+//! The scanning engine behind [ptscan](https://github.com/udoprog/ptscan), a
+//! Cheat Engine style memory and pointer scanner for Windows and Linux. Use it to
+//! list processes, read and write their memory, and find values and pointer paths
+//! with a small typed expression language, without writing any platform code.
+//!
+//! * **Typed scans.** Integers, floats, pointers, strings in any encoding and
+//!   byte arrays, filtered with the expression language below.
+//! * **Pointer scans.** Turn moving addresses into module-relative pointer paths.
+//! * **Parallel.** Scans run across the whole address space on all cores.
+//! * **One interface.** Win32 on Windows and `/proc` with `process_vm_readv` on
+//!   Linux sit behind the same API.
+//!
+//! The web UI that drives it is the
+//! [`ptscan-server`](https://github.com/udoprog/ptscan#readme) binary.
 //!
 //! <br>
 //!
 //! ## Usage
 //!
 //! Scans and watches select values using _filters_, the expression language
-//! described below.
+//! described below. Add the crate with `cargo add ptscan`, list processes with
+//! [`processes`](https://docs.rs/ptscan/latest/ptscan/fn.processes.html) and
+//! parse filters with
+//! [`FilterExpr::parse`](https://docs.rs/ptscan/latest/ptscan/struct.FilterExpr.html#method.parse).
 //!
 //! <br>
 //!
@@ -177,9 +192,9 @@
 //! ## License
 //!
 //! This project bundles Adwaita icons parts of the GNOME Project under the Creative
-//! Commons Attribution-Share Alike 3.0 license (see [licenses]).
+//! Commons Attribution-Share Alike 3.0 license (see [licenses](https://github.com/udoprog/ptscan/tree/main/licenses)).
 //!
-//! You can find them at http://www.gnome.org
+//! You can find them at <https://www.gnome.org>.
 
 #[macro_use]
 pub mod utils;

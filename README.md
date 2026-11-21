@@ -1,12 +1,35 @@
-# ptscan
+# ptscan-server
 
 [<img alt="github" src="https://img.shields.io/badge/github-udoprog/ptscan-8da0cb?style=for-the-badge&logo=github" height="20">](https://github.com/udoprog/ptscan)
-[<img alt="crates.io" src="https://img.shields.io/crates/v/ptscan.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/ptscan)
-[<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-ptscan-66c2a5?style=for-the-badge&logoColor=white&logo=data:image/svg+xml;base64,PHN2ZyByb2xlPSJpbWciIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgdmlld0JveD0iMCAwIDUxMiA1MTIiPjxwYXRoIGZpbGw9IiNmNWY1ZjUiIGQ9Ik00ODguNiAyNTAuMkwzOTIgMjE0VjEwNS41YzAtMTUtOS4zLTI4LjQtMjMuNC0zMy43bC0xMDAtMzcuNWMtOC4xLTMuMS0xNy4xLTMuMS0yNS4zIDBsLTEwMCAzNy41Yy0xNC4xIDUuMy0yMy40IDE4LjctMjMuNCAzMy43VjIxNGwtOTYuNiAzNi4yQzkuMyAyNTUuNSAwIDI2OC45IDAgMjgzLjlWMzk0YzAgMTMuNiA3LjcgMjYuMSAxOS45IDMyLjJsMTAwIDUwYzEwLjEgNS4xIDIyLjEgNS4xIDMyLjIgMGwxMDMuOS01MiAxMDMuOSA1MmMxMC4xIDUuMSAyMi4xIDUuMSAzMi4yIDBsMTAwLTUwYzEyLjItNi4xIDE5LjktMTguNiAxOS45LTMyLjJWMjgzLjljMC0xNS05LjMtMjguNC0yMy40LTMzLjd6TTM1OCAyMTQuOGwtODUgMzEuOXYtNjguMmw4NS0zN3Y3My4zek0xNTQgMTA0LjFsMTAyLTM4LjIgMTAyIDM4LjJ2LjZsLTEwMiA0MS40LTEwMi00MS40di0uNnptODQgMjkxLjFsLTg1IDQyLjV2LTc5LjFsODUtMzguOHY3NS40em0wLTExMmwtMTAyIDQxLjQtMTAyLTQxLjR2LS42bDEwMi0zOC4yIDEwMiAzOC4ydi42em0yNDAgMTEybC04NSA0Mi41di03OS4xbDg1LTM4Ljh2NzUuNHptMC0xMTJsLTEwMiA0MS40LTEwMi00MS40di0uNmwxMDItMzguMiAxMDIgMzguMnYuNnoiPjwvcGF0aD48L3N2Zz4K" height="20">](https://docs.rs/ptscan)
+[<img alt="crates.io" src="https://img.shields.io/crates/v/ptscan-server.svg?style=for-the-badge&color=fc8d62&logo=rust" height="20">](https://crates.io/crates/ptscan-server)
+[<img alt="docs.rs" src="https://img.shields.io/badge/docs.rs-ptscan--server-66c2a5?style=for-the-badge&logoColor=white&logo=data:image/svg+xml;base64,PHN2ZyByb2xlPSJpbWciIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgdmlld0JveD0iMCAwIDUxMiA1MTIiPjxwYXRoIGZpbGw9IiNmNWY1ZjUiIGQ9Ik00ODguNiAyNTAuMkwzOTIgMjE0VjEwNS41YzAtMTUtOS4zLTI4LjQtMjMuNC0zMy43bC0xMDAtMzcuNWMtOC4xLTMuMS0xNy4xLTMuMS0yNS4zIDBsLTEwMCAzNy41Yy0xNC4xIDUuMy0yMy40IDE4LjctMjMuNCAzMy43VjIxNGwtOTYuNiAzNi4yQzkuMyAyNTUuNSAwIDI2OC45IDAgMjgzLjlWMzk0YzAgMTMuNiA3LjcgMjYuMSAxOS45IDMyLjJsMTAwIDUwYzEwLjEgNS4xIDIyLjEgNS4xIDMyLjIgMGwxMDMuOS01MiAxMDMuOSA1MmMxMC4xIDUuMSAyMi4xIDUuMSAzMi4yIDBsMTAwLTUwYzEyLjItNi4xIDE5LjktMTguNiAxOS45LTMyLjJWMjgzLjljMC0xNS05LjMtMjguNC0yMy40LTMzLjd6TTM1OCAyMTQuOGwtODUgMzEuOXYtNjguMmw4NS0zN3Y3My4zek0xNTQgMTA0LjFsMTAyLTM4LjIgMTAyIDM4LjJ2LjZsLTEwMiA0MS40LTEwMi00MS40di0uNnptODQgMjkxLjFsLTg1IDQyLjV2LTc5LjFsODUtMzguOHY3NS40em0wLTExMmwtMTAyIDQxLjQtMTAyLTQxLjR2LS42bDEwMi0zOC4yIDEwMiAzOC4ydi42em0yNDAgMTEybC04NSA0Mi41di03OS4xbDg1LTM4Ljh2NzUuNHptMC0xMTJsLTEwMiA0MS40LTEwMi00MS40di0uNmwxMDItMzguMiAxMDIgMzguMnYuNnoiPjwvcGF0aD48L3N2Zz4K" height="20">](https://docs.rs/ptscan-server)
 [<img alt="build status" src="https://img.shields.io/github/actions/workflow/status/udoprog/ptscan/ci.yml?branch=main&style=for-the-badge" height="20">](https://github.com/udoprog/ptscan/actions?query=branch%3Amain)
 
-A memory and pointer scanner for Windows and Linux, written in Rust, with a
-web UI.
+ptscan finds the memory addresses behind the numbers in a running program, the
+way Cheat Engine does, from a web UI in your browser on Windows and Linux. Attach
+to a process, scan for a value, change it in the program, narrow the results
+until one address is left, then watch it or write to it. When the program moves
+it around between runs, a pointer scan finds a stable path back to it.
+
+* **Typed scans.** Integers, floats, pointers, strings in any encoding and
+  byte arrays, and the expression language below to narrow them with
+  comparisons, arithmetic, dereferences and regular expressions.
+* **Pointer scans.** Resolve addresses that move into module-relative pointer
+  paths which survive restarts.
+* **Fast.** Scans run in parallel over the whole address space, with the exact
+  value patterns of initial scans searched in batches.
+* **A browser UI.** `ptscan-server` serves a local web UI, so there is nothing
+  to attach a debugger-style window to, and no GUI toolkit to install.
+* **Written in Rust.** One native binary per platform, with a library you can
+  embed in your own tools.
+
+<br>
+
+## Install
+
+Download the Windows installer from the
+[GitHub releases](https://github.com/udoprog/ptscan/releases). On Linux, build
+it from source as described under [Building](https://github.com/udoprog/ptscan#building).
 
 <br>
 
@@ -26,7 +49,8 @@ Scans and watches select values using _filters_, the expression language
 described below.
 
 On Linux, reading another process's memory needs ptrace access to it, such
-as `kernel.yama.ptrace_scope = 0` or `CAP_SYS_PTRACE`.
+as `kernel.yama.ptrace_scope = 0` or `CAP_SYS_PTRACE`. See
+[Linux](https://github.com/udoprog/ptscan#linux) for details.
 
 <br>
 
@@ -217,6 +241,6 @@ On Linux, ptscan reads process memory with `process_vm_readv`, falling back to
 ## License
 
 This project bundles Adwaita icons parts of the GNOME Project under the Creative
-Commons Attribution-Share Alike 3.0 license (see [licenses]).
+Commons Attribution-Share Alike 3.0 license (see [licenses](https://github.com/udoprog/ptscan/tree/main/licenses)).
 
-You can find them at http://www.gnome.org
+You can find them at <https://www.gnome.org>.

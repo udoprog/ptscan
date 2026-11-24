@@ -1,16 +1,17 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::process::Command;
+use std::process;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tracing_subscriber::EnvFilter;
 
 #[cfg(windows)]
 mod tray;
+mod update;
 
 #[derive(Parser)]
 #[command(about = "Serve the ptscan websocket API")]
@@ -28,16 +29,28 @@ struct Args {
     /// Do not show an icon in the Windows notification area.
     #[arg(long)]
     no_tray: bool,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Update ptscan to the latest GitHub release.
+    Update,
 }
 
 fn main() -> Result<()> {
+    let args = Args::parse();
+
+    if let Some(Command::Update) = args.command {
+        return update::update();
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
-
-    let args = Args::parse();
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -60,7 +73,7 @@ async fn run(args: Args) -> Result<()> {
 
     if !ptscan_server::web::is_embedded() {
         tracing::warn!(
-            "The web UI is not embedded; run `trunk build --release` and rebuild ptscan-server"
+            "The web UI is not embedded; run `trunk build --release` and rebuild ptscan (`cargo build -p ptscan-server`)"
         );
     }
 
@@ -139,15 +152,15 @@ fn url(mut addr: SocketAddr) -> String {
 
 fn open_browser(url: &str) -> Result<()> {
     let mut command = if cfg!(windows) {
-        let mut command = Command::new("rundll32");
+        let mut command = process::Command::new("rundll32");
         command.args(["url.dll,FileProtocolHandler", url]);
         command
     } else if cfg!(target_os = "macos") {
-        let mut command = Command::new("open");
+        let mut command = process::Command::new("open");
         command.arg(url);
         command
     } else {
-        let mut command = Command::new("xdg-open");
+        let mut command = process::Command::new("xdg-open");
         command.arg(url);
         command
     };

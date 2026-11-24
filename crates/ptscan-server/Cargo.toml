@@ -1,7 +1,12 @@
 [package]
 name = "ptscan-server"
+version = "0.0.0"
 edition = "2024"
 publish = false
+
+[[bin]]
+name = "ptscan"
+path = "src/main.rs"
 
 [dependencies]
 api = { path = "../api" }
@@ -12,10 +17,16 @@ rust-embed = { version = "8.7.2", default-features = false }
 mime_guess = { version = "2.0.5", default-features = false }
 axum = { version = "0.8", default-features = false, features = ["ws", "tokio", "http1"] }
 clap = { version = "4.6.7", features = ["derive"] }
+flate2 = "1.1.11"
 musli-web = { version = "0.6.0", default-features = false, features = ["axum08", "format-descriptive", "format-json"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "rustls"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tar = { version = "0.4.46", default-features = false }
 tokio = { version = "1.45", features = ["rt-multi-thread", "macros", "net", "sync"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["fmt", "env-filter"] }
+zip = { version = "9.7.3", default-features = false, features = ["deflate-flate2"] }
 
 [target.'cfg(windows)'.dependencies.windows-sys]
 version = "0.61.2"

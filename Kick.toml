@@ -2,7 +2,7 @@ name = "ptscan"
 
 [build]
 package = "ptscan"
-pre_build = ["trunk build --release"]
+pre_build = ["trug build --release"]
 
 [package]
 binaries = { exclude = ["web"] }

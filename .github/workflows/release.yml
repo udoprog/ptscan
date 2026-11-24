@@ -47,11 +47,9 @@ jobs:
       with:
         targets: wasm32-unknown-unknown
     - uses: Swatinem/rust-cache@v2
-    - uses: jetli/trunk-action@v0.5.0
-      with:
-        version: v0.22.1
+    - uses: udoprog/actions@trug
     - uses: udoprog/actions@kick
-    - run: trunk build --release
+    - run: trug build --release
     - run: cargo build --release -p ptscan
     - run: kick ${{matrix.method}} --name "ptscan-{release}-{arch}-{os}" --output dist
     - uses: actions/upload-artifact@v4

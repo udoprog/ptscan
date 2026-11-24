@@ -27,7 +27,7 @@ async fn serves_web_ui() {
 
     if !ptscan::web::is_embedded() {
         assert!(head.starts_with("http/1.1 404"), "{head}");
-        assert!(body.contains("trunk build --release"), "{body}");
+        assert!(body.contains("trug build --release"), "{body}");
         return;
     }
 

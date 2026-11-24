@@ -3,7 +3,7 @@
 //! A browser always sends `Origin` on websocket upgrades, so a page on another
 //! site (or one using DNS rebinding to reach this port) is refused, while
 //! native clients which send no `Origin` are allowed. Origins added with
-//! [`crate::Shared::with_dev_origin`], such as a `trunk serve` page proxying
+//! [`crate::Shared::with_dev_origin`], such as a `trug serve` page proxying
 //! `/ws`, are also allowed.
 
 use std::fmt;

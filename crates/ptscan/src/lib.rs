@@ -63,11 +63,11 @@
 //!
 //! ## Building
 //!
-//! The server embeds the web UI built by [trunk](https://trunkrs.dev), so build
+//! The server embeds the web UI built by [trug](https://github.com/udoprog/trug), so build
 //! the UI first (it needs the `wasm32-unknown-unknown` target):
 //!
 //! ```sh
-//! trunk build --release
+//! trug build --release
 //! cargo build --release -p ptscan
 //! ```
 //!
@@ -75,12 +75,12 @@
 //! UI is missing. Releases are packaged for Linux (`.tar.gz`) and Windows
 //! (`.zip`) by [kick](https://github.com/udoprog/kick).
 //!
-//! For development, run the server and serve the UI with `trunk serve`, which
+//! For development, run the server and serve the UI with `trug serve`, which
 //! proxies `/ws` to the server:
 //!
 //! ```sh
 //! cargo run -p ptscan -- --no-browser --dev-origin http://127.0.0.1:8080
-//! trunk serve
+//! trug serve
 //! ```
 //!
 //! <br>

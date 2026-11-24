@@ -20,7 +20,7 @@ struct Args {
     #[arg(long, default_value = api::DEFAULT_BIND)]
     bind: SocketAddr,
     /// Also accept connections from pages served at this origin, such as
-    /// `http://127.0.0.1:8080` for `trunk serve`. Can be repeated.
+    /// `http://127.0.0.1:8080` for `trug serve`. Can be repeated.
     #[arg(long, value_name = "ORIGIN")]
     dev_origin: Vec<ptscan::DevOrigin>,
     /// Do not open the web UI in the default browser on launch.
@@ -73,7 +73,7 @@ async fn run(args: Args) -> Result<()> {
 
     if !ptscan::web::is_embedded() {
         tracing::warn!(
-            "The web UI is not embedded; run `trunk build --release` and rebuild ptscan (`cargo build -p ptscan`)"
+            "The web UI is not embedded; run `trug build --release` and rebuild ptscan (`cargo build -p ptscan`)"
         );
     }
 

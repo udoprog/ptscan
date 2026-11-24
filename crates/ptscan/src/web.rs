@@ -1,6 +1,6 @@
-//! Serves the trunk-built web UI embedded into the binary.
+//! Serves the trug-built web UI embedded into the binary.
 //!
-//! The UI is built into `target/dist` with `trunk build --release` before the
+//! The UI is built into `target/dist` with `trug build --release` before the
 //! server is built. Without it the server still builds, but serves a page
 //! saying the UI is missing and warns on startup.
 
@@ -14,7 +14,7 @@ use rust_embed::RustEmbed;
 struct Asset;
 
 const MISSING: &str = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>ptscan</title></head>\
-<body><p>The ptscan web UI was not built into this server. Run <code>trunk build --release</code> \
+<body><p>The ptscan web UI was not built into this server. Run <code>trug build --release</code> \
 in the repository root, then rebuild ptscan (<code>cargo build -p ptscan</code>).</p></body></html>";
 
 /// Test if the web UI is embedded.

@@ -34,10 +34,8 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
       with:
         targets: wasm32-unknown-unknown
-    - uses: jetli/trunk-action@v0.5.0
-      with:
-        version: v0.22.1
-    - run: trunk build --release
+    - uses: udoprog/actions@trug
+    - run: trug build --release
 
   rustfmt:
     runs-on: ubuntu-latest

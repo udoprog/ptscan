@@ -25,7 +25,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
-    - run: cargo test -p ptscan -p ptscan-server -p api -p dynamicvec
+    - run: cargo test -p ptscan-core -p ptscan -p api -p dynamicvec
 
   web:
     runs-on: ubuntu-latest

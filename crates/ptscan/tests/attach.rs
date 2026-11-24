@@ -31,8 +31,8 @@ impl Drop for KillOnDrop {
 async fn connect() -> Handle {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let shared = Arc::new(ptscan_server::Shared::default());
-    tokio::spawn(ptscan_server::serve(listener, shared));
+    let shared = Arc::new(ptscan::Shared::default());
+    tokio::spawn(ptscan::serve(listener, shared));
 
     let mut service = tungstenite029::connect(format!("ws://{addr}/ws")).build();
     let handle = service.handle().clone();

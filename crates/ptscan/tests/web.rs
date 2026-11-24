@@ -19,13 +19,13 @@ async fn get(addr: std::net::SocketAddr, path: &str) -> (String, String) {
 async fn serves_web_ui() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let shared = Arc::new(ptscan_server::Shared::default());
-    tokio::spawn(ptscan_server::serve(listener, shared));
+    let shared = Arc::new(ptscan::Shared::default());
+    tokio::spawn(ptscan::serve(listener, shared));
 
     let (head, body) = get(addr, "/").await;
     assert!(head.contains("content-type: text/html"), "{head}");
 
-    if !ptscan_server::web::is_embedded() {
+    if !ptscan::web::is_embedded() {
         assert!(head.starts_with("http/1.1 404"), "{head}");
         assert!(body.contains("trunk build --release"), "{body}");
         return;
@@ -34,7 +34,7 @@ async fn serves_web_ui() {
     assert!(head.starts_with("http/1.1 200"), "{head}");
     assert!(body.contains("<title>ptscan</title>"), "{body}");
 
-    let js = ptscan_server::web::files()
+    let js = ptscan::web::files()
         .find(|name| name.ends_with(".js"))
         .expect("embedded script");
     let (head, body) = get(addr, &format!("/{js}")).await;

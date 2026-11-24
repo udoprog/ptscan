@@ -18,13 +18,13 @@ macro_rules! timeout {
 }
 
 async fn server() -> SocketAddr {
-    server_with(ptscan_server::Shared::default()).await
+    server_with(ptscan::Shared::default()).await
 }
 
-async fn server_with(shared: ptscan_server::Shared) -> SocketAddr {
+async fn server_with(shared: ptscan::Shared) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(ptscan_server::serve(listener, Arc::new(shared)));
+    tokio::spawn(ptscan::serve(listener, Arc::new(shared)));
     addr
 }
 
@@ -456,7 +456,7 @@ mod linux {
     #[tokio::test(flavor = "multi_thread")]
     async fn large_generation_is_rescanned_in_place() {
         let mut holder = Holder::spawn();
-        let shared = ptscan_server::Shared::default().with_rescan_copy_limit(0);
+        let shared = ptscan::Shared::default().with_rescan_copy_limit(0);
         let handle = connect(server_with(shared).await).await;
         let mut changes = handle.on_broadcast::<api::ScanStateChanged>();
         attach(&handle, holder.child.id()).await;

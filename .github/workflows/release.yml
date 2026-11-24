@@ -27,7 +27,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
     - name: Check that the version matches Cargo.toml
       run: |
-        manifest=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "ptscan-server") | .version')
+        manifest=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "ptscan") | .version')
         if [ "$manifest" != "$KICK_VERSION" ]; then
           echo "Version $KICK_VERSION does not match Cargo.toml version $manifest" >&2
           exit 1
@@ -52,7 +52,7 @@ jobs:
         version: v0.22.1
     - uses: udoprog/actions@kick
     - run: trunk build --release
-    - run: cargo build --release -p ptscan-server
+    - run: cargo build --release -p ptscan
     - run: kick ${{matrix.method}} --name "ptscan-{release}-{arch}-{os}" --output dist
     - uses: actions/upload-artifact@v4
       with:

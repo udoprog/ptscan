@@ -15,7 +15,7 @@ struct Asset;
 
 const MISSING: &str = "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>ptscan</title></head>\
 <body><p>The ptscan web UI was not built into this server. Run <code>trunk build --release</code> \
-in the repository root, then rebuild ptscan (<code>cargo build -p ptscan-server</code>).</p></body></html>";
+in the repository root, then rebuild ptscan (<code>cargo build -p ptscan</code>).</p></body></html>";
 
 /// Test if the web UI is embedded.
 pub fn is_embedded() -> bool {

@@ -1,7 +1,7 @@
 //! The scratch list: pointers watched and edited outside of scans.
 
 use anyhow::{Result, anyhow};
-use ptscan::{Address, PortablePointer, ProcessHandle, Proxy as _, Type, Value};
+use ptscan_core::{Address, PortablePointer, ProcessHandle, Proxy as _, Type, Value};
 
 use crate::{Shared, lock, read};
 

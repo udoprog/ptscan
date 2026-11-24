@@ -1,221 +1,264 @@
-use crate::{
-    Address, Base, FollowablePointer as _, Location, Offset, Pointer, ProcessHandle, Size, Token,
-    Type,
+//! Pointer scans for the address of a scratch entry.
+
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, RwLock};
+use std::time::Instant;
+
+use anyhow::{Result, anyhow};
+use ptscan_core::{
+    Addresses, FilterExpr, FollowablePointer as _, PointerScan, PortablePointer, ProcessHandle,
+    Size, Token, Type, ValueExpr, Values,
 };
-use anyhow::anyhow;
-use hashbrown::{hash_map, HashMap};
-use std::collections::{BTreeMap, VecDeque};
+use tokio::sync::watch;
 
-type SVec = Vec<Offset>;
+use crate::{Shared, lock, read};
 
-pub trait PointerScanInitialProgress {
-    fn report(&mut self, queue: usize, results: usize) -> anyhow::Result<()>;
+const MAX_DEPTH: usize = 7;
+const MAX_OFFSET: u32 = 0x1000;
+
+#[derive(Default)]
+pub(crate) struct PointerSession {
+    entry: Option<u64>,
+    value_type: Option<Type>,
+    results: Arc<Vec<PortablePointer>>,
+    running: Option<Arc<AtomicBool>>,
+    last: Option<api::PointerScanOutcome>,
+    /// Bumped whenever the results are discarded, so that a scan started
+    /// before that does not store its result.
+    epoch: u64,
 }
 
-pub trait PointerScanBackreferenceProgress {
-    /// Report progress during a backreference scan.
-    fn report(&mut self, remaining: usize, results: usize) -> anyhow::Result<()>;
-}
-
-/// Helper for performing a pointer scan.
-///
-/// The configuration to use during a scan.
-///
-/// Defaults are
-///
-/// max_offset: 0x1000
-/// max_depth: 7
-pub struct PointerScan<'a> {
-    #[allow(unused)]
-    thread_pool: &'a rayon::ThreadPool,
-    handle: &'a ProcessHandle,
-    cancel: &'a Token,
-    /// Forward references used.
-    pub forward: HashMap<Address, Address>,
-    /// Reverse references used.
-    pub reverse: BTreeMap<Address, Address>,
-    // contains both all visited links and alternative paths for each address.
-    pub visited: HashMap<Address, Vec<SVec>>,
-    pub visited_count: usize,
-    pub max_offset: Size,
-    pub max_depth: usize,
-}
-
-impl<'a> PointerScan<'a> {
-    pub fn new(
-        thread_pool: &'a rayon::ThreadPool,
-        handle: &'a ProcessHandle,
-        cancel: &'a Token,
-    ) -> Self {
-        Self {
-            thread_pool,
-            handle,
-            cancel,
-            forward: Default::default(),
-            reverse: Default::default(),
-            visited: HashMap::new(),
-            visited_count: 0,
-            max_offset: 0x1000u32.into(),
-            max_depth: 7,
+impl PointerSession {
+    fn state(&self) -> api::PointerScanState {
+        api::PointerScanState {
+            entry: self.entry,
+            value_type: self.value_type.map(|t| t.to_string()),
+            results: self.results.len() as u64,
+            running: self.running.is_some(),
+            last: self.last.clone(),
         }
     }
 
-    /// Build forward and backward references.
-    pub fn build_references<'v, A, V>(&mut self, addresses: A, values: V) -> anyhow::Result<()>
-    where
-        A: IntoIterator<Item = Address>,
-        V: IntoIterator<Item = dynamicvec::Accessor<'v, Type>>,
-    {
-        for (from, value) in addresses.into_iter().zip(values.into_iter()) {
-            let to = match value.read().as_address() {
-                Some(address) => address,
-                None => continue,
-            };
-
-            self.forward.insert(from, to);
-            self.reverse.insert(to, from);
+    fn cancel(&self) {
+        if let Some(token) = &self.running {
+            Token::from_raw(token).set();
         }
+    }
+}
 
+struct Progress {
+    sender: watch::Sender<api::PointerScanProgress>,
+    stage: api::PointerScanStage,
+}
+
+impl Progress {
+    fn send(&self, percentage: u32, remaining: usize, results: u64) {
+        self.sender.send_replace(api::PointerScanProgress {
+            stage: self.stage,
+            percentage,
+            remaining: remaining as u64,
+            results,
+        });
+    }
+}
+
+impl ptscan_core::ScanProgress for Progress {
+    fn report_bytes(&mut self, _: Size) -> Result<()> {
         Ok(())
     }
 
-    /// Perform the initial backwards pointer scan.
-    pub fn scan(
-        &mut self,
-        needle: Address,
-        pointers: &mut Vec<Pointer>,
-        progress: &mut impl PointerScanInitialProgress,
-    ) -> anyhow::Result<()> {
-        let Self {
-            ref handle,
-            ref cancel,
-            ref reverse,
-            ref mut visited,
-            ref mut visited_count,
-            max_depth,
-            max_offset,
-            ..
-        } = *self;
-
-        let mut queue = VecDeque::new();
-        queue.push_back((needle, 0usize, SVec::new()));
-
-        while let Some((n, depth, path)) = queue.pop_front() {
-            if cancel.test() {
-                break;
-            }
-
-            let it = reverse.range(..=n).rev();
-
-            for (from, hit) in it {
-                let offset = n.offset_of(*from);
-
-                if !offset.is_within(max_offset) {
-                    break;
-                }
-
-                let mut path = path.clone();
-                path.push(offset);
-
-                match visited.entry(*hit) {
-                    hash_map::Entry::Occupied(mut e) => {
-                        e.get_mut().push(path);
-                        *visited_count += 1;
-                        continue;
-                    }
-                    hash_map::Entry::Vacant(e) => {
-                        e.insert(Vec::new());
-                    }
-                }
-
-                match handle.find_location(*hit) {
-                    Location::Module(module) => {
-                        let mut path = path.clone();
-                        let offset = hit.offset_of(module.range.base);
-                        path.reverse();
-
-                        let pointer = Pointer::new(
-                            Base::Module {
-                                id: module.id,
-                                offset,
-                            },
-                            path.clone(),
-                        );
-
-                        pointers.push(pointer);
-                    }
-                    // ignore thread stacks
-                    Location::Thread(..) => {
-                        continue;
-                    }
-                    _ => (),
-                }
-
-                let depth = depth + 1;
-
-                if depth < max_depth {
-                    queue.push_back((*hit, depth, path));
-                }
-            }
-
-            progress.report(queue.len(), pointers.len())?;
-        }
-
+    fn report(&mut self, percentage: usize, results: u64) -> Result<()> {
+        self.send(percentage as u32, 0, results);
         Ok(())
     }
+}
 
-    /// Perform a "backreference scan", where we add all additional pointer
-    /// paths that were skipped during the first scan.
-    ///
-    /// We accomplish this by going through all found results so far and
-    /// traversing theirs paths, looking for backreferences that were omitted
-    /// in the first step.
-    pub fn backreference_scan(
-        &mut self,
-        pointers: &mut Vec<Pointer>,
-        progress: &mut impl PointerScanBackreferenceProgress,
-    ) -> anyhow::Result<()> {
-        // add all tailing pointers.
-        let mut additions = Vec::new();
+impl ptscan_core::PointerScanInitialProgress for Progress {
+    fn report(&mut self, queue: usize, results: usize) -> Result<()> {
+        self.send(0, queue, results as u64);
+        Ok(())
+    }
+}
 
-        for (i, pointer) in pointers.iter().enumerate() {
-            if self.cancel.test() {
-                break;
-            }
+impl ptscan_core::PointerScanBackreferenceProgress for Progress {
+    fn report(&mut self, remaining: usize, results: usize) -> Result<()> {
+        self.send(0, remaining, results as u64);
+        Ok(())
+    }
+}
 
-            let mut address = pointer
-                .follow_default(self.handle)?
-                .ok_or_else(|| anyhow!("could not resolve pointer to address"))?;
+impl Shared {
+    pub fn pointer_scan_state(&self) -> api::PointerScanState {
+        lock(&self.pointer_session).state()
+    }
 
-            let mut path = SVec::new();
-            let mut it = pointer.offsets.iter().copied();
+    fn publish_pointer_scan_state(&self, session: &PointerSession) -> api::PointerScanState {
+        let state = session.state();
+        self.pointer_scan_state.send_replace(state.clone());
+        state
+    }
 
-            while !self.cancel.test() {
-                if let Some(extra) = self.visited.get(&address) {
-                    for p in extra {
-                        let mut path = path.clone();
-                        path.extend(p.iter().rev().cloned());
+    /// Start a pointer scan in the background for the address the scratch
+    /// entry `id` currently follows to, replacing the paths of the last one.
+    pub fn start_pointer_scan(self: &Arc<Self>, id: u64) -> api::PointerScanResponse {
+        let error = |e: &str| api::PointerScanResponse {
+            error: Some(e.into()),
+        };
 
-                        let pointer = Pointer::new(pointer.base.clone(), path);
-                        additions.push(pointer);
-                    }
-                }
+        let Some(handle) = lock(&self.handle).clone() else {
+            return error("not attached to a process");
+        };
 
-                if let Some(a) = self.forward.get(&address).copied() {
-                    if let Some(o) = it.next() {
-                        address = a.saturating_offset(o);
-                        path.push(o);
-                        continue;
-                    }
-                }
+        let Some((pointer, value_type)) = lock(&self.scratch).get(id) else {
+            return error(&format!("no scratch entry {id}"));
+        };
 
-                break;
-            }
+        let mut session = lock(&self.pointer_session);
 
-            progress.report(pointers.len() - (i + 1), pointers.len() + additions.len())?;
+        if session.running.is_some() {
+            return error("a pointer scan is already running");
         }
 
-        pointers.append(&mut additions);
-        Ok(())
+        let token = Arc::new(AtomicBool::new(false));
+        session.running = Some(token.clone());
+        session.entry = Some(id);
+        session.value_type = Some(value_type);
+        session.results = Arc::default();
+        session.last = None;
+        let epoch = session.epoch;
+        self.pointer_progress
+            .send_replace(api::PointerScanProgress::default());
+        self.publish_pointer_scan_state(&session);
+        drop(session);
+
+        let shared = self.clone();
+
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let token_ref = Token::from_raw(&token);
+            let mut results = Vec::new();
+            let result = shared.run_pointer_scan(&handle, &pointer, &mut results, token_ref);
+
+            let mut session = lock(&shared.pointer_session);
+
+            if session.epoch != epoch {
+                return;
+            }
+
+            session.running = None;
+            session.results = Arc::new(results);
+            session.last = Some(api::PointerScanOutcome {
+                results: session.results.len() as u64,
+                cancelled: token_ref.test(),
+                error: result.err().map(|e| format!("{e:#}")),
+                duration_ms: started.elapsed().as_millis() as u64,
+            });
+            shared.publish_pointer_scan_state(&session);
+        });
+
+        api::PointerScanResponse::default()
+    }
+
+    /// The pointer scan of the GTK GUI: every pointer in memory is collected,
+    /// then followed back from the address to modules.
+    fn run_pointer_scan(
+        &self,
+        handle: &RwLock<ProcessHandle>,
+        pointer: &PortablePointer,
+        results: &mut Vec<PortablePointer>,
+        token: &Token,
+    ) -> Result<()> {
+        crate::scan::refresh_modules(handle)?;
+        let handle = read(handle);
+
+        let needle = pointer
+            .follow_default(&handle)?
+            .ok_or_else(|| anyhow!("failed to follow pointer `{pointer}` to an address"))?;
+
+        let filter = FilterExpr::pointer(ValueExpr::Value, &handle.process)?;
+        let width = handle.process.pointer_width;
+        let mut addresses = Addresses::new(width);
+        let mut values = Values::new(width.into_type());
+
+        let progress = |stage| Progress {
+            sender: self.pointer_progress.clone(),
+            stage,
+        };
+
+        handle.initial_scan(
+            &self.pool,
+            &filter,
+            &mut addresses,
+            &mut values,
+            Some(token),
+            progress(api::PointerScanStage::Initial),
+            Default::default(),
+        )?;
+
+        let mut scan = PointerScan::new(&self.pool, &handle, token);
+        scan.max_depth = MAX_DEPTH;
+        scan.max_offset = Size::new(MAX_OFFSET.into());
+        scan.build_references(addresses.iter_copied(), values.iter())?;
+        drop((addresses, values));
+
+        let mut pointers = Vec::new();
+        let result = scan.scan(
+            needle,
+            &mut pointers,
+            &mut progress(api::PointerScanStage::Paths),
+        );
+
+        if result.is_ok() {
+            scan.backreference_scan(
+                &mut pointers,
+                &mut progress(api::PointerScanStage::Backreferences),
+            )?;
+        }
+
+        results.extend(pointers.into_iter().filter_map(|p| {
+            Some(PortablePointer::new(
+                p.base.as_portable(&handle)?,
+                p.offsets,
+            ))
+        }));
+
+        result
+    }
+
+    pub fn cancel_pointer_scan(&self) -> api::PointerScanState {
+        let session = lock(&self.pointer_session);
+        session.cancel();
+        session.state()
+    }
+
+    pub(crate) fn reset_pointer_scan(&self) {
+        let mut session = lock(&self.pointer_session);
+        session.cancel();
+        let epoch = session.epoch + 1;
+        *session = PointerSession {
+            epoch,
+            ..PointerSession::default()
+        };
+        self.publish_pointer_scan_state(&session);
+    }
+
+    pub fn pointer_scan_results(&self, offset: u64, limit: u32) -> api::PointerScanResultsResponse {
+        let (results, value_type) = {
+            let session = lock(&self.pointer_session);
+            (session.results.clone(), session.value_type)
+        };
+
+        let total = results.len();
+        let start = usize::try_from(offset).unwrap_or(usize::MAX).min(total);
+        let end = start
+            .saturating_add(limit.min(api::MAX_SCAN_PAGE) as usize)
+            .min(total);
+
+        api::PointerScanResultsResponse {
+            total: total as u64,
+            offset: start as u64,
+            results: results[start..end].iter().map(|p| p.to_string()).collect(),
+            value_type: value_type.map(|t| t.to_string()),
+        }
     }
 }

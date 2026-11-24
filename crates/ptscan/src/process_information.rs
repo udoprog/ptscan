@@ -1,7 +1,7 @@
 //! Modules, threads and memory regions of the attached process.
 
 use anyhow::{Context as _, Result};
-use ptscan::{
+use ptscan_core::{
     AddressRange, MemoryInformation, ModulesState, ProcessHandle, ProcessInfo as _, ProcessThread,
 };
 

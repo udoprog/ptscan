@@ -10,9 +10,7 @@ use tokio::sync::oneshot;
 use tracing_subscriber::EnvFilter;
 
 #[cfg(windows)]
-#[path = "../tray.rs"]
 mod tray;
-#[path = "../update.rs"]
 mod update;
 
 #[derive(Parser)]
@@ -24,7 +22,7 @@ struct Args {
     /// Also accept connections from pages served at this origin, such as
     /// `http://127.0.0.1:8080` for `trunk serve`. Can be repeated.
     #[arg(long, value_name = "ORIGIN")]
-    dev_origin: Vec<ptscan_server::DevOrigin>,
+    dev_origin: Vec<ptscan::DevOrigin>,
     /// Do not open the web UI in the default browser on launch.
     #[arg(long)]
     no_browser: bool,
@@ -73,9 +71,9 @@ async fn run(args: Args) -> Result<()> {
     let url = url(listener.local_addr()?);
     tracing::info!("Serving the web UI on {url}");
 
-    if !ptscan_server::web::is_embedded() {
+    if !ptscan::web::is_embedded() {
         tracing::warn!(
-            "The web UI is not embedded; run `trunk build --release` and rebuild ptscan (`cargo build -p ptscan-server`)"
+            "The web UI is not embedded; run `trunk build --release` and rebuild ptscan (`cargo build -p ptscan`)"
         );
     }
 
@@ -88,7 +86,7 @@ async fn run(args: Args) -> Result<()> {
     let shared = Arc::new(
         args.dev_origin
             .into_iter()
-            .fold(ptscan_server::Shared::default(), |shared, origin| {
+            .fold(ptscan::Shared::default(), |shared, origin| {
                 shared.with_dev_origin(origin)
             }),
     );
@@ -130,7 +128,7 @@ async fn run(args: Args) -> Result<()> {
         }
     };
 
-    let result = ptscan_server::serve_until(listener, shared, shutdown).await;
+    let result = ptscan::serve_until(listener, shared, shutdown).await;
 
     #[cfg(windows)]
     if let Some(tray) = tray {

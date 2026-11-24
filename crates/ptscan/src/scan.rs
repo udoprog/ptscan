@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
 use anyhow::{Context as _, Result, anyhow};
-use ptscan::{
+use ptscan_core::{
     Address, Addresses, FilterExpr, InitialScanConfig, PortablePointer, Process, ProcessHandle,
     Proxy as _, Size, Token, TypeHint, Value, ValueExpr, Values,
 };
@@ -83,7 +83,7 @@ impl Session {
 
 struct Progress(watch::Sender<api::ScanProgress>);
 
-impl ptscan::ScanProgress for Progress {
+impl ptscan_core::ScanProgress for Progress {
     fn report_bytes(&mut self, _: Size) -> Result<()> {
         Ok(())
     }
@@ -99,7 +99,7 @@ impl ptscan::ScanProgress for Progress {
 
 struct NoProgress;
 
-impl ptscan::ScanProgress for NoProgress {
+impl ptscan_core::ScanProgress for NoProgress {
     fn report_bytes(&mut self, _: Size) -> Result<()> {
         Ok(())
     }
@@ -545,7 +545,9 @@ pub(crate) fn refresh_modules(handle: &RwLock<ProcessHandle>) -> Result<()> {
         // Threads only name stack-relative results, so a platform without
         // thread listing scans without them.
         let threads = match handle.get_threads_with_modules(&modules) {
-            Err(e) if matches!(e.downcast_ref(), Some(ptscan::Error::Unsupported)) => Vec::new(),
+            Err(e) if matches!(e.downcast_ref(), Some(ptscan_core::Error::Unsupported)) => {
+                Vec::new()
+            }
             result => result?,
         };
         (modules, threads)

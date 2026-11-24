@@ -1845,6 +1845,31 @@ name = "ptscan"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "api",
+ "axum",
+ "clap",
+ "flate2",
+ "mime_guess",
+ "musli-web",
+ "ptscan-core",
+ "rayon",
+ "reqwest",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "tar",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "windows-sys 0.61.2",
+ "zip",
+]
+
+[[package]]
+name = "ptscan-core"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
  "bigdecimal",
  "byteorder",
  "clap",
@@ -1873,31 +1898,6 @@ dependencies = [
  "smallvec",
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "ptscan-server"
-version = "0.0.0"
-dependencies = [
- "anyhow",
- "api",
- "axum",
- "clap",
- "flate2",
- "mime_guess",
- "musli-web",
- "ptscan",
- "rayon",
- "reqwest",
- "rust-embed",
- "serde",
- "serde_json",
- "tar",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "windows-sys 0.61.2",
- "zip",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-//! The websocket API shared by `ptscan-server` and the web frontend.
+//! The websocket API shared by `ptscan` and the web frontend.
 
 use musli::{Decode, Encode};
 use musli_web::api;

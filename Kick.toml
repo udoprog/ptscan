@@ -1,4 +1,4 @@
-name = "ptscan-server"
+name = "ptscan"
 
 [package]
 binaries = { exclude = ["web"] }

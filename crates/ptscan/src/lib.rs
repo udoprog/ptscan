@@ -15,7 +15,7 @@
 //!   Linux sit behind the same API.
 //!
 //! The web UI that drives it is the
-//! [`ptscan-server`](https://github.com/udoprog/ptscan#readme) binary.
+//! [`ptscan`](https://github.com/udoprog/ptscan#readme) binary.
 //!
 //! <br>
 //!

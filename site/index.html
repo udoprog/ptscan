@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ptscan</title>
+<meta name="description" content="Cheat Engine style memory and pointer scanner for Windows and Linux, with a web UI in your browser.">
+<style>
+:root {
+  --bg: #fafaf8;
+  --fg: #1d1f21;
+  --muted: #5c6370;
+  --accent: #b7410e;
+  --code-bg: #1d1f21;
+  --code-fg: #f2f2ee;
+  --border: #d8d8d2;
+  --radius: 6px;
+  --space: 1rem;
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17181a;
+    --fg: #ece8e6;
+    --muted: #a0a6b0;
+    --accent: #f08a4b;
+    --code-bg: #0d0e0f;
+    --border: #34363a;
+  }
+}
+.page { margin: 0; background: var(--bg); color: var(--fg); font: 1rem/1.6 var(--font); }
+.main { max-width: 42rem; margin: 0 auto; padding: calc(var(--space) * 3) var(--space); }
+.title { font-size: 2.5rem; margin: 0; }
+.lead { color: var(--muted); font-size: 1.15rem; }
+.heading { font-size: 1.1rem; margin-top: calc(var(--space) * 2); }
+.install { display: flex; gap: .5rem; align-items: stretch; }
+.cmd { flex: 1; margin: 0; padding: .75rem 1rem; overflow-x: auto; background: var(--code-bg); color: var(--code-fg); border-radius: var(--radius); font: .9rem var(--mono); }
+.copy { padding: 0 1rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); color: var(--fg); font: inherit; cursor: pointer; }
+.copy:hover, .copy:focus-visible { border-color: var(--accent); color: var(--accent); }
+.note { color: var(--muted); font-size: .9rem; }
+.links { display: flex; gap: var(--space); padding: 0; list-style: none; }
+.link { color: var(--accent); }
+</style>
+</head>
+<body class="page">
+<main class="main">
+  <h1 class="title">ptscan</h1>
+  <p class="lead">Finds the memory addresses behind the numbers in a running program, the way Cheat Engine does, from a web UI in your browser on Windows and Linux. Run typed value scans, narrow results with an expression language, resolve moving addresses into stable pointer paths, and update with <code>ptscan update</code>.</p>
+
+  <h2 class="heading">Install</h2>
+  <div class="install">
+    <pre class="cmd" id="cmd">curl -fsSL https://udoprog.github.io/ptscan/install.sh | sh</pre>
+    <button class="copy" id="copy" type="button">Copy</button>
+  </div>
+  <p class="note">Installs into <code>~/.local/bin</code> (set <code>PTSCAN_INSTALL_DIR</code> to change it) on Linux (<code>x86_64</code>). On Windows, download the zip from the <a class="link" href="https://github.com/udoprog/ptscan/releases">releases</a>.</p>
+
+  <h2 class="heading">Links</h2>
+  <ul class="links">
+    <li><a class="link" href="https://github.com/udoprog/ptscan">Repository</a></li>
+    <li><a class="link" href="https://github.com/udoprog/ptscan#readme">README</a></li>
+    <li><a class="link" href="https://docs.rs/ptscan">Documentation</a></li>
+    <li><a class="link" href="https://github.com/udoprog/ptscan/releases">Releases</a></li>
+  </ul>
+</main>
+<script>
+document.getElementById("copy").addEventListener("click", function (e) {
+  var button = e.currentTarget;
+  var text = document.getElementById("cmd").textContent;
+  navigator.clipboard.writeText(text).then(function () {
+    button.textContent = "Copied";
+    setTimeout(function () { button.textContent = "Copy"; }, 1500);
+  }, function () {
+    button.textContent = "Press Ctrl+C";
+  });
+});
+</script>
+</body>
+</html>

@@ -1,46 +1,75 @@
 name: Release
 
 on:
+  push:
+    tags:
+    - '[0-9]+.[0-9]+.[0-9]+*'
   workflow_dispatch:
     inputs:
       version:
         description: 'Version to release'
         required: true
-        default: 'nightly'
-        type: choice
-        options:
-        - nightly
-        - "%date"
-  push:
-    tags:
-      - '*'
+        type: string
 
 env:
-  KICK_VERSION: >-
-    ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.version || 'nightly' }}
+  KICK_VERSION: "${{github.event.inputs.version || github.ref_name}}"
+  RUST_LOG: kick=trace
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+    - name: Check that the version matches Cargo.toml
+      run: |
+        manifest=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "ptscan-server") | .version')
+        if [ "$manifest" != "$KICK_VERSION" ]; then
+          echo "Version $KICK_VERSION does not match Cargo.toml version $manifest" >&2
+          exit 1
+        fi
+
   build:
+    needs: version
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [windows-latest]
+        include:
+        - {os: windows-latest, method: zip}
+        - {os: ubuntu-latest, method: gzip}
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
       with:
         targets: wasm32-unknown-unknown
+    - uses: Swatinem/rust-cache@v2
     - uses: jetli/trunk-action@v0.5.0
       with:
         version: v0.22.1
+    - uses: udoprog/actions@kick
     - run: trunk build --release
     - run: cargo build --release -p ptscan-server
-    - uses: udoprog/kick@nightly
-    - run: kick msi --output dist
-    - run: kick gh release --github-action --upload "dist/*"
+    - run: kick ${{matrix.method}} --name "ptscan-{release}-{arch}-{os}" --output dist
+    - uses: actions/upload-artifact@v4
+      with:
+        name: dist-${{matrix.os}}
+        path: dist
+
+  publish:
+    permissions: write-all
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/download-artifact@v7
+      with: {name: dist-windows-latest, path: dist}
+    - uses: actions/download-artifact@v7
+      with: {name: dist-ubuntu-latest, path: dist}
+    - uses: udoprog/actions@kick
+    - run: kick gh release --upload "dist/*" --github-action
       env:
-        GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

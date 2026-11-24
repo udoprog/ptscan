@@ -10,7 +10,9 @@ use tokio::sync::oneshot;
 use tracing_subscriber::EnvFilter;
 
 #[cfg(windows)]
+#[path = "../tray.rs"]
 mod tray;
+#[path = "../update.rs"]
 mod update;
 
 #[derive(Parser)]

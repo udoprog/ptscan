@@ -11,7 +11,7 @@
 //!   paths which survive restarts.
 //! * **Fast.** Scans run in parallel over the whole address space, with the exact
 //!   value patterns of initial scans searched in batches.
-//! * **A browser UI.** `ptscan-server` serves a local web UI, so there is nothing
+//! * **A browser UI.** `ptscan` serves a local web UI, so there is nothing
 //!   to attach a debugger-style window to, and no GUI toolkit to install.
 //! * **Written in Rust.** One native binary per platform, with a library you can
 //!   embed in your own tools.
@@ -20,20 +20,34 @@
 //!
 //! ## Install
 //!
-//! Download the Windows installer from the
-//! [GitHub releases](https://github.com/udoprog/ptscan/releases). On Linux, build
-//! it from source as described under [Building](https://github.com/udoprog/ptscan#building).
+//! On Linux (`x86_64`), install the latest release into `~/.local/bin` (set
+//! `PTSCAN_INSTALL_DIR` to change it):
+//!
+//! ```sh
+//! curl -fsSL https://udoprog.github.io/ptscan/install.sh | sh
+//! ```
+//!
+//! On Windows, download the zip from the
+//! [GitHub releases](https://github.com/udoprog/ptscan/releases).
+//!
+//! To update an existing installation to the latest release:
+//!
+//! ```sh
+//! ptscan update
+//! ```
 //!
 //! <br>
 //!
 //! ## Usage
 //!
-//! `ptscan-server` serves the web UI and its websocket API (at `/ws`) on
+//! `ptscan` serves the web UI and its websocket API (at `/ws`) on
 //! `127.0.0.1:7431`, and opens the UI in the default browser on launch:
 //!
 //! ```sh
-//! ptscan-server [--bind ADDR] [--no-browser] [--no-tray]
+//! ptscan [--bind ADDR] [--no-browser] [--no-tray]
 //! ```
+//!
+//! Run `ptscan update` to replace the binary with the latest GitHub release.
 //!
 //! On Windows it also shows a notification area icon whose menu opens the UI,
 //! shows the attached process and quits the server; `--no-tray` leaves it out.
@@ -58,8 +72,8 @@
 //! ```
 //!
 //! Without the first step the server still builds, but serves a page saying the
-//! UI is missing. Releases are MSI installers of the Windows build, packaged by
-//! [kick](https://github.com/udoprog/kick).
+//! UI is missing. Releases are packaged for Linux (`.tar.gz`) and Windows
+//! (`.zip`) by [kick](https://github.com/udoprog/kick).
 //!
 //! For development, run the server and serve the UI with `trunk serve`, which
 //! proxies `/ws` to the server:

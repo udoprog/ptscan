@@ -296,6 +296,8 @@ pub struct PointerScanOutcome {
     pub results: u64,
     /// The scan was cancelled and the paths found so far kept.
     pub cancelled: bool,
+    /// The scan stopped at [`PointerScanSettings::max_paths`].
+    pub truncated: bool,
     pub error: Option<String>,
     pub duration_ms: u64,
 }
@@ -429,11 +431,14 @@ pub struct PointerScanSettings {
     pub max_depth: u32,
     /// Largest offset added to a pointer at each step.
     pub max_offset: u32,
+    /// Most paths stored; the scan stops when one more is found.
+    pub max_paths: u32,
 }
 
 impl PointerScanSettings {
     pub const MAX_DEPTH: u32 = 16;
     pub const MAX_OFFSET: u32 = 0x10_0000;
+    pub const MAX_PATHS: u32 = 100_000_000;
 }
 
 impl Default for PointerScanSettings {
@@ -441,6 +446,7 @@ impl Default for PointerScanSettings {
         Self {
             max_depth: 7,
             max_offset: 0x1000,
+            max_paths: 1_000_000,
         }
     }
 }

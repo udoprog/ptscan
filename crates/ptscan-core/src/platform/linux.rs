@@ -1404,21 +1404,29 @@ mod tests {
         }
     }
 
+    /// Each path found as its base address and offsets, before and after the
+    /// backreference scan, and whether each stage was truncated.
+    struct FoundPaths {
+        scanned: Vec<(u64, Vec<Offset>)>,
+        scanned_truncated: bool,
+        all: Vec<(u64, Vec<Offset>)>,
+        all_truncated: bool,
+    }
+
     /// Writes each `(from, to)` pointer into the child and pointer-scans
-    /// those from `needle`, returning each path found as its base address and
-    /// offsets, before and after the backreference scan.
+    /// those from `needle`.
     ///
     /// The pointers are handed to the scan as written rather than found by an
     /// initial scan, so the test does not depend on where the child's
     /// allocations land.
-    #[allow(clippy::type_complexity)]
     fn pointer_paths(
         handle: &ProcessHandle,
         pointers: &[(u64, u64)],
         needle: u64,
         max_depth: usize,
         max_offset: u64,
-    ) -> (Vec<(u64, Vec<Offset>)>, Vec<(u64, Vec<Offset>)>) {
+        max_paths: usize,
+    ) -> FoundPaths {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(2)
             .build()
@@ -1440,6 +1448,7 @@ mod tests {
         let mut scan = PointerScan::new(&pool, handle, &token);
         scan.max_depth = max_depth;
         scan.max_offset = Size::new(max_offset);
+        scan.max_paths = max_paths;
         scan.build_references(addresses.iter_copied(), values.iter())
             .unwrap();
 
@@ -1454,9 +1463,16 @@ mod tests {
         scan.scan(Address::new(needle), &mut pointers, &mut NoPathProgress)
             .unwrap();
         let scanned = paths(&pointers);
+        let scanned_truncated = scan.truncated();
         scan.backreference_scan(&mut pointers, &mut NoPathProgress)
             .unwrap();
-        (scanned, paths(&pointers))
+
+        FoundPaths {
+            scanned,
+            scanned_truncated,
+            all: paths(&pointers),
+            all_truncated: scan.truncated(),
+        }
     }
 
     #[test]
@@ -1467,7 +1483,9 @@ mod tests {
 
         // Both words of the pair, in the image, point at the heap value.
         let pointers = [(holder.pair, holder.value), (holder.pair + 8, holder.value)];
-        let (scanned, _) = pointer_paths(&handle, &pointers, holder.value, 1, 0);
+        let found = pointer_paths(&handle, &pointers, holder.value, 1, 0, usize::MAX);
+        let scanned = found.scanned;
+        assert!(!found.scanned_truncated);
 
         for base in [holder.pair, holder.pair + 8] {
             assert!(
@@ -1492,11 +1510,52 @@ mod tests {
         let direct = (holder.pair, vec![eight]);
         let through = (holder.pair, vec![Offset::zero(), eight]);
 
-        let (scanned, all) = pointer_paths(&handle, &pointers, holder.pair + 8, 2, 8);
+        let found = pointer_paths(&handle, &pointers, holder.pair + 8, 2, 8, usize::MAX);
+        let (scanned, all) = (found.scanned, found.all);
         assert!(scanned.contains(&direct), "{:x?}", scanned);
         assert!(!scanned.contains(&through), "{:x?}", scanned);
         assert!(all.contains(&direct), "{:x?}", all);
         assert!(all.contains(&through), "{:x?}", all);
+        assert!(!found.all_truncated);
+    }
+
+    #[test]
+    fn pointer_scan_stops_at_max_paths() {
+        let holder = Holder::spawn();
+        let mut handle = holder.handle();
+        handle.refresh_modules().unwrap();
+
+        let pointers = [(holder.pair, holder.value), (holder.pair + 8, holder.value)];
+
+        let found = pointer_paths(&handle, &pointers, holder.value, 1, 0, 2);
+        assert_eq!(found.scanned.len(), 2, "{:x?}", found.scanned);
+        assert!(!found.scanned_truncated);
+
+        let found = pointer_paths(&handle, &pointers, holder.value, 1, 0, 1);
+        assert_eq!(found.scanned.len(), 1, "{:x?}", found.scanned);
+        assert!(found.scanned_truncated);
+        assert_eq!(found.all, found.scanned);
+        assert!(found.all_truncated);
+
+        let found = pointer_paths(&handle, &pointers, holder.value, 1, 0, 0);
+        assert!(found.scanned.is_empty());
+        assert!(found.all_truncated);
+    }
+
+    #[test]
+    fn backreference_scan_stops_at_max_paths() {
+        let holder = Holder::spawn();
+        let mut handle = holder.handle();
+        handle.refresh_modules().unwrap();
+
+        let pointers = [(holder.pair, holder.pair)];
+        let eight = Offset::new(Sign::Plus, Size::new(8));
+
+        let found = pointer_paths(&handle, &pointers, holder.pair + 8, 2, 8, 1);
+        assert_eq!(found.scanned, vec![(holder.pair, vec![eight])]);
+        assert!(!found.scanned_truncated);
+        assert_eq!(found.all, found.scanned);
+        assert!(found.all_truncated);
     }
 
     #[test]

@@ -67,6 +67,7 @@ pub trait PointerScanBackreferenceProgress {
 ///
 /// max_offset: 0x1000
 /// max_depth: 7
+/// max_paths: unlimited
 pub struct PointerScan<'a> {
     thread_pool: &'a rayon::ThreadPool,
     handle: &'a ProcessHandle,
@@ -85,6 +86,9 @@ pub struct PointerScan<'a> {
     pub visited_count: usize,
     pub max_offset: Size,
     pub max_depth: usize,
+    /// Most paths stored in the results passed to the scans.
+    pub max_paths: usize,
+    truncated: bool,
 }
 
 impl<'a> PointerScan<'a> {
@@ -105,6 +109,8 @@ impl<'a> PointerScan<'a> {
             visited_count: 0,
             max_offset: 0x1000u32.into(),
             max_depth: 7,
+            max_paths: usize::MAX,
+            truncated: false,
         }
     }
 
@@ -137,6 +143,11 @@ impl<'a> PointerScan<'a> {
         Ok(())
     }
 
+    /// A path was dropped because the results held [`Self::max_paths`].
+    pub fn truncated(&self) -> bool {
+        self.truncated
+    }
+
     fn follow(&self, from: Address) -> Option<Address> {
         let index = self.forward.partition_point(|&(f, _)| f < from);
 
@@ -163,6 +174,8 @@ impl<'a> PointerScan<'a> {
             ref mut visited_count,
             max_depth,
             max_offset,
+            max_paths,
+            ref mut truncated,
             ..
         } = *self;
 
@@ -212,6 +225,11 @@ impl<'a> PointerScan<'a> {
 
                 match handle.find_location(hit) {
                     Location::Module(module) => {
+                        if pointers.len() >= max_paths {
+                            *truncated = true;
+                            return Ok(());
+                        }
+
                         let mut path = SVec::with_capacity(depth.saturating_add(1));
                         extend_path(nodes, node, &mut path);
 
@@ -294,6 +312,10 @@ impl<'a> PointerScan<'a> {
         pointers: &mut Vec<Pointer>,
         progress: &mut impl PointerScanBackreferenceProgress,
     ) -> anyhow::Result<()> {
+        if self.truncated {
+            return Ok(());
+        }
+
         // Group the alternatives by node, keeping the order they were found
         // in, so that each node's are a range.
         let alternatives = &mut self.alternatives;
@@ -312,8 +334,9 @@ impl<'a> PointerScan<'a> {
             self.walk_alternatives(pointer, |_, extra| count += extra.len())?;
         }
 
-        pointers.reserve_exact(count);
         let len = pointers.len();
+        pointers.reserve_exact(count.min(self.max_paths.saturating_sub(len)));
+        let mut truncated = false;
 
         // add all tailing pointers.
         for i in 0..len {
@@ -328,6 +351,11 @@ impl<'a> PointerScan<'a> {
 
             self.walk_alternatives(&pointer, |path, extra| {
                 for alternative in extra {
+                    if truncated || pointers.len() >= self.max_paths {
+                        truncated = true;
+                        return;
+                    }
+
                     let capacity = path
                         .len()
                         .saturating_add(1)
@@ -340,9 +368,14 @@ impl<'a> PointerScan<'a> {
                 }
             })?;
 
+            if truncated {
+                break;
+            }
+
             progress.report(len.saturating_sub(i.saturating_add(1)), pointers.len())?;
         }
 
+        self.truncated = truncated;
         Ok(())
     }
 }

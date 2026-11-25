@@ -27,6 +27,7 @@ const SCAN_SUSPEND: ConfigKey = ConfigKey::nested(ConfigField::Scan, ConfigField
 const SCAN_MODULES_ONLY: ConfigKey = ConfigKey::nested(ConfigField::Scan, ConfigField::ModulesOnly);
 const MAX_DEPTH: ConfigKey = ConfigKey::nested(ConfigField::PointerScan, ConfigField::MaxDepth);
 const MAX_OFFSET: ConfigKey = ConfigKey::nested(ConfigField::PointerScan, ConfigField::MaxOffset);
+const MAX_PATHS: ConfigKey = ConfigKey::nested(ConfigField::PointerScan, ConfigField::MaxPaths);
 
 impl Setting for String {
     const VERSION: u32 = 1;
@@ -115,6 +116,7 @@ fn pointer_scan(id: u64, config: &BTreeMap<ConfigKey, String>) -> api::PointerSc
     api::PointerScanSettings {
         max_depth: get(id, config, MAX_DEPTH).unwrap_or(default.max_depth),
         max_offset: get(id, config, MAX_OFFSET).unwrap_or(default.max_offset),
+        max_paths: get(id, config, MAX_PATHS).unwrap_or(default.max_paths),
     }
 }
 
@@ -139,6 +141,12 @@ fn validate_pointer_scan(settings: &api::PointerScanSettings) -> Result<()> {
 
     if !(1..=max).contains(&settings.max_offset) {
         bail!("The offset must be between 1 and {max:#x}");
+    }
+
+    let max = api::PointerScanSettings::MAX_PATHS;
+
+    if !(1..=max).contains(&settings.max_paths) {
+        bail!("The most paths must be between 1 and {max}");
     }
 
     Ok(())
@@ -374,6 +382,7 @@ impl Shared {
                 let mut changes = Changes::new();
                 put(&mut changes, MAX_DEPTH, Some(&settings.max_depth))?;
                 put(&mut changes, MAX_OFFSET, Some(&settings.max_offset))?;
+                put(&mut changes, MAX_PATHS, Some(&settings.max_paths))?;
                 db.update_session(id, changes).await?;
             }
 

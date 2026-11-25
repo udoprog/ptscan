@@ -34,6 +34,7 @@ pub enum Msg {
     Cancel,
     Depth(String),
     Offset(String),
+    MaxPaths(String),
     Save,
     Saved(Result<ws::Packet<api::SetPointerScanSettings>, ws::Error>),
     Page(u64),
@@ -47,6 +48,7 @@ pub enum Msg {
 pub struct PointerScanView {
     depth: String,
     offset_limit: String,
+    max_paths: String,
     session: Option<u64>,
     /// The settings as last read from or saved to the server.
     synced: api::PointerScanSettings,
@@ -126,12 +128,14 @@ impl PointerScanView {
         Some(api::PointerScanSettings {
             max_depth: parse_depth(&self.depth)?,
             max_offset: parse_offset(&self.offset_limit)?,
+            max_paths: parse_max_paths(&self.max_paths)?,
         })
     }
 
     fn apply_settings(&mut self, settings: &api::PointerScanSettings) {
         self.depth = settings.max_depth.to_string();
         self.offset_limit = format!("{:#x}", settings.max_offset);
+        self.max_paths = settings.max_paths.to_string();
         self.synced = settings.clone();
     }
 
@@ -170,6 +174,7 @@ impl Component for PointerScanView {
         let mut this = Self {
             depth: String::new(),
             offset_limit: String::new(),
+            max_paths: String::new(),
             session: ctx.props().session,
             synced: api::PointerScanSettings::default(),
             save_timer: None,
@@ -255,6 +260,10 @@ impl Component for PointerScanView {
             }
             Msg::Offset(text) => {
                 self.offset_limit = text;
+                self.schedule_save(ctx);
+            }
+            Msg::MaxPaths(text) => {
+                self.max_paths = text;
                 self.schedule_save(ctx);
             }
             Msg::Save => {
@@ -439,6 +448,12 @@ impl Component for PointerScanView {
                             invalid={parse_offset(&self.offset_limit).is_none()}
                             disabled={running} value={self.offset_limit.clone()}
                             on_input={link.callback(Msg::Offset)} />
+                        <label class={class::MUTED} for="pointer-max-paths"
+                            title="The scan stops once it has found this many paths">{"Max paths"}</label>
+                        <TextInput id="pointer-max-paths" size={InputSize::Small} class={class::NARROW}
+                            inputmode="numeric" invalid={parse_max_paths(&self.max_paths).is_none()}
+                            disabled={running} value={self.max_paths.clone()}
+                            on_input={link.callback(Msg::MaxPaths)} />
                     </Cluster>
                     if running {
                         <Button size={ButtonSize::Small} busy={self.cancel.is_pending()}
@@ -537,11 +552,13 @@ impl PointerScanView {
 
         if last.cancelled {
             text.push_str("; cancelled, paths found so far kept");
+        } else if last.truncated {
+            text.push_str("; stopped at the max paths limit, raise it to find more");
         }
 
         let tone = if last.error.is_some() {
             Tone::Danger
-        } else if last.cancelled {
+        } else if last.cancelled || last.truncated {
             Tone::Warning
         } else {
             Tone::Neutral
@@ -600,6 +617,14 @@ fn parse_offset(text: &str) -> Option<u32> {
         .then_some(offset)
 }
 
+/// Most paths a scan stores, from 1 to the server's limit.
+fn parse_max_paths(text: &str) -> Option<u32> {
+    let paths = text.trim().replace('_', "").parse::<u32>().ok()?;
+    (1..=api::PointerScanSettings::MAX_PATHS)
+        .contains(&paths)
+        .then_some(paths)
+}
+
 fn last_page(total: u64) -> u64 {
     total.saturating_sub(1) / PAGE as u64 * PAGE as u64
 }
@@ -614,7 +639,7 @@ fn duration(ms: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_depth, parse_offset};
+    use super::{parse_depth, parse_max_paths, parse_offset};
 
     #[test]
     fn depth() {
@@ -632,5 +657,14 @@ mod tests {
         assert_eq!(parse_offset("0x0"), None);
         assert_eq!(parse_offset("0x100001"), None);
         assert_eq!(parse_offset("0x"), None);
+    }
+
+    #[test]
+    fn max_paths() {
+        assert_eq!(parse_max_paths(" 1000000 "), Some(1_000_000));
+        assert_eq!(parse_max_paths("1_000"), Some(1000));
+        assert_eq!(parse_max_paths("0"), None);
+        assert_eq!(parse_max_paths("100000001"), None);
+        assert_eq!(parse_max_paths("x"), None);
     }
 }

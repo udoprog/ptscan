@@ -44,6 +44,7 @@ fields! {
     Filter = "filter",
     MaxDepth = "max-depth",
     MaxOffset = "max-offset",
+    MaxPaths = "max-paths",
     ModulesOnly = "modules-only",
     Name = "name",
     Opened = "opened",

@@ -170,6 +170,7 @@ async fn settings_survive_a_restart() {
     let settings = api::PointerScanSettings {
         max_depth: 3,
         max_offset: 0x200,
+        max_paths: 5000,
     };
     let response = send(
         &handle,
@@ -185,13 +186,28 @@ async fn settings_survive_a_restart() {
         api::SetPointerScanSettingsRequest {
             settings: api::PointerScanSettings {
                 max_depth: 0,
-                max_offset: 0x200,
+                ..settings.clone()
             },
         },
     )
     .await;
     assert!(response.error.is_some());
     assert_eq!(response.state.pointer_scan, settings);
+
+    for max_paths in [0, api::PointerScanSettings::MAX_PATHS + 1] {
+        let response = send(
+            &handle,
+            api::SetPointerScanSettingsRequest {
+                settings: api::PointerScanSettings {
+                    max_paths,
+                    ..settings.clone()
+                },
+            },
+        )
+        .await;
+        assert!(response.error.is_some());
+        assert_eq!(response.state.pointer_scan, settings);
+    }
 
     let second = create(&handle, "Second").await;
     let response = send(&handle, api::OpenSessionRequest { id: second }).await;

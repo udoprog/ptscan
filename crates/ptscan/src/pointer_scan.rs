@@ -22,6 +22,8 @@ struct Paths {
     pointers: Vec<Pointer>,
     /// The names of the modules at the end of the scan, by module id.
     modules: Vec<String>,
+    /// The scan stopped at the most paths it may store.
+    truncated: bool,
 }
 
 impl Paths {
@@ -178,6 +180,7 @@ impl Shared {
             current.last = Some(api::PointerScanOutcome {
                 results: current.results.pointers.len() as u64,
                 cancelled: token_ref.test(),
+                truncated: current.results.truncated,
                 error: result.err().map(|e| format!("{e:#}")),
                 duration_ms: started.elapsed().as_millis() as u64,
             });
@@ -229,6 +232,7 @@ impl Shared {
         let mut scan = PointerScan::new(&self.pool, &handle, token);
         scan.max_depth = usize::try_from(settings.max_depth)?;
         scan.max_offset = Size::new(settings.max_offset.into());
+        scan.max_paths = usize::try_from(settings.max_paths)?;
         scan.build_references(addresses.iter_copied(), values.iter())?;
         drop((addresses, values));
 
@@ -245,6 +249,8 @@ impl Shared {
                 &mut progress(api::PointerScanStage::Backreferences),
             )?;
         }
+
+        results.truncated = scan.truncated();
 
         // The references and paths visited are no longer needed, and are
         // large next to the results being converted.

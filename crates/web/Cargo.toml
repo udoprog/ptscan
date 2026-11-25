@@ -6,7 +6,7 @@ publish = false
 [dependencies]
 api = { path = "../api" }
 musli-web = { version = "0.6.0", default-features = false, features = ["web03", "yew023", "format-descriptive", "format-json"] }
-sockel = { version = "0.3.2", default-features = false, features = ["badge", "button", "checkbox", "confirm", "field", "icons", "input", "layout", "menu", "notice", "overlay", "pager", "property-list", "rows", "seam", "shell", "table", "tabs", "toast", "tooltip"] }
+sockel = { version = "0.3.3", default-features = false, features = ["badge", "button", "checkbox", "confirm", "field", "file-browser", "icons", "input", "layout", "menu", "notice", "overlay", "pager", "property-list", "rows", "seam", "shell", "table", "tabs", "toast", "tooltip"] }
 wasm-bindgen = "0.2.100"
 js-sys = "0.3.77"
 yew = { version = "0.23.0", features = ["csr"] }
@@ -15,7 +15,7 @@ gloo-timers = "0.4.0"
 web-sys = { version = "0.3.77", features = ["Clipboard", "Document", "Element", "HtmlElement", "HtmlInputElement", "KeyboardEvent", "MouseEvent", "Navigator", "SubmitEvent", "Window"] }
 
 [build-dependencies]
-sockel-build = "0.3.2"
+sockel-build = "0.3.3"
 
 [dev-dependencies]
-sockel-build = "0.3.2"
+sockel-build = "0.3.3"

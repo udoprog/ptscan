@@ -611,8 +611,11 @@ pub struct SetLayoutRequest {
 /// or load from. Read only.
 #[derive(Debug, Clone, Default, Encode, Decode)]
 pub struct ListDirectoryRequest {
-    /// An absolute path; `None` lists the home directory.
+    /// An absolute path to a directory, or to a file to list the directory
+    /// of; `None` lists the home directory.
     pub path: Option<String>,
+    /// A missing path lists its closest existing ancestor instead.
+    pub nearest: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
@@ -624,13 +627,9 @@ pub enum EntryKind {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct DirectoryEntry {
     pub name: String,
-    /// The entry's absolute path.
-    pub path: String,
     pub kind: EntryKind,
     /// Size in bytes, for files.
     pub size: Option<u64>,
-    /// Unix time in seconds.
-    pub modified: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
@@ -646,13 +645,6 @@ pub enum PlaceKind {
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct Place {
     pub kind: PlaceKind,
-    pub name: String,
-    pub path: String,
-}
-
-/// One directory of a listed path, from the root down.
-#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
-pub struct Crumb {
     pub name: String,
     pub path: String,
 }
@@ -673,8 +665,10 @@ pub struct ListDirectoryResponse {
     /// The listed directory; with a refusal, the asked-for path.
     pub path: String,
     pub parent: Option<String>,
-    pub crumbs: Vec<Crumb>,
     pub entries: Vec<DirectoryEntry>,
+    /// The name in `path` the asked-for path named, when it was not a
+    /// directory.
+    pub file: Option<String>,
     pub places: Vec<Place>,
     /// The separator to join a file name onto `path` with.
     pub separator: String,

@@ -5,7 +5,6 @@ use std::cmp::Ordering;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Component, MAIN_SEPARATOR_STR, Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 /// The directories a file browser offers as shortcuts.
 #[derive(Debug, Clone, Default)]
@@ -72,8 +71,14 @@ impl Places {
     }
 }
 
-/// List `path`, or the home directory (else the first root) when `None`.
-pub fn list_directory(path: Option<&str>, places: &Places) -> api::ListDirectoryResponse {
+/// List `path`, or the home directory (else the first root) when `None`. A
+/// file lists the directory holding it; with `nearest`, so does a missing
+/// path, from its closest existing ancestor.
+pub fn list_directory(
+    path: Option<&str>,
+    nearest: bool,
+    places: &Places,
+) -> api::ListDirectoryResponse {
     let path = match path {
         Some(path) => PathBuf::from(path),
         None => places
@@ -96,11 +101,34 @@ pub fn list_directory(path: Option<&str>, places: &Places) -> api::ListDirectory
     }
 
     let path = normalize(&path);
-    response.path = path.display().to_string();
-    response.parent = path.parent().map(|p| p.display().to_string());
-    response.crumbs = crumbs(&path);
 
-    match read(&path) {
+    let (dir, file) = match fs::metadata(&path) {
+        Ok(metadata) if metadata.is_dir() => (path.as_path(), None),
+        Ok(_) => match path.parent() {
+            Some(parent) => (parent, path.file_name()),
+            None => (path.as_path(), None),
+        },
+        Err(error) if nearest && missing(&error) => {
+            let Some(dir) = path.ancestors().skip(1).find(|dir| dir.is_dir()) else {
+                response.refusal = Some(api::ListDirectoryRefusal::Missing);
+                return response;
+            };
+
+            let file = path.file_name().filter(|_| path.parent() == Some(dir));
+            (dir, file)
+        }
+        Err(error) => {
+            response.path = path.display().to_string();
+            response.refusal = Some(refusal(&error));
+            return response;
+        }
+    };
+
+    response.path = dir.display().to_string();
+    response.parent = dir.parent().map(|p| p.display().to_string());
+    response.file = file.map(|name| name.to_string_lossy().into_owned());
+
+    match read(dir) {
         Ok(entries) => response.entries = entries,
         Err(refusal) => response.refusal = Some(refusal),
     }
@@ -109,12 +137,6 @@ pub fn list_directory(path: Option<&str>, places: &Places) -> api::ListDirectory
 }
 
 fn read(path: &Path) -> Result<Vec<api::DirectoryEntry>, api::ListDirectoryRefusal> {
-    let metadata = fs::metadata(path).map_err(|error| refusal(&error))?;
-
-    if !metadata.is_dir() {
-        return Err(api::ListDirectoryRefusal::NotADirectory);
-    }
-
     let mut entries = Vec::new();
 
     for entry in fs::read_dir(path).map_err(|error| refusal(&error))? {
@@ -138,18 +160,10 @@ fn read(path: &Path) -> Result<Vec<api::DirectoryEntry>, api::ListDirectoryRefus
             api::EntryKind::File
         };
 
-        let modified = metadata
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs());
-
         entries.push(api::DirectoryEntry {
-            path: entry.path().display().to_string(),
             name,
             kind,
             size: (kind == api::EntryKind::File).then_some(metadata.len()),
-            modified,
         });
     }
 
@@ -164,6 +178,10 @@ fn order(a: &api::DirectoryEntry, b: &api::DirectoryEntry) -> Ordering {
         .cmp(&rank(b))
         .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         .then_with(|| a.name.cmp(&b.name))
+}
+
+fn missing(error: &std::io::Error) -> bool {
+    matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory)
 }
 
 fn refusal(error: &std::io::Error) -> api::ListDirectoryRefusal {
@@ -189,22 +207,6 @@ fn normalize(path: &Path) -> PathBuf {
     }
 
     out
-}
-
-fn crumbs(path: &Path) -> Vec<api::Crumb> {
-    let mut crumbs = path
-        .ancestors()
-        .map(|dir| api::Crumb {
-            name: match dir.file_name() {
-                Some(name) => name.to_string_lossy().into_owned(),
-                None => dir.display().to_string(),
-            },
-            path: dir.display().to_string(),
-        })
-        .collect::<Vec<_>>();
-
-    crumbs.reverse();
-    crumbs
 }
 
 fn roots() -> Vec<PathBuf> {
@@ -239,7 +241,7 @@ mod tests {
         fs::write(root.path().join("B.txt"), b"")?;
 
         let path = root.path().display().to_string();
-        let listed = list_directory(Some(&path), &places(root.path()));
+        let listed = list_directory(Some(&path), false, &places(root.path()));
 
         assert_eq!(listed.refusal, None);
         assert_eq!(listed.path, path);
@@ -255,11 +257,6 @@ mod tests {
         let file = &listed.entries[3];
         assert_eq!(file.kind, api::EntryKind::File);
         assert_eq!(file.size, Some(2));
-        assert_eq!(
-            file.path,
-            root.path().join("c.ptscan.json").display().to_string()
-        );
-        assert!(file.modified.is_some());
 
         let dir = &listed.entries[0];
         assert_eq!(dir.kind, api::EntryKind::Directory);
@@ -268,13 +265,13 @@ mod tests {
     }
 
     #[test]
-    fn crumbs_run_from_the_root_down() -> std::io::Result<()> {
+    fn normalizes_the_path() -> std::io::Result<()> {
         let root = tempfile::tempdir()?;
         let nested = root.path().join("one").join("two");
         fs::create_dir_all(&nested)?;
 
         let asked = format!("{}/./../two", nested.display());
-        let listed = list_directory(Some(&asked), &places(root.path()));
+        let listed = list_directory(Some(&asked), false, &places(root.path()));
 
         assert_eq!(listed.refusal, None);
         assert_eq!(listed.path, nested.display().to_string());
@@ -282,13 +279,6 @@ mod tests {
             listed.parent,
             Some(root.path().join("one").display().to_string())
         );
-
-        let first = listed.crumbs.first().unwrap();
-        assert_eq!((first.name.as_str(), first.path.as_str()), ("/", "/"));
-
-        let last = listed.crumbs.last().unwrap();
-        assert_eq!(last.name, "two");
-        assert_eq!(last.path, listed.path);
         Ok(())
     }
 
@@ -297,13 +287,13 @@ mod tests {
         let root = tempfile::tempdir()?;
         let path = root.path().display().to_string();
 
-        let listed = list_directory(Some(&path), &places(root.path()));
+        let listed = list_directory(Some(&path), false, &places(root.path()));
         let kinds = listed.places.iter().map(|p| p.kind).collect::<Vec<_>>();
         // The data directory does not exist yet.
         assert_eq!(kinds, [api::PlaceKind::Home, api::PlaceKind::Root]);
 
         fs::create_dir(root.path().join("data"))?;
-        let listed = list_directory(Some(&path), &places(root.path()));
+        let listed = list_directory(Some(&path), false, &places(root.path()));
         let kinds = listed.places.iter().map(|p| p.kind).collect::<Vec<_>>();
         assert_eq!(
             kinds,
@@ -321,7 +311,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         fs::write(root.path().join("x"), b"")?;
 
-        let listed = list_directory(None, &places(root.path()));
+        let listed = list_directory(None, false, &places(root.path()));
 
         assert_eq!(listed.path, root.path().display().to_string());
         assert_eq!(listed.entries.len(), 1);
@@ -329,28 +319,51 @@ mod tests {
     }
 
     #[test]
-    fn refuses_missing_files_and_relative_paths() -> std::io::Result<()> {
+    fn refuses_missing_and_relative_paths() -> std::io::Result<()> {
         let root = tempfile::tempdir()?;
-        fs::write(root.path().join("file"), b"")?;
         let places = places(root.path());
 
         let missing = root.path().join("missing").display().to_string();
-        let listed = list_directory(Some(&missing), &places);
+        let listed = list_directory(Some(&missing), false, &places);
         assert_eq!(listed.refusal, Some(api::ListDirectoryRefusal::Missing));
         assert_eq!(listed.path, missing);
         assert!(listed.entries.is_empty());
-        assert!(!listed.crumbs.is_empty());
+
+        let listed = list_directory(Some("relative/dir"), true, &places);
+        assert_eq!(listed.refusal, Some(api::ListDirectoryRefusal::Relative));
+        Ok(())
+    }
+
+    #[test]
+    fn a_file_lists_its_directory() -> std::io::Result<()> {
+        let root = tempfile::tempdir()?;
+        fs::write(root.path().join("file"), b"")?;
 
         let file = root.path().join("file").display().to_string();
-        let listed = list_directory(Some(&file), &places);
-        assert_eq!(
-            listed.refusal,
-            Some(api::ListDirectoryRefusal::NotADirectory)
-        );
+        let listed = list_directory(Some(&file), false, &places(root.path()));
+        assert_eq!(listed.refusal, None);
+        assert_eq!(listed.path, root.path().display().to_string());
+        assert_eq!(listed.file.as_deref(), Some("file"));
+        Ok(())
+    }
 
-        let listed = list_directory(Some("relative/dir"), &places);
-        assert_eq!(listed.refusal, Some(api::ListDirectoryRefusal::Relative));
-        assert!(listed.crumbs.is_empty());
+    #[test]
+    fn nearest_lists_the_closest_existing_ancestor() -> std::io::Result<()> {
+        let root = tempfile::tempdir()?;
+        let places = places(root.path());
+        let dir = root.path().display().to_string();
+
+        let new = root.path().join("new.ptscan.json").display().to_string();
+        let listed = list_directory(Some(&new), true, &places);
+        assert_eq!(listed.refusal, None);
+        assert_eq!(listed.path, dir);
+        assert_eq!(listed.file.as_deref(), Some("new.ptscan.json"));
+
+        let deep = root.path().join("gone").join("away").display().to_string();
+        let listed = list_directory(Some(&deep), true, &places);
+        assert_eq!(listed.refusal, None);
+        assert_eq!(listed.path, dir);
+        assert_eq!(listed.file, None);
         Ok(())
     }
 
@@ -363,7 +376,11 @@ mod tests {
         fs::create_dir(&locked)?;
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o000))?;
 
-        let listed = list_directory(Some(&locked.display().to_string()), &places(root.path()));
+        let listed = list_directory(
+            Some(&locked.display().to_string()),
+            false,
+            &places(root.path()),
+        );
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o755))?;
 
         // Root reads anything, so the refusal only shows for other users.

@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use gloo_timers::callback::Timeout;
 use musli_web::web03::prelude::*;
 use sockel::{
-    Button, ButtonSize, ButtonVariant, Checkbox, Dialog, EmptyState, InputSize, Menu, MenuWidth,
-    Pager, PagerCounts, Table, TableCell, TextInput, ToolbarSpacer,
+    Button, ButtonSize, ButtonVariant, Checkbox, Dialog, EmptyState, FileBrowserMode, InputSize,
+    Menu, MenuWidth, Pager, PagerCounts, Table, TableCell, TextInput, ToolbarSpacer,
 };
 use yew::prelude::*;
 
@@ -12,7 +12,7 @@ use crate::class;
 use crate::clipboard;
 use crate::icons::{AppIcon, icon};
 use crate::ui::actions::{Action, RowMenu, more};
-use crate::ui::file_browser::{FileBrowser, FileMode, file_name, refused, split_path};
+use crate::ui::file_browser::{FileBrowser, file_name, refused};
 use crate::ui::pane::{Pane, PaneBar, PaneHead, StatusLine, StatusTone};
 
 const PAGE: u32 = 100;
@@ -59,7 +59,7 @@ pub enum Msg {
     CopyPaths,
     AddSelected,
     Added(Result<ws::Packet<api::AddScratch>, ws::Error>),
-    Browse(FileMode),
+    Browse(FileBrowserMode),
     CloseBrowser,
     Chosen(String),
     /// Load the chosen file in place of the paths shown.
@@ -96,7 +96,7 @@ pub struct PointerScanView {
     cancel: ws::Request,
     page: ws::Request,
     adding: Vec<ws::Request>,
-    browser: Option<FileMode>,
+    browser: Option<FileBrowserMode>,
     /// The file chosen to load, while asking whether it replaces the paths.
     loading: Option<String>,
     /// The file last saved or loaded, which the browser starts at.
@@ -464,11 +464,13 @@ impl Component for PointerScanView {
             Msg::Browse(mode) => self.browser = Some(mode),
             Msg::CloseBrowser => self.browser = None,
             Msg::Chosen(path) => match self.browser {
-                Some(FileMode::Save) => self.start_file(ctx, api::PointerScanFileKind::Save, path),
-                Some(FileMode::Open) if self.state.results == 0 => {
+                Some(FileBrowserMode::Save) => {
+                    self.start_file(ctx, api::PointerScanFileKind::Save, path)
+                }
+                Some(FileBrowserMode::Open) if self.state.results == 0 => {
                     self.start_file(ctx, api::PointerScanFileKind::Load, path);
                 }
-                Some(FileMode::Open) => self.loading = Some(path),
+                Some(FileBrowserMode::Open) => self.loading = Some(path),
                 None => return false,
             },
             Msg::ConfirmLoad => {
@@ -888,13 +890,13 @@ impl PointerScanView {
             Action::new(
                 AppIcon::Save,
                 "Save paths to file…",
-                link.callback(|_| Msg::Browse(FileMode::Save)),
+                link.callback(|_| Msg::Browse(FileBrowserMode::Save)),
             )
             .disabled(busy || self.state.last.is_none()),
             Action::new(
                 AppIcon::Load,
                 "Load paths from file…",
-                link.callback(|_| Msg::Browse(FileMode::Open)),
+                link.callback(|_| Msg::Browse(FileBrowserMode::Open)),
             )
             .disabled(busy),
         ]
@@ -904,20 +906,22 @@ impl PointerScanView {
         let props = ctx.props();
         let link = ctx.link();
 
-        let (dir, name) = match self.file.as_deref().or(self.state.source.as_deref()) {
-            Some(path) => split_path(path),
-            None => (None, DEFAULT_NAME),
-        };
+        let path = self
+            .file
+            .as_deref()
+            .or(self.state.source.as_deref())
+            .map(|path| AttrValue::from(path.to_owned()))
+            .unwrap_or_default();
 
         let browser = self.browser.map(|mode| {
             let title = match mode {
-                FileMode::Save => "Save pointer paths",
-                FileMode::Open => "Load pointer paths",
+                FileBrowserMode::Save => "Save pointer paths",
+                FileBrowserMode::Open => "Load pointer paths",
             };
 
             html! {
                 <FileBrowser ws={props.ws.clone()} open=true {mode} {title}
-                    path={dir.map(AttrValue::from)} name={AttrValue::from(name.to_owned())}
+                    {path} name={DEFAULT_NAME}
                     extensions={vec![AttrValue::Static(EXTENSION)]}
                     on_choose={link.callback(Msg::Chosen)}
                     on_close={link.callback(|()| Msg::CloseBrowser)}

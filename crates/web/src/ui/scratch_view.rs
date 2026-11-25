@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use gloo_timers::callback::Interval;
 use musli_web::web03::prelude::*;
 use sockel::{
-    Button, ButtonVariant, Checkbox, Cluster, Dialog, DialogDismiss, EmptyState, FormRow, FormRows,
-    Table, TableCell, TextInput,
+    Button, ButtonVariant, Checkbox, Cluster, Dialog, DialogDismiss, EmptyState, FileBrowserMode,
+    FormRow, FormRows, Table, TableCell, TextInput,
 };
 use yew::prelude::*;
 
@@ -12,7 +12,7 @@ use crate::class;
 use crate::clipboard;
 use crate::icons::{AppIcon, icon};
 use crate::ui::actions::{Action, RowMenu, more, tool};
-use crate::ui::file_browser::{FileBrowser, FileMode, file_name, refused, split_path};
+use crate::ui::file_browser::{FileBrowser, file_name, refused};
 use crate::ui::pane::{Pane, PaneHead};
 
 const REFRESH_MS: u32 = 1000;
@@ -49,7 +49,7 @@ pub enum Msg {
     PointerScanStarted(Result<ws::Packet<api::PointerScan>, ws::Error>),
     PointerScanState(Result<ws::Packet<api::GetPointerScanState>, ws::Error>),
     PointerScanChanged(Result<ws::Packet<api::PointerScanStateChanged>, ws::Error>),
-    Browse(FileMode),
+    Browse(FileBrowserMode),
     CloseBrowser,
     Chosen(String),
     /// Load the chosen file, replacing the entries or not.
@@ -68,7 +68,7 @@ pub struct ScratchView {
     pointer_scan: ws::Request,
     pointer_scan_state: ws::Request,
     pointer_scan_running: bool,
-    browser: Option<FileMode>,
+    browser: Option<FileBrowserMode>,
     /// The file chosen to load, while asking whether it replaces the entries.
     loading: Option<String>,
     /// The file last saved or loaded, which the browser starts at.
@@ -314,7 +314,7 @@ impl Component for ScratchView {
             Msg::Browse(mode) => self.browser = Some(mode),
             Msg::CloseBrowser => self.browser = None,
             Msg::Chosen(path) => match self.browser {
-                Some(FileMode::Save) => {
+                Some(FileBrowserMode::Save) => {
                     self.file_request = ctx
                         .props()
                         .ws
@@ -324,10 +324,10 @@ impl Component for ScratchView {
                         .send();
                     self.file = Some(path);
                 }
-                Some(FileMode::Open) if self.entries.is_empty() => {
+                Some(FileBrowserMode::Open) if self.entries.is_empty() => {
                     self.load_file(ctx, path, false);
                 }
-                Some(FileMode::Open) => self.loading = Some(path),
+                Some(FileBrowserMode::Open) => self.loading = Some(path),
                 None => return false,
             },
             Msg::LoadFile(replace) => {
@@ -551,13 +551,13 @@ impl ScratchView {
             Action::new(
                 AppIcon::Save,
                 "Save to file…",
-                link.callback(|_| Msg::Browse(FileMode::Save)),
+                link.callback(|_| Msg::Browse(FileBrowserMode::Save)),
             )
             .disabled(busy),
             Action::new(
                 AppIcon::Load,
                 "Load from file…",
-                link.callback(|_| Msg::Browse(FileMode::Open)),
+                link.callback(|_| Msg::Browse(FileBrowserMode::Open)),
             )
             .disabled(busy),
         ]
@@ -567,20 +567,21 @@ impl ScratchView {
         let props = ctx.props();
         let link = ctx.link();
 
-        let (dir, name) = match self.file.as_deref() {
-            Some(path) => split_path(path),
-            None => (None, DEFAULT_NAME),
-        };
+        let path = self
+            .file
+            .as_deref()
+            .map(|path| AttrValue::from(path.to_owned()))
+            .unwrap_or_default();
 
         let browser = self.browser.map(|mode| {
             let title = match mode {
-                FileMode::Save => "Save scratch list",
-                FileMode::Open => "Load scratch list",
+                FileBrowserMode::Save => "Save scratch list",
+                FileBrowserMode::Open => "Load scratch list",
             };
 
             html! {
                 <FileBrowser ws={props.ws.clone()} open=true {mode} {title}
-                    path={dir.map(AttrValue::from)} name={AttrValue::from(name.to_owned())}
+                    {path} name={DEFAULT_NAME}
                     extensions={vec![AttrValue::Static(EXTENSION)]}
                     on_choose={link.callback(Msg::Chosen)}
                     on_close={link.callback(|()| Msg::CloseBrowser)}

@@ -648,7 +648,10 @@ async fn lists_directories_with_the_servers_places() {
     let listed: api::ListDirectoryResponse = timeout!(
         handle
             .request()
-            .body(api::ListDirectoryRequest { path: None })
+            .body(api::ListDirectoryRequest {
+                path: None,
+                nearest: false,
+            })
             .send()
     )
     .unwrap()
@@ -677,6 +680,7 @@ async fn lists_directories_with_the_servers_places() {
             .request()
             .body(api::ListDirectoryRequest {
                 path: Some(missing.clone()),
+                nearest: false,
             })
             .send()
     )

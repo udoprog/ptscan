@@ -896,7 +896,7 @@ impl ws::Handler for Handler {
 
                 let shared = self.shared.clone();
                 let response = tokio::task::spawn_blocking(move || {
-                    files::list_directory(request.path.as_deref(), &shared.places)
+                    files::list_directory(request.path.as_deref(), request.nearest, &shared.places)
                 })
                 .await?;
                 outgoing.write(response);

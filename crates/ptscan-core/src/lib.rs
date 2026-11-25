@@ -203,6 +203,7 @@ mod address_range;
 mod addresses;
 mod alignment;
 mod bitset;
+mod block_addresses;
 mod encoding;
 mod error;
 mod filter_expr;
@@ -248,6 +249,10 @@ pub use self::address_range::AddressRange;
 pub use self::addresses::Addresses;
 pub use self::alignment::{Aligned, Alignment, Unaligned};
 pub use self::bitset::BitSet;
+pub use self::block_addresses::{
+    Block, BlockAddresses, BlockAddressesBuilder, BlockError, BlockIter, Blocks,
+    Encoding as BlockEncoding, Iter as BlockAddressesIter,
+};
 pub use self::encoding::Encoding;
 pub use self::error::Error;
 pub use self::filter_expr::{FilterExpr, Special, Test, TypedFilterExpr, ValueInfo};

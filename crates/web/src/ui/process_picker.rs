@@ -234,7 +234,7 @@ impl Component for ProcessPicker {
 
         html! {
             <Card inset={Inset::Flush} class={class::PANE}>
-                <Toolbar label="Processes" band=true>
+                <Toolbar label="Processes" band=true chrome=true>
                     <span class={class::TITLE}>{"Processes"}</span>
                     <TextInput size={InputSize::Small}
                         class={class::SEARCH}
@@ -245,7 +245,7 @@ impl Component for ProcessPicker {
                         {"Refresh"}
                     </Button>
                 </Toolbar>
-                <Toolbar label="Process actions" band=true>
+                <Toolbar label="Process actions" band=true chrome=true>
                     {summary}
                     <ToolbarSpacer />
                     <Button size={ButtonSize::Small} variant={ButtonVariant::Primary}

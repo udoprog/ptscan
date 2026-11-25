@@ -335,7 +335,7 @@ impl Component for ScratchView {
 
         html! {
             <Card inset={Inset::Flush} class={class::PANE}>
-                <Toolbar label="Scratch" band=true>
+                <Toolbar label="Scratch" band=true chrome=true>
                     <span class={class::TITLE}>{"Scratch"}</span>
                     <span class={class::MUTED}>{match self.entries.len() {
                         1 => String::from("1 entry"),

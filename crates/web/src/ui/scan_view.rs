@@ -586,7 +586,7 @@ impl Component for ScanView {
         html! {
             <Card inset={Inset::Flush} class={class::PANE}>
                 <form class={class::FORM} {onsubmit}>
-                    <Toolbar label="Scan" band=true>
+                    <Toolbar label="Scan" band=true chrome=true>
                         <span class={class::TITLE}>{"Scan"}</span>
                         <ToolbarSpacer />
                         <Button size={ButtonSize::Small} submit=true variant={ButtonVariant::Primary}
@@ -631,7 +631,7 @@ impl Component for ScanView {
                     </Stack>
                 </form>
                 {self.status()}
-                <Toolbar label="Scan results" band=true>
+                <Toolbar label="Scan results" band=true chrome=true>
                     <span class={classes!(class::MUTED, sockel::class::NUMERIC)}>{self.range_label(page_end)}</span>
                     <Cluster gap={Gap::Hair} nowrap=true>
                         <Button size={ButtonSize::Small} disabled={!can_prev} onclick={link.callback(|_| Msg::Page(0))}>{"First"}</Button>

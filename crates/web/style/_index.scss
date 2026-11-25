@@ -65,7 +65,7 @@ body {
     min-height: 0;
 
     @include p.below("phone") {
-        flex: 0 0 16rem;
+        flex: 0 0 auto;
     }
 }
 
@@ -97,12 +97,21 @@ body {
     flex-direction: column;
     min-width: 0;
     min-height: 0;
+
+    @include p.below("phone") {
+        flex: 0 0 auto;
+        min-height: 16rem;
+    }
 }
 
 .ptscan-scroll {
     flex: 1 1 auto;
     min-height: 0;
     overflow: auto;
+
+    @include p.below("phone") {
+        max-height: 20rem;
+    }
 }
 
 .ptscan-title {

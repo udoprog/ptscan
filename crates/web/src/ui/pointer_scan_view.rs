@@ -321,7 +321,7 @@ impl Component for PointerScanView {
 
         html! {
             <Card inset={Inset::Flush} class={class::PANE}>
-                <Toolbar label="Pointer scan" band=true>
+                <Toolbar label="Pointer scan" band=true chrome=true>
                     <span class={class::TITLE}>{"Pointer scan"}</span>
                     <span class={class::MUTED}>{self.target()}</span>
                     <ToolbarSpacer />
@@ -331,7 +331,7 @@ impl Component for PointerScanView {
                     }
                 </Toolbar>
                 {self.status()}
-                <Toolbar label="Pointer scan results" band=true>
+                <Toolbar label="Pointer scan results" band=true chrome=true>
                     <span class={classes!(class::MUTED, sockel::class::NUMERIC)}>{self.range_label(page_end)}</span>
                     <Cluster gap={Gap::Hair} nowrap=true>
                         <Button size={ButtonSize::Small} disabled={!can_prev} onclick={link.callback(|_| Msg::Page(0))}>{"First"}</Button>

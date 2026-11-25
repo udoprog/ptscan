@@ -1411,13 +1411,24 @@ impl ProcessHandle {
                     None => bail!("base `{}` + offset `{}` out of range", range.base, offset),
                 };
 
-                queue.push((address, len));
+                queue.push(Item {
+                    seq: queue.len(),
+                    address,
+                    len,
+                });
                 offset += len;
             }
         }
 
         let queue = &queue;
         let pointer_width = self.process.pointer_width;
+
+        // Chunk results indexed by queue sequence number. Ranges are sorted
+        // and disjoint and chunks are queued in order, so appending slots in
+        // sequence order yields strictly increasing addresses.
+        let mut slots = (0..queue.len()).map(|_| None).collect::<Vec<_>>();
+        let mut next = 0usize;
+        let start = addresses.len();
 
         thread_pool.install(|| {
             rayon::scope(|s| {
@@ -1452,19 +1463,31 @@ impl ProcessHandle {
 
                 while task_count > 0 {
                     match rx.recv().expect("channel closed") {
-                        Task::Done(result, ..) => {
-                            if let Some((mut a, mut r)) = reporter.eval(result) {
-                                addresses.append(&mut a);
-                                values.append(&mut r);
-                            }
-
+                        Task::Done(result) => {
+                            reporter.eval(result);
                             task_count -= 1;
-
-                            if task_count == 0 {
-                                break;
-                            }
                         }
-                        Task::Tick(bytes, c, ..) => {
+                        Task::Chunk(chunk) => {
+                            let ChunkResult {
+                                seq,
+                                bytes,
+                                hits: c,
+                                addresses: a,
+                                values: v,
+                            } = chunk;
+
+                            if let Some(slot) = slots.get_mut(seq) {
+                                *slot = Some((a, v));
+                            }
+
+                            while let Some(Some((mut a, mut v))) =
+                                slots.get_mut(next).map(Option::take)
+                            {
+                                addresses.append(&mut a);
+                                values.append(&mut v);
+                                next += 1;
+                            }
+
                             hits += c;
                             reporter.tick_n(bytes, hits);
                         }
@@ -1475,21 +1498,47 @@ impl ProcessHandle {
             })
         })?;
 
+        // Chunks left behind by a cancelled or failed worker leave gaps; what
+        // was scanned is still appended in order.
+        for (mut a, mut v) in slots.into_iter().skip(next).flatten() {
+            addresses.append(&mut a);
+            values.append(&mut v);
+        }
+
+        debug_assert!(
+            is_strictly_increasing(addresses, start),
+            "initial_scan produced unsorted addresses"
+        );
+
         if let Some(e) = last_error {
             return Err(e);
         }
 
         return Ok(());
 
+        struct Item {
+            seq: usize,
+            address: Address,
+            len: usize,
+        }
+
+        struct ChunkResult {
+            seq: usize,
+            bytes: usize,
+            hits: u64,
+            addresses: Addresses,
+            values: Values,
+        }
+
         enum Task {
-            Done(anyhow::Result<(Addresses, Values)>),
-            Tick(usize, u64),
+            Done(anyhow::Result<()>),
+            Chunk(ChunkResult),
         }
 
         struct Work<'a> {
             handle: &'a ProcessHandle,
             tx: &'a mpsc::Sender<Task>,
-            queue: &'a SegQueue<(Address, usize)>,
+            queue: &'a SegQueue<Item>,
             value_type: Type,
             buffer_size: usize,
             cancel: &'a Token,
@@ -1498,7 +1547,7 @@ impl ProcessHandle {
         }
 
         #[inline(always)]
-        fn work(work: Work<'_>) -> anyhow::Result<(Addresses, Values)> {
+        fn work(work: Work<'_>) -> anyhow::Result<()> {
             let Work {
                 handle,
                 tx,
@@ -1510,15 +1559,15 @@ impl ProcessHandle {
                 pointer_width,
             } = work;
 
-            let mut addresses = Addresses::new(pointer_width);
-            let mut values = Values::new(value_type);
-
             let mut buffer = vec![0u8; buffer_size];
 
-            while let Some((address, len)) = queue.pop() {
+            while let Some(Item { seq, address, len }) = queue.pop() {
                 if cancel.test() {
-                    return Ok((addresses, values));
+                    return Ok(());
                 }
+
+                let mut addresses = Addresses::new(pointer_width);
+                let mut values = Values::new(value_type);
 
                 let len = usize::min(buffer.len(), len);
                 let data = &mut buffer[..len];
@@ -1528,6 +1577,14 @@ impl ProcessHandle {
                 let len = handle.process.read_process_memory(address, data)?;
 
                 if len == 0 {
+                    // Still fill the slot so the collector can move past it.
+                    let _ = tx.send(Task::Chunk(ChunkResult {
+                        seq,
+                        bytes: 0,
+                        hits: 0,
+                        addresses,
+                        values,
+                    }));
                     continue;
                 }
 
@@ -1547,11 +1604,16 @@ impl ProcessHandle {
                     cancel,
                 )?;
 
-                tx.send(Task::Tick(data.len(), hits))
-                    .expect("send tick failed");
+                let _ = tx.send(Task::Chunk(ChunkResult {
+                    seq,
+                    bytes: data.len(),
+                    hits,
+                    addresses,
+                    values,
+                }));
             }
 
-            Ok((addresses, values))
+            Ok(())
         }
     }
 }
@@ -1573,6 +1635,21 @@ fn covered_ranges(range: AddressRange, covered: &[AddressRange], out: &mut Vec<A
             });
         }
     }
+}
+
+/// Test that `addresses[start..]` is strictly increasing.
+fn is_strictly_increasing(addresses: &Addresses, start: usize) -> bool {
+    let mut last = None;
+
+    for address in addresses.iter_copied().skip(start) {
+        if last.is_some_and(|last| last >= address) {
+            return false;
+        }
+
+        last = Some(address);
+    }
+
+    true
 }
 
 /// Push the parts of `range` not covered by any of `covered`, which is

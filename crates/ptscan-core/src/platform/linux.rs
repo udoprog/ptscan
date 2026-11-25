@@ -1202,6 +1202,55 @@ mod tests {
         }
     }
 
+    /// With many tasks and small buffers, workers finish chunks out of order;
+    /// `initial_scan` still emits results in strictly increasing address
+    /// order, the same results a single task scanning big buffers finds.
+    #[test]
+    fn initial_scan_results_in_address_order() {
+        let holder = Holder::spawn();
+        let mut handle = holder.handle();
+        handle.refresh_modules().unwrap();
+        handle.refresh_threads().unwrap();
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(8)
+            .build()
+            .unwrap();
+        let filter = FilterExpr::parse("value != 0", &handle).unwrap();
+
+        let run = |tasks: usize, buffer_size: usize| {
+            let mut addresses = Addresses::new(handle.process.pointer_width);
+            let mut values = Values::new(Type::U64);
+            handle
+                .initial_scan(
+                    ScanContext::new(&pool, None, NoProgress),
+                    &filter,
+                    &mut addresses,
+                    &mut values,
+                    crate::InitialScanConfig {
+                        tasks: Some(tasks),
+                        buffer_size: Some(buffer_size),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            (
+                addresses.iter_copied().collect::<Vec<_>>(),
+                values.iter().map(|v| v.read()).collect::<Vec<_>>(),
+            )
+        };
+
+        assert!(handle.modules.modules.len() > 1);
+
+        let (expected, expected_values) = run(1, 0x100_000);
+        assert!(expected.len() > 1000, "{}", expected.len());
+
+        let (found, found_values) = run(16, 0x1000);
+        assert!(found.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(found, expected);
+        assert_eq!(found_values, expected_values);
+    }
+
     /// `rescan_large` keeps results inside module images, as `rescan_small`
     /// does, rather than depending on the number of results.
     #[test]

@@ -1,7 +1,11 @@
 use musli_web::web03::prelude::*;
-use wasm_bindgen::JsCast;
-use web_sys::HtmlInputElement;
+use sockel::{
+    Button, ButtonSize, ButtonVariant, Card, EmptyState, InputSize, Inset, Pill, Table, TableCell,
+    TextInput, Tone, Toolbar, ToolbarSpacer,
+};
 use yew::prelude::*;
+
+use crate::class;
 
 #[derive(Properties, PartialEq)]
 pub struct Props {
@@ -162,14 +166,7 @@ impl Component for ProcessPicker {
         let busy = self.action.is_pending();
         let attached = props.attach.process.as_ref().map(|p| p.pid);
 
-        let oninput = link.callback(|e: InputEvent| {
-            let value = e
-                .target()
-                .and_then(|t| t.dyn_into::<HtmlInputElement>().ok())
-                .map(|input| input.value())
-                .unwrap_or_default();
-            Msg::Filter(value)
-        });
+        let on_input = link.callback(Msg::Filter);
 
         let attach = match self.selected {
             Some(pid) if props.open && !busy && attached != Some(pid) => {
@@ -188,17 +185,22 @@ impl Component for ProcessPicker {
             .map(|process| {
                 let pid = process.pid;
                 let class = classes!(
-                    (self.selected == Some(pid)).then_some("selected"),
-                    (attached == Some(pid)).then_some("attached"),
+                    sockel::class::TABLE_ROW,
+                    class::ROW,
+                    (self.selected == Some(pid)).then_some(class::SELECTED),
                 );
 
                 html! {
                     <tr key={pid} {class}
                         onclick={link.callback(move |_| Msg::Select(pid))}
                         ondblclick={link.callback(move |_| Msg::Attach(pid))}>
-                        <td class="pid">{pid}</td>
-                        <td>{process.name.as_deref().unwrap_or("")}</td>
-                        <td class="muted">{if attached == Some(pid) { "attached" } else { "" }}</td>
+                        <TableCell numeric=true>{pid}</TableCell>
+                        <TableCell cut=true>{process.name.as_deref().unwrap_or("")}</TableCell>
+                        <TableCell>
+                            if attached == Some(pid) {
+                                <Pill tone={Tone::Success}>{"attached"}</Pill>
+                            }
+                        </TableCell>
                     </tr>
                 }
             })
@@ -207,41 +209,55 @@ impl Component for ProcessPicker {
         let summary = match self.unreadable.len() {
             0 => html! {},
             n => html! {
-                <span class="muted" title={self.unreadable.join("\n")}>
+                <span class={class::MUTED} title={self.unreadable.join("\n")}>
                     {format!("{n} could not be read")}
                 </span>
             },
         };
 
+        let head = html! {
+            <>
+                <TableCell head=true numeric=true>{"PID"}</TableCell>
+                <TableCell head=true>{"Name"}</TableCell>
+                <TableCell head=true><span class={sockel::class::VISUALLY_HIDDEN}>{"State"}</span></TableCell>
+            </>
+        };
+
+        let empty = self.processes.is_empty().then(|| {
+            let title = if props.open {
+                "No processes"
+            } else {
+                "Waiting for the server"
+            };
+            html! { <EmptyState {title} compact=true /> }
+        });
+
         html! {
-            <column class="panel fill" style="gap: 0">
-                <row class="toolbar center">
-                    <span class="title">{"Processes"}</span>
-                    <input type="search" placeholder="Filter by name or pid"
-                        value={self.filter.clone()} {oninput} />
-                    <button onclick={link.callback(|_| Msg::Refresh)} disabled={!props.open}>
+            <Card inset={Inset::Flush} class={class::PANE}>
+                <Toolbar label="Processes" band=true>
+                    <span class={class::TITLE}>{"Processes"}</span>
+                    <TextInput size={InputSize::Small}
+                        class={class::SEARCH}
+                        placeholder="Filter by name or pid" label="Filter processes"
+                        value={self.filter.clone()} {on_input} />
+                    <Button size={ButtonSize::Small} busy={self.list.is_pending()}
+                        onclick={link.callback(|_| Msg::Refresh)} disabled={!props.open}>
                         {"Refresh"}
-                    </button>
+                    </Button>
+                </Toolbar>
+                <Toolbar label="Process actions" band=true>
                     {summary}
-                    <div class="fill" />
-                    <button class="primary" disabled={attach.is_none()}
-                        onclick={attach.unwrap_or_default()}>{"Attach"}</button>
-                    <button disabled={detach.is_none()}
-                        onclick={detach.unwrap_or_default()}>{"Detach"}</button>
-                </row>
-                <div class="list fill">
-                    if self.processes.is_empty() {
-                        <div class="empty muted">
-                            {if props.open { "No processes" } else { "Waiting for the server" }}
-                        </div>
-                    } else {
-                        <table>
-                            <thead><tr><th>{"PID"}</th><th>{"Name"}</th><th></th></tr></thead>
-                            <tbody>{rows}</tbody>
-                        </table>
-                    }
+                    <ToolbarSpacer />
+                    <Button size={ButtonSize::Small} variant={ButtonVariant::Primary}
+                        busy={busy} disabled={attach.is_none()}
+                        onclick={attach.unwrap_or_default()}>{"Attach"}</Button>
+                    <Button size={ButtonSize::Small} disabled={detach.is_none()}
+                        onclick={detach.unwrap_or_default()}>{"Detach"}</Button>
+                </Toolbar>
+                <div class={class::SCROLL}>
+                    <Table {head} columns={3} {empty} label="Processes">{rows}</Table>
                 </div>
-            </column>
+            </Card>
         }
     }
 }

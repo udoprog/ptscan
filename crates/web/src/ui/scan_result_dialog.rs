@@ -1,7 +1,8 @@
 use musli_web::web03::prelude::*;
-use wasm_bindgen::JsCast;
-use web_sys::HtmlInputElement;
+use sockel::{Button, ButtonVariant, Cluster, Dialog, DialogDismiss, FormRow, FormRows, TextInput};
 use yew::prelude::*;
+
+use crate::class;
 
 #[derive(Properties, PartialEq)]
 pub struct Props {
@@ -137,8 +138,7 @@ impl Component for ScanResultDialog {
         let props = ctx.props();
         let link = ctx.link();
         let result = &props.result;
-        let close = props.on_close.reform(|_: MouseEvent| ());
-        let keep_open = Callback::from(|e: MouseEvent| e.stop_propagation());
+        let close = props.on_close.reform(|_| ());
         let changed = result.current != result.last;
 
         let onsubmit = link.callback(|e: SubmitEvent| {
@@ -154,90 +154,74 @@ impl Component for ScanResultDialog {
             let value = entry.value.as_deref().unwrap_or("?");
 
             html! {
-                <span class="muted">
+                <span class={class::MUTED}>
                     {format!("Added {} at {address} = {value}", entry.pointer)}
                 </span>
             }
         });
 
+        let error = |error: &Option<String>| error.as_ref().map(|e| html! { {e.clone()} });
+
+        let on_write_key = link.batch_callback(|e: KeyboardEvent| {
+            (e.key() == "Enter").then(|| {
+                e.prevent_default();
+                Msg::Write
+            })
+        });
+
+        let actions = html! {
+            <>
+                {added}
+                <Button submit=true form="scan-result-form" variant={ButtonVariant::Primary}
+                    busy={self.request.is_pending()}>
+                    {"Add to scratch"}
+                </Button>
+            </>
+        };
+
         html! {
-            <div class="backdrop" onclick={close.clone()}>
-                <column class="panel dialog" style="gap: 0" onclick={keep_open}>
-                    <row class="toolbar center">
-                        <span class="title">{"Scan result"}</span>
-                        <div class="fill" />
-                        <button onclick={close}>{"Close"}</button>
-                    </row>
-                    <form class="details" {onsubmit}>
-                        <span class="field-label">{"Address"}</span>
-                        <span class="mono">{format!("{:#x}", result.address)}</span>
-                        <span class="field-label">{"Last value"}</span>
-                        <span class="mono">{&result.last}</span>
-                        <span class="field-label">{"Current value"}</span>
-                        <span class={classes!("mono", changed.then_some("changed"))}>{&result.current}</span>
-                        <label class="field-label" for="result-pointer">{"Pointer"}</label>
-                        <column style="gap: 2px">
-                            <input id="result-pointer"
-                                class={classes!("mono", self.pointer_error.is_some().then_some("invalid"))}
+            <Dialog open=true on_dismiss={close} title="Scan result" dismiss={DialogDismiss::NoOutside} {actions}>
+                <form id="scan-result-form" class={class::FORM} {onsubmit}>
+                    <FormRows>
+                        <FormRow id="result-address" label={html! {"Address"}}>
+                            <span class={class::MONO}>{format!("{:#x}", result.address)}</span>
+                        </FormRow>
+                        <FormRow id="result-last" label={html! {"Last value"}}>
+                            <span class={class::MONO}>{&result.last}</span>
+                        </FormRow>
+                        <FormRow id="result-current" label={html! {"Current value"}}>
+                            <span class={classes!(class::MONO, changed.then_some(class::CHANGED))}>{&result.current}</span>
+                        </FormRow>
+                        <FormRow id="result-pointer" label={html! {"Pointer"}} error={error(&self.pointer_error)}>
+                            <TextInput id="result-pointer" class={class::MONO}
+                                invalid={self.pointer_error.is_some()}
                                 value={self.pointer.clone()}
-                                oninput={link.callback(|e: InputEvent| Msg::Pointer(input_value(&e)))} />
-                            if let Some(error) = &self.pointer_error {
-                                <span class="field-error">{error}</span>
-                            }
-                        </column>
-                        <label class="field-label" for="result-type">{"Type"}</label>
-                        <column style="gap: 2px">
-                            <input id="result-type"
-                                class={classes!("mono", self.value_type_error.is_some().then_some("invalid"))}
+                                on_input={link.callback(Msg::Pointer)} />
+                        </FormRow>
+                        <FormRow id="result-type" label={html! {"Type"}} error={error(&self.value_type_error)}>
+                            <TextInput id="result-type" class={class::MONO}
+                                invalid={self.value_type_error.is_some()}
                                 value={self.value_type.clone()}
-                                oninput={link.callback(|e: InputEvent| Msg::ValueType(input_value(&e)))} />
-                            if let Some(error) = &self.value_type_error {
-                                <span class="field-error">{error}</span>
-                            }
-                        </column>
-                        <label class="field-label" for="result-value">{"Value"}</label>
-                        <column style="gap: 2px">
-                            <row class="center">
-                                <input id="result-value"
-                                    class={classes!("mono", "fill", self.value_error.is_some().then_some("invalid"))}
+                                on_input={link.callback(Msg::ValueType)} />
+                        </FormRow>
+                        <FormRow id="result-value" label={html! {"Value"}} error={error(&self.value_error)}
+                            hint={self.written.clone().map(|w| html! { {w} })}>
+                            <Cluster nowrap=true>
+                                <TextInput id="result-value" class={classes!(class::MONO, sockel::class::GROW)}
+                                    invalid={self.value_error.is_some()}
                                     value={self.value.clone()}
-                                    oninput={link.callback(|e: InputEvent| Msg::Value(input_value(&e)))}
-                                    onkeydown={link.batch_callback(|e: KeyboardEvent| {
-                                        (e.key() == "Enter").then(|| {
-                                            e.prevent_default();
-                                            Msg::Write
-                                        })
-                                    })} />
-                                <button type="button" title="Write the value as the type above at the address"
-                                    disabled={self.write.is_pending()}
+                                    on_input={link.callback(Msg::Value)}
+                                    on_keydown={on_write_key} />
+                                <Button title="Write the value as the type above at the address"
+                                    busy={self.write.is_pending()}
                                     onclick={link.callback(|_| Msg::Write)}>
                                     {"Write"}
-                                </button>
-                            </row>
-                            if let Some(error) = &self.value_error {
-                                <span class="field-error">{error}</span>
-                            }
-                            if let Some(written) = &self.written {
-                                <span class="muted">{written}</span>
-                            }
-                        </column>
-                        <span />
-                        <row class="center">
-                            <button type="submit" class="primary" disabled={self.request.is_pending()}>
-                                {"Add to scratch"}
-                            </button>
-                            {added}
-                        </row>
-                    </form>
-                </column>
-            </div>
+                                </Button>
+                            </Cluster>
+                        </FormRow>
+                    </FormRows>
+                </form>
+            </Dialog>
         }
     }
-}
-
-fn input_value(e: &InputEvent) -> String {
-    e.target()
-        .and_then(|t| t.dyn_into::<HtmlInputElement>().ok())
-        .map(|input| input.value())
-        .unwrap_or_default()
 }

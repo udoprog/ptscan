@@ -731,8 +731,8 @@ mod tests {
     use super::*;
     use crate::{
         process::ProcessInfo, Addresses, BlockAddresses, FilterExpr, Offset, Pointer, PointerScan,
-        Process, ProcessHandle, ScanContext, ScanProgress, ScanResults, Sign, Token, Type, Value,
-        ValueExpr, Values,
+        Process, ProcessHandle, ScanContext, ScanProgress, ScanResults, ScanValues, Sign, Token,
+        Type, Value, ValueExpr, Values,
     };
 
     /// Kills the scratch child when dropped, so a failing test cleans up.
@@ -1634,6 +1634,86 @@ mod tests {
         assert_eq!(kept, found.into_iter().collect::<HashSet<_>>());
     }
 
+    /// An exact-match initial scan stores its values as one constant, and
+    /// pages the same addresses and values as a dense scan, before and after
+    /// rescans which expand `last` but leave `initial` constant.
+    #[test]
+    fn exact_match_scan_pages_constant_values() {
+        let holder = Holder::spawn();
+        let mut handle = holder.handle();
+        handle.refresh_modules().unwrap();
+        handle.refresh_threads().unwrap();
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let filter = FilterExpr::parse(&format!("value == {}u64", HELD), &handle).unwrap();
+
+        let mut results = ScanResults::empty(Type::U64).unwrap();
+        handle
+            .initial_scan_results(
+                ScanContext::new(&pool, None, NoProgress),
+                &filter,
+                &mut results,
+                Default::default(),
+            )
+            .unwrap();
+        assert!(matches!(results.last(), ScanValues::Constant { .. }));
+        assert_eq!(results.last().len(), results.len());
+
+        let mut addresses = BlockAddresses::new(1).unwrap();
+        let mut values = Values::new(Type::U64);
+        handle
+            .initial_scan(
+                ScanContext::new(&pool, None, NoProgress),
+                &filter,
+                &mut addresses,
+                &mut values,
+                Default::default(),
+            )
+            .unwrap();
+        assert!(values.bytes() > 0);
+
+        // As the server pages them: addresses from an offset, each with its
+        // last and initial value by index.
+        let page = |r: &ScanResults, offset: usize, limit: usize| {
+            r.addresses()
+                .iter_from(offset)
+                .take(limit)
+                .zip(offset..)
+                .map(|(a, i)| (a, r.last().get(i), r.initial().get(i)))
+                .collect::<Vec<_>>()
+        };
+
+        let held = Some(Value::U64(HELD));
+        let expected = addresses
+            .iter()
+            .map(|a| (a, held.clone(), held.clone()))
+            .collect::<Vec<_>>();
+        assert!(expected.len() >= 2, "{:?}", expected);
+        assert_eq!(page(&results, 0, usize::MAX), expected);
+        assert_eq!(page(&results, 1, 1), expected.get(1..2).unwrap_or_default());
+
+        let dense = ScanResults::unchanged(addresses, values);
+        assert!(results.bytes() < dense.bytes());
+
+        for window in [None, Some(0x1000)] {
+            let mut rescanned = results.clone();
+            let ctx = ScanContext::new(&pool, None, NoProgress);
+
+            match window {
+                None => handle.rescan_small(ctx, &mut rescanned, &filter),
+                Some(window) => handle.rescan_windows(ctx, &mut rescanned, &filter, window),
+            }
+            .unwrap();
+
+            assert!(matches!(rescanned.initial(), ScanValues::Constant { .. }));
+            assert!(matches!(rescanned.last(), ScanValues::Dense(..)));
+            assert_eq!(page(&rescanned, 0, usize::MAX), expected);
+        }
+    }
+
     /// Windowed rescans, whatever the window size, keep exactly what
     /// `rescan_small` keeps, with the same values and in the original order,
     /// and drop results outside the scanned memory.
@@ -1680,8 +1760,8 @@ mod tests {
         let read = |r: &ScanResults| {
             (
                 r.addresses().iter().collect::<Vec<_>>(),
-                r.initial().iter().map(|v| v.read()).collect::<Vec<_>>(),
-                r.last().iter().map(|v| v.read()).collect::<Vec<_>>(),
+                r.initial().iter().collect::<Vec<_>>(),
+                r.last().iter().collect::<Vec<_>>(),
             )
         };
 
@@ -1844,8 +1924,8 @@ mod tests {
             let found = rescanned
                 .addresses()
                 .iter()
-                .zip(rescanned.initial().iter().map(|v| v.read()))
-                .zip(rescanned.last().iter().map(|v| v.read()))
+                .zip(rescanned.initial().iter())
+                .zip(rescanned.last().iter())
                 .map(|((a, i), l)| (a, i, l))
                 .collect::<Vec<_>>();
 

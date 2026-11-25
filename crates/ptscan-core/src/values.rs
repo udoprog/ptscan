@@ -9,7 +9,7 @@
 
 use crate::{
     raw_serde::{RawDeserialize, RawSerialize, RawTypeDeserialize, RawTypeSerialize},
-    Address, Type, Value,
+    Address, BitSet, Type, Value,
 };
 use dynamicvec::{DynamicType, DynamicVec};
 use serde::{Deserialize, Serialize};
@@ -195,6 +195,156 @@ impl DynamicType for Type {
 }
 
 pub type Values = DynamicVec<Type>;
+
+/// The values of scan results: either stored per result, or one constant
+/// shared by every result, as after an exact-match initial scan.
+#[derive(Clone)]
+pub enum ScanValues {
+    /// A value per result.
+    Dense(Values),
+    /// `len` results which all hold `value`, of type `ty`.
+    Constant { ty: Type, value: Value, len: usize },
+}
+
+impl ScanValues {
+    /// Whether values of `ty` can be stored as a constant: fixed-size
+    /// integers and pointers, whose equal values are the same bytes and own
+    /// no heap data, so a constant can be expanded byte by byte.
+    pub fn can_be_constant(ty: Type) -> bool {
+        is_plain(ty)
+    }
+
+    /// The type of the values.
+    pub fn ty(&self) -> Type {
+        match self {
+            Self::Dense(values) => values.ty(),
+            Self::Constant { ty, .. } => *ty,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Dense(values) => values.len(),
+            Self::Constant { len, .. } => *len,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The value at `index`.
+    pub fn get(&self, index: usize) -> Option<Value> {
+        match self {
+            Self::Dense(values) => values.get(index),
+            Self::Constant { value, len, .. } if index < *len => Some(value.clone()),
+            Self::Constant { .. } => None,
+        }
+    }
+
+    /// Iterate over the values in order.
+    pub fn iter(&self) -> impl Iterator<Item = Value> + '_ {
+        (0..self.len()).map_while(move |index| self.get(index))
+    }
+
+    /// Bytes used by the stored values; a constant uses none per result.
+    pub fn bytes(&self) -> usize {
+        match self {
+            Self::Dense(values) => values.bytes(),
+            Self::Constant { .. } => 0,
+        }
+    }
+
+    /// Remove the values whose index is set in `marked`, keeping the order
+    /// of the others.
+    pub fn remove_marked(&mut self, marked: &BitSet) {
+        match self {
+            Self::Dense(values) => values.retain_by_index(|index| !marked.test(index)),
+            Self::Constant { len, .. } => {
+                *len = len.saturating_sub(marked.count_below(*len));
+            }
+        }
+    }
+
+    /// The values, if they are stored per result.
+    pub fn as_dense(&self) -> Option<&Values> {
+        match self {
+            Self::Dense(values) => Some(values),
+            Self::Constant { .. } => None,
+        }
+    }
+
+    /// A value per result, which a constant is expanded into first.
+    pub fn dense_mut(&mut self) -> Result<&mut Values, ScanValuesError> {
+        if let Self::Constant { ty, value, len } = self {
+            *self = Self::Dense(materialize(*ty, value, *len)?);
+        }
+
+        match self {
+            Self::Dense(values) => Ok(values),
+            Self::Constant { .. } => Err(ScanValuesError),
+        }
+    }
+}
+
+impl From<Values> for ScanValues {
+    fn from(values: Values) -> Self {
+        Self::Dense(values)
+    }
+}
+
+/// A constant could not be expanded into a value per result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanValuesError;
+
+impl std::fmt::Display for ScanValuesError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("constant values too large to expand")
+    }
+}
+
+impl std::error::Error for ScanValuesError {}
+
+/// Fixed-size primitives whose element bytes are the whole value, so a copy
+/// of the bytes is a copy of the value.
+fn is_plain(ty: Type) -> bool {
+    matches!(
+        ty,
+        Type::U8
+            | Type::I8
+            | Type::U16
+            | Type::I16
+            | Type::U32
+            | Type::I32
+            | Type::U64
+            | Type::I64
+            | Type::U128
+            | Type::I128
+            | Type::Pointer(..)
+    )
+}
+
+/// `len` copies of `value` as a value per result.
+fn materialize(ty: Type, value: &Value, len: usize) -> Result<Values, ScanValuesError> {
+    if !is_plain(ty) {
+        return Err(ScanValuesError);
+    }
+
+    let mut one = Values::with_capacity(ty, 1);
+    one.push(value.clone());
+    let element_size = one.element_size();
+
+    // NB: `repeat` panics when the size overflows, which is checked first.
+    if element_size.checked_mul(len).is_none() {
+        return Err(ScanValuesError);
+    }
+
+    let data = one.as_bytes().repeat(len);
+
+    // Safety: `ty` owns no heap data, so `data` is `len` valid elements, each
+    // a byte copy of the one pushed above.
+    Ok(unsafe { Values::from_raw_parts(ty, element_size, data, len) })
+}
 
 impl RawTypeDeserialize for Type {
     unsafe fn raw_type_deserialize<R>(self, reader: &mut R, len: usize) -> io::Result<Vec<u8>>

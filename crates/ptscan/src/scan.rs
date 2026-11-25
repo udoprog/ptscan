@@ -6,9 +6,9 @@ use std::time::Instant;
 
 use anyhow::{Context as _, Result, anyhow};
 use ptscan_core::{
-    Address, Addresses, BitSet, BlockAddresses, FilterExpr, InitialScanConfig, PortablePointer,
-    Process, ProcessHandle, Proxy as _, ScanContext, ScanResults, Size, Token, TypeHint, Value,
-    ValueExpr, Values,
+    Address, Addresses, BitSet, FilterExpr, InitialScanConfig, PortablePointer, Process,
+    ProcessHandle, Proxy as _, ScanContext, ScanResults, Size, Token, TypeHint, Value, ValueExpr,
+    Values,
 };
 use tokio::sync::watch;
 
@@ -288,24 +288,18 @@ impl Shared {
 
         refresh_modules(handle)?;
         let handle = read(handle);
-        // The initial scan picks the step, which replaces this empty set.
-        let mut addresses = BlockAddresses::new(1)?;
-        let mut values = Values::new(value_type);
+        let mut results = ScanResults::empty(value_type)?;
 
         let result = suspended(&handle.process, suspend, || {
-            handle.initial_scan(
+            handle.initial_scan_results(
                 ScanContext::new(&self.pool, Some(token), progress),
                 &filter,
-                &mut addresses,
-                &mut values,
+                &mut results,
                 config,
             )
         });
 
-        *generation = Some(Generation {
-            results: ScanResults::unchanged(addresses, values),
-            value,
-        });
+        *generation = Some(Generation { results, value });
 
         result
     }

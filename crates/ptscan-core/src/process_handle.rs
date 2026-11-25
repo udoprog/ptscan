@@ -10,8 +10,8 @@ use crate::{
     system, utils, Address, AddressRange, Addresses, Base, BitSet, BlockAddresses,
     BlockAddressesBuilder, BlockError, Cached, DefaultScanner, FollowablePointer,
     MemoryInformation, MemoryReader, Pointer, PointerInfo, PointerWidth, PortableBase, Process,
-    ProcessId, ProcessInfo, Scanner, Size, Test, ThreadId, Token, Type, TypeHint, TypedFilterExpr,
-    Value, ValueExpr, ValueRef, Values,
+    ProcessId, ProcessInfo, ScanValues, ScanValuesError, Scanner, Size, Test, ThreadId, Token,
+    Type, TypeHint, TypedFilterExpr, Value, ValueExpr, ValueRef, Values,
 };
 use anyhow::{anyhow, bail, Context as _};
 use crossbeam_queue::SegQueue;
@@ -69,12 +69,16 @@ impl<'a, P> ScanContext<'a, P> {
 /// Invariants: all three have the same length, and the addresses are
 /// strictly increasing (which [`BlockAddresses`] guarantees), so results can
 /// be found by binary search.
+///
+/// After an exact-match initial scan every value is the same constant, which
+/// is stored once (see [`ScanValues::Constant`]); `last` gets a value per
+/// result on the first rescan, while `initial` stays a constant.
 #[derive(Clone)]
 pub struct ScanResults {
     addresses: BlockAddresses,
     /// Values at the initial scan, `None` while they are the same as `last`.
-    initial: Option<Values>,
-    last: Values,
+    initial: Option<ScanValues>,
+    last: ScanValues,
 }
 
 impl ScanResults {
@@ -84,14 +88,15 @@ impl ScanResults {
 
         Self {
             addresses,
-            initial: Some(initial),
-            last,
+            initial: Some(ScanValues::Dense(initial)),
+            last: ScanValues::Dense(last),
         }
     }
 
     /// Results whose initial values are the same as `values`, which are not
     /// stored twice until `last` is about to change.
-    pub fn unchanged(addresses: BlockAddresses, values: Values) -> Self {
+    pub fn unchanged(addresses: BlockAddresses, values: impl Into<ScanValues>) -> Self {
+        let values = values.into();
         debug_assert_eq!(addresses.len(), values.len());
 
         Self {
@@ -99,6 +104,11 @@ impl ScanResults {
             initial: None,
             last: values,
         }
+    }
+
+    /// No results, with values of type `ty`.
+    pub fn empty(ty: Type) -> Result<Self, BlockError> {
+        Ok(Self::unchanged(BlockAddresses::new(1)?, Values::new(ty)))
     }
 
     /// The addresses of the results, strictly increasing.
@@ -123,12 +133,12 @@ impl ScanResults {
     }
 
     /// The values at the initial scan.
-    pub fn initial(&self) -> &Values {
+    pub fn initial(&self) -> &ScanValues {
         self.initial.as_ref().unwrap_or(&self.last)
     }
 
     /// The values at the last scan.
-    pub fn last(&self) -> &Values {
+    pub fn last(&self) -> &ScanValues {
         &self.last
     }
 
@@ -136,20 +146,27 @@ impl ScanResults {
     pub fn bytes(&self) -> usize {
         self.addresses
             .bytes()
-            .saturating_add(self.initial.as_ref().map_or(0, Values::bytes))
+            .saturating_add(self.initial.as_ref().map_or(0, ScanValues::bytes))
             .saturating_add(self.last.bytes())
     }
 
-    /// Store the initial values separately, which must be done before `last`
-    /// is changed. Returns the addresses, initial values and last values.
-    pub fn split_mut(&mut self) -> (&BlockAddresses, &Values, &mut Values) {
+    /// Store the initial values separately and give `last` a value per
+    /// result, which must be done before `last` is changed. Returns the
+    /// addresses, initial values and last values.
+    ///
+    /// A constant `last` stays the initial values as it is, so only `last`
+    /// is expanded.
+    pub fn split_mut(
+        &mut self,
+    ) -> Result<(&BlockAddresses, &ScanValues, &mut Values), ScanValuesError> {
         let Self {
             addresses,
             initial,
             last,
         } = self;
         let initial = &*initial.get_or_insert_with(|| last.clone());
-        (addresses, initial, last)
+        let last = last.dense_mut()?;
+        Ok((addresses, initial, last))
     }
 
     pub fn len(&self) -> usize {
@@ -171,14 +188,7 @@ impl ScanResults {
 
         self.addresses
             .retain_by_index(|index| !marked.test(index))?;
-
-        if let Some(initial) = &mut self.initial {
-            initial.retain_by_index(|index| !marked.test(index));
-            debug_assert_eq!(self.addresses.len(), initial.len());
-        }
-
-        self.last.retain_by_index(|index| !marked.test(index));
-        debug_assert_eq!(self.addresses.len(), self.last.len());
+        self.remove_marked_values(marked);
         Ok(())
     }
 
@@ -212,14 +222,18 @@ impl ScanResults {
             return Ok(());
         }
 
+        self.remove_marked_values(marked);
+        Ok(())
+    }
+
+    fn remove_marked_values(&mut self, marked: &BitSet) {
         if let Some(initial) = &mut self.initial {
-            initial.retain_by_index(|index| !marked.test(index));
+            initial.remove_marked(marked);
             debug_assert_eq!(self.addresses.len(), initial.len());
         }
 
-        self.last.retain_by_index(|index| !marked.test(index));
+        self.last.remove_marked(marked);
         debug_assert_eq!(self.addresses.len(), self.last.len());
-        Ok(())
     }
 }
 
@@ -804,7 +818,7 @@ impl ProcessHandle {
         }
 
         // The values are changed below, so the initial ones need their own copy.
-        results.split_mut();
+        results.split_mut()?;
 
         let len = results.len();
 
@@ -1054,7 +1068,11 @@ impl ProcessHandle {
 
                 let addresses = self.results.addresses();
                 let initial = self.results.initial();
-                let values = self.results.last();
+
+                // `split_mut` gave `last` a value per result.
+                let Some(values) = self.results.last().as_dense() else {
+                    bail!("last values are not stored per result");
+                };
 
                 let mut buffer = vec![0u8; self.buffer_size];
 
@@ -1181,7 +1199,7 @@ impl ProcessHandle {
         }
 
         // The values are changed below, so the initial ones need their own copy.
-        let (addresses, initial, values) = results.split_mut();
+        let (addresses, initial, values) = results.split_mut()?;
 
         if addresses.len() != values.len() || addresses.len() != initial.len() {
             return Err(anyhow!(
@@ -1463,6 +1481,69 @@ impl ProcessHandle {
         values: &mut Values,
         config: InitialScanConfig,
     ) -> anyhow::Result<()> {
+        self.initial_scan_into(ctx, filter, addresses, values, true, config)
+    }
+
+    /// Run an initial scan into `results`, which must be empty, for values
+    /// of the type of `results.last()`.
+    ///
+    /// When the filter is an exact match (`value == C`) on a fixed-size
+    /// integer or pointer type, every result holds `C`, so the values are
+    /// stored as that one constant rather than per result.
+    ///
+    /// As with [`ProcessHandle::initial_scan`], what was found is kept in
+    /// `results` even if an error is returned.
+    pub fn initial_scan_results(
+        &self,
+        ctx: ScanContext<'_, impl ScanProgress + Send>,
+        filter: &FilterExpr,
+        results: &mut ScanResults,
+        config: InitialScanConfig,
+    ) -> anyhow::Result<()> {
+        if !results.is_empty() {
+            bail!("initial scan into {} existing results", results.len());
+        }
+
+        let value_type = results.last().ty();
+        let mut addresses = BlockAddresses::new(1)?;
+        let mut values = Values::new(value_type);
+
+        let constant = filter
+            .exact(value_type)
+            .filter(|_| ScanValues::can_be_constant(value_type));
+
+        let Some(value) = constant else {
+            let result =
+                self.initial_scan_into(ctx, filter, &mut addresses, &mut values, true, config);
+            *results = ScanResults::unchanged(addresses, values);
+            return result;
+        };
+
+        let result =
+            self.initial_scan_into(ctx, filter, &mut addresses, &mut values, false, config);
+        let len = addresses.len();
+        *results = ScanResults::unchanged(
+            addresses,
+            ScanValues::Constant {
+                ty: value_type,
+                value,
+                len,
+            },
+        );
+        result
+    }
+
+    /// The initial scan, which only keeps the values found if `keep_values`
+    /// is set; otherwise `values` is left as it is.
+    fn initial_scan_into(
+        &self,
+        ctx: ScanContext<'_, impl ScanProgress + Send>,
+        filter: &FilterExpr,
+        addresses: &mut BlockAddresses,
+        values: &mut Values,
+        keep_values: bool,
+        config: InitialScanConfig,
+    ) -> anyhow::Result<()> {
         let ScanContext {
             pool: thread_pool,
             cancel,
@@ -1591,7 +1672,9 @@ impl ProcessHandle {
                             handle: self,
                             tx: &tx,
                             queue,
-                            value_type,
+                            // NB: values of no type count the hits and
+                            // store nothing.
+                            value_type: if keep_values { value_type } else { Type::None },
                             buffer_size,
                             cancel,
                             scanner,
@@ -1637,7 +1720,7 @@ impl ProcessHandle {
                                     append_failed = reporter.eval(appended).is_none();
                                 }
 
-                                if !append_failed {
+                                if !append_failed && keep_values {
                                     values.append(&mut v);
                                 }
 
@@ -1662,7 +1745,8 @@ impl ProcessHandle {
             }
 
             match builder.append(&a) {
-                Ok(()) => values.append(&mut v),
+                Ok(()) if keep_values => values.append(&mut v),
+                Ok(()) => {}
                 Err(e) => {
                     append_failed = true;
                     last_error = Some(e.into());
@@ -1679,7 +1763,7 @@ impl ProcessHandle {
             }
         }
 
-        debug_assert_eq!(addresses.len(), values.len());
+        debug_assert!(!keep_values || addresses.len() == values.len());
 
         if let Some(e) = last_error {
             return Err(e);
@@ -2134,7 +2218,7 @@ impl fmt::Display for ProcessThread {
 #[cfg(test)]
 mod tests {
     use super::ScanResults;
-    use crate::{Address, BitSet, BlockAddresses, Type, Value, Values};
+    use crate::{Address, BitSet, BlockAddresses, ScanValues, Type, Value, Values};
 
     fn block(addresses: Vec<Address>) -> BlockAddresses {
         BlockAddresses::from_sorted(4, addresses).unwrap()
@@ -2152,7 +2236,7 @@ mod tests {
 
         let mut results = ScanResults::unchanged(block(addresses), last);
         let shared = results.bytes();
-        let read = |v: &Values| v.iter().map(|v| v.read()).collect::<Vec<_>>();
+        let read = |v: &ScanValues| v.iter().collect::<Vec<_>>();
         let before = read(results.last());
         assert_eq!(read(results.initial()), before);
 
@@ -2162,12 +2246,72 @@ mod tests {
         assert_eq!(results.len(), 9);
         assert_eq!(read(results.initial()), read(results.last()));
 
-        let (_, _, last) = results.split_mut();
+        let (_, _, last) = results.split_mut().unwrap();
         last.iter_mut().next().unwrap().write(Value::U32(100));
         assert!(results.bytes() > shared - 4);
         assert_eq!(results.initial().len(), 9);
         assert_eq!(results.initial().get(0), Some(Value::U32(1)));
         assert_eq!(results.last().get(0), Some(Value::U32(100)));
+    }
+
+    #[test]
+    fn constant_values_expand_on_first_change() {
+        let addresses = (0..10u64).map(|n| Address::new(n * 4)).collect();
+        let constant = ScanValues::Constant {
+            ty: Type::U32,
+            value: Value::U32(7),
+            len: 10,
+        };
+        let mut results = ScanResults::unchanged(block(addresses), constant);
+        let read = |v: &ScanValues| v.iter().collect::<Vec<_>>();
+
+        assert_eq!(results.bytes(), results.addresses().bytes());
+        assert_eq!(read(results.last()), vec![Value::U32(7); 10]);
+        assert_eq!(results.last().get(10), None);
+
+        let mut marked = BitSet::new();
+        marked.set(0);
+        marked.set(9);
+        results.remove_marked(&marked).unwrap();
+        assert_eq!(results.len(), 8);
+        assert_eq!(results.last().len(), 8);
+        assert_eq!(results.initial().len(), 8);
+
+        let (_, initial, last) = results.split_mut().unwrap();
+        assert!(matches!(initial, ScanValues::Constant { len: 8, .. }));
+        assert_eq!(last.len(), 8);
+        last.iter_mut().next().unwrap().write(Value::U32(100));
+
+        assert!(matches!(results.initial(), ScanValues::Constant { .. }));
+        assert_eq!(results.bytes(), results.addresses().bytes() + 8 * 4);
+        assert_eq!(read(results.initial()), vec![Value::U32(7); 8]);
+        assert_eq!(results.last().get(0), Some(Value::U32(100)));
+        assert_eq!(
+            read(results.last()).get(1..),
+            Some(&vec![Value::U32(7); 7][..])
+        );
+
+        let mut marked = BitSet::new();
+        marked.set(0);
+        results.remove_marked(&marked).unwrap();
+        assert_eq!(read(results.initial()), vec![Value::U32(7); 7]);
+        assert_eq!(read(results.last()), vec![Value::U32(7); 7]);
+    }
+
+    #[test]
+    fn constant_values_refuse_unsized_types() {
+        let mut values = ScanValues::Constant {
+            ty: Type::String(Default::default()),
+            value: Value::String("x".into()),
+            len: 2,
+        };
+        assert!(!ScanValues::can_be_constant(Type::F32));
+        assert!(!ScanValues::can_be_constant(Type::String(
+            Default::default()
+        )));
+        assert!(ScanValues::can_be_constant(Type::U64));
+        assert!(values.dense_mut().is_err());
+        assert_eq!(values.get(1), Some(Value::String("x".into())));
     }
 
     #[test]
@@ -2241,17 +2385,13 @@ mod tests {
             .unwrap();
         assert_eq!(results.addresses(), &kept_addresses);
         assert_eq!(
-            results
-                .initial()
-                .iter()
-                .map(|v| v.read())
-                .collect::<Vec<_>>(),
+            results.initial().iter().collect::<Vec<_>>(),
             kept.iter()
                 .map(|&i| Value::U32(i as u32))
                 .collect::<Vec<_>>()
         );
         assert_eq!(
-            results.last().iter().map(|v| v.read()).collect::<Vec<_>>(),
+            results.last().iter().collect::<Vec<_>>(),
             kept.iter()
                 .map(|&i| Value::U32(i as u32 + 100))
                 .collect::<Vec<_>>()
@@ -2299,15 +2439,11 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert_eq!(
-            results
-                .initial()
-                .iter()
-                .map(|v| v.read())
-                .collect::<Vec<_>>(),
+            results.initial().iter().collect::<Vec<_>>(),
             kept.iter().map(|&n| Value::U32(n)).collect::<Vec<_>>()
         );
         assert_eq!(
-            results.last().iter().map(|v| v.read()).collect::<Vec<_>>(),
+            results.last().iter().collect::<Vec<_>>(),
             kept.iter()
                 .map(|&n| Value::U64(u64::from(n) * 2))
                 .collect::<Vec<_>>()

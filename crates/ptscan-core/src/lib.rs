@@ -284,4 +284,4 @@ pub use self::type_hint::{TypeHint, TypeSolveError};
 pub use self::utils::IteratorExtension;
 pub use self::value::{Value, ValueRef};
 pub use self::value_expr::{TypedValueExpr, ValueExpr};
-pub use self::values::Values;
+pub use self::values::{ScanValues, ScanValuesError, Values};

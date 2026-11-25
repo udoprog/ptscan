@@ -162,6 +162,21 @@ impl FilterExpr {
         }
     }
 
+    /// The constant every match holds, if the filter is `value == C` for a
+    /// constant `C` of `value_type`.
+    ///
+    /// The caller decides whether equality pins the stored value down for
+    /// the type; for floats it doesn't, since `-0.0 == 0.0`.
+    pub fn exact(&self, value_type: Type) -> Option<Value> {
+        match self {
+            Self::Binary(m) => match m.comparison(value_type)? {
+                (FilterOp::Eq, constant) => Some(constant),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Construct a special scanner if possible.
     pub fn scanner<P>(
         &self,

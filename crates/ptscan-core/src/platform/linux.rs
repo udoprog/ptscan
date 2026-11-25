@@ -638,9 +638,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        process::ProcessInfo, Addresses, FilterExpr, Offset, Pointer, PointerScan, Process,
-        ProcessHandle, ScanContext, ScanProgress, ScanResults, Sign, Token, Type, Value, ValueExpr,
-        Values,
+        process::ProcessInfo, Addresses, BlockAddresses, FilterExpr, Offset, Pointer, PointerScan,
+        Process, ProcessHandle, ScanContext, ScanProgress, ScanResults, Sign, Token, Type, Value,
+        ValueExpr, Values,
     };
 
     /// Kills the scratch child when dropped, so a failing test cleans up.
@@ -967,7 +967,7 @@ mod tests {
             .num_threads(2)
             .build()
             .unwrap();
-        let mut addresses = Addresses::new(handle.process.pointer_width);
+        let mut addresses = BlockAddresses::new(1).unwrap();
         let mut values = Values::new(ty);
         handle
             .initial_scan(
@@ -978,7 +978,7 @@ mod tests {
                 Default::default(),
             )
             .unwrap();
-        addresses.iter_copied().collect()
+        addresses.iter().collect()
     }
 
     #[test]
@@ -1081,7 +1081,7 @@ mod tests {
                 .num_threads(2)
                 .build()
                 .unwrap();
-            let mut addresses = Addresses::new(handle.process.pointer_width);
+            let mut addresses = BlockAddresses::new(1).unwrap();
             let mut values = Values::new(Type::U64);
             handle
                 .initial_scan(
@@ -1095,7 +1095,7 @@ mod tests {
                     },
                 )
                 .unwrap();
-            let found = addresses.iter_copied().collect::<Vec<_>>();
+            let found = addresses.iter().collect::<Vec<_>>();
 
             for address in [holder.pair, holder.pair + 8] {
                 assert!(found.contains(&Address::new(address)), "{:?}", found);
@@ -1187,7 +1187,7 @@ mod tests {
                 "{}",
                 filter
             );
-            let mut addresses = Addresses::new(handle.process.pointer_width);
+            let mut addresses = BlockAddresses::new(1).unwrap();
             let mut values = Values::new(Type::U64);
             handle
                 .initial_scan(
@@ -1203,7 +1203,7 @@ mod tests {
                 )
                 .unwrap();
 
-            let found = addresses.iter_copied().collect::<Vec<_>>();
+            let found = addresses.iter().collect::<Vec<_>>();
             let held = Address::new(holder.value);
             assert_eq!(
                 found.iter().filter(|a| **a == held).count(),
@@ -1234,7 +1234,7 @@ mod tests {
         let filter = FilterExpr::parse("value != 0", &handle).unwrap();
 
         let run = |tasks: usize, buffer_size: usize| {
-            let mut addresses = Addresses::new(handle.process.pointer_width);
+            let mut addresses = BlockAddresses::new(1).unwrap();
             let mut values = Values::new(Type::U64);
             handle
                 .initial_scan(
@@ -1250,7 +1250,7 @@ mod tests {
                 )
                 .unwrap();
             (
-                addresses.iter_copied().collect::<Vec<_>>(),
+                addresses.iter().collect::<Vec<_>>(),
                 values.iter().map(|v| v.read()).collect::<Vec<_>>(),
             )
         };
@@ -1280,7 +1280,7 @@ mod tests {
             .build()
             .unwrap();
         let filter = FilterExpr::parse(&format!("value == {}u64", HELD), &handle).unwrap();
-        let mut addresses = Addresses::new(handle.process.pointer_width);
+        let mut addresses = BlockAddresses::new(1).unwrap();
         let mut values = Values::new(Type::U64);
         handle
             .initial_scan(
@@ -1301,7 +1301,7 @@ mod tests {
         };
         assert!(in_image(holder.pair), "HELD_PAIR is not in a module image");
 
-        let found = addresses.iter_copied().collect::<Vec<_>>();
+        let found = addresses.iter().collect::<Vec<_>>();
         assert!(found.contains(&Address::new(holder.pair)), "{:?}", found);
         assert!(found.contains(&Address::new(holder.value)), "{:?}", found);
 
@@ -1314,7 +1314,7 @@ mod tests {
             )
             .unwrap();
 
-        let kept = results.addresses().iter_copied().collect::<HashSet<_>>();
+        let kept = results.addresses().iter().collect::<HashSet<_>>();
         assert_eq!(kept, found.into_iter().collect::<HashSet<_>>());
     }
 
@@ -1333,7 +1333,7 @@ mod tests {
             .build()
             .unwrap();
         let filter = FilterExpr::parse("value != 0", &handle).unwrap();
-        let mut addresses = Addresses::new(handle.process.pointer_width);
+        let mut addresses = BlockAddresses::new(1).unwrap();
         let mut values = Values::new(Type::U64);
         handle
             .initial_scan(
@@ -1348,20 +1348,22 @@ mod tests {
         // Unmapped, so every rescan has to drop it. Put first to keep the
         // addresses sorted.
         let mut scanned = (addresses, values);
-        let mut addresses = Addresses::new(handle.process.pointer_width);
+        let addresses = BlockAddresses::from_sorted(
+            scanned.0.step(),
+            std::iter::once(Address::new(8)).chain(scanned.0.iter()),
+        )
+        .unwrap();
         let mut values = Values::new(Type::U64);
-        addresses.push(Address::new(8));
         values.push(crate::Value::U64(1));
-        addresses.append(&mut scanned.0);
         values.append(&mut scanned.1);
 
-        let original = addresses.iter_copied().collect::<Vec<_>>();
+        let original = addresses.iter().collect::<Vec<_>>();
         let results = ScanResults::unchanged(addresses, values);
         let filter = FilterExpr::parse("value < 4294967296", &handle).unwrap();
 
         let read = |r: &ScanResults| {
             (
-                r.addresses().iter_copied().collect::<Vec<_>>(),
+                r.addresses().iter().collect::<Vec<_>>(),
                 r.initial().iter().map(|v| v.read()).collect::<Vec<_>>(),
                 r.last().iter().map(|v| v.read()).collect::<Vec<_>>(),
             )
@@ -1686,7 +1688,7 @@ mod tests {
         handle.refresh_modules().unwrap();
         let pool = rayon::ThreadPoolBuilder::new().build().unwrap();
         let filter = FilterExpr::pointer(ValueExpr::Value, &handle.process).unwrap();
-        let mut addresses = Addresses::new(handle.process.pointer_width);
+        let mut addresses = BlockAddresses::new(1).unwrap();
         let mut values = Values::new(handle.process.pointer_width.into_type());
         handle
             .initial_scan(
@@ -1703,7 +1705,7 @@ mod tests {
             let token = Token::new();
             let mut scan = PointerScan::new(&pool, &handle, &token);
             scan.max_paths = max_paths;
-            scan.build_references(addresses.iter_copied(), values.iter())
+            scan.build_references(addresses.iter(), values.iter())
                 .unwrap();
 
             std::fs::write("/proc/self/clear_refs", "5").unwrap();

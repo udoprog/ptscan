@@ -6,9 +6,9 @@ use std::time::Instant;
 
 use anyhow::{Context as _, Result, anyhow};
 use ptscan_core::{
-    Address, Addresses, BitSet, FilterExpr, InitialScanConfig, PortablePointer, Process,
-    ProcessHandle, Proxy as _, ScanContext, ScanResults, Size, Token, TypeHint, Value, ValueExpr,
-    Values,
+    Address, Addresses, BitSet, BlockAddresses, FilterExpr, InitialScanConfig, PortablePointer,
+    Process, ProcessHandle, Proxy as _, ScanContext, ScanResults, Size, Token, TypeHint, Value,
+    ValueExpr, Values,
 };
 use tokio::sync::watch;
 
@@ -288,7 +288,8 @@ impl Shared {
 
         refresh_modules(handle)?;
         let handle = read(handle);
-        let mut addresses = Addresses::new(handle.process.pointer_width);
+        // The initial scan picks the step, which replaces this empty set.
+        let mut addresses = BlockAddresses::new(1)?;
         let mut values = Values::new(value_type);
 
         let result = suspended(&handle.process, suspend, || {
@@ -363,10 +364,12 @@ impl Shared {
         let mut removed = 0u64;
 
         if let Some(g) = generations.scans.last() {
-            for &address in addresses {
-                if let Some(index) = g.results.index_of(Address::new(address))
-                    && !marked.test(index)
-                {
+            let mut sorted = addresses.to_vec();
+            sorted.sort_unstable();
+            sorted.dedup();
+
+            for address in sorted {
+                if let Some(index) = g.results.index_of(Address::new(address)) {
                     marked.set(index);
                     removed = removed.saturating_add(1);
                 }
@@ -378,7 +381,11 @@ impl Shared {
             return response;
         };
 
-        Arc::make_mut(generation).results.remove_marked(&marked);
+        if let Err(e) = Arc::make_mut(generation).results.remove_marked(&marked) {
+            response.error = Some(format!("{e:#}"));
+            response.state = generations.state();
+            return response;
+        }
 
         generations.undone.clear();
         response.removed = removed;
@@ -468,11 +475,14 @@ impl Shared {
         let mut addresses = Addresses::new(handle.process.pointer_width);
         let mut current = Values::new(last_type);
 
-        for index in start..end {
-            let (Some(address), Some(value)) = (
-                generation.results.addresses().get(index),
-                generation.results.last().get(index),
-            ) else {
+        let page = generation
+            .results
+            .addresses()
+            .iter_from(start)
+            .take(end.saturating_sub(start));
+
+        for (index, address) in (start..end).zip(page) {
+            let Some(value) = generation.results.last().get(index) else {
                 break;
             };
 

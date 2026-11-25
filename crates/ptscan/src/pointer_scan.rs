@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use anyhow::{Result, anyhow};
 use ptscan_core::{
-    Addresses, Base, FilterExpr, FollowablePointer as _, Pointer, PointerScan, PortableBase,
+    Base, BlockAddresses, FilterExpr, FollowablePointer as _, Pointer, PointerScan, PortableBase,
     PortablePointer, ProcessHandle, ScanContext, Size, Token, Type, ValueExpr, Values,
 };
 use tokio::sync::watch;
@@ -237,7 +237,7 @@ impl Shared {
 
         let filter = FilterExpr::pointer(ValueExpr::Value, &handle.process)?;
         let width = handle.process.pointer_width;
-        let mut addresses = Addresses::new(width);
+        let mut addresses = BlockAddresses::new(1)?;
         let mut values = Values::new(width.into_type());
 
         let progress = |stage| Progress {
@@ -261,7 +261,7 @@ impl Shared {
         scan.max_depth = usize::try_from(settings.max_depth)?;
         scan.max_offset = Size::new(settings.max_offset.into());
         scan.max_paths = usize::try_from(settings.max_paths)?;
-        scan.build_references(addresses.iter_copied(), values.iter())?;
+        scan.build_references(addresses.iter(), values.iter())?;
         drop((addresses, values));
 
         let mut pointers = Vec::new();

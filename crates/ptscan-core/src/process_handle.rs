@@ -7,10 +7,11 @@ use crate::{
     process::MemoryType,
     progress_reporter::ProgressReporter,
     scanner::{Chunk, ScanSink},
-    system, utils, Address, AddressRange, Addresses, Base, BitSet, Cached, DefaultScanner,
-    FollowablePointer, MemoryInformation, MemoryReader, Pointer, PointerInfo, PointerWidth,
-    PortableBase, Process, ProcessId, ProcessInfo, Scanner, Size, Test, ThreadId, Token, Type,
-    TypeHint, TypedFilterExpr, Value, ValueExpr, ValueRef, Values,
+    system, utils, Address, AddressRange, Addresses, Base, BitSet, BlockAddresses,
+    BlockAddressesBuilder, BlockError, Cached, DefaultScanner, FollowablePointer,
+    MemoryInformation, MemoryReader, Pointer, PointerInfo, PointerWidth, PortableBase, Process,
+    ProcessId, ProcessInfo, Scanner, Size, Test, ThreadId, Token, Type, TypeHint, TypedFilterExpr,
+    Value, ValueExpr, ValueRef, Values,
 };
 use anyhow::{anyhow, bail, Context as _};
 use crossbeam_queue::SegQueue;
@@ -66,21 +67,20 @@ impl<'a, P> ScanContext<'a, P> {
 /// The results of a scan: addresses with their initial and last values.
 ///
 /// Invariants: all three have the same length, and the addresses are
-/// strictly increasing, so results can be found by binary search.
+/// strictly increasing (which [`BlockAddresses`] guarantees), so results can
+/// be found by binary search.
 #[derive(Clone)]
 pub struct ScanResults {
-    addresses: Addresses,
+    addresses: BlockAddresses,
     /// Values at the initial scan, `None` while they are the same as `last`.
     initial: Option<Values>,
     last: Values,
 }
 
 impl ScanResults {
-    pub fn new(addresses: Addresses, initial: Values, last: Values) -> Self {
-        debug_assert!(
-            is_strictly_increasing(&addresses, 0),
-            "scan results must be strictly increasing"
-        );
+    pub fn new(addresses: BlockAddresses, initial: Values, last: Values) -> Self {
+        debug_assert_eq!(addresses.len(), initial.len());
+        debug_assert_eq!(addresses.len(), last.len());
 
         Self {
             addresses,
@@ -91,11 +91,8 @@ impl ScanResults {
 
     /// Results whose initial values are the same as `values`, which are not
     /// stored twice until `last` is about to change.
-    pub fn unchanged(addresses: Addresses, values: Values) -> Self {
-        debug_assert!(
-            is_strictly_increasing(&addresses, 0),
-            "scan results must be strictly increasing"
-        );
+    pub fn unchanged(addresses: BlockAddresses, values: Values) -> Self {
+        debug_assert_eq!(addresses.len(), values.len());
 
         Self {
             addresses,
@@ -105,32 +102,24 @@ impl ScanResults {
     }
 
     /// The addresses of the results, strictly increasing.
-    pub fn addresses(&self) -> &Addresses {
+    pub fn addresses(&self) -> &BlockAddresses {
         &self.addresses
+    }
+
+    /// The step of the scan the addresses were found by.
+    pub fn step(&self) -> u64 {
+        self.addresses.step()
     }
 
     /// The number of results whose address is below `address`, which is the
     /// index of the first result at or after it.
     pub fn lower_bound(&self, address: Address) -> usize {
-        let mut lo = 0usize;
-        let mut hi = self.addresses.len();
-
-        while lo < hi {
-            let mid = lo.saturating_add(hi.saturating_sub(lo) / 2);
-
-            match self.addresses.get(mid) {
-                Some(a) if a < address => lo = mid.saturating_add(1),
-                _ => hi = mid,
-            }
-        }
-
-        lo
+        self.addresses.lower_bound(address)
     }
 
     /// The index of the result at `address`, if any.
     pub fn index_of(&self, address: Address) -> Option<usize> {
-        let index = self.lower_bound(address);
-        (self.addresses.get(index)? == address).then_some(index)
+        self.addresses.index_of(address)
     }
 
     /// The values at the initial scan.
@@ -153,7 +142,7 @@ impl ScanResults {
 
     /// Store the initial values separately, which must be done before `last`
     /// is changed. Returns the addresses, initial values and last values.
-    pub fn split_mut(&mut self) -> (&Addresses, &Values, &mut Values) {
+    pub fn split_mut(&mut self) -> (&BlockAddresses, &Values, &mut Values) {
         let Self {
             addresses,
             initial,
@@ -173,20 +162,24 @@ impl ScanResults {
 
     /// Remove the results whose index is set in `marked`, keeping the order
     /// of the others.
-    pub fn remove_marked(&mut self, marked: &BitSet) {
+    ///
+    /// The addresses are re-encoded first; if that fails nothing is removed.
+    pub fn remove_marked(&mut self, marked: &BitSet) -> Result<(), BlockError> {
         if marked.is_empty() {
-            return;
+            return Ok(());
         }
 
-        self.addresses.retain_by_index(|index| !marked.test(index));
+        self.addresses
+            .retain_by_index(|index| !marked.test(index))?;
 
         if let Some(initial) = &mut self.initial {
             initial.retain_by_index(|index| !marked.test(index));
+            debug_assert_eq!(self.addresses.len(), initial.len());
         }
 
         self.last.retain_by_index(|index| !marked.test(index));
-
-        debug_assert!(is_strictly_increasing(&self.addresses, 0));
+        debug_assert_eq!(self.addresses.len(), self.last.len());
+        Ok(())
     }
 }
 
@@ -901,11 +894,13 @@ impl ProcessHandle {
             });
         }
 
-        results.remove_marked(&rejected);
+        let removed = results.remove_marked(&rejected);
 
         if let Some(e) = last_error {
             return Err(e);
         }
+
+        removed?;
 
         return Ok(());
 
@@ -956,8 +951,11 @@ impl ProcessHandle {
 
                     // Sorted, so the first and last results bound the span.
                     let (Some(Address(min)), Some(Address(max))) = (
-                        addresses.get(indices.start),
-                        indices.end.checked_sub(1).and_then(|i| addresses.get(i)),
+                        addresses.iter_from(indices.start).next(),
+                        indices
+                            .end
+                            .checked_sub(1)
+                            .and_then(|i| addresses.iter_from(i).next()),
                     ) else {
                         continue;
                     };
@@ -979,8 +977,11 @@ impl ProcessHandle {
                     let mut rejected = Vec::new();
 
                     let count = indices.len();
+                    let mut window_addresses = addresses.iter_from(indices.start);
 
                     for (n, i) in indices.enumerate() {
+                        let address = window_addresses.next();
+
                         if n % CHECK_INTERVAL == 0 && self.cancel.test() {
                             break;
                         }
@@ -993,7 +994,7 @@ impl ProcessHandle {
                         // each window is handed to one task, so no other
                         // mutator to this value exists.
                         let (Some(address), Some(initial), Some(mut value)) =
-                            (addresses.get(i), initial.get(i), unsafe {
+                            (address, initial.get(i), unsafe {
                                 values.get_mutator_unsafe(i)
                             })
                         else {
@@ -1082,12 +1083,15 @@ impl ProcessHandle {
             |range| {
                 let mut accepted = 0u64;
                 let mut rejected = Vec::new();
+                let mut chunk_addresses = addresses.iter_from(range.start);
 
                 for index in range {
+                    let address = chunk_addresses.next();
+
                     // Safety: the chunks are disjoint, so no other mutator to
                     // this value exists.
                     let (Some(address), Some(initial), Some(mut value)) =
-                        (addresses.get(index), initial.get(index), unsafe {
+                        (address, initial.get(index), unsafe {
                             values.get_mutator_unsafe(index)
                         })
                     else {
@@ -1112,11 +1116,13 @@ impl ProcessHandle {
             |index| rejected.set(index),
         );
 
-        results.remove_marked(&rejected);
+        let removed = results.remove_marked(&rejected);
 
         if let Some(e) = last_error {
             return Err(e);
         }
+
+        removed?;
 
         Ok(())
     }
@@ -1317,11 +1323,16 @@ impl ProcessHandle {
     /// raised from a worker thread. Only the last error will be propagated to
     /// the user. Modifications to the provided buffers will be applied even if
     /// an error happens.
+    ///
+    /// The addresses are block-encoded per chunk by the workers, so a full
+    /// list of them never exists. Their step is the scan's step size, or a
+    /// divisor of it if a configured alignment does not share it. If
+    /// `addresses` is not empty, it must have been built with that step.
     pub fn initial_scan(
         &self,
         ctx: ScanContext<'_, impl ScanProgress + Send>,
         filter: &FilterExpr,
-        addresses: &mut Addresses,
+        addresses: &mut BlockAddresses,
         values: &mut Values,
         config: InitialScanConfig,
     ) -> anyhow::Result<()> {
@@ -1346,6 +1357,13 @@ impl ProcessHandle {
         let alignment = config
             .alignment
             .or(if aligned { Some(alignment) } else { None });
+
+        // Every address found is a multiple of this.
+        let block_step = match alignment {
+            Some(alignment) => gcd(step_size, alignment),
+            None => step_size,
+        };
+        let block_step = u64::try_from(block_step)?;
 
         let special = filter.special(self, values.ty())?;
         let special = special.as_ref();
@@ -1422,7 +1440,17 @@ impl ProcessHandle {
         // sequence order yields strictly increasing addresses.
         let mut slots = (0..queue.len()).map(|_| None).collect::<Vec<_>>();
         let mut next = 0usize;
-        let start = addresses.len();
+        let start = values.len();
+
+        let mut builder = BlockAddressesBuilder::new(block_step)?;
+
+        if !addresses.is_empty() {
+            builder.append(addresses)?;
+        }
+
+        // Set once appending failed, after which nothing more is appended so
+        // the addresses and values stay aligned.
+        let mut append_failed = false;
 
         thread_pool.install(|| {
             rayon::scope(|s| {
@@ -1441,6 +1469,7 @@ impl ProcessHandle {
                             cancel,
                             scanner,
                             pointer_width,
+                            block_step,
                         });
 
                         tx.send(Task::Done(result)).expect("send done failed");
@@ -1474,11 +1503,17 @@ impl ProcessHandle {
                                 *slot = Some((a, v));
                             }
 
-                            while let Some(Some((mut a, mut v))) =
-                                slots.get_mut(next).map(Option::take)
+                            while let Some(Some((a, mut v))) = slots.get_mut(next).map(Option::take)
                             {
-                                addresses.append(&mut a);
-                                values.append(&mut v);
+                                if !append_failed {
+                                    let appended = builder.append(&a).map_err(anyhow::Error::from);
+                                    append_failed = reporter.eval(appended).is_none();
+                                }
+
+                                if !append_failed {
+                                    values.append(&mut v);
+                                }
+
                                 next += 1;
                             }
 
@@ -1494,15 +1529,30 @@ impl ProcessHandle {
 
         // Chunks left behind by a cancelled or failed worker leave gaps; what
         // was scanned is still appended in order.
-        for (mut a, mut v) in slots.into_iter().skip(next).flatten() {
-            addresses.append(&mut a);
-            values.append(&mut v);
+        for (a, mut v) in slots.into_iter().skip(next).flatten() {
+            if append_failed {
+                break;
+            }
+
+            match builder.append(&a) {
+                Ok(()) => values.append(&mut v),
+                Err(e) => {
+                    append_failed = true;
+                    last_error = Some(e.into());
+                }
+            }
         }
 
-        debug_assert!(
-            is_strictly_increasing(addresses, start),
-            "initial_scan produced unsorted addresses"
-        );
+        match builder.finish() {
+            Ok(built) => *addresses = built,
+            Err(e) => {
+                // Drop what this scan added so the values match `addresses`.
+                values.retain_by_index(|index| index < start);
+                last_error = Some(e.into());
+            }
+        }
+
+        debug_assert_eq!(addresses.len(), values.len());
 
         if let Some(e) = last_error {
             return Err(e);
@@ -1520,7 +1570,7 @@ impl ProcessHandle {
             seq: usize,
             bytes: usize,
             hits: u64,
-            addresses: Addresses,
+            addresses: BlockAddresses,
             values: Values,
         }
 
@@ -1538,6 +1588,7 @@ impl ProcessHandle {
             cancel: &'a Token,
             scanner: &'a dyn Scanner,
             pointer_width: PointerWidth,
+            block_step: u64,
         }
 
         #[inline(always)]
@@ -1551,16 +1602,19 @@ impl ProcessHandle {
                 cancel,
                 scanner,
                 pointer_width,
+                block_step,
             } = work;
 
             let mut buffer = vec![0u8; buffer_size];
+            // Reused across chunks; only the encoded blocks are sent.
+            let mut addresses = Addresses::new(pointer_width);
 
             while let Some(Item { seq, address, len }) = queue.pop() {
                 if cancel.test() {
                     return Ok(());
                 }
 
-                let mut addresses = Addresses::new(pointer_width);
+                addresses.clear();
                 let mut values = Values::new(value_type);
 
                 let len = usize::min(buffer.len(), len);
@@ -1576,7 +1630,7 @@ impl ProcessHandle {
                         seq,
                         bytes: 0,
                         hits: 0,
-                        addresses,
+                        addresses: BlockAddresses::new(block_step)?,
                         values,
                     }));
                     continue;
@@ -1597,6 +1651,8 @@ impl ProcessHandle {
                     },
                     cancel,
                 )?;
+
+                let addresses = BlockAddresses::from_sorted(block_step, addresses.iter_copied())?;
 
                 let _ = tx.send(Task::Chunk(ChunkResult {
                     seq,
@@ -1631,19 +1687,13 @@ fn covered_ranges(range: AddressRange, covered: &[AddressRange], out: &mut Vec<A
     }
 }
 
-/// Test that `addresses[start..]` is strictly increasing.
-fn is_strictly_increasing(addresses: &Addresses, start: usize) -> bool {
-    let mut last = None;
-
-    for address in addresses.iter_copied().skip(start) {
-        if last.is_some_and(|last| last >= address) {
-            return false;
-        }
-
-        last = Some(address);
+/// The greatest common divisor of `a` and `b`.
+fn gcd(mut a: usize, mut b: usize) -> usize {
+    while b != 0 {
+        (a, b) = (b, a % b);
     }
 
-    true
+    a
 }
 
 /// Push the parts of `range` not covered by any of `covered`, which is
@@ -1957,11 +2007,15 @@ impl fmt::Display for ProcessThread {
 #[cfg(test)]
 mod tests {
     use super::ScanResults;
-    use crate::{Address, Addresses, BitSet, PointerWidth, Type, Value, Values};
+    use crate::{Address, BitSet, BlockAddresses, Type, Value, Values};
+
+    fn block(addresses: Vec<Address>) -> BlockAddresses {
+        BlockAddresses::from_sorted(4, addresses).unwrap()
+    }
 
     #[test]
     fn unchanged_initial_is_materialized_before_last_changes() {
-        let mut addresses = Addresses::new(PointerWidth::Pointer64);
+        let mut addresses = Vec::new();
         let mut last = Values::new(Type::U32);
 
         for n in 0..10u32 {
@@ -1969,7 +2023,7 @@ mod tests {
             last.push(Value::U32(n));
         }
 
-        let mut results = ScanResults::unchanged(addresses, last);
+        let mut results = ScanResults::unchanged(block(addresses), last);
         let shared = results.bytes();
         let read = |v: &Values| v.iter().map(|v| v.read()).collect::<Vec<_>>();
         let before = read(results.last());
@@ -1977,7 +2031,7 @@ mod tests {
 
         let mut marked = BitSet::new();
         marked.set(0);
-        results.remove_marked(&marked);
+        results.remove_marked(&marked).unwrap();
         assert_eq!(results.len(), 9);
         assert_eq!(read(results.initial()), read(results.last()));
 
@@ -1991,7 +2045,7 @@ mod tests {
 
     #[test]
     fn lower_bound_and_index_of() {
-        let mut addresses = Addresses::new(PointerWidth::Pointer64);
+        let mut addresses = Vec::new();
         let mut values = Values::new(Type::U32);
 
         for n in 1..=50u32 {
@@ -1999,7 +2053,7 @@ mod tests {
             values.push(Value::U32(n));
         }
 
-        let results = ScanResults::unchanged(addresses, values);
+        let results = ScanResults::unchanged(block(addresses), values);
 
         assert_eq!(results.lower_bound(Address::new(0)), 0);
         assert_eq!(results.lower_bound(Address::new(16)), 0);
@@ -2014,17 +2068,14 @@ mod tests {
         assert_eq!(results.index_of(Address::new(8)), None);
         assert_eq!(results.index_of(Address::new(1000)), None);
 
-        let empty = ScanResults::unchanged(
-            Addresses::new(PointerWidth::Pointer64),
-            Values::new(Type::U32),
-        );
+        let empty = ScanResults::unchanged(BlockAddresses::new(4).unwrap(), Values::new(Type::U32));
         assert_eq!(empty.lower_bound(Address::new(5)), 0);
         assert_eq!(empty.index_of(Address::new(5)), None);
     }
 
     #[test]
     fn remove_marked_keeps_order() {
-        let mut addresses = Addresses::new(PointerWidth::Pointer64);
+        let mut addresses = Vec::new();
         let mut initial = Values::new(Type::U32);
         let mut last = Values::new(Type::U64);
 
@@ -2034,9 +2085,9 @@ mod tests {
             last.push(Value::U64(u64::from(n) * 2));
         }
 
-        let mut results = ScanResults::new(addresses, initial, last);
+        let mut results = ScanResults::new(block(addresses), initial, last);
 
-        results.remove_marked(&BitSet::new());
+        results.remove_marked(&BitSet::new()).unwrap();
         assert_eq!(results.len(), 100);
 
         let mut marked = BitSet::new();
@@ -2045,14 +2096,14 @@ mod tests {
             marked.set(index);
         }
 
-        results.remove_marked(&marked);
+        results.remove_marked(&marked).unwrap();
 
         let kept = (0..100u32)
             .filter(|n| n % 7 != 0 && *n != 99)
             .collect::<Vec<_>>();
         assert_eq!(results.len(), kept.len());
         assert_eq!(
-            results.addresses().iter_copied().collect::<Vec<_>>(),
+            results.addresses().iter().collect::<Vec<_>>(),
             kept.iter()
                 .map(|&n| Address::new(u64::from(n) * 8))
                 .collect::<Vec<_>>()

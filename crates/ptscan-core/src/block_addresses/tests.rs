@@ -85,7 +85,28 @@ fn check(set: &BlockAddresses, expected: &[u64], rng: &mut Rng) {
         let page: Vec<u64> = it.take(100).map(|a| a.0).collect();
         let end = (i + 100).min(expected.len());
         assert_eq!(page, &expected[i..end], "iter_from({})", i);
+
+        let a = expected[i];
+        assert_eq!(set.lower_bound(Address(a)), i);
+        assert_eq!(set.index_of(Address(a)), Some(i));
+
+        for probe in [a.wrapping_sub(1), a.wrapping_add(1), a ^ 0xffff] {
+            let rank = expected.partition_point(|&e| e < probe);
+            assert_eq!(
+                set.lower_bound(Address(probe)),
+                rank,
+                "lower_bound({probe:#x})"
+            );
+            let found = expected.binary_search(&probe).ok();
+            assert_eq!(set.index_of(Address(probe)), found, "index_of({probe:#x})");
+        }
     }
+
+    assert_eq!(set.lower_bound(Address(0)), 0);
+    assert_eq!(
+        set.lower_bound(Address(u64::MAX)),
+        expected.partition_point(|&e| e < u64::MAX)
+    );
 
     // Blocks: contiguous ranks, non-empty, the smaller encoding, and every
     // address inside of its block.

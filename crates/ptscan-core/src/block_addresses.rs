@@ -158,6 +158,28 @@ impl BlockAddresses {
         block.get(block.len().checked_sub(1)?)
     }
 
+    /// The number of addresses below `address`, which is the index of the
+    /// first address at or after it.
+    ///
+    /// A binary search over blocks plus a scan of at most one block.
+    pub fn lower_bound(&self, address: Address) -> usize {
+        let key = address.0 >> BLOCK_SHIFT;
+        let block = self.headers.partition_point(|h| h.block() < key);
+
+        let Some(b) = self.block(block) else {
+            return self.len;
+        };
+
+        let below = b.iter().take_while(|a| *a < address).count();
+        b.rank().saturating_add(below)
+    }
+
+    /// The index of `address`, if it is in the set.
+    pub fn index_of(&self, address: Address) -> Option<usize> {
+        let index = self.lower_bound(address);
+        (self.get(index)? == address).then_some(index)
+    }
+
     /// Iterate over all addresses.
     pub fn iter(&self) -> Iter<'_> {
         self.iter_from(0)

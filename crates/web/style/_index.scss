@@ -1,0 +1,197 @@
+@use "sockel" as p;
+
+:root {
+    --bg: #f6f6f4;
+    --surface: #ffffff;
+    --text: #1d1d1b;
+    --muted: #6b6b66;
+    --border: #d9d9d4;
+    --accent: #2f6fdb;
+    --shadow-1: 0 1px 2px rgb(0 0 0 / 0.08);
+    --selection: #e3ecfb;
+    color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #1b1c1e;
+        --surface: #242528;
+        --text: #e8e8e4;
+        --muted: #9a9a94;
+        --border: #3a3b3f;
+        --accent: #6c9cf0;
+        --shadow-1: 0 1px 2px rgb(0 0 0 / 0.35);
+        --selection: #2c3a52;
+        color-scheme: dark;
+    }
+}
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font: var(--text-md) / 1.4 system-ui, sans-serif;
+}
+
+.ptscan-app {
+    height: 100%;
+}
+
+.ptscan-workspace {
+    display: flex;
+    flex: 1 1 auto;
+    gap: var(--space-3);
+    min-height: 0;
+    padding: var(--space-3);
+    overflow: auto;
+
+    @include p.below("phone") {
+        flex-direction: column;
+    }
+}
+
+.ptscan-side {
+    display: flex;
+    flex: 0 0 21rem;
+    flex-direction: column;
+    min-height: 0;
+
+    @include p.below("phone") {
+        flex: 0 0 16rem;
+    }
+}
+
+.ptscan-main {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: var(--space-3);
+    min-width: 0;
+    min-height: 0;
+}
+
+.ptscan-lower {
+    display: flex;
+    flex: 0 0 auto;
+    gap: var(--space-3);
+    height: 35%;
+    min-height: 13rem;
+
+    @include p.below("phone") {
+        flex-direction: column;
+        height: auto;
+    }
+}
+
+.ptscan-pane {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+}
+
+.ptscan-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+}
+
+.ptscan-title {
+    font-weight: 600;
+}
+
+.ptscan-muted {
+    color: var(--muted);
+}
+
+.ptscan-mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.ptscan-changed {
+    color: var(--danger);
+    font-weight: 600;
+}
+
+.ptscan-narrow {
+    width: 6rem;
+}
+
+.ptscan-search {
+    flex: 1 1 10rem;
+    min-width: 0;
+}
+
+.ptscan-form {
+    margin: 0;
+}
+
+.ptscan-fields {
+    padding: var(--space-2) var(--space-3);
+    border-bottom: var(--space-px) solid var(--border);
+}
+
+.ptscan-status-bar {
+    padding: var(--space-2) var(--space-3);
+    border-bottom: var(--space-px) solid var(--border);
+}
+
+.ptscan-progress {
+    flex: 0 0 12rem;
+}
+
+.ptscan-added {
+    flex: 1 1 0;
+    min-width: 0;
+    text-align: end;
+}
+
+.ptscan-row {
+    cursor: pointer;
+}
+
+.ptscan-selected {
+    background: var(--selection);
+}
+
+.ptscan-error-entry {
+    padding: var(--space-2) var(--space-3);
+    border-bottom: var(--space-px) solid var(--border);
+}
+
+.ptscan-error-message {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font: inherit;
+}
+
+.ptscan-details {
+    display: grid;
+    grid-template-columns: 7rem minmax(0, 1fr);
+    gap: var(--space-2);
+    align-items: center;
+    padding: var(--space-3);
+    border-bottom: var(--space-px) solid var(--border);
+}
+
+.ptscan-tabs {
+    padding: 0 var(--space-3);
+    border-bottom: var(--space-px) solid var(--border);
+}
+
+.ptscan-dialog-body {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+}

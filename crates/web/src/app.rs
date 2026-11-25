@@ -1,6 +1,8 @@
 use musli_web::web03::prelude::*;
+use sockel::{Button, ButtonSize, Count, Gap, Pill, Stack, Tone, Toolbar, ToolbarSpacer};
 use yew::prelude::*;
 
+use crate::class;
 use crate::error::ErrorEntry;
 use crate::ui::error_log::ErrorLog;
 use crate::ui::pointer_scan_view::PointerScanView;
@@ -142,57 +144,62 @@ impl Component for App {
     }
 
     fn view(&self, ctx: &Context<Self>) -> Html {
-        let (class, label) = match self.connection {
-            ws::State::Open => ("open", String::from("Connected")),
-            ws::State::Closed => ("closed", String::from("Connecting...")),
+        let (tone, label) = match self.connection {
+            ws::State::Open => (Tone::Success, String::from("Connected")),
+            ws::State::Closed => (Tone::Warning, String::from("Connecting...")),
             ws::State::Incompatible { server, client } => (
-                "incompatible",
+                Tone::Danger,
                 format!("Incompatible server (version {server}, page {client}); reload the page"),
             ),
-            _ => ("closed", String::from("Disconnected")),
+            _ => (Tone::Warning, String::from("Disconnected")),
         };
 
         let attached = match &self.attach.process {
             Some(process) => html! {
                 <span>{format!("Attached to {}", describe(process))}</span>
             },
-            None => html! { <span class="muted">{"Not attached"}</span> },
+            None => html! { <span class={class::MUTED}>{"Not attached"}</span> },
         };
 
-        let errors = match self.errors.len() {
-            0 => html! { {"Errors"} },
-            n => html! { <>{"Errors "}<span class="badge">{format!("({n})")}</span></> },
-        };
+        let error_count = u32::try_from(self.errors.len()).unwrap_or(u32::MAX);
+        let error_after = (error_count > 0).then(|| html! { <Count value={error_count} /> });
 
         html! {
-            <column class="app" style="gap: 0">
-                <row class="toolbar center">
-                    <span class="title">{"ptscan"}</span>
-                    <span class={classes!("status", class)}>{label}</span>
+            <Stack gap={Gap::None} class={class::APP}>
+                <Toolbar label="Application" band=true chrome=true>
+                    <span class={class::TITLE}>{"ptscan"}</span>
+                    <Pill {tone}>{label}</Pill>
                     {attached}
-                    <div class="fill" />
-                    <button disabled={self.attach.process.is_none()}
+                    <ToolbarSpacer />
+                    <Button size={ButtonSize::Small}
+                        disabled={self.attach.process.is_none()}
                         title="Show the attached process's modules, threads and memory regions"
-                        onclick={ctx.link().callback(|_| Msg::ToggleProcessInformation)}>{"Process info"}</button>
-                    <button onclick={ctx.link().callback(|_| Msg::ToggleErrors)}>{errors}</button>
-                </row>
-                <row class="body fill">
-                    <column class="side">
+                        onclick={ctx.link().callback(|_| Msg::ToggleProcessInformation)}>
+                        {"Process info"}
+                    </Button>
+                    <Button size={ButtonSize::Small}
+                        after={error_after}
+                        onclick={ctx.link().callback(|_| Msg::ToggleErrors)}>
+                        {"Errors"}
+                    </Button>
+                </Toolbar>
+                <div class={class::WORKSPACE}>
+                    <div class={class::SIDE}>
                         <ProcessPicker
                             ws={self.service.handle().clone()}
                             open={self.connection.is_open()}
                             attach={self.attach.clone()}
                             on_error={self.on_error.clone()}
                         />
-                    </column>
-                    <column class="fill main">
+                    </div>
+                    <div class={class::MAIN}>
                         <ScanView
                             ws={self.service.handle().clone()}
                             open={self.connection.is_open()}
                             attached={self.attach.process.is_some()}
                             on_error={self.on_error.clone()}
                         />
-                        <row class="lower">
+                        <div class={class::LOWER}>
                             <ScratchView
                                 ws={self.service.handle().clone()}
                                 open={self.connection.is_open()}
@@ -205,26 +212,24 @@ impl Component for App {
                                 attached={self.attach.process.is_some()}
                                 on_error={self.on_error.clone()}
                             />
-                        </row>
-                    </column>
-                </row>
-                if self.show_process_information {
-                    <ProcessInformation
-                        ws={self.service.handle().clone()}
-                        open={self.connection.is_open()}
-                        process={self.attach.process.clone()}
-                        on_error={self.on_error.clone()}
-                        on_close={ctx.link().callback(|()| Msg::ToggleProcessInformation)}
-                    />
-                }
-                if self.show_errors {
-                    <ErrorLog
-                        errors={self.errors.clone()}
-                        on_clear={ctx.link().callback(|()| Msg::ClearErrors)}
-                        on_close={ctx.link().callback(|()| Msg::ToggleErrors)}
-                    />
-                }
-            </column>
+                        </div>
+                    </div>
+                </div>
+                <ProcessInformation
+                    open={self.show_process_information}
+                    ws={self.service.handle().clone()}
+                    connected={self.connection.is_open()}
+                    process={self.attach.process.clone()}
+                    on_error={self.on_error.clone()}
+                    on_close={ctx.link().callback(|()| Msg::ToggleProcessInformation)}
+                />
+                <ErrorLog
+                    open={self.show_errors}
+                    errors={self.errors.clone()}
+                    on_clear={ctx.link().callback(|()| Msg::ClearErrors)}
+                    on_close={ctx.link().callback(|()| Msg::ToggleErrors)}
+                />
+            </Stack>
         }
     }
 }

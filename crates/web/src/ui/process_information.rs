@@ -1,13 +1,19 @@
 use musli_web::web03::prelude::*;
-use wasm_bindgen::JsCast;
-use web_sys::HtmlInputElement;
+use sockel::{
+    Button, ButtonSize, Checkbox, Cluster, Dialog, DialogSize, EmptyState, TabItem, Table,
+    TableCell, TableRow, Tabs,
+};
 use yew::prelude::*;
+
+use crate::class;
 
 #[derive(Properties, PartialEq)]
 pub struct Props {
+    /// The dialog is shown.
+    pub open: bool,
     pub ws: ws::Handle,
     /// The connection is open.
-    pub open: bool,
+    pub connected: bool,
     pub process: Option<api::ProcessInfo>,
     pub on_error: Callback<String>,
     pub on_close: Callback<()>,
@@ -46,7 +52,7 @@ pub struct ProcessInformation {
 
 impl ProcessInformation {
     fn refresh(&mut self, ctx: &Context<Self>) {
-        if !ctx.props().open || ctx.props().process.is_none() {
+        if !ctx.props().open || !ctx.props().connected || ctx.props().process.is_none() {
             self.request = ws::Request::default();
             self.info = None;
             return;
@@ -83,7 +89,10 @@ impl Component for ProcessInformation {
     fn changed(&mut self, ctx: &Context<Self>, old: &Self::Properties) -> bool {
         let props = ctx.props();
 
-        if props.open != old.open || props.process != old.process {
+        if props.open != old.open
+            || props.connected != old.connected
+            || props.process != old.process
+        {
             self.refresh(ctx);
         }
 
@@ -131,8 +140,7 @@ impl Component for ProcessInformation {
     fn view(&self, ctx: &Context<Self>) -> Html {
         let props = ctx.props();
         let link = ctx.link();
-        let close = props.on_close.reform(|_: MouseEvent| ());
-        let keep_open = Callback::from(|e: MouseEvent| e.stop_propagation());
+        let close = props.on_close.reform(|_| ());
 
         let title = match &props.process {
             Some(process) => format!("Process information: {}", crate::app::describe(process)),
@@ -143,23 +151,28 @@ impl Component for ProcessInformation {
         let name = info.and_then(|i| i.name.as_deref()).unwrap_or("n/a");
         let file_name = info.and_then(|i| i.file_name.as_deref()).unwrap_or("n/a");
 
-        let tab = |tab: Tab, label: &str, count: Option<usize>| {
-            let class = classes!("tab", (self.tab == tab).then_some("active"));
+        let tab = |tab: Tab, count: Option<usize>| {
             let label = match count {
-                Some(n) => format!("{label} ({n})"),
-                None => label.to_string(),
+                Some(n) => format!("{} ({n})", tab.label()),
+                None => tab.label().to_string(),
             };
 
-            html! {
-                <button {class} onclick={link.callback(move |_| Msg::Tab(tab))}>{label}</button>
-            }
+            TabItem::new(tab.value(), label)
         };
+
+        let tabs = vec![
+            tab(Tab::Modules, info.map(|i| i.modules.len())),
+            tab(Tab::Threads, info.map(|i| i.threads.len())),
+            tab(Tab::Memory, info.map(|i| i.regions.len())),
+        ];
+
+        let on_tab = link.batch_callback(|value: AttrValue| Tab::from_value(&value).map(Msg::Tab));
 
         let body = match info {
             None if self.request.is_pending() => {
-                html! { <div class="empty muted">{"Loading..."}</div> }
+                html! { <EmptyState title="Loading..." compact=true /> }
             }
-            None => html! { <div class="empty muted">{"Not attached"}</div> },
+            None => html! { <EmptyState title="Not attached" compact=true /> },
             Some(info) => match self.tab {
                 Tab::Modules => modules(&info.modules),
                 Tab::Threads => threads(&info.threads),
@@ -167,37 +180,59 @@ impl Component for ProcessInformation {
             },
         };
 
+        let head_actions = html! {
+            <Button size={ButtonSize::Small}
+                busy={self.request.is_pending()}
+                disabled={!props.connected || props.process.is_none()}
+                title="Read the process information again"
+                onclick={link.callback(|_| Msg::Refresh)}>{"Refresh"}</Button>
+        };
+
         html! {
-            <div class="backdrop" onclick={close.clone()}>
-                <column class="panel dialog wide" style="gap: 0" onclick={keep_open}>
-                    <row class="toolbar center">
-                        <span class="title">{title}</span>
-                        <div class="fill" />
-                        if self.request.is_pending() {
-                            <span class="muted">{"Loading..."}</span>
-                        }
-                        <button disabled={!props.open || props.process.is_none() || self.request.is_pending()}
-                            title="Read the process information again"
-                            onclick={link.callback(|_| Msg::Refresh)}>{"Refresh"}</button>
-                        <button onclick={close}>{"Close"}</button>
-                    </row>
-                    <div class="details">
-                        <span class="field-label">{"Name"}</span>
+            <Dialog open={props.open} on_dismiss={close} title={title}
+                size={DialogSize::WideTall} flush=true {head_actions}>
+                <div class={class::DIALOG_BODY}>
+                    <div class={class::DETAILS}>
+                        <span class={class::MUTED}>{"Name"}</span>
                         <span>{name}</span>
-                        <span class="field-label">{"File"}</span>
-                        <span class="mono">{file_name}</span>
+                        <span class={class::MUTED}>{"File"}</span>
+                        <span class={class::MONO}>{file_name}</span>
                     </div>
-                    <row class="toolbar center tabs">
-                        {tab(Tab::Modules, "Modules", info.map(|i| i.modules.len()))}
-                        {tab(Tab::Threads, "Threads", info.map(|i| i.threads.len()))}
-                        {tab(Tab::Memory, "Memory", info.map(|i| i.regions.len()))}
-                    </row>
+                    <Tabs class={class::TABS} label="Process information" {tabs}
+                        value={AttrValue::from(self.tab.value())} on_change={on_tab} />
                     if self.tab == Tab::Memory {
                         {self.filters(ctx)}
                     }
-                    <div class="list fill">{body}</div>
-                </column>
-            </div>
+                    <div class={class::SCROLL}>{body}</div>
+                </div>
+            </Dialog>
+        }
+    }
+}
+
+impl Tab {
+    fn value(self) -> &'static str {
+        match self {
+            Tab::Modules => "modules",
+            Tab::Threads => "threads",
+            Tab::Memory => "memory",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Tab::Modules => "Modules",
+            Tab::Threads => "Threads",
+            Tab::Memory => "Memory",
+        }
+    }
+
+    fn from_value(value: &str) -> Option<Self> {
+        match value {
+            "modules" => Some(Tab::Modules),
+            "threads" => Some(Tab::Threads),
+            "memory" => Some(Tab::Memory),
+            _ => None,
         }
     }
 }
@@ -209,20 +244,21 @@ impl ProcessInformation {
         let filter = &self.filter;
 
         let check = |flag: Flag, label: &str, checked: bool, disabled: bool, title: &str| {
+            let title = (!title.is_empty()).then(|| AttrValue::from(title.to_string()));
+
             html! {
-                <label class="check" title={title.to_string()}>
-                    <input type="checkbox" {checked} {disabled}
-                        onchange={link.callback(move |e: Event| Msg::Filter(flag, input_checked(&e)))} />
-                    {label}
-                </label>
+                <Checkbox {checked} {disabled} {title}
+                    on_change={link.callback(move |value: bool| Msg::Filter(flag, value))}>
+                    {label.to_string()}
+                </Checkbox>
             }
         };
 
         let flags = busy || filter.other;
 
         html! {
-            <row class="toolbar center options">
-                <span class="muted">{"Only regions which are"}</span>
+            <Cluster class={class::FIELDS}>
+                <span class={class::MUTED}>{"Only regions which are"}</span>
                 {check(Flag::Readable, "Readable", filter.readable, flags, "")}
                 {check(Flag::Writable, "Writable", filter.writable, flags, "")}
                 {check(Flag::Executable, "Executable", filter.executable, flags, "")}
@@ -230,14 +266,22 @@ impl ProcessInformation {
                 {check(Flag::ThreadStacks, "Thread stacks", filter.thread_stacks, flags, "Holding a thread's stack")}
                 {check(Flag::Other, "Other", filter.other, busy,
                     "Neither accessible nor part of a module or thread stack; overrides the other filters")}
-            </row>
+            </Cluster>
         }
     }
 }
 
+fn head(label: &'static str) -> Html {
+    html! { <TableCell head=true>{label}</TableCell> }
+}
+
+fn hex(value: u64) -> Html {
+    html! { <TableCell class={class::MONO}>{format!("{value:#x}")}</TableCell> }
+}
+
 fn modules(modules: &[api::ModuleInformation]) -> Html {
     if modules.is_empty() {
-        return html! { <div class="empty muted">{"No modules"}</div> };
+        return html! { <EmptyState title="No modules" compact=true /> };
     }
 
     let rows = modules
@@ -245,26 +289,25 @@ fn modules(modules: &[api::ModuleInformation]) -> Html {
         .enumerate()
         .map(|(index, m)| {
             html! {
-                <tr key={index}>
-                    <td title={m.file_name.clone().unwrap_or_default()}>{&m.name}</td>
-                    <td class="mono">{format!("{:#x}", m.base)}</td>
-                    <td class="mono">{format!("{:#x}", m.size)}</td>
-                </tr>
+                <TableRow key={index}>
+                    <TableCell tip={m.file_name.clone().map(AttrValue::from)}>{&m.name}</TableCell>
+                    {hex(m.base)}
+                    {hex(m.size)}
+                </TableRow>
             }
         })
         .collect::<Html>();
 
+    let head = html! { <>{head("Name")}{head("Base")}{head("Size")}</> };
+
     html! {
-        <table>
-            <thead><tr><th>{"Name"}</th><th>{"Base"}</th><th>{"Size"}</th></tr></thead>
-            <tbody>{rows}</tbody>
-        </table>
+        <Table {head} columns={3} label="Modules">{rows}</Table>
     }
 }
 
 fn threads(threads: &[api::ThreadInformation]) -> Html {
     if threads.is_empty() {
-        return html! { <div class="empty muted">{"No threads"}</div> };
+        return html! { <EmptyState title="No threads" compact=true /> };
     }
 
     let rows = threads
@@ -276,32 +319,33 @@ fn threads(threads: &[api::ThreadInformation]) -> Html {
                 .unwrap_or_else(|| String::from("n/a"));
 
             html! {
-                <tr key={t.id}>
-                    <td class="num">{t.id}</td>
-                    <td class="mono">{format!("{:#x}", t.stack_base)}</td>
-                    <td class="mono">{format!("{:#x}", t.stack_size)}</td>
-                    <td class="mono">{exit}</td>
-                </tr>
+                <TableRow key={t.id}>
+                    <TableCell numeric=true>{t.id}</TableCell>
+                    {hex(t.stack_base)}
+                    {hex(t.stack_size)}
+                    <TableCell class={class::MONO}>{exit}</TableCell>
+                </TableRow>
             }
         })
         .collect::<Html>();
 
+    let head = html! {
+        <>
+            <TableCell head=true numeric=true>{"ID"}</TableCell>
+            {head("Stack base")}
+            {head("Stack size")}
+            <TableCell head=true tip="Address of the thread's exit frame on its stack">{"Stack exit"}</TableCell>
+        </>
+    };
+
     html! {
-        <table>
-            <thead><tr>
-                <th class="num">{"ID"}</th>
-                <th>{"Stack base"}</th>
-                <th>{"Stack size"}</th>
-                <th title="Address of the thread's exit frame on its stack">{"Stack exit"}</th>
-            </tr></thead>
-            <tbody>{rows}</tbody>
-        </table>
+        <Table {head} columns={4} label="Threads">{rows}</Table>
     }
 }
 
 fn regions(regions: &[api::MemoryRegion]) -> Html {
     if regions.is_empty() {
-        return html! { <div class="empty muted">{"No regions match the filter"}</div> };
+        return html! { <EmptyState title="No regions match the filter" compact=true /> };
     }
 
     let rows = regions
@@ -315,35 +359,30 @@ fn regions(regions: &[api::MemoryRegion]) -> Html {
             };
 
             html! {
-                <tr key={index}>
-                    <td class="mono">{format!("{:#x}", r.base)}</td>
-                    <td class="mono">{format!("{:#x}", r.size)}</td>
-                    <td>{&r.state}</td>
-                    <td>{r.ty.as_deref().unwrap_or("")}</td>
-                    <td>{r.protect.join(" | ")}</td>
-                    <td>{kind}</td>
-                </tr>
+                <TableRow key={index}>
+                    {hex(r.base)}
+                    {hex(r.size)}
+                    <TableCell>{&r.state}</TableCell>
+                    <TableCell>{r.ty.as_deref().unwrap_or("")}</TableCell>
+                    <TableCell>{r.protect.join(" | ")}</TableCell>
+                    <TableCell>{kind}</TableCell>
+                </TableRow>
             }
         })
         .collect::<Html>();
 
-    html! {
-        <table>
-            <thead><tr>
-                <th>{"Base"}</th>
-                <th>{"Size"}</th>
-                <th>{"State"}</th>
-                <th>{"Type"}</th>
-                <th>{"Protection"}</th>
-                <th>{"Kind"}</th>
-            </tr></thead>
-            <tbody>{rows}</tbody>
-        </table>
-    }
-}
+    let head = html! {
+        <>
+            {head("Base")}
+            {head("Size")}
+            {head("State")}
+            {head("Type")}
+            {head("Protection")}
+            {head("Kind")}
+        </>
+    };
 
-fn input_checked(e: &Event) -> bool {
-    e.target()
-        .and_then(|t| t.dyn_into::<HtmlInputElement>().ok())
-        .is_some_and(|input| input.checked())
+    html! {
+        <Table {head} columns={6} label="Memory regions">{rows}</Table>
+    }
 }

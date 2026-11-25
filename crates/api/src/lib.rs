@@ -393,6 +393,120 @@ pub struct ProcessInformation {
     pub error: Option<String>,
 }
 
+/// The process a session targets. Pids do not survive restarts, so it is
+/// remembered by name.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct SessionTarget {
+    pub name: String,
+    /// The executable, where known.
+    pub path: Option<String>,
+}
+
+/// The scan form of a session, as [`ScanRequest`] takes it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct ScanForm {
+    pub filter: String,
+    pub value: String,
+    pub alignment: Option<u32>,
+    pub suspend: bool,
+    pub modules_only: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct PointerScanSettings {
+    /// Most pointers followed in one path.
+    pub max_depth: u32,
+    /// Largest offset added to a pointer at each step.
+    pub max_offset: u32,
+}
+
+impl PointerScanSettings {
+    pub const MAX_DEPTH: u32 = 16;
+    pub const MAX_OFFSET: u32 = 0x10_0000;
+}
+
+impl Default for PointerScanSettings {
+    fn default() -> Self {
+        Self {
+            max_depth: 7,
+            max_offset: 0x1000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct SessionInfo {
+    pub id: u64,
+    pub name: String,
+    /// Unix time in seconds.
+    pub created: u64,
+    /// Unix time in seconds.
+    pub opened: u64,
+    pub target: Option<SessionTarget>,
+}
+
+/// The sessions, and the settings of the open one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct SessionState {
+    /// The open session; `None` when the server keeps no database.
+    pub current: Option<u64>,
+    /// Every session, most recently opened first.
+    pub sessions: Vec<SessionInfo>,
+    pub scan: ScanForm,
+    pub pointer_scan: PointerScanSettings,
+}
+
+impl SessionState {
+    pub fn current(&self) -> Option<&SessionInfo> {
+        let id = self.current?;
+        self.sessions.iter().find(|s| s.id == id)
+    }
+}
+
+/// The sessions after a change, or why it was refused.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct SessionResponse {
+    pub state: SessionState,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Encode, Decode)]
+pub struct GetSessionStateRequest;
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct CreateSessionRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct RenameSessionRequest {
+    pub id: u64,
+    pub name: String,
+}
+
+/// Switch to a session: detaches, drops scan and pointer-scan results and
+/// loads its settings.
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct OpenSessionRequest {
+    pub id: u64,
+}
+
+/// Delete a session other than the open one.
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct DeleteSessionRequest {
+    pub id: u64,
+}
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct SetScanFormRequest {
+    pub form: ScanForm,
+}
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct SetPointerScanSettingsRequest {
+    pub settings: PointerScanSettings,
+}
+
 api::define! {
     pub type ListProcesses;
     impl Endpoint for ListProcesses {
@@ -559,5 +673,52 @@ api::define! {
     impl Endpoint for GetProcessInformation {
         impl Request for ProcessInformationRequest;
         type Response<'de> = ProcessInformation;
+    }
+
+    pub type GetSessionState;
+    impl Endpoint for GetSessionState {
+        impl Request for GetSessionStateRequest;
+        type Response<'de> = SessionState;
+    }
+
+    pub type CreateSession;
+    impl Endpoint for CreateSession {
+        impl Request for CreateSessionRequest;
+        type Response<'de> = SessionResponse;
+    }
+
+    pub type RenameSession;
+    impl Endpoint for RenameSession {
+        impl Request for RenameSessionRequest;
+        type Response<'de> = SessionResponse;
+    }
+
+    pub type OpenSession;
+    impl Endpoint for OpenSession {
+        impl Request for OpenSessionRequest;
+        type Response<'de> = SessionResponse;
+    }
+
+    pub type DeleteSession;
+    impl Endpoint for DeleteSession {
+        impl Request for DeleteSessionRequest;
+        type Response<'de> = SessionResponse;
+    }
+
+    pub type SetScanForm;
+    impl Endpoint for SetScanForm {
+        impl Request for SetScanFormRequest;
+        type Response<'de> = SessionResponse;
+    }
+
+    pub type SetPointerScanSettings;
+    impl Endpoint for SetPointerScanSettings {
+        impl Request for SetPointerScanSettingsRequest;
+        type Response<'de> = SessionResponse;
+    }
+
+    pub type SessionStateChanged;
+    impl Broadcast for SessionStateChanged {
+        impl Event for SessionState;
     }
 }

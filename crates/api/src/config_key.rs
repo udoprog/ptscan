@@ -45,6 +45,20 @@ impl ConfigKey {
         }
     }
 
+    /// A field of a field, as in `scan.filter`.
+    #[inline]
+    pub const fn nested(parent: ConfigField, field: ConfigField) -> Self {
+        Self {
+            segments: [
+                ConfigSegment::Field(parent),
+                ConfigSegment::Field(field),
+                FILL,
+                FILL,
+            ],
+            len: 2,
+        }
+    }
+
     /// Append a field, as in `scan.filter`.
     #[inline]
     pub fn with_field(self, field: ConfigField) -> Result<Self, ConfigKeyFull> {

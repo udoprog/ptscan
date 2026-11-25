@@ -104,6 +104,11 @@ async fn run(args: Args) -> Result<()> {
             }),
     );
 
+    shared
+        .open_last_session()
+        .await
+        .context("Opening the last session")?;
+
     let (quit, quitting) = oneshot::channel::<()>();
 
     #[cfg(windows)]

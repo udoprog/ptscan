@@ -32,6 +32,10 @@ struct Read {
     select_config: TypedStatement<(), (String, String)>,
     #[sql = "SELECT value FROM config WHERE key = ?1"]
     select_config_value: TypedStatement<(ConfigKey,), String>,
+    #[sql = "SELECT id FROM sessions ORDER BY id"]
+    select_sessions: TypedStatement<(), i64>,
+    #[sql = "SELECT key, value FROM session_config WHERE session_id = ?1 ORDER BY key"]
+    select_session_config: TypedStatement<(i64,), (String, String)>,
 }
 
 #[derive(Statements)]
@@ -41,7 +45,19 @@ struct Write {
     upsert_config: TypedStatement<(ConfigKey, String), ()>,
     #[sql = "DELETE FROM config WHERE key = ?"]
     delete_config: TypedStatement<(ConfigKey,), ()>,
+    #[sql = "INSERT INTO sessions DEFAULT VALUES RETURNING id"]
+    insert_session: TypedStatement<(), i64>,
+    #[sql = "DELETE FROM sessions WHERE id = ?"]
+    delete_session: TypedStatement<(i64,), ()>,
+    #[sql = "INSERT INTO session_config (session_id, key, value) VALUES (?, ?, ?)"]
+    #[sql = "ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value"]
+    upsert_session_config: TypedStatement<(i64, ConfigKey, String), ()>,
+    #[sql = "DELETE FROM session_config WHERE session_id = ? AND key = ?"]
+    delete_session_config: TypedStatement<(i64, ConfigKey), ()>,
 }
+
+/// Settings to write, by key; `None` removes the setting.
+pub type Changes = Vec<(ConfigKey, Option<String>)>;
 
 /// A value stored under a [`ConfigKey`].
 ///
@@ -68,7 +84,7 @@ struct Envelope<T> {
     value: T,
 }
 
-fn encode<T>(value: &T) -> Result<String>
+pub(crate) fn encode<T>(value: &T) -> Result<String>
 where
     T: Setting,
 {
@@ -81,7 +97,7 @@ where
 }
 
 /// Decode a stored value, or `None` if it was stored under another version.
-fn decode<T>(json: &str) -> Result<Option<T>>
+pub(crate) fn decode<T>(json: &str) -> Result<Option<T>>
 where
     T: Setting,
 {
@@ -221,6 +237,133 @@ impl Db {
 
         Ok(())
     }
+
+    pub async fn session_ids(&self) -> Result<Vec<u64>> {
+        let ids = self
+            .pool
+            .read(|r| {
+                r.select_sessions
+                    .query()?
+                    .collect::<Result<Vec<_>, sqll::Error>>()
+            })
+            .await??;
+
+        Ok(ids
+            .into_iter()
+            .filter_map(|id| u64::try_from(id).ok())
+            .collect())
+    }
+
+    /// Every setting of a session, by key. A key this build does not know is
+    /// skipped with a warning.
+    pub async fn session_config(&self, id: u64) -> Result<BTreeMap<ConfigKey, String>> {
+        let id = i64::try_from(id)?;
+
+        let rows = self
+            .pool
+            .read(move |r| {
+                r.select_session_config
+                    .bind((id,))?
+                    .collect::<Result<Vec<_>, sqll::Error>>()
+            })
+            .await??;
+
+        let mut out = BTreeMap::new();
+
+        for (key, value) in rows {
+            match key.parse::<ConfigKey>() {
+                Ok(parsed) => {
+                    out.insert(parsed, value);
+                }
+                Err(error) => {
+                    tracing::warn!(session = id, key, "Skipping unknown session key: {error}");
+                }
+            }
+        }
+
+        Ok(out)
+    }
+
+    /// Create a session holding `changes`, returning its id.
+    pub async fn create_session(&self, changes: Changes) -> Result<u64> {
+        let id = self
+            .pool
+            .write(move |w| {
+                w.transaction(|w, _| {
+                    let id = w
+                        .insert_session
+                        .query()?
+                        .first()?
+                        .ok_or_else(|| anyhow!("Inserting a session returned no id"))?;
+                    apply(w, id, &changes)?;
+                    Ok::<_, anyhow::Error>(id)
+                })
+            })
+            .await??;
+
+        Ok(u64::try_from(id)?)
+    }
+
+    pub async fn update_session(&self, id: u64, changes: Changes) -> Result<()> {
+        let id = i64::try_from(id)?;
+
+        self.pool
+            .write(move |w| w.transaction(|w, _| apply(w, id, &changes)))
+            .await??;
+
+        Ok(())
+    }
+
+    /// Apply `changes` to a session and record it as the open one under
+    /// `current` in the global settings.
+    pub async fn open_session<T>(
+        &self,
+        id: u64,
+        changes: Changes,
+        current: ConfigKey,
+        value: &T,
+    ) -> Result<()>
+    where
+        T: Setting,
+    {
+        let id = i64::try_from(id)?;
+        let json = encode(value)?;
+
+        self.pool
+            .write(move |w| {
+                w.transaction(|w, _| {
+                    apply(w, id, &changes)?;
+                    w.upsert_config.execute((current, json.as_str()))
+                })
+            })
+            .await??;
+
+        Ok(())
+    }
+
+    /// Delete a session and every setting it holds.
+    pub async fn delete_session(&self, id: u64) -> Result<()> {
+        let id = i64::try_from(id)?;
+
+        self.pool
+            .write(move |w| w.transaction(|w, _| w.delete_session.execute((id,))))
+            .await??;
+
+        Ok(())
+    }
+}
+
+fn apply(w: &mut Write, id: i64, changes: &Changes) -> Result<(), sqll::Error> {
+    for (key, value) in changes {
+        match value {
+            Some(value) => w
+                .upsert_session_config
+                .execute((id, *key, value.as_str()))?,
+            None => w.delete_session_config.execute((id, *key))?,
+        };
+    }
+
+    Ok(())
 }
 
 /// Where the database lives unless `--db` says otherwise:

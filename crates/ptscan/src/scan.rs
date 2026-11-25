@@ -37,7 +37,7 @@ struct Plan {
 }
 
 #[derive(Default)]
-pub(crate) struct Session {
+pub(crate) struct Generations {
     scans: Vec<Arc<Generation>>,
     undone: Vec<Arc<Generation>>,
     running: Option<Arc<AtomicBool>>,
@@ -50,7 +50,7 @@ pub(crate) struct Session {
     epoch: u64,
 }
 
-impl Session {
+impl Generations {
     fn state(&self) -> api::ScanState {
         api::ScanState {
             generations: (self.scans.len() + usize::from(self.in_place.is_some())) as u32,
@@ -111,11 +111,11 @@ impl ptscan_core::ScanProgress for NoProgress {
 
 impl Shared {
     pub fn scan_state(&self) -> api::ScanState {
-        lock(&self.session).state()
+        lock(&self.generations).state()
     }
 
-    pub(crate) fn publish_scan_state(&self, session: &Session) -> api::ScanState {
-        let state = session.state();
+    pub(crate) fn publish_scan_state(&self, generations: &Generations) -> api::ScanState {
+        let state = generations.state();
         self.scan_state.send_replace(state.clone());
         state
     }
@@ -171,32 +171,32 @@ impl Shared {
             suspend: request.suspend,
         };
 
-        let mut session = lock(&self.session);
+        let mut generations = lock(&self.generations);
 
-        if session.running.is_some() {
+        if generations.running.is_some() {
             response.error = Some("a scan is already running".into());
             return response;
         }
 
         let token = Arc::new(AtomicBool::new(false));
-        session.running = Some(token.clone());
-        let in_place = session
+        generations.running = Some(token.clone());
+        let in_place = generations
             .scans
             .last()
             .is_some_and(|g| g.bytes() > self.rescan_copy_limit);
 
         let previous = if in_place {
-            let previous = session.scans.pop();
-            session.in_place = previous.as_ref().map(|g| g.addresses.len() as u64);
+            let previous = generations.scans.pop();
+            generations.in_place = previous.as_ref().map(|g| g.addresses.len() as u64);
             previous
         } else {
-            session.scans.last().cloned()
+            generations.scans.last().cloned()
         };
 
-        let epoch = session.epoch;
+        let epoch = generations.epoch;
         self.progress.send_replace(api::ScanProgress::default());
-        self.publish_scan_state(&session);
-        drop(session);
+        self.publish_scan_state(&generations);
+        drop(generations);
 
         let shared = self.clone();
 
@@ -210,14 +210,14 @@ impl Shared {
             let result = shared.run_scan(&handle, plan, &mut generation, token_ref);
 
             let cancelled = token_ref.test();
-            let mut session = lock(&shared.session);
+            let mut generations = lock(&shared.generations);
 
-            if session.epoch != epoch {
+            if generations.epoch != epoch {
                 return;
             }
 
-            session.running = None;
-            session.in_place = None;
+            generations.running = None;
+            generations.in_place = None;
 
             let mut outcome = api::ScanOutcome {
                 cancelled,
@@ -237,12 +237,12 @@ impl Shared {
 
             if let Some(generation) = generation {
                 outcome.results = generation.addresses.len() as u64;
-                session.scans.push(Arc::new(generation));
-                session.undone.clear();
+                generations.scans.push(Arc::new(generation));
+                generations.undone.clear();
             }
 
-            session.last = Some(outcome);
-            shared.publish_scan_state(&session);
+            generations.last = Some(outcome);
+            shared.publish_scan_state(&generations);
         });
 
         response
@@ -320,58 +320,58 @@ impl Shared {
     }
 
     pub fn cancel_scan(&self) -> api::ScanState {
-        let session = lock(&self.session);
-        session.cancel();
-        session.state()
+        let generations = lock(&self.generations);
+        generations.cancel();
+        generations.state()
     }
 
     pub fn reset_scan(&self) -> api::ScanState {
-        let mut session = lock(&self.session);
-        session.reset();
-        self.publish_scan_state(&session)
+        let mut generations = lock(&self.generations);
+        generations.reset();
+        self.publish_scan_state(&generations)
     }
 
     pub fn undo_scan(&self) -> api::ScanState {
-        let mut session = lock(&self.session);
+        let mut generations = lock(&self.generations);
 
-        if session.running.is_none() && session.scans.len() > 1 {
-            let generation = session.scans.pop().unwrap();
-            session.undone.push(generation);
-            return self.publish_scan_state(&session);
+        if generations.running.is_none() && generations.scans.len() > 1 {
+            let generation = generations.scans.pop().unwrap();
+            generations.undone.push(generation);
+            return self.publish_scan_state(&generations);
         }
 
-        session.state()
+        generations.state()
     }
 
     pub fn redo_scan(&self) -> api::ScanState {
-        let mut session = lock(&self.session);
+        let mut generations = lock(&self.generations);
 
-        if session.running.is_none()
-            && let Some(generation) = session.undone.pop()
+        if generations.running.is_none()
+            && let Some(generation) = generations.undone.pop()
         {
-            session.scans.push(generation);
-            return self.publish_scan_state(&session);
+            generations.scans.push(generation);
+            return self.publish_scan_state(&generations);
         }
 
-        session.state()
+        generations.state()
     }
 
     /// Remove the results at `addresses` from the current generation in place,
     /// like the GTK frontend. Generations redone from before the removal would
     /// bring the removed results back, so the redo stack is discarded.
     pub fn remove_scan_results(&self, addresses: &[u64]) -> api::RemoveScanResultsResponse {
-        let mut session = lock(&self.session);
+        let mut generations = lock(&self.generations);
         let mut response = api::RemoveScanResultsResponse::default();
 
-        if session.running.is_some() {
+        if generations.running.is_some() {
             response.error = Some("a scan is running".into());
-            response.state = session.state();
+            response.state = generations.state();
             return response;
         }
 
         let addresses = addresses.iter().copied().collect::<HashSet<_>>();
 
-        let indices = session
+        let indices = generations
             .scans
             .last()
             .map(|g| {
@@ -385,11 +385,11 @@ impl Shared {
             .unwrap_or_default();
 
         if indices.is_empty() {
-            response.state = session.state();
+            response.state = generations.state();
             return response;
         }
 
-        let generation = Arc::make_mut(session.scans.last_mut().unwrap());
+        let generation = Arc::make_mut(generations.scans.last_mut().unwrap());
 
         // Descending, so that swap_remove only moves results which are kept.
         for &index in indices.iter().rev() {
@@ -398,9 +398,9 @@ impl Shared {
             generation.last.swap_remove(index);
         }
 
-        session.undone.clear();
+        generations.undone.clear();
         response.removed = indices.len() as u64;
-        response.state = self.publish_scan_state(&session);
+        response.state = self.publish_scan_state(&generations);
         response
     }
 
@@ -452,9 +452,9 @@ impl Shared {
     /// now.
     pub fn scan_results(&self, offset: u64, limit: u32) -> Result<api::ScanResultsResponse> {
         let generation = {
-            let session = lock(&self.session);
+            let generations = lock(&self.generations);
 
-            if let Some(total) = session.in_place {
+            if let Some(total) = generations.in_place {
                 return Ok(api::ScanResultsResponse {
                     total,
                     offset,
@@ -463,7 +463,7 @@ impl Shared {
                 });
             }
 
-            session.scans.last().cloned()
+            generations.scans.last().cloned()
         };
         let handle = lock(&self.handle).clone();
 

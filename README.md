@@ -61,6 +61,14 @@ Settings are kept in an SQLite database, created on first start:
 Linux and `%LOCALAPPDATA%\ptscan\ptscan.db` on Windows. `--db` uses another
 file. Scan results are never stored; scanning again rebuilds them.
 
+Work is kept in _sessions_: named workspaces holding the process they
+target, the scan form and the pointer-scan settings, saved as they change.
+The session that was open last is opened again at start-up, and a
+`Default` one is created when there are none. A session remembers its
+process by name, so opening it does not attach; the UI offers to attach to
+a running process of that name instead. Switching sessions detaches and
+drops the scan and pointer-scan results.
+
 On Windows it also shows a notification area icon whose menu opens the UI,
 shows the attached process and quits the server; `--no-tray` leaves it out.
 

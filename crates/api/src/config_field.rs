@@ -40,9 +40,13 @@ macro_rules! fields {
 
 fields! {
     Alignment = "alignment",
+    Created = "created",
     Filter = "filter",
+    MaxDepth = "max-depth",
+    MaxOffset = "max-offset",
     ModulesOnly = "modules-only",
     Name = "name",
+    Opened = "opened",
     Pointer = "pointer",
     PointerScan = "pointer-scan",
     Scan = "scan",

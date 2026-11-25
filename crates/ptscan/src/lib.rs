@@ -54,6 +54,14 @@
 //! Linux and `%LOCALAPPDATA%\ptscan\ptscan.db` on Windows. `--db` uses another
 //! file. Scan results are never stored; scanning again rebuilds them.
 //!
+//! Work is kept in _sessions_: named workspaces holding the process they
+//! target, the scan form and the pointer-scan settings, saved as they change.
+//! The session that was open last is opened again at start-up, and a
+//! `Default` one is created when there are none. A session remembers its
+//! process by name, so opening it does not attach; the UI offers to attach to
+//! a running process of that name instead. Switching sessions detaches and
+//! drops the scan and pointer-scan results.
+//!
 //! On Windows it also shows a notification area icon whose menu opens the UI,
 //! shows the attached process and quits the server; `--no-tray` leaves it out.
 //!
@@ -266,6 +274,7 @@ mod pointer_scan;
 mod process_information;
 mod scan;
 mod scratch;
+mod session;
 pub mod web;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -286,18 +295,22 @@ use tokio::sync::watch;
 pub struct Shared {
     handle: Mutex<Option<Arc<RwLock<ProcessHandle>>>>,
     state: watch::Sender<api::AttachState>,
-    session: Mutex<scan::Session>,
+    generations: Mutex<scan::Generations>,
     scan_state: watch::Sender<api::ScanState>,
     progress: watch::Sender<api::ScanProgress>,
     scratch: Mutex<scratch::Scratch>,
     scratch_list: watch::Sender<api::ScratchList>,
-    pointer_session: Mutex<pointer_scan::PointerSession>,
+    pointer_results: Mutex<pointer_scan::PointerResults>,
     pointer_scan_state: watch::Sender<api::PointerScanState>,
     pointer_progress: watch::Sender<api::PointerScanProgress>,
     pool: rayon::ThreadPool,
     rescan_copy_limit: usize,
     dev_origins: Vec<DevOrigin>,
     db: Option<Db>,
+    session_state: watch::Sender<api::SessionState>,
+    /// Held while a session change is written, so that the database and
+    /// `session_state` change together.
+    session_lock: tokio::sync::Mutex<()>,
 }
 
 impl Default for Shared {
@@ -305,12 +318,12 @@ impl Default for Shared {
         Self {
             handle: Mutex::new(None),
             state: watch::Sender::new(api::AttachState::default()),
-            session: Mutex::default(),
+            generations: Mutex::default(),
             scan_state: watch::Sender::new(api::ScanState::default()),
             progress: watch::Sender::new(api::ScanProgress::default()),
             scratch: Mutex::default(),
             scratch_list: watch::Sender::new(api::ScratchList::default()),
-            pointer_session: Mutex::default(),
+            pointer_results: Mutex::default(),
             pointer_scan_state: watch::Sender::new(api::PointerScanState::default()),
             pointer_progress: watch::Sender::new(api::PointerScanProgress::default()),
             pool: rayon::ThreadPoolBuilder::new()
@@ -319,6 +332,8 @@ impl Default for Shared {
             rescan_copy_limit: 100_000_000,
             dev_origins: Vec::new(),
             db: None,
+            session_state: watch::Sender::new(api::SessionState::default()),
+            session_lock: tokio::sync::Mutex::new(()),
         }
     }
 }
@@ -367,14 +382,25 @@ impl Shared {
         self.state.subscribe()
     }
 
-    fn attach(&self, pid: u32) -> Result<api::AttachState> {
+    fn attach(&self, pid: u32) -> Result<(api::AttachState, api::SessionTarget)> {
         let handle = ProcessHandle::open(pid)?
             .ok_or_else(|| anyhow!("process {pid} does not exist or cannot be opened"))?;
+
+        let name = handle.name.to_string_lossy().into_owned();
+
+        let target = api::SessionTarget {
+            name: name.clone(),
+            path: handle
+                .modules
+                .process_file_name
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
+        };
 
         let state = api::AttachState {
             process: Some(api::ProcessInfo {
                 pid,
-                name: Some(handle.name.to_string_lossy().into_owned()),
+                name: Some(name),
             }),
         };
 
@@ -383,7 +409,7 @@ impl Shared {
         self.reset_scan();
         self.reset_pointer_scan();
         self.state.send_replace(state.clone());
-        Ok(state)
+        Ok((state, target))
     }
 
     fn detach(&self) -> api::AttachState {
@@ -464,6 +490,7 @@ async fn run(socket: WebSocket, shared: Arc<Shared>) -> Result<()> {
     let mut scratch = shared.scratch_list.subscribe();
     let mut pointer_state = shared.pointer_scan_state.subscribe();
     let mut pointer_progress = shared.pointer_progress.subscribe();
+    let mut session_state = shared.session_state.subscribe();
     let handler = Handler {
         shared: shared.clone(),
     };
@@ -520,6 +547,14 @@ async fn run(socket: WebSocket, shared: Arc<Shared>) -> Result<()> {
                 let event = pointer_progress.borrow_and_update().clone();
                 server.broadcast(event)?;
             }
+            changed = session_state.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+
+                let event = session_state.borrow_and_update().clone();
+                server.broadcast(event)?;
+            }
             result = server.run() => {
                 result?;
                 break;
@@ -560,7 +595,13 @@ impl ws::Handler for Handler {
                     tokio::task::spawn_blocking(move || shared.attach(request.pid)).await?;
 
                 let response = match result {
-                    Ok(state) => api::AttachResponse { state, error: None },
+                    Ok((state, target)) => {
+                        if let Err(error) = self.shared.set_target(target).await {
+                            tracing::warn!("Recording the session's target: {error:#}");
+                        }
+
+                        api::AttachResponse { state, error: None }
+                    }
                     Err(e) => api::AttachResponse {
                         state: self.shared.attach_state(),
                         error: Some(format!("{e:#}")),
@@ -727,6 +768,55 @@ impl ws::Handler for Handler {
                 })
                 .await?;
                 outgoing.write(response);
+            }
+            api::Request::GetSessionState => {
+                outgoing.write(self.shared.session_state());
+            }
+            api::Request::CreateSession => {
+                let Some(request) = incoming.read::<api::CreateSessionRequest>() else {
+                    return Ok(false);
+                };
+
+                outgoing.write(self.shared.create_session(&request.name).await);
+            }
+            api::Request::RenameSession => {
+                let Some(request) = incoming.read::<api::RenameSessionRequest>() else {
+                    return Ok(false);
+                };
+
+                outgoing.write(self.shared.rename_session(request.id, &request.name).await);
+            }
+            api::Request::OpenSession => {
+                let Some(request) = incoming.read::<api::OpenSessionRequest>() else {
+                    return Ok(false);
+                };
+
+                outgoing.write(self.shared.open_session(request.id).await);
+            }
+            api::Request::DeleteSession => {
+                let Some(request) = incoming.read::<api::DeleteSessionRequest>() else {
+                    return Ok(false);
+                };
+
+                outgoing.write(self.shared.delete_session(request.id).await);
+            }
+            api::Request::SetScanForm => {
+                let Some(request) = incoming.read::<api::SetScanFormRequest>() else {
+                    return Ok(false);
+                };
+
+                outgoing.write(self.shared.set_scan_form(request.form).await);
+            }
+            api::Request::SetPointerScanSettings => {
+                let Some(request) = incoming.read::<api::SetPointerScanSettingsRequest>() else {
+                    return Ok(false);
+                };
+
+                outgoing.write(
+                    self.shared
+                        .set_pointer_scan_settings(request.settings)
+                        .await,
+                );
             }
             _ => return Ok(false),
         }

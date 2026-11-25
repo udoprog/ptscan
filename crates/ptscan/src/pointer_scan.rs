@@ -13,11 +13,8 @@ use tokio::sync::watch;
 
 use crate::{Shared, lock, read};
 
-const MAX_DEPTH: usize = 7;
-const MAX_OFFSET: u32 = 0x1000;
-
 #[derive(Default)]
-pub(crate) struct PointerSession {
+pub(crate) struct PointerResults {
     entry: Option<u64>,
     value_type: Option<Type>,
     results: Arc<Vec<PortablePointer>>,
@@ -28,7 +25,7 @@ pub(crate) struct PointerSession {
     epoch: u64,
 }
 
-impl PointerSession {
+impl PointerResults {
     fn state(&self) -> api::PointerScanState {
         api::PointerScanState {
             entry: self.entry,
@@ -89,11 +86,11 @@ impl ptscan_core::PointerScanBackreferenceProgress for Progress {
 
 impl Shared {
     pub fn pointer_scan_state(&self) -> api::PointerScanState {
-        lock(&self.pointer_session).state()
+        lock(&self.pointer_results).state()
     }
 
-    fn publish_pointer_scan_state(&self, session: &PointerSession) -> api::PointerScanState {
-        let state = session.state();
+    fn publish_pointer_scan_state(&self, current: &PointerResults) -> api::PointerScanState {
+        let state = current.state();
         self.pointer_scan_state.send_replace(state.clone());
         state
     }
@@ -113,23 +110,23 @@ impl Shared {
             return error(&format!("no scratch entry {id}"));
         };
 
-        let mut session = lock(&self.pointer_session);
+        let mut current = lock(&self.pointer_results);
 
-        if session.running.is_some() {
+        if current.running.is_some() {
             return error("a pointer scan is already running");
         }
 
         let token = Arc::new(AtomicBool::new(false));
-        session.running = Some(token.clone());
-        session.entry = Some(id);
-        session.value_type = Some(value_type);
-        session.results = Arc::default();
-        session.last = None;
-        let epoch = session.epoch;
+        current.running = Some(token.clone());
+        current.entry = Some(id);
+        current.value_type = Some(value_type);
+        current.results = Arc::default();
+        current.last = None;
+        let epoch = current.epoch;
         self.pointer_progress
             .send_replace(api::PointerScanProgress::default());
-        self.publish_pointer_scan_state(&session);
-        drop(session);
+        self.publish_pointer_scan_state(&current);
+        drop(current);
 
         let shared = self.clone();
 
@@ -139,21 +136,21 @@ impl Shared {
             let mut results = Vec::new();
             let result = shared.run_pointer_scan(&handle, &pointer, &mut results, token_ref);
 
-            let mut session = lock(&shared.pointer_session);
+            let mut current = lock(&shared.pointer_results);
 
-            if session.epoch != epoch {
+            if current.epoch != epoch {
                 return;
             }
 
-            session.running = None;
-            session.results = Arc::new(results);
-            session.last = Some(api::PointerScanOutcome {
-                results: session.results.len() as u64,
+            current.running = None;
+            current.results = Arc::new(results);
+            current.last = Some(api::PointerScanOutcome {
+                results: current.results.len() as u64,
                 cancelled: token_ref.test(),
                 error: result.err().map(|e| format!("{e:#}")),
                 duration_ms: started.elapsed().as_millis() as u64,
             });
-            shared.publish_pointer_scan_state(&session);
+            shared.publish_pointer_scan_state(&current);
         });
 
         api::PointerScanResponse::default()
@@ -195,9 +192,10 @@ impl Shared {
             Default::default(),
         )?;
 
+        let settings = self.pointer_scan_settings();
         let mut scan = PointerScan::new(&self.pool, &handle, token);
-        scan.max_depth = MAX_DEPTH;
-        scan.max_offset = Size::new(MAX_OFFSET.into());
+        scan.max_depth = usize::try_from(settings.max_depth)?;
+        scan.max_offset = Size::new(settings.max_offset.into());
         scan.build_references(addresses.iter_copied(), values.iter())?;
         drop((addresses, values));
 
@@ -226,26 +224,26 @@ impl Shared {
     }
 
     pub fn cancel_pointer_scan(&self) -> api::PointerScanState {
-        let session = lock(&self.pointer_session);
-        session.cancel();
-        session.state()
+        let current = lock(&self.pointer_results);
+        current.cancel();
+        current.state()
     }
 
     pub(crate) fn reset_pointer_scan(&self) {
-        let mut session = lock(&self.pointer_session);
-        session.cancel();
-        let epoch = session.epoch + 1;
-        *session = PointerSession {
+        let mut current = lock(&self.pointer_results);
+        current.cancel();
+        let epoch = current.epoch + 1;
+        *current = PointerResults {
             epoch,
-            ..PointerSession::default()
+            ..PointerResults::default()
         };
-        self.publish_pointer_scan_state(&session);
+        self.publish_pointer_scan_state(&current);
     }
 
     pub fn pointer_scan_results(&self, offset: u64, limit: u32) -> api::PointerScanResultsResponse {
         let (results, value_type) = {
-            let session = lock(&self.pointer_session);
-            (session.results.clone(), session.value_type)
+            let current = lock(&self.pointer_results);
+            (current.results.clone(), current.value_type)
         };
 
         let total = results.len();

@@ -302,6 +302,63 @@ mod linux {
         panic!("holder exited before printing `{marker}`");
     }
 
+    /// Scans leave nothing in the database beyond the session's settings.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scan_results_are_not_stored() {
+        let holder = Holder::spawn();
+        let pid = holder.child.id();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ptscan.db");
+
+        let shared = Arc::new(ptscan::Shared::default().with_db(ptscan::Db::open(&path).unwrap()));
+        shared.open_last_session().await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(ptscan::serve(listener, shared));
+
+        let handle = connect(addr).await;
+        let mut changes = handle.on_broadcast::<api::ScanStateChanged>();
+
+        let response: api::AttachResponse =
+            timeout!(handle.request().body(api::AttachRequest { pid }).send())
+                .unwrap()
+                .decode()
+                .unwrap();
+        assert_eq!(response.error, None);
+
+        let response = scan(&handle, &format!("value == {HELD}u64")).await;
+        assert_eq!(response, api::ScanResponse::default());
+        let state = finished(&mut changes, 1).await;
+        assert!(state.results > 0);
+
+        let c = sqll::OpenOptions::new().read_write().open(&path).unwrap();
+        let mut tables = c
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .unwrap();
+        let mut names = Vec::new();
+
+        while let Some(name) = tables.next::<String>().unwrap() {
+            names.push(name);
+        }
+
+        assert_eq!(
+            names,
+            ["config", "migrations", "session_config", "sessions"]
+        );
+
+        let mut keys = c
+            .prepare("SELECT key, length(value) FROM session_config ORDER BY key")
+            .unwrap();
+        let mut stored = Vec::new();
+
+        while let Some((key, len)) = keys.next::<(String, i64)>().unwrap() {
+            assert!(len < 256, "{key} holds {len} bytes");
+            stored.push(key);
+        }
+
+        assert_eq!(stored, ["created", "name", "opened", "target"]);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn scan_rescan_undo_redo() {
         let mut holder = Holder::spawn();

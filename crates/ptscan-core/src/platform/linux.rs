@@ -899,6 +899,28 @@ mod tests {
             panic!("holder exited without answering");
         }
 
+        /// Wait until no thread of the child is running, so each reports the
+        /// stack pointer it is blocked with. The child prints its addresses
+        /// before it blocks reading stdin.
+        fn wait_blocked(&self) {
+            let task = format!("/proc/{}/task", self.child.0.id());
+
+            for _ in 0..500 {
+                let running = fs::read_dir(&task).unwrap().any(|e| {
+                    let path = e.unwrap().path().join("syscall");
+                    fs::read_to_string(path).is_ok_and(|s| s.trim() == "running")
+                });
+
+                if !running {
+                    return;
+                }
+
+                std::thread::sleep(Duration::from_millis(10));
+            }
+
+            panic!("child threads did not block");
+        }
+
         fn state(&self) -> char {
             let stat = fs::read_to_string(format!("/proc/{}/stat", self.child.0.id())).unwrap();
             let (_, rest) = stat.rsplit_once(") ").unwrap();
@@ -1075,6 +1097,7 @@ mod tests {
     #[test]
     fn child_threads_and_stacks() {
         let holder = Holder::spawn();
+        holder.wait_blocked();
         let pid = holder.child.0.id();
         let handle = holder.handle();
 

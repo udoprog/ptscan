@@ -143,6 +143,16 @@ body {
     overflow: auto;
 }
 
+// Holds its one child in the middle of its box, as an empty state stands
+// in an empty dialog.
+.ptscan-center {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    min-height: 100%;
+}
+
 .ptscan-title {
     font-weight: 600;
     letter-spacing: -0.01em;

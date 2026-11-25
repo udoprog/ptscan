@@ -21,7 +21,7 @@ pub fn error_log(props: &Props) -> Html {
     let clear = props.on_clear.reform(|_: MouseEvent| ());
 
     let entries = if props.errors.is_empty() {
-        html! { <EmptyState title="No errors" compact=true /> }
+        html! { <EmptyState title="No errors" hint={html! { "Failed requests are listed here." }} /> }
     } else {
         props
             .errors
@@ -45,7 +45,9 @@ pub fn error_log(props: &Props) -> Html {
     html! {
         <Dialog open={props.open} on_dismiss={close} title="Errors"
             size={DialogSize::WideTall} flush=true {head_actions}>
-            <div class={class::SCROLL}>{entries}</div>
+            <div class={classes!(class::SCROLL, props.errors.is_empty().then_some(class::CENTER))}>
+                {entries}
+            </div>
         </Dialog>
     }
 }

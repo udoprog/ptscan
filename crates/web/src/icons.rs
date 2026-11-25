@@ -32,10 +32,13 @@ pub enum AppIcon {
     Attach,
     Detach,
     Open,
+    Session,
+    Process,
+    Errors,
 }
 
 impl AppIcon {
-    const ALL: [AppIcon; 23] = [
+    const ALL: [AppIcon; 26] = [
         AppIcon::Scan,
         AppIcon::Stop,
         AppIcon::Undo,
@@ -59,6 +62,9 @@ impl AppIcon {
         AppIcon::Home,
         AppIcon::Data,
         AppIcon::Drive,
+        AppIcon::Session,
+        AppIcon::Process,
+        AppIcon::Errors,
     ];
 
     fn glyph(self) -> Option<Glyph> {
@@ -100,6 +106,9 @@ impl AppIcon {
             AppIcon::Attach => "attach",
             AppIcon::Detach => "detach",
             AppIcon::Open => "open",
+            AppIcon::Session => "session",
+            AppIcon::Process => "process",
+            AppIcon::Errors => "errors",
         }
     }
 
@@ -151,6 +160,19 @@ impl AppIcon {
             AppIcon::Drive => {
                 html! { <><rect x="1.5" y="5" width="13" height="6" rx="1" /><path d="M11 8h1" /></> }
             }
+            // A stack of records: the saved sessions.
+            AppIcon::Session => html! {
+                <><ellipse cx="8" cy="4" rx="5" ry="1.75" />
+                <path d="M3 4v8c0 1 2.25 1.75 5 1.75s5-.75 5-1.75V4M3 8c0 1 2.25 1.75 5 1.75S13 9 13 8" /></>
+            },
+            // A chip: the attached process.
+            AppIcon::Process => html! {
+                <><rect x="4" y="4" width="8" height="8" rx="1" />
+                <path d="M6.5 1.5v2.5M9.5 1.5v2.5M6.5 12v2.5M9.5 12v2.5M1.5 6.5h2.5M1.5 9.5h2.5M12 6.5h2.5M12 9.5h2.5" /></>
+            },
+            AppIcon::Errors => html! {
+                <><path d="M8 2l6 11H2z" /><path d="M8 6.5v3M8 11.25v.25" /></>
+            },
             AppIcon::Add | AppIcon::Copy | AppIcon::Show | AppIcon::More => html! {},
         }
     }

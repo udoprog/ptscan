@@ -1,9 +1,13 @@
 use musli_web::web03::prelude::*;
-use sockel::{AppShell, Button, ButtonSize, Count, Pill, Seam, SeamAxis, Toast, ToastHost, Tone};
+use sockel::{
+    AppShell, Button, ButtonSize, ButtonVariant, Count, Pill, Seam, SeamAxis, Toast, ToastHost,
+    Tone,
+};
 use yew::prelude::*;
 
 use crate::class;
 use crate::error::ErrorEntry;
+use crate::icons::{AppIcon, icon};
 use crate::ui::error_log::ErrorLog;
 use crate::ui::pointer_scan_view::PointerScanView;
 use crate::ui::process_information::ProcessInformation;
@@ -297,6 +301,11 @@ impl Component for App {
 
         let error_count = u32::try_from(self.errors.len()).unwrap_or(u32::MAX);
         let error_after = (error_count > 0).then(|| html! { <Count value={error_count} /> });
+        let errors_label = match error_count {
+            0 => String::from("Errors"),
+            1 => String::from("Errors: 1 error"),
+            n => format!("Errors: {n} errors"),
+        };
 
         let [side, results, scratch] = self.layout.fractions();
         let resize = |region| ctx.link().callback(move |at| Msg::Resize(region, at));
@@ -312,23 +321,25 @@ impl Component for App {
 
         let end = html! {
             <>
-                <Button size={ButtonSize::Small}
+                <Button size={ButtonSize::Small} variant={ButtonVariant::Quiet}
+                    icon={icon(AppIcon::Session)}
                     disabled={self.session.current.is_none()}
-                    title="Switch, create, rename and delete sessions"
+                    label={format!("Session {session_name}: switch, create, rename and delete sessions")}
+                    tip="Switch, create, rename and delete sessions"
                     onclick={ctx.link().callback(|_| Msg::ToggleSessions)}>
-                    {format!("Session: {session_name}")}
+                    {session_name}
                 </Button>
-                <Button size={ButtonSize::Small}
+                <Button size={ButtonSize::Small} variant={ButtonVariant::Quiet}
+                    icon={icon(AppIcon::Process)}
                     disabled={self.attach.process.is_none()}
-                    title="Show the attached process's modules, threads and memory regions"
-                    onclick={ctx.link().callback(|_| Msg::ToggleProcessInformation)}>
-                    {"Process info"}
-                </Button>
-                <Button size={ButtonSize::Small}
+                    label="Process information"
+                    tip="Show the attached process's modules, threads and memory regions"
+                    onclick={ctx.link().callback(|_| Msg::ToggleProcessInformation)} />
+                <Button size={ButtonSize::Small} variant={ButtonVariant::Quiet}
+                    icon={icon(AppIcon::Errors)}
+                    label={errors_label.clone()} tip={errors_label}
                     after={error_after}
-                    onclick={ctx.link().callback(|_| Msg::ToggleErrors)}>
-                    {"Errors"}
-                </Button>
+                    onclick={ctx.link().callback(|_| Msg::ToggleErrors)} />
             </>
         };
 

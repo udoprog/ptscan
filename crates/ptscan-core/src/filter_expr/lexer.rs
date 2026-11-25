@@ -98,10 +98,7 @@ impl fmt::Display for Token {
 
 /// Test if character qualifies as part of a number.
 fn is_numeric(c: char) -> bool {
-    match c {
-        '0'..='9' => true,
-        _ => false,
-    }
+    c.is_ascii_digit()
 }
 
 /// Iterate over an input string and emits tokens.
@@ -207,7 +204,7 @@ impl<'a> Lexer<'a> {
         for x in 0..4u32 {
             let c = self
                 .peek()
-                .ok_or_else(|| ("expected digit", x as usize))?
+                .ok_or(("expected digit", x as usize))?
                 .1
                 .to_string();
             let c = u32::from_str_radix(&c, 16).map_err(|_| ("expected hex digit", x as usize))?;
@@ -215,7 +212,7 @@ impl<'a> Lexer<'a> {
             self.step();
         }
 
-        Ok(::std::char::from_u32(res).ok_or_else(|| ("invalid character", 0usize))?)
+        ::std::char::from_u32(res).ok_or(("invalid character", 0usize))
     }
 
     fn scan_escape(&mut self) -> Result<char, Error> {
@@ -278,7 +275,7 @@ impl<'a> Lexer<'a> {
         }
 
         let result = hex::FromHex::from_hex(&self.buf);
-        Ok(result.map_err(|e: hex::FromHexError| self.err(e.to_string()))?)
+        result.map_err(|e: hex::FromHexError| self.err(e.to_string()))
     }
 
     /// Scan a string.

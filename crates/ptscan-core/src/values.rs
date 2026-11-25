@@ -22,12 +22,12 @@ impl DynamicType for Type {
         Type::element_size(self)
     }
 
-    fn clone_data(self, data: &Vec<u8>) -> Vec<u8> {
+    fn clone_data(self, data: &[u8]) -> Vec<u8> {
         match self {
             // Special cases where we need to take care to clone each element.
             Type::String(..) => unsafe { clone_data::<String>(data) },
             Type::Bytes(None) => unsafe { clone_data::<Vec<u8>>(data) },
-            _ => data.clone(),
+            _ => data.to_vec(),
         }
     }
 
@@ -301,7 +301,7 @@ unsafe fn drop_data<T>(data: &mut Vec<u8>, len: &mut usize) {
 }
 
 /// Clone the internal data as type `T`.
-unsafe fn clone_data<T>(from: &Vec<u8>) -> Vec<u8>
+unsafe fn clone_data<T>(from: &[u8]) -> Vec<u8>
 where
     T: Clone,
 {
@@ -356,7 +356,7 @@ where
         writer.write_all(T::as_ref(&*ptr))?;
     }
 
-    return Ok(());
+    Ok(())
 }
 
 /// Deserialize a dynamically sized type from the given reader.
@@ -379,7 +379,7 @@ where
 
     for (i, DynamicElementIndex { len, .. }) in indices.into_iter().enumerate() {
         if buf.len() < len {
-            buf.extend(std::iter::repeat(0u8).take(len - buf.len()));
+            buf.extend(std::iter::repeat_n(0u8, len - buf.len()));
         }
 
         reader.read_exact(&mut buf)?;

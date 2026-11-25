@@ -67,7 +67,7 @@ impl str::FromStr for Size {
     type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = if s.starts_with("0x") { &s[2..] } else { s };
+        let s = s.strip_prefix("0x").unwrap_or(s);
         Ok(Size(u64::from_str_radix(s, 16).map_err(|_| ParseError)?))
     }
 }

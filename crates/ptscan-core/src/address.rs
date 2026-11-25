@@ -3,7 +3,7 @@
 use crate::{error::Error, FollowablePointer, Offset, ProcessHandle, Sign, Size};
 
 use std::{
-    convert::{self, TryFrom, TryInto},
+    convert::{TryFrom, TryInto},
     fmt, num, str,
 };
 
@@ -118,7 +118,7 @@ impl Address {
 
     /// Test if the current address is aligned with the given size.
     pub fn is_aligned(self, size: Size) -> bool {
-        size.0 != 0 && (self.0 % size.0) == 0
+        size.0 != 0 && self.0.is_multiple_of(size.0)
     }
 
     /// Try to convert into the given type.
@@ -154,7 +154,7 @@ impl str::FromStr for Address {
     type Err = ParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = if s.starts_with("0x") { &s[2..] } else { s };
+        let s = s.strip_prefix("0x").unwrap_or(s);
         Ok(Address(u64::from_str_radix(s, 16).map_err(|_| ParseError)?))
     }
 }
@@ -194,6 +194,18 @@ impl<T> Convertible<Address> for *const T {
     }
 }
 
+impl From<Address> for u128 {
+    fn from(value: Address) -> Self {
+        u128::from(value.0)
+    }
+}
+
+impl From<Address> for i128 {
+    fn from(value: Address) -> Self {
+        i128::from(value.0)
+    }
+}
+
 macro_rules! try_from_int {
     ($($ty:ty, $error:ty),*) => {
         $(
@@ -223,10 +235,6 @@ try_from_int!(
     num::TryFromIntError,
     i64,
     num::TryFromIntError,
-    u128,
-    convert::Infallible,
-    i128,
-    convert::Infallible,
     usize,
     num::TryFromIntError
 );

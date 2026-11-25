@@ -66,7 +66,7 @@ impl<'a> PointerScan<'a> {
         A: IntoIterator<Item = Address>,
         V: IntoIterator<Item = dynamicvec::Accessor<'v, Type>>,
     {
-        for (from, value) in addresses.into_iter().zip(values.into_iter()) {
+        for (from, value) in addresses.into_iter().zip(values) {
             let to = match value.read().as_address() {
                 Some(address) => address,
                 None => continue,
@@ -87,8 +87,8 @@ impl<'a> PointerScan<'a> {
         progress: &mut impl PointerScanInitialProgress,
     ) -> anyhow::Result<()> {
         let Self {
-            ref handle,
-            ref cancel,
+            handle,
+            cancel,
             ref reverse,
             ref mut visited,
             ref mut visited_count,

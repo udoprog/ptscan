@@ -103,10 +103,8 @@ impl Encoding {
     where
         B: byteorder::ByteOrder,
     {
-        use std::iter;
-
         for c in s.encode_utf16() {
-            buf.extend(iter::repeat(0x0).take(2));
+            buf.extend(std::iter::repeat_n(0x0, 2));
             let s = buf.len() - 2;
             B::write_u16(&mut buf[s..], c);
         }
@@ -138,14 +136,12 @@ impl Encoding {
                 len => (true, &input[..len]),
             };
 
-            if !last {
-                if !address.checked_add_assign_size(read_buffer_size) {
-                    bail!(
-                        "adding address `{}` + read buffer size `{}` overflowed",
-                        address,
-                        read_buffer_size
-                    );
-                }
+            if !last && !address.checked_add_assign_size(read_buffer_size) {
+                bail!(
+                    "adding address `{}` + read buffer size `{}` overflowed",
+                    address,
+                    read_buffer_size
+                );
             }
 
             if !input.is_empty() {
@@ -158,7 +154,7 @@ impl Encoding {
                     None => return Ok((Value::None, Some(offset + input.len() + 1))),
                 }
 
-                if let Some(index) = memchr::memchr(0x0, &input) {
+                if let Some(index) = memchr::memchr(0x0, input) {
                     input = &input[..index];
                     last = true;
                 } else {

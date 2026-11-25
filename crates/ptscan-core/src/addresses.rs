@@ -17,8 +17,8 @@ impl DynamicType for PointerWidth {
         PointerWidth::size(self)
     }
 
-    fn clone_data(self, data: &Vec<u8>) -> Vec<u8> {
-        data.clone()
+    fn clone_data(self, data: &[u8]) -> Vec<u8> {
+        data.to_vec()
     }
 
     #[inline]

@@ -139,9 +139,11 @@ impl TypedValueExpr<'_> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[derive(Default)]
 pub enum ValueExpr {
     /// The value of the address.
     #[serde(rename = "value")]
+    #[default]
     Value,
     /// The last known value.
     #[serde(rename = "last")]
@@ -191,10 +193,7 @@ pub enum ValueExpr {
 impl ValueExpr {
     /// If this is a default expression.
     pub fn is_default(&self) -> bool {
-        match self {
-            ValueExpr::Value => true,
-            _ => false,
-        }
+        matches!(self, ValueExpr::Value)
     }
 
     pub fn reduced(&self) -> &Self {
@@ -207,7 +206,7 @@ impl ValueExpr {
     /// Parse a value expression to use.
     pub fn parse(input: &str) -> anyhow::Result<ValueExpr> {
         let expr = parser::parse_value(input)?;
-        Ok(expr.eval()?)
+        expr.eval()
     }
 
     /// Get relevant traits of the expression.
@@ -362,7 +361,7 @@ impl ValueExpr {
                 cast_type: inner_type,
             } => match &**expr {
                 Self::Value => Explicit(inner_type),
-                ref other => other.value_type_of(pointer, Explicit(inner_type))?,
+                other => other.value_type_of(pointer, Explicit(inner_type))?,
             },
             _ => NoHint,
         })
@@ -437,12 +436,6 @@ impl ValueExpr {
                 TypedValueExpr::Binary(expr_type, op, Box::new(lhs), Box::new(rhs))
             }
         })
-    }
-}
-
-impl Default for ValueExpr {
-    fn default() -> Self {
-        Self::Value
     }
 }
 

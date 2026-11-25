@@ -15,6 +15,10 @@ pub trait RawSerialize {
 
 pub trait RawDeserialize {
     /// Deserialize raw data from the given reader.
+    ///
+    /// # Safety
+    ///
+    /// The reader must yield data produced by the matching `raw_serialize`.
     unsafe fn raw_deserialize<R>(reader: &mut R) -> anyhow::Result<Self>
     where
         Self: Sized,

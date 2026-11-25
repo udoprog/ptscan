@@ -1,24 +1,16 @@
 /// The sign of a number or offset.
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Default)]
 pub enum Sign {
     Plus,
     Minus,
+    #[default]
     NoSign,
 }
 
 impl Sign {
     /// Test if the sign is not defined.
     pub fn is_none(&self) -> bool {
-        match self {
-            Self::NoSign => true,
-            _ => false,
-        }
-    }
-}
-
-impl Default for Sign {
-    fn default() -> Self {
-        Self::NoSign
+        matches!(self, Self::NoSign)
     }
 }
 
@@ -52,10 +44,7 @@ impl<'de> serde::de::Deserialize<'de> for Sign {
         D: serde::de::Deserializer<'de>,
     {
         Ok(
-            match Option::<String>::deserialize(deserializer)?
-                .as_ref()
-                .map(String::as_str)
-            {
+            match Option::<String>::deserialize(deserializer)?.as_deref() {
                 Some("+") => Sign::Plus,
                 Some("-") => Sign::Minus,
                 Some(value) => {

@@ -74,6 +74,9 @@ impl PointerWidth {
         true
     }
 
+    /// # Safety
+    ///
+    /// `ptr` must be valid for writes of a pointer of this width.
     pub unsafe fn write_unchecked(self, ptr: *mut u8, value: Address) {
         use std::ptr::write;
 
@@ -83,6 +86,9 @@ impl PointerWidth {
         }
     }
 
+    /// # Safety
+    ///
+    /// `ptr` must be valid for reads of a pointer of this width.
     pub unsafe fn read_unchecked(self, ptr: *const u8) -> Address {
         use std::ptr::read;
 
@@ -339,10 +345,7 @@ pub enum MemoryState {
 impl MemoryState {
     /// Test if the memory state is free (i.e. unused).
     pub fn is_free(self) -> bool {
-        match self {
-            MemoryState::Free => true,
-            _ => false,
-        }
+        matches!(self, MemoryState::Free)
     }
 
     pub fn as_str(self) -> &'static str {

@@ -65,10 +65,7 @@ impl PortableBase {
             Self::Module { ref name, offset } => {
                 let id = handle.modules.modules_index.get(name).cloned();
 
-                let id = match id {
-                    Some(id) => id,
-                    None => return None,
-                };
+                let id = id?;
 
                 Base::Module { id, offset }
             }
@@ -138,10 +135,7 @@ impl Base {
             Self::Module { id, offset } => {
                 let module = handle.modules.modules.get(id as usize);
 
-                let module = match module {
-                    Some(module) => module,
-                    None => return None,
-                };
+                let module = module?;
 
                 PortableBase::Module {
                     name: module.name.clone(),

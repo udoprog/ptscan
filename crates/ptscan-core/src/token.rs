@@ -4,6 +4,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[repr(transparent)]
 pub struct Token(AtomicBool);
 
+impl Default for Token {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Token {
     /// Create from a raw atomic boolean reference.
     ///

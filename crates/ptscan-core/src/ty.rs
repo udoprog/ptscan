@@ -120,7 +120,9 @@ macro_rules! convert {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
+#[derive(Default)]
 pub enum Type {
+    #[default]
     None,
     Pointer(PointerWidth),
     U8,
@@ -142,10 +144,7 @@ pub enum Type {
 impl Type {
     /// Indicates if this type is aligned by default or not.
     pub fn is_default_aligned(&self) -> bool {
-        match self {
-            Self::String(..) => false,
-            _ => true,
-        }
+        !matches!(self, Self::String(..))
     }
 
     /// If the type is unsized, try to complement it with an old type.
@@ -425,10 +424,10 @@ impl Type {
             return Ok((value, Some(size)));
         }
 
-        return match self {
+        match self {
             Self::String(encoding) => Ok(encoding.stream_decode(reader, address)?),
             other => bail!("tried to decode sized {} as unsized", other),
-        };
+        }
     }
 
     /// Decode the given data as a fixed-length value.
@@ -476,12 +475,6 @@ impl Type {
     /// Convert into a type which implements `fmt::Display` for a human-readable string.
     pub fn human_display(&self) -> HumanDisplay {
         HumanDisplay { ty: *self }
-    }
-}
-
-impl Default for Type {
-    fn default() -> Self {
-        Self::None
     }
 }
 

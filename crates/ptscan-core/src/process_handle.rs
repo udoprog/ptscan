@@ -402,6 +402,7 @@ impl ProcessHandle {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn rescan_values(
         &self,
         thread_pool: &rayon::ThreadPool,
@@ -436,6 +437,7 @@ impl ProcessHandle {
     }
 
     /// Read the value of many memory locations.
+    #[allow(clippy::too_many_arguments)]
     pub fn rescan_large(
         &self,
         thread_pool: &rayon::ThreadPool,
@@ -479,11 +481,7 @@ impl ProcessHandle {
         let mut ranges = Vec::new();
 
         {
-            let thread_stacks = self
-                .threads
-                .iter()
-                .map(|t| t.stack.clone())
-                .collect::<HashSet<_>>();
+            let thread_stacks = self.threads.iter().map(|t| t.stack).collect::<HashSet<_>>();
 
             for m in self.process.virtual_memory_regions().only_relevant() {
                 let m = m?;
@@ -698,6 +696,7 @@ impl ProcessHandle {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn rescan_small(
         &self,
         thread_pool: &rayon::ThreadPool,
@@ -741,11 +740,7 @@ impl ProcessHandle {
         let mut ranges = Vec::new();
 
         {
-            let thread_stacks = self
-                .threads
-                .iter()
-                .map(|t| t.stack.clone())
-                .collect::<HashSet<_>>();
+            let thread_stacks = self.threads.iter().map(|t| t.stack).collect::<HashSet<_>>();
 
             for m in self.process.virtual_memory_regions().only_relevant() {
                 let m = m?;
@@ -1126,6 +1121,7 @@ impl ProcessHandle {
     /// raised from a worker thread. Only the last error will be propagated to
     /// the user. Modifications to the provided buffers will be applied even if
     /// an error happens.
+    #[allow(clippy::too_many_arguments)]
     pub fn initial_scan(
         &self,
         thread_pool: &rayon::ThreadPool,
@@ -1158,7 +1154,7 @@ impl ProcessHandle {
         let step_size = if aligned { alignment } else { 1 };
         let alignment = config
             .alignment
-            .or_else(|| if aligned { Some(alignment) } else { None });
+            .or(if aligned { Some(alignment) } else { None });
 
         let special = filter.special(self, values.ty())?;
         let special = special.as_ref();
@@ -1187,11 +1183,7 @@ impl ProcessHandle {
         let mut ranges = Vec::new();
 
         {
-            let thread_stacks = self
-                .threads
-                .iter()
-                .map(|t| t.stack.clone())
-                .collect::<HashSet<_>>();
+            let thread_stacks = self.threads.iter().map(|t| t.stack).collect::<HashSet<_>>();
 
             let mut modules = self
                 .modules
@@ -1549,7 +1541,7 @@ impl Proxy for BufferProxy<'_> {
         }
 
         let buffer_reader = BufferReader {
-            buffer: &self.buffer,
+            buffer: self.buffer,
             address: self.address,
         };
 

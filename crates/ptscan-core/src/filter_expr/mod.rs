@@ -70,7 +70,7 @@ impl FilterExpr {
     /// Parse a a string into a filter.
     pub fn parse(input: &str, process: &impl ProcessInfo) -> anyhow::Result<Self> {
         let expr = parser::parse_filter(input)?;
-        Ok(expr.into_filter(process)?)
+        expr.into_filter(process)
     }
 
     pub fn pointer(expr: ValueExpr, process: &impl ProcessInfo) -> anyhow::Result<Self> {
@@ -786,7 +786,7 @@ impl TypedIsPointer<'_> {
         }
 
         Ok(
-            AddressRange::find_in_range(&self.memory_regions, |m| &m.range, address)
+            AddressRange::find_in_range(self.memory_regions, |m| &m.range, address)
                 .is_some()
                 .into(),
         )

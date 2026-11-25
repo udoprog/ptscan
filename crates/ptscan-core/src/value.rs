@@ -45,7 +45,9 @@ pub struct FromBigDecimalError(bigdecimal::BigDecimal, Type);
 /// A single dynamic literal value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type", content = "value")]
+#[derive(Default)]
 pub enum Value {
+    #[default]
     None,
     Pointer(Address),
     U8(u8),
@@ -89,40 +91,34 @@ impl Value {
 
     /// Test if this value is something.
     pub fn is_some(&self) -> bool {
-        match *self {
-            Value::None => false,
-            _ => true,
-        }
+        !matches!(self, Value::None)
     }
 
     pub fn is_none(&self) -> bool {
-        match *self {
-            Value::None => true,
-            _ => false,
-        }
+        matches!(self, Value::None)
     }
 
     /// Test if value is of the given type.
     pub fn is(&self, ty: Type) -> bool {
-        match (self, ty) {
-            (Self::None, Type::None) => true,
-            (Self::Pointer(..), Type::Pointer(..)) => true,
-            (Self::U8(..), Type::U8) => true,
-            (Self::I8(..), Type::I8) => true,
-            (Self::U16(..), Type::U16) => true,
-            (Self::I16(..), Type::I16) => true,
-            (Self::U32(..), Type::U32) => true,
-            (Self::I32(..), Type::I32) => true,
-            (Self::U64(..), Type::U64) => true,
-            (Self::I64(..), Type::I64) => true,
-            (Self::U128(..), Type::U128) => true,
-            (Self::I128(..), Type::I128) => true,
-            (Self::F32(..), Type::F32) => true,
-            (Self::F64(..), Type::F64) => true,
-            (Self::String(..), Type::String(..)) => true,
-            (Self::Bytes(..), Type::Bytes(..)) => true,
-            _ => false,
-        }
+        matches!(
+            (self, ty),
+            (Self::None, Type::None)
+                | (Self::Pointer(..), Type::Pointer(..))
+                | (Self::U8(..), Type::U8)
+                | (Self::I8(..), Type::I8)
+                | (Self::U16(..), Type::U16)
+                | (Self::I16(..), Type::I16)
+                | (Self::U32(..), Type::U32)
+                | (Self::I32(..), Type::I32)
+                | (Self::U64(..), Type::U64)
+                | (Self::I64(..), Type::I64)
+                | (Self::U128(..), Type::U128)
+                | (Self::I128(..), Type::I128)
+                | (Self::F32(..), Type::F32)
+                | (Self::F64(..), Type::F64)
+                | (Self::String(..), Type::String(..))
+                | (Self::Bytes(..), Type::Bytes(..))
+        )
     }
 
     /// Unwrap the current value, or return an alternative if this is None.
@@ -202,11 +198,7 @@ impl Value {
 
     /// Test if value is aligned by default or not.
     pub fn is_default_aligned(&self) -> bool {
-        match self {
-            Self::String(..) => false,
-            Self::Bytes(..) => false,
-            _ => true,
-        }
+        !matches!(self, Self::String(..) | Self::Bytes(..))
     }
 
     /// Try to treat the value as an address.
@@ -217,13 +209,13 @@ impl Value {
 
         match *self {
             Self::Pointer(address) => Some(address),
-            Self::U8(value) => Address::try_from(value).ok(),
+            Self::U8(value) => Some(Address::from(value)),
             Self::I8(value) => Address::try_from(value).ok(),
-            Self::U16(value) => Address::try_from(value).ok(),
+            Self::U16(value) => Some(Address::from(value)),
             Self::I16(value) => Address::try_from(value).ok(),
-            Self::U32(value) => Address::try_from(value).ok(),
+            Self::U32(value) => Some(Address::from(value)),
             Self::I32(value) => Address::try_from(value).ok(),
-            Self::U64(value) => Address::try_from(value).ok(),
+            Self::U64(value) => Some(Address::from(value)),
             Self::I64(value) => Address::try_from(value).ok(),
             Self::U128(value) => Address::try_from(value).ok(),
             Self::I128(value) => Address::try_from(value).ok(),
@@ -410,25 +402,18 @@ impl Value {
     }
 }
 
-impl Default for Value {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
 impl str::FromStr for Value {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (hex, s) = if s.starts_with("0x") {
-            (true, &s[2..])
-        } else {
-            (false, s)
+        let (hex, s) = match s.strip_prefix("0x") {
+            Some(s) => (true, s),
+            None => (false, s),
         };
 
-        let mut it = s.split(|c| c == 'i' || c == 'u');
+        let mut it = s.split(['i', 'u']);
 
-        let base = it.next().ok_or_else(|| Error::ValueMissingBase)?;
+        let base = it.next().ok_or(Error::ValueMissingBase)?;
 
         let (s, ty) = match it.next() {
             Some(suffix) => {
@@ -460,8 +445,8 @@ impl fmt::Display for Value {
             Self::I128(value) => write!(fmt, "{}", value),
             Self::F32(value) => write!(fmt, "{}", value),
             Self::F64(value) => write!(fmt, "{}", value),
-            Self::String(string) => write!(fmt, "{}", EscapeString(&*string)),
-            Self::Bytes(bytes) => write!(fmt, "{{{}}}", Hex(&*bytes)),
+            Self::String(string) => write!(fmt, "{}", EscapeString(string)),
+            Self::Bytes(bytes) => write!(fmt, "{{{}}}", Hex(bytes)),
         }
     }
 }
@@ -528,8 +513,8 @@ impl fmt::Display for ValueRef<'_> {
             Self::I128(value) => write!(fmt, "{}", value),
             Self::F32(value) => write!(fmt, "{}", value),
             Self::F64(value) => write!(fmt, "{}", value),
-            Self::String(string) => write!(fmt, "{}", EscapeString(&*string)),
-            Self::Bytes(bytes) => write!(fmt, "{{{}}}", Hex(&*bytes)),
+            Self::String(string) => write!(fmt, "{}", EscapeString(string)),
+            Self::Bytes(bytes) => write!(fmt, "{{{}}}", Hex(bytes)),
         }
     }
 }

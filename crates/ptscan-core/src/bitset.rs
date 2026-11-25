@@ -6,6 +6,12 @@ pub struct BitSet {
     slots: Vec<u64>,
 }
 
+impl Default for BitSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BitSet {
     const BITS_IN_SLOT: usize = std::mem::size_of::<u64>() * 8;
 
@@ -33,7 +39,7 @@ impl BitSet {
 
         if self.slots.len() < slot {
             self.slots
-                .extend(std::iter::repeat(0u64).take(slot - self.slots.len()));
+                .extend(std::iter::repeat_n(0u64, slot - self.slots.len()));
         }
 
         self.slots[slot] |= 1u64 << offset;

@@ -44,10 +44,7 @@ pub(crate) fn find_first_nonzero(mut data: &[u8]) -> Option<usize> {
         return None;
     }
 
-    let index = match data.iter().position(|c| *c != 0) {
-        Some(index) => index,
-        None => return None,
-    };
+    let index = data.iter().position(|c| *c != 0)?;
 
     Some(local + index)
 }
@@ -139,10 +136,7 @@ impl Special {
 
                 None
             }
-            Self::Regex(ref regex) => match regex.find(data) {
-                Some(m) => Some(m.start()),
-                None => None,
-            },
+            Self::Regex(ref regex) => regex.find(data).map(|m| m.start()),
         }
     }
 }
@@ -157,10 +151,9 @@ mod tests {
         assert_eq!(Some(4), find_first_nonzero(&[0, 0, 0, 0, 5, 0, 0]));
         assert_eq!(
             None,
-            find_first_nonzero(&iter::repeat(0u8).take(127).collect::<Vec<_>>())
+            find_first_nonzero(&std::iter::repeat_n(0u8, 127).collect::<Vec<_>>())
         );
-        let test = iter::repeat(0u8)
-            .take(126)
+        let test = std::iter::repeat_n(0u8, 126)
             .chain(iter::once(8))
             .collect::<Vec<_>>();
         assert_eq!(Some(126), find_first_nonzero(&test));
@@ -170,16 +163,14 @@ mod tests {
 
     #[test]
     fn test_is_all_zeros() -> anyhow::Result<()> {
-        assert_eq!(false, is_all_zeros(&[0, 0, 0, 0, 5, 0, 0]));
-        assert_eq!(
-            true,
-            is_all_zeros(&iter::repeat(0u8).take(127).collect::<Vec<_>>())
-        );
-        let test = iter::repeat(0u8)
-            .take(126)
+        assert!(!is_all_zeros(&[0, 0, 0, 0, 5, 0, 0]));
+        assert!(is_all_zeros(
+            &std::iter::repeat_n(0u8, 127).collect::<Vec<_>>()
+        ));
+        let test = std::iter::repeat_n(0u8, 126)
             .chain(iter::once(8))
             .collect::<Vec<_>>();
-        assert_eq!(false, is_all_zeros(&test));
+        assert!(!is_all_zeros(&test));
         Ok(())
     }
 }

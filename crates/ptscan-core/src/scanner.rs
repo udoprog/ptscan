@@ -55,6 +55,7 @@ impl ScannerTrait for FindNonZero {
 }
 
 pub trait Scanner: Send + Sync {
+    #[allow(clippy::too_many_arguments)]
     fn scan(
         &self,
         base: Address,

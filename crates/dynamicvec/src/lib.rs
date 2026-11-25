@@ -31,19 +31,35 @@ pub trait DynamicType: fmt::Display + Copy + PartialEq {
     fn element_size(self) -> usize;
 
     /// Clone the underlying data of a dynamic vector.
-    fn clone_data(self, data: &Vec<u8>) -> Vec<u8>;
+    fn clone_data(self, data: &[u8]) -> Vec<u8>;
 
     /// Perform an unchecked read which will clone the inner value.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to a valid, initialized element of this type.
     unsafe fn read_unchecked(self, ptr: *const u8) -> Self::Value;
 
     /// Write the given value to the unchecked memory location.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must be valid for writes of one element of this type.
     unsafe fn write_unchecked(self, ptr: *mut u8, value: Self::Value);
 
     /// Replace whatever is at the given pointer location, making sure it is
     /// dropped appropriately.
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to a valid, initialized element of this type.
     unsafe fn replace_unchecked(self, ptr: *mut u8, value: Self::Value);
 
     /// Drop a single element correctly.
+    ///
+    /// # Safety
+    ///
+    /// `hole` must point to a valid, initialized element that is not used afterwards.
     unsafe fn drop_element(self, hole: *mut u8);
 
     /// Drop the underlying data.
@@ -90,6 +106,10 @@ where
     }
 
     /// Construct a dynamic collection from its raw components.
+    ///
+    /// # Safety
+    ///
+    /// `data` must hold `len` valid, initialized elements of `element_size` bytes of type `ty`.
     #[inline]
     pub unsafe fn from_raw_parts(ty: T, element_size: usize, data: Vec<u8>, len: usize) -> Self {
         Self {

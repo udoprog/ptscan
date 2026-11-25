@@ -60,10 +60,7 @@ where
         use crate::process::{MemoryState, MemoryType};
 
         loop {
-            let memory_info = match self.iter.next() {
-                Some(memory_info) => try_iter!(memory_info),
-                None => return None,
-            };
+            let memory_info = try_iter!(self.iter.next()?);
 
             match (memory_info.state, memory_info.ty) {
                 (_, Some(MemoryType::Mapped)) => continue,
@@ -111,16 +108,13 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if self.current.is_none() {
-                self.current = match self.iter.next() {
-                    Some(memory_info) => Some(try_iter!(memory_info)),
-                    None => return None,
+                self.current = {
+                    let memory_info = self.iter.next()?;
+                    Some(try_iter!(memory_info))
                 }
             }
 
-            let memory_info = match self.current.as_ref() {
-                Some(memory_info) => memory_info,
-                None => return None,
-            };
+            let memory_info = self.current.as_ref()?;
 
             if self.offset >= memory_info.range.size {
                 self.offset = Size::new(0);

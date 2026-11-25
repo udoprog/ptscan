@@ -2614,9 +2614,9 @@ checksum = "3244542535d5de959d90ec55d1b5ff0fd2bb7b1310223907d5f11932847f7b59"
 
 [[package]]
 name = "sockel"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3257ce552815d45bad96a90e6e498edc573aa94a792b86d2f56a29cc0cdbf0c"
+checksum = "b99d3b33ccde19d85489a5bdf8f87a67c8234f826353a170ca9b8954a7241348"
 dependencies = [
  "js-sys",
  "phrasebook",
@@ -2629,9 +2629,9 @@ dependencies = [
 
 [[package]]
 name = "sockel-build"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de081b59e09e9e86c68252b384038dad51f9f3421acc50bd6f828b893183a87b"
+checksum = "5bbdee197e06d28635f489168cabe3d41ddf459cc2d5874792e4c1bb0fc49218"
 dependencies = [
  "sasso",
 ]

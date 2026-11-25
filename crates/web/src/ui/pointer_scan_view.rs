@@ -1,15 +1,18 @@
 use std::collections::BTreeSet;
 
+use gloo_timers::callback::Timeout;
 use musli_web::web03::prelude::*;
 use sockel::{
-    Button, ButtonSize, ButtonVariant, Card, Checkbox, Cluster, EmptyState, Gap, Inset, Notice,
-    Table, TableCell, Tone, Toolbar, ToolbarSpacer,
+    Button, ButtonSize, ButtonVariant, Card, Checkbox, Cluster, EmptyState, Gap, InputSize, Inset,
+    Notice, Table, TableCell, TextInput, Tone, Toolbar, ToolbarSpacer,
 };
 use yew::prelude::*;
 
 use crate::class;
 
 const PAGE: u32 = 100;
+/// How long the settings rest after an edit before they are saved.
+const SAVE_MS: u32 = 500;
 
 #[derive(Properties, PartialEq)]
 pub struct Props {
@@ -17,6 +20,10 @@ pub struct Props {
     /// The connection is open.
     pub open: bool,
     pub attached: bool,
+    /// The open session.
+    pub session: Option<u64>,
+    /// The open session's settings, as the server holds them.
+    pub settings: api::PointerScanSettings,
     pub on_error: Callback<String>,
 }
 
@@ -25,6 +32,10 @@ pub enum Msg {
     StateChanged(Result<ws::Packet<api::PointerScanStateChanged>, ws::Error>),
     Progressed(Result<ws::Packet<api::PointerScanProgressed>, ws::Error>),
     Cancel,
+    Depth(String),
+    Offset(String),
+    Save,
+    Saved(Result<ws::Packet<api::SetPointerScanSettings>, ws::Error>),
     Page(u64),
     Loaded(Result<ws::Packet<api::PointerScanResults>, ws::Error>),
     Select(u64, bool),
@@ -34,6 +45,13 @@ pub enum Msg {
 }
 
 pub struct PointerScanView {
+    depth: String,
+    offset_limit: String,
+    session: Option<u64>,
+    /// The settings as last read from or saved to the server.
+    synced: api::PointerScanSettings,
+    save_timer: Option<Timeout>,
+    save: ws::Request,
     state: api::PointerScanState,
     progress: api::PointerScanProgress,
     offset: u64,
@@ -103,6 +121,43 @@ impl PointerScanView {
     fn page_indexes(&self) -> std::ops::Range<u64> {
         self.offset..self.offset + self.paths.len() as u64
     }
+
+    fn settings(&self) -> Option<api::PointerScanSettings> {
+        Some(api::PointerScanSettings {
+            max_depth: parse_depth(&self.depth)?,
+            max_offset: parse_offset(&self.offset_limit)?,
+        })
+    }
+
+    fn apply_settings(&mut self, settings: &api::PointerScanSettings) {
+        self.depth = settings.max_depth.to_string();
+        self.offset_limit = format!("{:#x}", settings.max_offset);
+        self.synced = settings.clone();
+    }
+
+    /// Follow the server's settings, unless an edit of ours is still to be
+    /// saved.
+    fn sync_settings(&mut self, ctx: &Context<Self>) {
+        let props = ctx.props();
+
+        if props.session != self.session {
+            self.session = props.session;
+            self.save_timer = None;
+            self.save = ws::Request::default();
+            self.apply_settings(&props.settings);
+        } else if props.settings != self.synced {
+            if self.save_timer.is_none() && !self.save.is_pending() {
+                self.apply_settings(&props.settings);
+            } else {
+                self.synced = props.settings.clone();
+            }
+        }
+    }
+
+    fn schedule_save(&mut self, ctx: &Context<Self>) {
+        let link = ctx.link().clone();
+        self.save_timer = Some(Timeout::new(SAVE_MS, move || link.send_message(Msg::Save)));
+    }
 }
 
 impl Component for PointerScanView {
@@ -113,6 +168,12 @@ impl Component for PointerScanView {
         let ws = &ctx.props().ws;
 
         let mut this = Self {
+            depth: String::new(),
+            offset_limit: String::new(),
+            session: ctx.props().session,
+            synced: api::PointerScanSettings::default(),
+            save_timer: None,
+            save: ws::Request::default(),
             state: api::PointerScanState::default(),
             progress: api::PointerScanProgress::default(),
             offset: 0,
@@ -129,6 +190,8 @@ impl Component for PointerScanView {
             _progress_listener: ws.on_broadcast(ctx.link().callback(Msg::Progressed)),
         };
 
+        this.apply_settings(&ctx.props().settings);
+
         if ctx.props().open {
             this.load_state(ctx);
         }
@@ -142,6 +205,8 @@ impl Component for PointerScanView {
         if props.open && (!old.open || props.attached != old.attached) {
             self.load_state(ctx);
         }
+
+        self.sync_settings(ctx);
 
         true
     }
@@ -183,6 +248,43 @@ impl Component for PointerScanView {
                         },
                     ))
                     .send();
+            }
+            Msg::Depth(text) => {
+                self.depth = text;
+                self.schedule_save(ctx);
+            }
+            Msg::Offset(text) => {
+                self.offset_limit = text;
+                self.schedule_save(ctx);
+            }
+            Msg::Save => {
+                self.save_timer = None;
+
+                let Some(settings) = self.settings().filter(|s| *s != self.synced) else {
+                    return false;
+                };
+
+                self.synced = settings.clone();
+                self.save = ctx
+                    .props()
+                    .ws
+                    .request()
+                    .body(api::SetPointerScanSettingsRequest { settings })
+                    .on_packet(ctx.link().callback(Msg::Saved))
+                    .send();
+                return false;
+            }
+            Msg::Saved(result) => {
+                match result.and_then(|p| p.decode_response()) {
+                    Ok(response) => {
+                        if let Some(error) = response.error {
+                            on_error.emit(format!("Saving pointer scan settings: {error}"));
+                        }
+                    }
+                    Err(error) => on_error.emit(format!("Saving pointer scan settings: {error}")),
+                }
+
+                return false;
             }
             Msg::Page(offset) => {
                 self.offset = offset;
@@ -325,6 +427,19 @@ impl Component for PointerScanView {
                     <span class={class::TITLE}>{"Pointer scan"}</span>
                     <span class={class::MUTED}>{self.target()}</span>
                     <ToolbarSpacer />
+                    <Cluster gap={Gap::Tight} nowrap=true>
+                        <label class={class::MUTED} for="pointer-depth">{"Depth"}</label>
+                        <TextInput id="pointer-depth" size={InputSize::Small} class={class::NARROW}
+                            inputmode="numeric" invalid={parse_depth(&self.depth).is_none()}
+                            disabled={running} value={self.depth.clone()}
+                            on_input={link.callback(Msg::Depth)} />
+                        <label class={class::MUTED} for="pointer-offset">{"Max offset"}</label>
+                        <TextInput id="pointer-offset" size={InputSize::Small}
+                            class={classes!(class::NARROW, class::MONO)}
+                            invalid={parse_offset(&self.offset_limit).is_none()}
+                            disabled={running} value={self.offset_limit.clone()}
+                            on_input={link.callback(Msg::Offset)} />
+                    </Cluster>
                     if running {
                         <Button size={ButtonSize::Small} busy={self.cancel.is_pending()}
                             onclick={link.callback(|_| Msg::Cancel)}>{"Cancel"}</Button>
@@ -463,6 +578,28 @@ impl PointerScanView {
     }
 }
 
+/// Most pointers followed in one path, from 1 to the server's limit.
+fn parse_depth(text: &str) -> Option<u32> {
+    let depth = text.trim().parse::<u32>().ok()?;
+    (1..=api::PointerScanSettings::MAX_DEPTH)
+        .contains(&depth)
+        .then_some(depth)
+}
+
+/// An offset in hex (`0x1000`) or decimal, from 1 to the server's limit.
+fn parse_offset(text: &str) -> Option<u32> {
+    let text = text.trim();
+
+    let offset = match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+        None => text.parse::<u32>().ok()?,
+    };
+
+    (1..=api::PointerScanSettings::MAX_OFFSET)
+        .contains(&offset)
+        .then_some(offset)
+}
+
 fn last_page(total: u64) -> u64 {
     total.saturating_sub(1) / PAGE as u64 * PAGE as u64
 }
@@ -472,5 +609,28 @@ fn duration(ms: u64) -> String {
         format!("{ms} ms")
     } else {
         format!("{:.1} s", ms as f64 / 1000.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_depth, parse_offset};
+
+    #[test]
+    fn depth() {
+        assert_eq!(parse_depth(" 7 "), Some(7));
+        assert_eq!(parse_depth("0"), None);
+        assert_eq!(parse_depth("17"), None);
+        assert_eq!(parse_depth("x"), None);
+    }
+
+    #[test]
+    fn offset() {
+        assert_eq!(parse_offset("0x1000"), Some(0x1000));
+        assert_eq!(parse_offset("0X10"), Some(0x10));
+        assert_eq!(parse_offset("4096"), Some(4096));
+        assert_eq!(parse_offset("0x0"), None);
+        assert_eq!(parse_offset("0x100001"), None);
+        assert_eq!(parse_offset("0x"), None);
     }
 }

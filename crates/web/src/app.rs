@@ -10,12 +10,16 @@ use crate::ui::process_information::ProcessInformation;
 use crate::ui::process_picker::ProcessPicker;
 use crate::ui::scan_view::ScanView;
 use crate::ui::scratch_view::ScratchView;
+use crate::ui::session_dialog::SessionDialog;
 
 pub enum Msg {
     Connection(ws::State),
     WebSocketError(ws::Error),
     AttachState(Result<ws::Packet<api::GetAttachState>, ws::Error>),
     AttachChanged(Result<ws::Packet<api::AttachStateChanged>, ws::Error>),
+    SessionState(Result<ws::Packet<api::GetSessionState>, ws::Error>),
+    SessionChanged(Result<ws::Packet<api::SessionStateChanged>, ws::Error>),
+    ToggleSessions,
     Error(String),
     ToggleErrors,
     ToggleProcessInformation,
@@ -26,9 +30,13 @@ pub struct App {
     service: ws::Service,
     _state_listener: ws::StateListener,
     _attach_listener: ws::Listener,
+    _session_listener: ws::Listener,
     attach_request: ws::Request,
+    session_request: ws::Request,
     connection: ws::State,
     attach: api::AttachState,
+    session: api::SessionState,
+    show_sessions: bool,
     errors: Vec<ErrorEntry>,
     show_errors: bool,
     show_process_information: bool,
@@ -48,6 +56,14 @@ impl App {
             .request()
             .body(api::GetAttachStateRequest)
             .on_packet(ctx.link().callback(Msg::AttachState))
+            .send();
+
+        self.session_request = self
+            .service
+            .handle()
+            .request()
+            .body(api::GetSessionStateRequest)
+            .on_packet(ctx.link().callback(Msg::SessionState))
             .send();
     }
 }
@@ -72,13 +88,21 @@ impl Component for App {
             .handle()
             .on_broadcast(ctx.link().callback(Msg::AttachChanged));
 
+        let session_listener = service
+            .handle()
+            .on_broadcast(ctx.link().callback(Msg::SessionChanged));
+
         let mut this = Self {
             service,
             _state_listener: state_listener,
             _attach_listener: attach_listener,
+            _session_listener: session_listener,
             attach_request: ws::Request::default(),
+            session_request: ws::Request::default(),
             connection,
             attach: api::AttachState::default(),
+            session: api::SessionState::default(),
+            show_sessions: false,
             errors: Vec::new(),
             show_errors: false,
             show_process_information: false,
@@ -127,6 +151,26 @@ impl Component for App {
 
                 true
             }
+            Msg::SessionState(result) => {
+                match result.and_then(|packet| packet.decode_response()) {
+                    Ok(state) => self.session = state,
+                    Err(error) => return self.raise(format!("Reading sessions: {error}")),
+                }
+
+                true
+            }
+            Msg::SessionChanged(result) => {
+                match result.and_then(|packet| packet.decode_event()) {
+                    Ok(state) => self.session = state,
+                    Err(error) => return self.raise(format!("Session update: {error}")),
+                }
+
+                true
+            }
+            Msg::ToggleSessions => {
+                self.show_sessions = !self.show_sessions;
+                true
+            }
             Msg::Error(message) => self.raise(message),
             Msg::ToggleErrors => {
                 self.show_errors = !self.show_errors;
@@ -161,6 +205,11 @@ impl Component for App {
             None => html! { <span class={class::MUTED}>{"Not attached"}</span> },
         };
 
+        let session_name = match self.session.current() {
+            Some(session) => session.name.clone(),
+            None => String::from("No session"),
+        };
+
         let error_count = u32::try_from(self.errors.len()).unwrap_or(u32::MAX);
         let error_after = (error_count > 0).then(|| html! { <Count value={error_count} /> });
 
@@ -171,6 +220,12 @@ impl Component for App {
                     <Pill {tone}>{label}</Pill>
                     {attached}
                     <ToolbarSpacer />
+                    <Button size={ButtonSize::Small}
+                        disabled={self.session.current.is_none()}
+                        title="Switch, create, rename and delete sessions"
+                        onclick={ctx.link().callback(|_| Msg::ToggleSessions)}>
+                        {format!("Session: {session_name}")}
+                    </Button>
                     <Button size={ButtonSize::Small}
                         disabled={self.attach.process.is_none()}
                         title="Show the attached process's modules, threads and memory regions"
@@ -189,6 +244,7 @@ impl Component for App {
                             ws={self.service.handle().clone()}
                             open={self.connection.is_open()}
                             attach={self.attach.clone()}
+                            target={self.session.current().and_then(|s| s.target.clone())}
                             on_error={self.on_error.clone()}
                         />
                     </div>
@@ -197,6 +253,8 @@ impl Component for App {
                             ws={self.service.handle().clone()}
                             open={self.connection.is_open()}
                             attached={self.attach.process.is_some()}
+                            session={self.session.current}
+                            form={self.session.scan.clone()}
                             on_error={self.on_error.clone()}
                         />
                         <div class={class::LOWER}>
@@ -210,6 +268,8 @@ impl Component for App {
                                 ws={self.service.handle().clone()}
                                 open={self.connection.is_open()}
                                 attached={self.attach.process.is_some()}
+                                session={self.session.current}
+                                settings={self.session.pointer_scan.clone()}
                                 on_error={self.on_error.clone()}
                             />
                         </div>
@@ -222,6 +282,13 @@ impl Component for App {
                     process={self.attach.process.clone()}
                     on_error={self.on_error.clone()}
                     on_close={ctx.link().callback(|()| Msg::ToggleProcessInformation)}
+                />
+                <SessionDialog
+                    open={self.show_sessions}
+                    ws={self.service.handle().clone()}
+                    connected={self.connection.is_open()}
+                    state={self.session.clone()}
+                    on_close={ctx.link().callback(|()| Msg::ToggleSessions)}
                 />
                 <ErrorLog
                     open={self.show_errors}

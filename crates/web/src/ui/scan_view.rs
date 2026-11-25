@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use gloo_timers::callback::Interval;
+use gloo_timers::callback::{Interval, Timeout};
 use musli_web::web03::prelude::*;
 use sockel::{
     Button, ButtonSize, ButtonVariant, Card, Checkbox, Cluster, EmptyState, FormRow, FormRows, Gap,
@@ -14,6 +14,8 @@ use crate::ui::scan_result_dialog::ScanResultDialog;
 
 const PAGE: u32 = 100;
 const REFRESH_MS: u32 = 1000;
+/// How long the form rests after an edit before it is saved.
+const SAVE_MS: u32 = 500;
 
 #[derive(Properties, PartialEq)]
 pub struct Props {
@@ -21,6 +23,10 @@ pub struct Props {
     /// The connection is open.
     pub open: bool,
     pub attached: bool,
+    /// The open session.
+    pub session: Option<u64>,
+    /// The open session's scan form, as the server holds it.
+    pub form: api::ScanForm,
     pub on_error: Callback<String>,
 }
 
@@ -30,6 +36,8 @@ pub enum Msg {
     Alignment(String),
     Suspend(bool),
     ModulesOnly(bool),
+    Save,
+    Saved(Result<ws::Packet<api::SetScanForm>, ws::Error>),
     Scan,
     Started(Result<ws::Packet<api::Scan>, ws::Error>),
     Cancel,
@@ -61,6 +69,11 @@ pub struct ScanView {
     alignment: String,
     suspend: bool,
     modules_only: bool,
+    session: Option<u64>,
+    /// The form as last read from or saved to the server.
+    synced: api::ScanForm,
+    save_timer: Option<Timeout>,
+    save: ws::Request,
     filter_error: Option<String>,
     value_error: Option<String>,
     state: api::ScanState,
@@ -138,7 +151,7 @@ impl ScanView {
         }
     }
 
-    fn scan_request(&self) -> Result<api::ScanRequest, String> {
+    fn form(&self) -> Result<api::ScanForm, String> {
         let alignment = match self.alignment.trim() {
             "" => None,
             text => match text.parse::<u32>() {
@@ -147,13 +160,64 @@ impl ScanView {
             },
         };
 
-        Ok(api::ScanRequest {
+        Ok(api::ScanForm {
             filter: self.filter.clone(),
             value: self.value.clone(),
             alignment,
             suspend: self.suspend,
             modules_only: self.modules_only,
         })
+    }
+
+    fn apply_form(&mut self, form: &api::ScanForm) {
+        self.filter = form.filter.clone();
+        self.value = form.value.clone();
+        self.alignment = form.alignment.map(|n| n.to_string()).unwrap_or_default();
+        self.suspend = form.suspend;
+        self.modules_only = form.modules_only;
+        self.filter_error = None;
+        self.value_error = None;
+        self.synced = form.clone();
+    }
+
+    /// Follow the server's form, unless an edit of ours is still to be saved.
+    fn sync_form(&mut self, ctx: &Context<Self>) {
+        let props = ctx.props();
+
+        if props.session != self.session {
+            self.session = props.session;
+            self.save_timer = None;
+            self.save = ws::Request::default();
+            self.apply_form(&props.form);
+        } else if props.form != self.synced {
+            if self.save_timer.is_none() && !self.save.is_pending() {
+                self.apply_form(&props.form);
+            } else {
+                self.synced = props.form.clone();
+            }
+        }
+    }
+
+    fn schedule_save(&mut self, ctx: &Context<Self>) {
+        let link = ctx.link().clone();
+        self.save_timer = Some(Timeout::new(SAVE_MS, move || link.send_message(Msg::Save)));
+    }
+
+    fn save_form(&mut self, ctx: &Context<Self>, form: api::ScanForm) {
+        self.save_timer = None;
+
+        if form == self.synced {
+            return;
+        }
+
+        self.synced = form.clone();
+        self.save = ctx
+            .props()
+            .ws
+            .request()
+            .body(api::SetScanFormRequest { form })
+            .on_packet(ctx.link().callback(Msg::Saved))
+            .send();
     }
 
     /// Selected results on the current page.
@@ -194,6 +258,10 @@ impl Component for ScanView {
             alignment: String::new(),
             suspend: false,
             modules_only: false,
+            session: None,
+            synced: api::ScanForm::default(),
+            save_timer: None,
+            save: ws::Request::default(),
             filter_error: None,
             value_error: None,
             state: api::ScanState::default(),
@@ -215,6 +283,9 @@ impl Component for ScanView {
             _timer: Interval::new(REFRESH_MS, move || link.send_message(Msg::Tick)),
         };
 
+        this.session = ctx.props().session;
+        this.apply_form(&ctx.props().form);
+
         if ctx.props().open {
             this.load_state(ctx);
         }
@@ -229,6 +300,8 @@ impl Component for ScanView {
             self.load_state(ctx);
         }
 
+        self.sync_form(ctx);
+
         true
     }
 
@@ -240,21 +313,63 @@ impl Component for ScanView {
             Msg::Filter(text) => {
                 self.filter = text;
                 self.filter_error = None;
+                self.schedule_save(ctx);
             }
             Msg::Value(text) => {
                 self.value = text;
                 self.value_error = None;
+                self.schedule_save(ctx);
             }
-            Msg::Alignment(text) => self.alignment = text,
-            Msg::Suspend(on) => self.suspend = on,
-            Msg::ModulesOnly(on) => self.modules_only = on,
+            Msg::Alignment(text) => {
+                self.alignment = text;
+                self.schedule_save(ctx);
+            }
+            Msg::Suspend(on) => {
+                self.suspend = on;
+                self.schedule_save(ctx);
+            }
+            Msg::ModulesOnly(on) => {
+                self.modules_only = on;
+                self.schedule_save(ctx);
+            }
+            Msg::Save => {
+                self.save_timer = None;
+
+                if let Ok(form) = self.form() {
+                    self.save_form(ctx, form);
+                }
+
+                return false;
+            }
+            Msg::Saved(result) => {
+                match result.and_then(|p| p.decode_response()) {
+                    Ok(response) => {
+                        if let Some(error) = response.error {
+                            on_error.emit(format!("Saving the scan form: {error}"));
+                        }
+                    }
+                    Err(error) => on_error.emit(format!("Saving the scan form: {error}")),
+                }
+
+                return false;
+            }
             Msg::Scan => {
-                let request = match self.scan_request() {
-                    Ok(request) => request,
+                let form = match self.form() {
+                    Ok(form) => form,
                     Err(error) => {
                         on_error.emit(error);
                         return true;
                     }
+                };
+
+                self.save_form(ctx, form.clone());
+
+                let request = api::ScanRequest {
+                    filter: form.filter,
+                    value: form.value,
+                    alignment: form.alignment,
+                    suspend: form.suspend,
+                    modules_only: form.modules_only,
                 };
 
                 self.scan = ws

@@ -6,18 +6,48 @@ use std::time::Instant;
 
 use anyhow::{Result, anyhow};
 use ptscan_core::{
-    Addresses, FilterExpr, FollowablePointer as _, PointerScan, PortablePointer, ProcessHandle,
-    ScanContext, Size, Token, Type, ValueExpr, Values,
+    Addresses, Base, FilterExpr, FollowablePointer as _, Pointer, PointerScan, PortableBase,
+    PortablePointer, ProcessHandle, ScanContext, Size, Token, Type, ValueExpr, Values,
 };
 use tokio::sync::watch;
 
 use crate::{Shared, lock, read};
 
+/// The paths of a pointer scan, as the scan produced them.
+///
+/// Modules are referred to by index and only named when a page is formatted,
+/// so that no path holds a copy of a module name.
+#[derive(Default)]
+struct Paths {
+    pointers: Vec<Pointer>,
+    /// The names of the modules at the end of the scan, by module id.
+    modules: Vec<String>,
+}
+
+impl Paths {
+    /// Format the path as a portable pointer.
+    fn display(&self, pointer: &Pointer) -> String {
+        let base = match pointer.base {
+            Base::Null => PortableBase::Null,
+            Base::Module { id, offset } => match self.modules.get(usize::from(id)) {
+                Some(name) => PortableBase::Module {
+                    name: name.clone(),
+                    offset,
+                },
+                None => PortableBase::Null,
+            },
+            Base::Address { address } => PortableBase::Address { address },
+        };
+
+        PortablePointer::new(base, pointer.offsets.iter().copied()).to_string()
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct PointerResults {
     entry: Option<u64>,
     value_type: Option<Type>,
-    results: Arc<Vec<PortablePointer>>,
+    results: Arc<Paths>,
     running: Option<Arc<AtomicBool>>,
     last: Option<api::PointerScanOutcome>,
     /// Bumped whenever the results are discarded, so that a scan started
@@ -30,7 +60,7 @@ impl PointerResults {
         api::PointerScanState {
             entry: self.entry,
             value_type: self.value_type.map(|t| t.to_string()),
-            results: self.results.len() as u64,
+            results: self.results.pointers.len() as u64,
             running: self.running.is_some(),
             last: self.last.clone(),
         }
@@ -134,7 +164,7 @@ impl Shared {
         std::thread::spawn(move || {
             let started = Instant::now();
             let token_ref = Token::from_raw(&token);
-            let mut results = Vec::new();
+            let mut results = Paths::default();
             let result = shared.run_pointer_scan(&handle, &pointer, &mut results, token_ref);
 
             let mut current = lock(&shared.pointer_results);
@@ -146,7 +176,7 @@ impl Shared {
             current.running = None;
             current.results = Arc::new(results);
             current.last = Some(api::PointerScanOutcome {
-                results: current.results.len() as u64,
+                results: current.results.pointers.len() as u64,
                 cancelled: token_ref.test(),
                 error: result.err().map(|e| format!("{e:#}")),
                 duration_ms: started.elapsed().as_millis() as u64,
@@ -163,7 +193,7 @@ impl Shared {
         &self,
         handle: &RwLock<ProcessHandle>,
         pointer: &PortablePointer,
-        results: &mut Vec<PortablePointer>,
+        results: &mut Paths,
         token: &Token,
     ) -> Result<()> {
         crate::scan::refresh_modules(handle)?;
@@ -220,12 +250,20 @@ impl Shared {
         // large next to the results being converted.
         drop(scan);
 
-        results.extend(pointers.into_iter().filter_map(|p| {
-            Some(PortablePointer::new(
-                p.base.as_portable(&handle)?,
-                p.offsets,
-            ))
-        }));
+        // Paths are only named when a page of them is asked for. Those through
+        // a module that is no longer known are dropped.
+        results.modules = handle
+            .modules
+            .modules
+            .iter()
+            .map(|m| m.name.clone())
+            .collect();
+        pointers.retain(|p| match p.base {
+            Base::Module { id, .. } => usize::from(id) < results.modules.len(),
+            _ => true,
+        });
+        pointers.shrink_to_fit();
+        results.pointers = pointers;
 
         result
     }
@@ -253,7 +291,7 @@ impl Shared {
             (current.results.clone(), current.value_type)
         };
 
-        let total = results.len();
+        let total = results.pointers.len();
         let start = usize::try_from(offset).unwrap_or(usize::MAX).min(total);
         let end = start
             .saturating_add(limit.min(api::MAX_SCAN_PAGE) as usize)
@@ -262,7 +300,13 @@ impl Shared {
         api::PointerScanResultsResponse {
             total: total as u64,
             offset: start as u64,
-            results: results[start..end].iter().map(|p| p.to_string()).collect(),
+            results: results
+                .pointers
+                .get(start..end)
+                .unwrap_or_default()
+                .iter()
+                .map(|p| results.display(p))
+                .collect(),
             value_type: value_type.map(|t| t.to_string()),
         }
     }

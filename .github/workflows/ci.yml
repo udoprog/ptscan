@@ -25,7 +25,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: dtolnay/rust-toolchain@stable
-    - run: cargo test -p ptscan-core -p ptscan -p api -p dynamicvec
+    - run: cargo test --workspace
 
   web:
     runs-on: ubuntu-latest
@@ -37,7 +37,6 @@ jobs:
         components: clippy
     - uses: udoprog/actions@trug
     - run: trug build --release
-    - run: cargo test -p web
     - run: cargo clippy -p web --target wasm32-unknown-unknown -- -D warnings
 
   rustfmt:

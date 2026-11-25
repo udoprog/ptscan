@@ -70,7 +70,8 @@ pub struct ScanRequest {
     pub alignment: Option<u32>,
     /// Suspend the process for the duration of the scan.
     pub suspend: bool,
-    /// Only scan the memory of loaded modules. Applies to initial scans.
+    /// Only scan the writable memory of loaded modules. Applies to initial
+    /// scans, which never look at the code or read-only data of modules.
     pub modules_only: bool,
 }
 

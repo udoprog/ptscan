@@ -4,14 +4,13 @@ use crate::{
     error::Error,
     filter_expr::FilterExpr,
     platform::{self, Thread},
+    process::MemoryType,
     progress_reporter::ProgressReporter,
     scanner::{Chunk, ScanSink},
-    system,
-    utils::IteratorExtension as _,
-    Address, AddressRange, Addresses, Base, BitSet, Cached, DefaultScanner, FollowablePointer,
-    MemoryInformation, MemoryReader, Pointer, PointerInfo, PointerWidth, PortableBase, Process,
-    ProcessId, ProcessInfo, Scanner, Size, Test, ThreadId, Token, Type, TypeHint, TypedFilterExpr,
-    Value, ValueExpr, ValueRef, Values,
+    system, utils, Address, AddressRange, Addresses, Base, BitSet, Cached, DefaultScanner,
+    FollowablePointer, MemoryInformation, MemoryReader, Pointer, PointerInfo, PointerWidth,
+    PortableBase, Process, ProcessId, ProcessInfo, Scanner, Size, Test, ThreadId, Token, Type,
+    TypeHint, TypedFilterExpr, Value, ValueExpr, ValueRef, Values,
 };
 use anyhow::{anyhow, bail, Context as _};
 use crossbeam_queue::SegQueue;
@@ -206,11 +205,23 @@ fn run_chunks<P: ScanProgress + Send>(
     });
 }
 
+/// Which parts of the module images [`ProcessHandle::scan_ranges`] keeps.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ModuleParts {
+    /// Only the parts mapped writable, where an initial scan looks: code and
+    /// read-only data are left out.
+    Writable,
+    /// The whole images, so a rescan keeps results anywhere in them.
+    Whole,
+}
+
 /// Size of the chunks memory is read in when scanning.
 const DEFAULT_BUFFER_SIZE: usize = 0x100_000;
 
 #[derive(Debug, Clone, Default)]
 pub struct InitialScanConfig {
+    /// Only scan module images. Either way only the writable parts of module
+    /// images are scanned, not their code or read-only data.
     pub modules_only: bool,
     pub tasks: Option<usize>,
     pub buffer_size: Option<usize>,
@@ -589,38 +600,30 @@ impl ProcessHandle {
         }
     }
 
-    /// The memory to scan, sorted by base and without overlaps: the relevant
-    /// regions minus thread stacks, plus the module images, each byte once.
-    /// With `modules_only`, just the module images.
+    /// The memory to scan, sorted by base and without overlaps, each byte
+    /// once: the relevant regions minus thread stacks, plus the module images
+    /// as `parts` says. With `modules_only`, just the module images.
     ///
     /// Callers binary-search the result, so it has to stay sorted.
-    fn scan_ranges(&self, modules_only: bool) -> anyhow::Result<Vec<AddressRange>> {
-        let mut modules = self
+    pub(crate) fn scan_ranges(
+        &self,
+        modules_only: bool,
+        parts: ModuleParts,
+    ) -> anyhow::Result<Vec<AddressRange>> {
+        let mut images = self
             .modules
             .modules
             .iter()
             .map(|m| m.range)
             .collect::<Vec<_>>();
-        modules.sort();
+        images.sort();
 
-        let mut ranges = Vec::new();
-
-        if !modules_only {
-            let thread_stacks = self.threads.iter().map(|t| t.stack).collect::<HashSet<_>>();
-
-            for m in self.process.virtual_memory_regions().only_relevant() {
-                let m = m?;
-
-                if !thread_stacks.contains(&m.range) {
-                    uncovered_ranges(m.range, &modules, &mut ranges);
-                }
-            }
-        }
-
-        // Modules may overlap each other; only keep the part not seen yet.
+        // Modules may overlap each other; merge them so each byte is covered
+        // once.
+        let mut modules = Vec::<AddressRange>::with_capacity(images.len());
         let mut end = 0u64;
 
-        for m in modules {
+        for m in images {
             let m_end = m.base.0.saturating_add(m.size.0);
 
             if m_end <= end {
@@ -628,11 +631,41 @@ impl ProcessHandle {
             }
 
             let start = m.base.0.max(end);
-            ranges.push(AddressRange {
+            modules.push(AddressRange {
                 base: Address(start),
                 size: Size(m_end - start),
             });
             end = m_end;
+        }
+
+        let whole = matches!(parts, ModuleParts::Whole);
+        let mut ranges = Vec::new();
+
+        if !modules_only || !whole {
+            let thread_stacks = self.threads.iter().map(|t| t.stack).collect::<HashSet<_>>();
+
+            for m in self.process.virtual_memory_regions() {
+                let m = m?;
+
+                if !utils::is_scannable(&m) {
+                    continue;
+                }
+
+                if !whole {
+                    covered_ranges(m.range, &modules, &mut ranges);
+                }
+
+                if !modules_only
+                    && !matches!(m.ty, Some(MemoryType::Mapped))
+                    && !thread_stacks.contains(&m.range)
+                {
+                    uncovered_ranges(m.range, &modules, &mut ranges);
+                }
+            }
+        }
+
+        if whole {
+            ranges.extend(modules);
         }
 
         ranges.sort();
@@ -724,7 +757,7 @@ impl ProcessHandle {
             .fold(MIN_TAIL, usize::max);
         let window_size = u64::try_from(window_size.max(1))?;
 
-        let ranges = self.scan_ranges(false)?;
+        let ranges = self.scan_ranges(false, ModuleParts::Whole)?;
 
         let mut windows = Vec::new();
         let mut first_window = Vec::with_capacity(ranges.len());
@@ -1344,7 +1377,7 @@ impl ProcessHandle {
 
         let mut bytes = Size::zero();
 
-        let ranges = self.scan_ranges(config.modules_only)?;
+        let ranges = self.scan_ranges(config.modules_only, ModuleParts::Writable)?;
 
         let mut total = 0;
 
@@ -1519,6 +1552,25 @@ impl ProcessHandle {
             }
 
             Ok((addresses, values))
+        }
+    }
+}
+
+/// Push the parts of `range` inside any of `covered`, which is sorted by base
+/// and without overlaps.
+fn covered_ranges(range: AddressRange, covered: &[AddressRange], out: &mut Vec<AddressRange>) {
+    let end = range.base.0.saturating_add(range.size.0);
+
+    for c in covered {
+        let c_end = c.base.0.saturating_add(c.size.0);
+        let start = range.base.0.max(c.base.0);
+        let stop = end.min(c_end);
+
+        if start < stop {
+            out.push(AddressRange {
+                base: Address(start),
+                size: Size(stop - start),
+            });
         }
     }
 }

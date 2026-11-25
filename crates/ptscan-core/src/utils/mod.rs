@@ -57,36 +57,32 @@ where
     type Item = anyhow::Result<MemoryInformation>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        use crate::process::{MemoryState, MemoryType};
+        use crate::process::MemoryType;
 
         loop {
             let memory_info = try_iter!(self.iter.next()?);
 
-            match (memory_info.state, memory_info.ty) {
-                (_, Some(MemoryType::Mapped)) => continue,
-                (MemoryState::Commit, _) => {
-                    if memory_info.protect.contains(MemoryProtect::NoAccess) {
-                        continue;
-                    }
+            if matches!(memory_info.ty, Some(MemoryType::Mapped)) {
+                continue;
+            }
 
-                    if memory_info.protect.contains(MemoryProtect::Guard) {
-                        continue;
-                    }
-
-                    if memory_info.protect.contains(MemoryProtect::NoCache) {
-                        continue;
-                    }
-
-                    if !memory_info.is_writable() {
-                        continue;
-                    }
-
-                    return Some(Ok(memory_info));
-                }
-                _ => continue,
+            if is_scannable(&memory_info) {
+                return Some(Ok(memory_info));
             }
         }
     }
+}
+
+/// Test if a region holds memory worth scanning: committed, accessible and
+/// writable, whatever its type.
+pub(crate) fn is_scannable(memory_info: &MemoryInformation) -> bool {
+    use crate::process::MemoryState;
+
+    memory_info.state == MemoryState::Commit
+        && !memory_info.protect.contains(MemoryProtect::NoAccess)
+        && !memory_info.protect.contains(MemoryProtect::Guard)
+        && !memory_info.protect.contains(MemoryProtect::NoCache)
+        && memory_info.is_writable()
 }
 
 pub struct Chunked<I>

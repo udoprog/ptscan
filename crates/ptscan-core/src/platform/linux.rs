@@ -800,11 +800,13 @@ mod tests {
     const HOLD_ENV: &str = "PTSCAN_TEST_HOLD_VALUE";
     const HELD: u64 = 0x5eed_c0de_f00d_7a11;
     static HELD_PAIR: [AtomicU64; 2] = [AtomicU64::new(HELD), AtomicU64::new(HELD)];
+    /// `HELD` in the image's read-only data, which value scans skip.
+    static HELD_READ_ONLY: u64 = HELD;
 
     /// Run in a re-executed test binary by [`Holder::spawn`]: keeps `HELD` and
-    /// a pointer to it on the heap, prints their addresses and that of
-    /// `HELD_PAIR` in the image's writable data, then answers each line on
-    /// stdin with the value it now holds.
+    /// a pointer to it on the heap, prints their addresses, that of
+    /// `HELD_PAIR` in the image's writable data and that of `HELD_READ_ONLY`,
+    /// then answers each line on stdin with the value it now holds.
     #[test]
     fn hold_value_child() {
         if std::env::var_os(HOLD_ENV).is_none() {
@@ -814,10 +816,11 @@ mod tests {
         let value = Box::new(std::hint::black_box(HELD));
         let pointer = Box::new(&*value as *const u64 as usize);
         println!(
-            "held {:x} {:x} {:x}",
+            "held {:x} {:x} {:x} {:x}",
             &*value as *const u64 as usize,
             &*pointer as *const usize as usize,
-            HELD_PAIR.as_ptr() as usize
+            HELD_PAIR.as_ptr() as usize,
+            std::hint::black_box(&HELD_READ_ONLY) as *const u64 as usize
         );
         io::stdout().flush().unwrap();
 
@@ -839,6 +842,7 @@ mod tests {
         value: u64,
         pointer: u64,
         pair: u64,
+        read_only: u64,
     }
 
     impl Holder {
@@ -868,12 +872,14 @@ mod tests {
                     let value = it.next().unwrap();
                     let pointer = it.next().unwrap();
                     let pair = it.next().unwrap();
+                    let read_only = it.next().unwrap();
                     return Self {
                         child,
                         stdout,
                         value,
                         pointer,
                         pair,
+                        read_only,
                     };
                 }
             }
@@ -1034,6 +1040,91 @@ mod tests {
 
         let unique = found.iter().collect::<HashSet<_>>();
         assert_eq!(unique.len(), found.len(), "{:?}", found);
+    }
+
+    /// Only the writable parts of module images are scanned: a value in an
+    /// image's writable data is found, one in its read-only data is not, and
+    /// no scanned range touches code or read-only data.
+    #[test]
+    fn value_scan_skips_read_only_module_parts() {
+        let holder = Holder::spawn();
+        let mut handle = holder.handle();
+        handle.refresh_modules().unwrap();
+
+        let read_only = handle
+            .process
+            .virtual_query(Address::new(holder.read_only))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(read_only.ty, Some(MemoryType::Image)));
+        assert!(!read_only.is_writable(), "{}", read_only);
+
+        let filter = FilterExpr::parse(&format!("value == {}u64", HELD), &handle).unwrap();
+
+        for modules_only in [false, true] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(2)
+                .build()
+                .unwrap();
+            let mut addresses = Addresses::new(handle.process.pointer_width);
+            let mut values = Values::new(Type::U64);
+            handle
+                .initial_scan(
+                    ScanContext::new(&pool, None, NoProgress),
+                    &filter,
+                    &mut addresses,
+                    &mut values,
+                    crate::InitialScanConfig {
+                        modules_only,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            let found = addresses.iter_copied().collect::<Vec<_>>();
+
+            for address in [holder.pair, holder.pair + 8] {
+                assert!(found.contains(&Address::new(address)), "{:?}", found);
+            }
+
+            assert!(
+                !found.contains(&Address::new(holder.read_only)),
+                "{:?}",
+                found
+            );
+            assert_eq!(
+                found.contains(&Address::new(holder.value)),
+                !modules_only,
+                "{:?}",
+                found
+            );
+        }
+
+        let regions = handle.process.handle.memory_regions().unwrap().unwrap();
+        let skipped = regions
+            .iter()
+            .filter(|r| matches!(r.ty, Some(MemoryType::Image)) && !r.is_writable())
+            .collect::<Vec<_>>();
+        assert!(skipped.iter().any(|r| r.is_executable()));
+
+        for modules_only in [false, true] {
+            let ranges = handle
+                .scan_ranges(modules_only, crate::process_handle::ModuleParts::Writable)
+                .unwrap();
+
+            for range in &ranges {
+                let end = range.base.0 + range.size.into_inner();
+
+                for r in &skipped {
+                    let r_end = r.range.base.0 + r.range.size.into_inner();
+                    assert!(
+                        end <= r.range.base.0 || r_end <= range.base.0,
+                        "{:?} overlaps {}",
+                        range,
+                        r
+                    );
+                }
+            }
+        }
     }
 
     /// A value straddling the end of a scan buffer is still found: the

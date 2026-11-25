@@ -1,7 +1,13 @@
 use std::collections::BTreeSet;
 
 use musli_web::web03::prelude::*;
+use sockel::{
+    Button, ButtonSize, ButtonVariant, Card, Checkbox, Cluster, EmptyState, Gap, Inset, Notice,
+    Table, TableCell, Tone, Toolbar, ToolbarSpacer,
+};
 use yew::prelude::*;
+
+use crate::class;
 
 const PAGE: u32 = 100;
 
@@ -275,15 +281,19 @@ impl Component for PointerScanView {
             .page_indexes()
             .zip(&self.paths)
             .map(|(index, path)| {
-                let class = classes!(self.selected.contains(&index).then_some("selected"));
+                let class = classes!(
+                    sockel::class::TABLE_ROW,
+                    class::ROW,
+                    self.selected.contains(&index).then_some(class::SELECTED),
+                );
                 let onclick = link.callback(move |e: MouseEvent| {
                     Msg::Select(index, e.ctrl_key() || e.meta_key() || e.shift_key())
                 });
 
                 html! {
                     <tr key={index} {class} {onclick}>
-                        <td class="num muted">{index}</td>
-                        <td class="mono">{path}</td>
+                        <TableCell numeric=true class={class::MUTED}>{index}</TableCell>
+                        <TableCell class={class::MONO}>{path}</TableCell>
                     </tr>
                 }
             })
@@ -292,54 +302,59 @@ impl Component for PointerScanView {
         let all = !self.paths.is_empty() && self.selected.len() == self.paths.len();
         let can_add = !self.selected.is_empty() && props.open && self.value_type.is_some();
 
+        let head = html! {
+            <>
+                <TableCell head=true numeric=true>
+                    <Checkbox title="Select every path on this page"
+                        checked={all} on_change={link.callback(|_| Msg::SelectPage)}>{"#"}</Checkbox>
+                </TableCell>
+                <TableCell head=true>{"Path"}</TableCell>
+            </>
+        };
+
+        let empty = self
+            .paths
+            .is_empty()
+            .then(|| html! { <EmptyState title={self.empty_label()} compact=true /> });
+
+        let added = self.added.clone().unwrap_or_default();
+
         html! {
-            <column class="panel pointers" style="gap: 0">
-                <row class="toolbar center">
-                    <span class="title">{"Pointer scan"}</span>
-                    <span class="muted">{self.target()}</span>
-                    <div class="fill" />
+            <Card inset={Inset::Flush} class={class::PANE}>
+                <Toolbar label="Pointer scan" band=true>
+                    <span class={class::TITLE}>{"Pointer scan"}</span>
+                    <span class={class::MUTED}>{self.target()}</span>
+                    <ToolbarSpacer />
                     if running {
-                        <button disabled={self.cancel.is_pending()}
-                            onclick={link.callback(|_| Msg::Cancel)}>{"Cancel"}</button>
+                        <Button size={ButtonSize::Small} busy={self.cancel.is_pending()}
+                            onclick={link.callback(|_| Msg::Cancel)}>{"Cancel"}</Button>
                     }
-                </row>
+                </Toolbar>
                 {self.status()}
-                <row class="toolbar center results-bar">
-                    <span class="muted">{self.range_label(page_end)}</span>
-                    <button disabled={!can_prev} onclick={link.callback(|_| Msg::Page(0))}>{"First"}</button>
-                    <button disabled={!can_prev} onclick={link.callback(move |_| Msg::Page(prev))}>{"Prev"}</button>
-                    <button disabled={!can_next} onclick={link.callback(move |_| Msg::Page(next))}>{"Next"}</button>
-                    <button disabled={!can_next} onclick={link.callback(move |_| Msg::Page(last))}>{"Last"}</button>
-                    <span class="muted added" title={self.added.clone().unwrap_or_default()}>
-                        {self.added.clone().unwrap_or_default()}
+                <Toolbar label="Pointer scan results" band=true>
+                    <span class={classes!(class::MUTED, sockel::class::NUMERIC)}>{self.range_label(page_end)}</span>
+                    <Cluster gap={Gap::Hair} nowrap=true>
+                        <Button size={ButtonSize::Small} disabled={!can_prev} onclick={link.callback(|_| Msg::Page(0))}>{"First"}</Button>
+                        <Button size={ButtonSize::Small} disabled={!can_prev} onclick={link.callback(move |_| Msg::Page(prev))}>{"Prev"}</Button>
+                        <Button size={ButtonSize::Small} disabled={!can_next} onclick={link.callback(move |_| Msg::Page(next))}>{"Next"}</Button>
+                        <Button size={ButtonSize::Small} disabled={!can_next} onclick={link.callback(move |_| Msg::Page(last))}>{"Last"}</Button>
+                    </Cluster>
+                    <span class={classes!(class::MUTED, class::ADDED, sockel::class::TRUNCATE)} title={added.clone()}>
+                        {added}
                     </span>
-                    <button class="primary" disabled={!can_add}
+                    <Button size={ButtonSize::Small} variant={ButtonVariant::Primary} disabled={!can_add}
                         title="Add the selected paths to the scratch list"
                         onclick={link.callback(|_| Msg::AddSelected)}>
                         {match self.selected.len() {
                             0 | 1 => String::from("Add to scratch"),
                             n => format!("Add {n} to scratch"),
                         }}
-                    </button>
-                </row>
-                <div class="list fill">
-                    if self.paths.is_empty() {
-                        <div class="empty muted">{self.empty_label()}</div>
-                    } else {
-                        <table>
-                            <thead><tr>
-                                <th class="num">
-                                    <input type="checkbox" title="Select every path on this page"
-                                        checked={all} onchange={link.callback(|_| Msg::SelectPage)} />
-                                    {" #"}
-                                </th>
-                                <th>{"Path"}</th>
-                            </tr></thead>
-                            <tbody>{rows}</tbody>
-                        </table>
-                    }
+                    </Button>
+                </Toolbar>
+                <div class={class::SCROLL}>
+                    <Table {head} columns={2} {empty} label="Pointer paths">{rows}</Table>
                 </div>
-            </column>
+            </Card>
         }
     }
 }
@@ -361,7 +376,7 @@ impl PointerScanView {
                 api::PointerScanStage::Initial => {
                     let percentage = progress.percentage.min(100);
                     (
-                        html! { <progress max="100" value={percentage.to_string()} /> },
+                        html! { <progress class={class::PROGRESS} max="100" value={percentage.to_string()} /> },
                         format!(
                             "Scanning memory, {percentage}%, {} pointers found",
                             progress.results
@@ -369,14 +384,14 @@ impl PointerScanView {
                     )
                 }
                 api::PointerScanStage::Paths => (
-                    html! { <progress /> },
+                    html! { <progress class={class::PROGRESS} /> },
                     format!(
                         "Following pointers, {} queued, {} paths so far",
                         progress.remaining, progress.results
                     ),
                 ),
                 api::PointerScanStage::Backreferences => (
-                    html! { <progress /> },
+                    html! { <progress class={class::PROGRESS} /> },
                     format!(
                         "Adding back references, {} left, {} paths so far",
                         progress.remaining, progress.results
@@ -385,10 +400,10 @@ impl PointerScanView {
             };
 
             return html! {
-                <row class="scan-status center">
+                <Cluster nowrap=true class={class::STATUS_BAR}>
                     {bar}
-                    <span>{text}</span>
-                </row>
+                    <span class={sockel::class::TRUNCATE}>{text}</span>
+                </Cluster>
             };
         }
 
@@ -409,13 +424,19 @@ impl PointerScanView {
             text.push_str("; cancelled, paths found so far kept");
         }
 
-        let class = classes!(
-            "scan-status",
-            last.error.is_some().then_some("bad"),
-            last.cancelled.then_some("warn"),
-        );
+        let tone = if last.error.is_some() {
+            Tone::Danger
+        } else if last.cancelled {
+            Tone::Warning
+        } else {
+            Tone::Neutral
+        };
 
-        html! { <row {class}>{text}</row> }
+        html! {
+            <div class={class::STATUS_BAR}>
+                <Notice {tone} status=true>{text}</Notice>
+            </div>
+        }
     }
 
     fn range_label(&self, page_end: u64) -> String {

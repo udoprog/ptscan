@@ -2,10 +2,13 @@ use std::collections::BTreeSet;
 
 use gloo_timers::callback::Interval;
 use musli_web::web03::prelude::*;
-use wasm_bindgen::JsCast;
-use web_sys::HtmlInputElement;
+use sockel::{
+    Button, ButtonSize, ButtonVariant, Card, Checkbox, Cluster, Dialog, DialogDismiss, EmptyState,
+    FormRow, FormRows, Inset, Table, TableCell, TextInput, Toolbar, ToolbarSpacer,
+};
 use yew::prelude::*;
 
+use crate::class;
 use crate::clipboard;
 
 const REFRESH_MS: u32 = 1000;
@@ -268,7 +271,11 @@ impl Component for ScratchView {
             .iter()
             .map(|entry| {
                 let id = entry.id;
-                let class = classes!(self.selected.contains(&id).then_some("selected"));
+                let class = classes!(
+                    sockel::class::TABLE_ROW,
+                    class::ROW,
+                    self.selected.contains(&id).then_some(class::SELECTED),
+                );
                 let onclick = link.callback(move |e: MouseEvent| {
                     Msg::Select(id, e.ctrl_key() || e.meta_key() || e.shift_key())
                 });
@@ -279,10 +286,10 @@ impl Component for ScratchView {
 
                 html! {
                     <tr key={id} {class} {onclick} ondblclick={link.callback(move |_| Msg::Edit(id))}>
-                        <td class="mono">{&entry.pointer}</td>
-                        <td class="mono">{&entry.value_type}</td>
-                        <td class="mono muted">{address}</td>
-                        <td class="mono">{entry.value.as_deref().unwrap_or("?")}</td>
+                        <TableCell class={class::MONO} cut=true>{&entry.pointer}</TableCell>
+                        <TableCell class={class::MONO}>{&entry.value_type}</TableCell>
+                        <TableCell class={classes!(class::MONO, class::MUTED)}>{address}</TableCell>
+                        <TableCell class={class::MONO}>{entry.value.as_deref().unwrap_or("?")}</TableCell>
                     </tr>
                 }
             })
@@ -304,57 +311,68 @@ impl Component for ScratchView {
 
         let all = !self.entries.is_empty() && self.selected.len() == self.entries.len();
 
+        let head = html! {
+            <>
+                <TableCell head=true>
+                    <Checkbox title="Select every entry" checked={all}
+                        on_change={link.callback(|_| Msg::SelectAll)}>{"Pointer"}</Checkbox>
+                </TableCell>
+                <TableCell head=true>{"Type"}</TableCell>
+                <TableCell head=true>{"Address"}</TableCell>
+                <TableCell head=true>{"Value"}</TableCell>
+            </>
+        };
+
+        let empty = self.entries.is_empty().then(
+            || html! { <EmptyState title="Add scan results to watch them here" compact=true /> },
+        );
+
+        let pointer_scan_title = if self.pointer_scan_running {
+            "A pointer scan is running"
+        } else {
+            "Find pointer paths to the selected entry's address"
+        };
+
         html! {
-            <column class="panel scratch" style="gap: 0">
-                <row class="toolbar center">
-                    <span class="title">{"Scratch"}</span>
-                    <span class="muted">{match self.entries.len() {
+            <Card inset={Inset::Flush} class={class::PANE}>
+                <Toolbar label="Scratch" band=true>
+                    <span class={class::TITLE}>{"Scratch"}</span>
+                    <span class={class::MUTED}>{match self.entries.len() {
                         1 => String::from("1 entry"),
                         n => format!("{n} entries"),
                     }}</span>
-                    <div class="fill" />
-                    <button disabled={self.selected.len() != 1}
+                    <ToolbarSpacer />
+                    <Button size={ButtonSize::Small} disabled={self.selected.len() != 1}
                         onclick={self.selected.first().copied().map(|id| link.callback(move |_| Msg::Edit(id))).unwrap_or_default()}>
                         {"Edit"}
-                    </button>
-                    <button title={if self.pointer_scan_running { "A pointer scan is running" } else { "Find pointer paths to the selected entry's address" }}
-                        disabled={self.selected.len() != 1 || !props.open || !props.attached || self.pointer_scan.is_pending() || self.pointer_scan_running}
+                    </Button>
+                    <Button size={ButtonSize::Small} title={pointer_scan_title}
+                        busy={self.pointer_scan.is_pending()}
+                        disabled={self.selected.len() != 1 || !props.open || !props.attached || self.pointer_scan_running}
                         onclick={self.selected.first().copied().map(|id| link.callback(move |_| Msg::PointerScan(id))).unwrap_or_default()}>
                         {"Pointer scan"}
-                    </button>
-                    <button title="Copy the selected entries as tab-separated text"
-                        disabled={none} onclick={link.callback(|_| Msg::CopyText)}>{"Copy"}</button>
-                    <button title="Copy the selected entries as JSON"
-                        disabled={none} onclick={link.callback(|_| Msg::CopyJson)}>{"Copy JSON"}</button>
-                    <button disabled={none || !props.open || self.remove.is_pending()}
+                    </Button>
+                    <Button size={ButtonSize::Small} title="Copy the selected entries as tab-separated text"
+                        disabled={none} onclick={link.callback(|_| Msg::CopyText)}>{"Copy"}</Button>
+                    <Button size={ButtonSize::Small} title="Copy the selected entries as JSON"
+                        disabled={none} onclick={link.callback(|_| Msg::CopyJson)}>{"Copy JSON"}</Button>
+                    <Button size={ButtonSize::Small} variant={ButtonVariant::Danger}
+                        busy={self.remove.is_pending()}
+                        disabled={none || !props.open}
                         onclick={link.callback(|_| Msg::RemoveSelected)}>
                         {match self.selected.len() {
                             0 | 1 => String::from("Remove"),
                             n => format!("Remove {n}"),
                         }}
-                    </button>
-                </row>
-                <div class="list fill" tabindex="0" onkeydown={link.batch_callback(|e: KeyboardEvent| {
+                    </Button>
+                </Toolbar>
+                <div class={class::SCROLL} tabindex="0" onkeydown={link.batch_callback(|e: KeyboardEvent| {
                     (e.key() == "Delete").then_some(Msg::RemoveSelected)
                 })}>
-                    if self.entries.is_empty() {
-                        <div class="empty muted">{"Add scan results to watch them here"}</div>
-                    } else {
-                        <table>
-                            <thead><tr>
-                                <th>
-                                    <input type="checkbox" title="Select every entry" checked={all}
-                                        onchange={link.callback(|_| Msg::SelectAll)} />
-                                    {" Pointer"}
-                                </th>
-                                <th>{"Type"}</th><th>{"Address"}</th><th>{"Value"}</th>
-                            </tr></thead>
-                            <tbody>{rows}</tbody>
-                        </table>
-                    }
+                    <Table {head} columns={4} {empty} label="Scratch entries">{rows}</Table>
                 </div>
                 {dialog}
-            </column>
+            </Card>
         }
     }
 }
@@ -502,8 +520,7 @@ impl Component for ScratchDialog {
         let props = ctx.props();
         let link = ctx.link();
         let entry = &props.entry;
-        let close = props.on_close.reform(|_: MouseEvent| ());
-        let keep_open = Callback::from(|e: MouseEvent| e.stop_propagation());
+        let close = props.on_close.reform(|_| ());
         let busy = self.request.is_pending();
 
         let onsubmit = link.callback(|e: SubmitEvent| {
@@ -516,82 +533,64 @@ impl Component for ScratchDialog {
             .map(|a| format!("{a:#x}"))
             .unwrap_or_else(|| String::from("?"));
 
+        let error = |error: &Option<String>| error.as_ref().map(|e| html! { {e.clone()} });
+
+        let on_write_key = link.batch_callback(|e: KeyboardEvent| {
+            (e.key() == "Enter").then(|| {
+                e.prevent_default();
+                DialogMsg::Write
+            })
+        });
+
+        let actions = html! {
+            <>
+                if let Some(status) = &self.status {
+                    <span class={class::MUTED}>{status}</span>
+                }
+                <Button submit=true form="scratch-form" variant={ButtonVariant::Primary} {busy}>
+                    {"Save"}
+                </Button>
+            </>
+        };
+
         html! {
-            <div class="backdrop" onclick={close.clone()}>
-                <column class="panel dialog" style="gap: 0" onclick={keep_open}>
-                    <row class="toolbar center">
-                        <span class="title">{"Scratch entry"}</span>
-                        <div class="fill" />
-                        <button onclick={close}>{"Close"}</button>
-                    </row>
-                    <form class="details" {onsubmit}>
-                        <span class="field-label">{"Address"}</span>
-                        <span class="mono">{address}</span>
-                        <span class="field-label">{"Current value"}</span>
-                        <span class="mono">{entry.value.as_deref().unwrap_or("?")}</span>
-                        <label class="field-label" for="scratch-pointer">{"Pointer"}</label>
-                        {input("scratch-pointer", &self.pointer, &self.pointer_error,
-                            link.callback(|e: InputEvent| DialogMsg::Pointer(input_value(&e))))}
-                        <label class="field-label" for="scratch-type">{"Type"}</label>
-                        {input("scratch-type", &self.value_type, &self.value_type_error,
-                            link.callback(|e: InputEvent| DialogMsg::ValueType(input_value(&e))))}
-                        <span />
-                        <row class="center">
-                            <button type="submit" class="primary" disabled={busy}>{"Save"}</button>
-                        </row>
-                        <label class="field-label" for="scratch-value">{"Value"}</label>
-                        <column style="gap: 2px">
-                            <row class="center">
-                                <input id="scratch-value"
-                                    class={classes!("mono", "fill", self.value_error.is_some().then_some("invalid"))}
+            <Dialog open=true on_dismiss={close} title="Scratch entry" dismiss={DialogDismiss::NoOutside} {actions}>
+                <form id="scratch-form" class={class::FORM} {onsubmit}>
+                    <FormRows>
+                        <FormRow id="scratch-address" label={html! {"Address"}}>
+                            <span class={class::MONO}>{address}</span>
+                        </FormRow>
+                        <FormRow id="scratch-current" label={html! {"Current value"}}>
+                            <span class={class::MONO}>{entry.value.as_deref().unwrap_or("?")}</span>
+                        </FormRow>
+                        <FormRow id="scratch-pointer" label={html! {"Pointer"}} error={error(&self.pointer_error)}>
+                            <TextInput id="scratch-pointer" class={class::MONO}
+                                invalid={self.pointer_error.is_some()}
+                                value={self.pointer.clone()}
+                                on_input={link.callback(DialogMsg::Pointer)} />
+                        </FormRow>
+                        <FormRow id="scratch-type" label={html! {"Type"}} error={error(&self.value_type_error)}>
+                            <TextInput id="scratch-type" class={class::MONO}
+                                invalid={self.value_type_error.is_some()}
+                                value={self.value_type.clone()}
+                                on_input={link.callback(DialogMsg::ValueType)} />
+                        </FormRow>
+                        <FormRow id="scratch-value" label={html! {"Value"}} error={error(&self.value_error)}>
+                            <Cluster nowrap=true>
+                                <TextInput id="scratch-value" class={classes!(class::MONO, sockel::class::GROW)}
+                                    invalid={self.value_error.is_some()}
                                     value={self.value.clone()}
-                                    oninput={link.callback(|e: InputEvent| DialogMsg::Value(input_value(&e)))}
-                                    onkeydown={link.batch_callback(|e: KeyboardEvent| {
-                                        (e.key() == "Enter").then(|| {
-                                            e.prevent_default();
-                                            DialogMsg::Write
-                                        })
-                                    })} />
-                                <button type="button" title="Write the value at the entry's address"
-                                    disabled={busy} onclick={link.callback(|_| DialogMsg::Write)}>
+                                    on_input={link.callback(DialogMsg::Value)}
+                                    on_keydown={on_write_key} />
+                                <Button title="Write the value at the entry's address"
+                                    {busy} onclick={link.callback(|_| DialogMsg::Write)}>
                                     {"Write"}
-                                </button>
-                            </row>
-                            if let Some(error) = &self.value_error {
-                                <span class="field-error">{error}</span>
-                            }
-                        </column>
-                        if let Some(status) = &self.status {
-                            <span />
-                            <span class="muted">{status}</span>
-                        }
-                    </form>
-                </column>
-            </div>
+                                </Button>
+                            </Cluster>
+                        </FormRow>
+                    </FormRows>
+                </form>
+            </Dialog>
         }
     }
-}
-
-fn input(
-    id: &'static str,
-    value: &str,
-    error: &Option<String>,
-    oninput: Callback<InputEvent>,
-) -> Html {
-    html! {
-        <column style="gap: 2px">
-            <input {id} class={classes!("mono", error.is_some().then_some("invalid"))}
-                value={value.to_owned()} {oninput} />
-            if let Some(error) = error {
-                <span class="field-error">{error}</span>
-            }
-        </column>
-    }
-}
-
-fn input_value(e: &InputEvent) -> String {
-    e.target()
-        .and_then(|t| t.dyn_into::<HtmlInputElement>().ok())
-        .map(|input| input.value())
-        .unwrap_or_default()
 }

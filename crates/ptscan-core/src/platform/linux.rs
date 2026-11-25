@@ -1037,9 +1037,10 @@ mod tests {
     }
 
     /// A value straddling the end of a scan buffer is still found: the
-    /// default scanner reads what runs past its chunk from the process.
+    /// default and compare scanners read what runs past their chunk from the
+    /// process.
     #[test]
-    fn default_scan_finds_value_straddling_chunks() {
+    fn scan_finds_value_straddling_chunks() {
         let holder = Holder::spawn();
         let handle = holder.handle();
         let region = handle
@@ -1055,38 +1056,59 @@ mod tests {
             .num_threads(2)
             .build()
             .unwrap();
-        // A range rather than `==`, which has a specialized scanner.
-        let filter = FilterExpr::parse(
-            &format!("value > {}u64 and value < {}u64", HELD - 1, HELD + 1),
-            &handle,
-        )
-        .unwrap();
-        let mut addresses = Addresses::new(handle.process.pointer_width);
-        let mut values = Values::new(Type::U64);
-        handle
-            .initial_scan(
-                ScanContext::new(&pool, None, NoProgress),
-                &filter,
-                &mut addresses,
-                &mut values,
-                crate::InitialScanConfig {
-                    buffer_size: Some(buffer_size),
-                    aligned: Some(false),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
 
-        let found = addresses.iter_copied().collect::<Vec<_>>();
-        let held = Address::new(holder.value);
-        assert_eq!(
-            found.iter().filter(|a| **a == held).count(),
-            1,
-            "{:?}",
-            found
-        );
-        let index = found.iter().position(|a| *a == held).unwrap();
-        assert_eq!(values.get(index), Some(crate::Value::U64(HELD)));
+        // Ranges rather than `==`, which has a specialized scanner. Arithmetic
+        // on `value` takes the default scanner, a bare `value` the compare
+        // scanner.
+        for (filter, specialized) in [
+            (
+                format!(
+                    "value + 0 > {}u64 and value + 0 < {}u64",
+                    HELD - 1,
+                    HELD + 1
+                ),
+                false,
+            ),
+            (
+                format!("value > {}u64 and value < {}u64", HELD - 1, HELD + 1),
+                true,
+            ),
+        ] {
+            let filter = FilterExpr::parse(&filter, &handle).unwrap();
+            assert_eq!(
+                filter.scanner(None, &handle, Type::U64).unwrap().is_some(),
+                specialized,
+                "{}",
+                filter
+            );
+            let mut addresses = Addresses::new(handle.process.pointer_width);
+            let mut values = Values::new(Type::U64);
+            handle
+                .initial_scan(
+                    ScanContext::new(&pool, None, NoProgress),
+                    &filter,
+                    &mut addresses,
+                    &mut values,
+                    crate::InitialScanConfig {
+                        buffer_size: Some(buffer_size),
+                        aligned: Some(false),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+
+            let found = addresses.iter_copied().collect::<Vec<_>>();
+            let held = Address::new(holder.value);
+            assert_eq!(
+                found.iter().filter(|a| **a == held).count(),
+                1,
+                "{}: {:?}",
+                filter,
+                found
+            );
+            let index = found.iter().position(|a| *a == held).unwrap();
+            assert_eq!(values.get(index), Some(crate::Value::U64(HELD)));
+        }
     }
 
     /// `rescan_large` keeps results inside module images, as `rescan_small`

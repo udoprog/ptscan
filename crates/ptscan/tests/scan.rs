@@ -185,9 +185,20 @@ mod linux {
             let event = timeout!(changes.recv()).unwrap().unwrap();
             let state = event.decode_event().unwrap();
 
-            if !state.running && state.last.is_some() && state.generations == generations {
+            if state.running {
+                continue;
+            }
+
+            let Some(last) = &state.last else {
+                continue;
+            };
+
+            if state.generations == generations {
                 return state;
             }
+
+            // A failed scan leaves no new generation to wait for.
+            assert_eq!(last.error, None, "{state:?}");
         }
     }
 
@@ -546,24 +557,54 @@ mod linux {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn cancelled_scan_keeps_partial_results() {
+        // Every scan thread is held until the cancellation has been handled,
+        // so the scan cannot finish before it however fast it is. One thread
+        // would not do: the scan waits on the pool for its own tasks.
+        const THREADS: usize = 2;
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(THREADS)
+            .build()
+            .unwrap();
+        let pool = Arc::new(pool);
+        let release = Arc::new(std::sync::Barrier::new(THREADS + 1));
+        let (started_tx, started) = std::sync::mpsc::channel();
+
+        for _ in 0..THREADS {
+            let release = release.clone();
+            let started_tx = started_tx.clone();
+
+            pool.spawn(move || {
+                started_tx.send(()).unwrap();
+                release.wait();
+            });
+        }
+
+        for _ in 0..THREADS {
+            started.recv_timeout(TIMEOUT).unwrap();
+        }
+
         let holder = Holder::spawn();
-        let handle = connect(server().await).await;
+        let handle = connect(server_with(ptscan::Shared::default().with_pool(pool)).await).await;
         let mut changes = handle.on_broadcast::<api::ScanStateChanged>();
         attach(&handle, holder.child.id()).await;
 
-        // Matches nearly everything, so the scan is still running when the
-        // cancellation arrives.
         let response = scan(&handle, "value != 1u8").await;
         assert_eq!(response, api::ScanResponse::default());
-        let _: api::ScanState = timeout!(handle.request().body(api::CancelScanRequest).send())
+        let state: api::ScanState = timeout!(handle.request().body(api::CancelScanRequest).send())
             .unwrap()
             .decode()
             .unwrap();
+        assert!(state.running, "{state:?}");
+        release.wait();
 
         let state = finished(&mut changes, 1).await;
         let outcome = state.last.clone().unwrap();
         assert_eq!(outcome.error, None);
         assert!(outcome.cancelled, "{outcome:?}");
+        // No chunk is scanned once the scan is cancelled, and it was cancelled
+        // before any could be.
+        assert_eq!(outcome.results, 0, "{outcome:?}");
         assert_eq!(outcome.results, state.results);
         assert_eq!(results(&handle).await.total, state.results);
     }

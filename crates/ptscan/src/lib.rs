@@ -304,7 +304,7 @@ pub struct Shared {
     pointer_results: Mutex<pointer_scan::PointerResults>,
     pointer_scan_state: watch::Sender<api::PointerScanState>,
     pointer_progress: watch::Sender<api::PointerScanProgress>,
-    pool: rayon::ThreadPool,
+    pool: Arc<rayon::ThreadPool>,
     rescan_copy_limit: usize,
     dev_origins: Vec<DevOrigin>,
     db: Option<Db>,
@@ -327,9 +327,11 @@ impl Default for Shared {
             pointer_results: Mutex::default(),
             pointer_scan_state: watch::Sender::new(api::PointerScanState::default()),
             pointer_progress: watch::Sender::new(api::PointerScanProgress::default()),
-            pool: rayon::ThreadPoolBuilder::new()
-                .build()
-                .expect("building scan thread pool"),
+            pool: Arc::new(
+                rayon::ThreadPoolBuilder::new()
+                    .build()
+                    .expect("building scan thread pool"),
+            ),
             rescan_copy_limit: 100_000_000,
             dev_origins: Vec::new(),
             db: None,
@@ -356,6 +358,12 @@ impl Shared {
     /// copied, which means the rescan cannot be undone.
     pub fn with_rescan_copy_limit(mut self, bytes: usize) -> Self {
         self.rescan_copy_limit = bytes;
+        self
+    }
+
+    /// Run scans on `pool` instead of a pool of its own.
+    pub fn with_pool(mut self, pool: Arc<rayon::ThreadPool>) -> Self {
+        self.pool = pool;
         self
     }
 

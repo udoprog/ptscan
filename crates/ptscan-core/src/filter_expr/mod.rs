@@ -163,14 +163,18 @@ impl FilterExpr {
     }
 
     /// Construct a special scanner if possible.
-    pub fn scanner(
+    pub fn scanner<P>(
         &self,
         alignment: Option<usize>,
-        pointer: &impl PointerInfo,
+        pointer: &P,
         value_type: Type,
-    ) -> anyhow::Result<Option<Box<dyn Scanner>>> {
+    ) -> anyhow::Result<Option<Box<dyn Scanner>>>
+    where
+        P: PointerInfo,
+    {
         match self {
             Self::Binary(m) => m.scanner(alignment, pointer, value_type),
+            Self::All(m) => Ok(m.scanner::<P>(alignment, value_type)),
             _ => Ok(None),
         }
     }
@@ -561,8 +565,157 @@ impl Binary {
             }
         }
 
+        if let Some(comparison) = self.comparison(value_type) {
+            return Ok(compare_scanner::<<P as PointerInfo>::ByteOrder>(
+                &[comparison],
+                alignment,
+                value_type,
+            ));
+        }
+
         Ok(None)
     }
+
+    /// Recognize a comparison of `value` against a constant, as `value <op>
+    /// constant` with the constant converted to `value_type`.
+    fn comparison(&self, value_type: Type) -> Option<(FilterOp, value::Value)> {
+        use self::FilterOp::*;
+
+        let self::Binary(op, lhs, rhs) = self;
+
+        let (op, constant) = match (lhs, rhs) {
+            (ValueExpr::Value, constant) => (*op, constant),
+            (constant, ValueExpr::Value) => {
+                let op = match op {
+                    Lt => Gt,
+                    Lte => Gte,
+                    Gt => Lt,
+                    Gte => Lte,
+                    other => *other,
+                };
+
+                (op, constant)
+            }
+            _ => return None,
+        };
+
+        let constant = match constant {
+            ValueExpr::Number { value, type_hint } if type_hint.is_none_or(|t| t == value_type) => {
+                value::Value::from_bigint(value_type, value).ok()?
+            }
+            ValueExpr::Decimal { value, type_hint }
+                if type_hint.is_none_or(|t| t == value_type) =>
+            {
+                value::Value::from_bigdecimal(value_type, value).ok()?
+            }
+            _ => return None,
+        };
+
+        Some((op, constant))
+    }
+}
+
+/// Build a [`scanner::CompareScanner`] for `value` satisfying every
+/// comparison, if `value_type` is a primitive it supports.
+fn compare_scanner<B>(
+    comparisons: &[(FilterOp, value::Value)],
+    alignment: Option<usize>,
+    value_type: Type,
+) -> Option<Box<dyn Scanner>>
+where
+    B: byteorder::ByteOrder + 'static,
+{
+    use crate::PointerWidth;
+    use scanner::{Pointer32, Pointer64};
+    use std::convert::TryFrom as _;
+
+    macro_rules! build {
+        ($ty:ty, $pat:pat => $value:expr) => {{
+            let mut typed = Vec::with_capacity(comparisons.len());
+
+            for (op, constant) in comparisons {
+                let constant: $ty = match constant {
+                    $pat => $value,
+                    _ => return None,
+                };
+
+                typed.push((*op, constant));
+            }
+
+            build_compare_scanner::<B, $ty>(&typed, alignment)
+        }};
+    }
+
+    // NB: pointers are compared as integers of the pointer's width.
+    match value_type {
+        Type::U8 => build!(u8, value::Value::U8(v) => *v),
+        Type::I8 => build!(i8, value::Value::I8(v) => *v),
+        Type::U16 => build!(u16, value::Value::U16(v) => *v),
+        Type::I16 => build!(i16, value::Value::I16(v) => *v),
+        Type::U32 => build!(u32, value::Value::U32(v) => *v),
+        Type::I32 => build!(i32, value::Value::I32(v) => *v),
+        Type::U64 => build!(u64, value::Value::U64(v) => *v),
+        Type::I64 => build!(i64, value::Value::I64(v) => *v),
+        Type::U128 => build!(u128, value::Value::U128(v) => *v),
+        Type::I128 => build!(i128, value::Value::I128(v) => *v),
+        Type::F32 => build!(f32, value::Value::F32(v) => *v),
+        Type::F64 => build!(f64, value::Value::F64(v) => *v),
+        Type::Pointer(PointerWidth::Pointer32) => {
+            build!(Pointer32, value::Value::Pointer(v) => Pointer32(u32::try_from(v.0).ok()?))
+        }
+        Type::Pointer(PointerWidth::Pointer64) => {
+            build!(Pointer64, value::Value::Pointer(v) => Pointer64(v.0))
+        }
+        _ => None,
+    }
+}
+
+fn build_compare_scanner<B, T>(
+    comparisons: &[(FilterOp, T)],
+    alignment: Option<usize>,
+) -> Option<Box<dyn Scanner>>
+where
+    B: byteorder::ByteOrder + 'static,
+    T: scanner::Primitive,
+{
+    use self::FilterOp::*;
+    use std::ops::Bound::*;
+
+    if comparisons.is_empty() {
+        return None;
+    }
+
+    // NB: a constant which isn't equal to itself (NaN) can't be put in an
+    // interval.
+    if comparisons.iter().any(|(_, c)| c.partial_cmp(c).is_none()) {
+        return None;
+    }
+
+    if let [(Neq, constant)] = comparisons {
+        return Some(Box::new(scanner::CompareScanner::<B, T, _>::new(
+            scanner::NotEqual(*constant),
+            alignment,
+        )));
+    }
+
+    let mut interval = scanner::Interval {
+        lower: Unbounded,
+        upper: Unbounded,
+    };
+
+    for (op, constant) in comparisons {
+        match op {
+            Lt => interval.narrow_upper(Excluded(*constant)),
+            Lte => interval.narrow_upper(Included(*constant)),
+            Gt => interval.narrow_lower(Excluded(*constant)),
+            Gte => interval.narrow_lower(Included(*constant)),
+            _ => return None,
+        }
+    }
+
+    Some(Box::new(scanner::CompareScanner::<B, T, _>::new(
+        interval, alignment,
+    )))
 }
 
 impl fmt::Display for Binary {
@@ -646,6 +799,24 @@ impl All {
         }
 
         Ok(all.into_iter().next())
+    }
+
+    /// Construct a scanner for a conjunction of comparisons of `value`
+    /// against constants, like `value >= 10 and value < 20`.
+    fn scanner<P>(&self, alignment: Option<usize>, value_type: Type) -> Option<Box<dyn Scanner>>
+    where
+        P: PointerInfo,
+    {
+        let mut comparisons = Vec::with_capacity(self.0.len());
+
+        for e in &self.0 {
+            match e {
+                FilterExpr::Binary(binary) => comparisons.push(binary.comparison(value_type)?),
+                _ => return None,
+            }
+        }
+
+        compare_scanner::<<P as PointerInfo>::ByteOrder>(&comparisons, alignment, value_type)
     }
 }
 

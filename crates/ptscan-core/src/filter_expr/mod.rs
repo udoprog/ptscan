@@ -491,7 +491,18 @@ impl Binary {
         };
 
         if let Some(value) = not_equal {
-            if let (Some(type_size), Some(alignment)) = (value.size(pointer), alignment) {
+            // NB: size the element by the type scanned, not the process: a
+            // 32-bit pointer in a 64-bit process is four bytes. And `-0.0`
+            // is equal to zero, but isn't zero bytes, so floats are scanned
+            // by the generic path.
+            let type_size = match value {
+                _ if matches!(value_type, Type::F32 | Type::F64) => None,
+                value::Value::Pointer(..) => value_type.size(),
+                value::Value::F32(..) | value::Value::F64(..) => None,
+                ref value => value.size(pointer),
+            };
+
+            if let (Some(type_size), Some(alignment)) = (type_size, alignment) {
                 let mut buf = Vec::with_capacity(type_size);
                 value.encode(pointer, &mut buf);
 

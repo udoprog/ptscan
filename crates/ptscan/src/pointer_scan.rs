@@ -216,6 +216,10 @@ impl Shared {
             )?;
         }
 
+        // The references and paths visited are no longer needed, and are
+        // large next to the results being converted.
+        drop(scan);
+
         results.extend(pointers.into_iter().filter_map(|p| {
             Some(PortablePointer::new(
                 p.base.as_portable(&handle)?,

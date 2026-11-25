@@ -2,9 +2,53 @@ use crate::{Address, Base, Location, Offset, Pointer, ProcessHandle, Size, Token
 use anyhow::anyhow;
 use hashbrown::{hash_map, HashMap};
 use rayon::slice::ParallelSliceMut as _;
-use std::collections::VecDeque;
+use std::{collections::VecDeque, convert::TryFrom as _};
 
 type SVec = Vec<Offset>;
+
+/// The parent of a node reached straight from the needle.
+const ROOT: u32 = u32::MAX;
+
+/// A pointer reached by [`PointerScan::scan`] for the first time.
+///
+/// Its path back to the needle is its `offset` followed by the path of its
+/// `parent`, so every path is shared by the paths that extend it.
+#[derive(Clone, Copy)]
+struct Node {
+    /// Index of the node this pointer was reached from, or [`ROOT`].
+    parent: u32,
+    /// Number of offsets in the path from this node to the needle.
+    len: u32,
+    /// Offset from what this pointer points to, to its parent.
+    offset: Offset,
+}
+
+/// Another path to an already visited node, through `parent` (or [`ROOT`])
+/// with `offset`.
+#[derive(Clone, Copy)]
+struct Alternative {
+    node: u32,
+    parent: u32,
+    offset: Offset,
+}
+
+/// Push the offsets of the path from the node at `index` to the needle onto
+/// `path`.
+///
+/// Parents are always pushed before their children, so this terminates.
+fn extend_path(nodes: &[Node], mut index: u32, path: &mut SVec) {
+    while let Some(node) = nodes.get(index as usize) {
+        path.push(node.offset);
+        index = node.parent;
+    }
+}
+
+/// Number of offsets in the path from the node at `index` to the needle.
+fn path_len(nodes: &[Node], index: u32) -> usize {
+    nodes
+        .get(index as usize)
+        .map_or(0, |node| node.len as usize)
+}
 
 pub trait PointerScanInitialProgress {
     fn report(&mut self, queue: usize, results: usize) -> anyhow::Result<()>;
@@ -32,8 +76,12 @@ pub struct PointerScan<'a> {
     /// Every pointer as `(to, from)`, sorted, so that all pointers to a
     /// shared target are kept.
     pub reverse: Vec<(Address, Address)>,
-    // contains both all visited links and alternative paths for each address.
-    pub visited: HashMap<Address, Vec<SVec>>,
+    /// The node of every pointer visited, by address.
+    visited: HashMap<Address, u32>,
+    /// Every pointer visited, indexed by `visited`.
+    nodes: Vec<Node>,
+    /// Every path to a pointer after the first, in the order visited.
+    alternatives: Vec<Alternative>,
     pub visited_count: usize,
     pub max_offset: Size,
     pub max_depth: usize,
@@ -52,6 +100,8 @@ impl<'a> PointerScan<'a> {
             forward: Default::default(),
             reverse: Default::default(),
             visited: HashMap::new(),
+            nodes: Vec::new(),
+            alternatives: Vec::new(),
             visited_count: 0,
             max_offset: 0x1000u32.into(),
             max_depth: 7,
@@ -108,6 +158,8 @@ impl<'a> PointerScan<'a> {
             cancel,
             ref reverse,
             ref mut visited,
+            ref mut nodes,
+            ref mut alternatives,
             ref mut visited_count,
             max_depth,
             max_offset,
@@ -115,9 +167,9 @@ impl<'a> PointerScan<'a> {
         } = *self;
 
         let mut queue = VecDeque::new();
-        queue.push_back((needle, 0usize, SVec::new()));
+        queue.push_back((needle, 0usize, ROOT));
 
-        while let Some((n, depth, path)) = queue.pop_front() {
+        while let Some((n, depth, parent)) = queue.pop_front() {
             if cancel.test() {
                 break;
             }
@@ -132,32 +184,43 @@ impl<'a> PointerScan<'a> {
                     break;
                 }
 
-                let mut path = path.clone();
-                path.push(offset);
-
-                match visited.entry(hit) {
-                    hash_map::Entry::Occupied(mut e) => {
-                        e.get_mut().push(path);
-                        *visited_count += 1;
+                let node = match visited.entry(hit) {
+                    hash_map::Entry::Occupied(e) => {
+                        alternatives.push(Alternative {
+                            node: *e.get(),
+                            parent,
+                            offset,
+                        });
+                        *visited_count = visited_count.saturating_add(1);
                         continue;
                     }
                     hash_map::Entry::Vacant(e) => {
-                        e.insert(Vec::new());
+                        let node = u32::try_from(nodes.len())
+                            .ok()
+                            .filter(|&node| node != ROOT)
+                            .ok_or_else(|| anyhow!("pointer scan visited too many pointers"))?;
+
+                        nodes.push(Node {
+                            parent,
+                            len: u32::try_from(depth.saturating_add(1)).unwrap_or(u32::MAX),
+                            offset,
+                        });
+
+                        *e.insert(node)
                     }
-                }
+                };
 
                 match handle.find_location(hit) {
                     Location::Module(module) => {
-                        let mut path = path.clone();
-                        let offset = hit.offset_of(module.range.base);
-                        path.reverse();
+                        let mut path = SVec::with_capacity(depth.saturating_add(1));
+                        extend_path(nodes, node, &mut path);
 
                         let pointer = Pointer::new(
                             Base::Module {
                                 id: module.id,
-                                offset,
+                                offset: hit.offset_of(module.range.base),
                             },
-                            path.clone(),
+                            path,
                         );
 
                         pointers.push(pointer);
@@ -169,14 +232,52 @@ impl<'a> PointerScan<'a> {
                     _ => (),
                 }
 
-                let depth = depth + 1;
+                let depth = depth.saturating_add(1);
 
                 if depth < max_depth {
-                    queue.push_back((hit, depth, path));
+                    queue.push_back((hit, depth, node));
                 }
             }
 
             progress.report(queue.len(), pointers.len())?;
+        }
+
+        Ok(())
+    }
+
+    /// Walk the path of `pointer` from its base, calling `f` at each pointer
+    /// along it with the offsets taken so far and the alternative paths to
+    /// that pointer.
+    fn walk_alternatives(
+        &self,
+        pointer: &Pointer,
+        mut f: impl FnMut(&[Offset], &[Alternative]),
+    ) -> anyhow::Result<()> {
+        let mut address = pointer
+            .base
+            .eval(self.handle)?
+            .ok_or_else(|| anyhow!("could not resolve pointer base to address"))?;
+
+        let mut path = SVec::new();
+        let mut it = pointer.offsets.iter().copied();
+
+        while !self.cancel.test() {
+            if let Some(&node) = self.visited.get(&address) {
+                let start = self.alternatives.partition_point(|a| a.node < node);
+                let extra = self.alternatives.get(start..).unwrap_or_default();
+                let end = extra.partition_point(|a| a.node == node);
+                f(&path, extra.get(..end).unwrap_or_default());
+            }
+
+            if let Some(a) = self.follow(address) {
+                if let Some(o) = it.next() {
+                    address = a.saturating_offset(o);
+                    path.push(o);
+                    continue;
+                }
+            }
+
+            break;
         }
 
         Ok(())
@@ -193,48 +294,55 @@ impl<'a> PointerScan<'a> {
         pointers: &mut Vec<Pointer>,
         progress: &mut impl PointerScanBackreferenceProgress,
     ) -> anyhow::Result<()> {
-        // add all tailing pointers.
-        let mut additions = Vec::new();
+        // Group the alternatives by node, keeping the order they were found
+        // in, so that each node's are a range.
+        let alternatives = &mut self.alternatives;
+        self.thread_pool
+            .install(|| alternatives.par_sort_by_key(|alternative| alternative.node));
 
-        for (i, pointer) in pointers.iter().enumerate() {
+        // Count the additions first so that they can be added in place, with
+        // no room to spare.
+        let mut count = 0usize;
+
+        for pointer in pointers.iter() {
             if self.cancel.test() {
                 break;
             }
 
-            let mut address = pointer
-                .base
-                .eval(self.handle)?
-                .ok_or_else(|| anyhow!("could not resolve pointer base to address"))?;
+            self.walk_alternatives(pointer, |_, extra| count += extra.len())?;
+        }
 
-            let mut path = SVec::new();
-            let mut it = pointer.offsets.iter().copied();
+        pointers.reserve_exact(count);
+        let len = pointers.len();
 
-            while !self.cancel.test() {
-                if let Some(extra) = self.visited.get(&address) {
-                    for p in extra {
-                        let mut path = path.clone();
-                        path.extend(p.iter().rev().cloned());
-
-                        let pointer = Pointer::new(pointer.base.clone(), path);
-                        additions.push(pointer);
-                    }
-                }
-
-                if let Some(a) = self.follow(address) {
-                    if let Some(o) = it.next() {
-                        address = a.saturating_offset(o);
-                        path.push(o);
-                        continue;
-                    }
-                }
-
+        // add all tailing pointers.
+        for i in 0..len {
+            if self.cancel.test() {
                 break;
             }
 
-            progress.report(pointers.len() - (i + 1), pointers.len() + additions.len())?;
+            let pointer = match pointers.get(i) {
+                Some(pointer) => pointer.clone(),
+                None => break,
+            };
+
+            self.walk_alternatives(&pointer, |path, extra| {
+                for alternative in extra {
+                    let capacity = path
+                        .len()
+                        .saturating_add(1)
+                        .saturating_add(path_len(&self.nodes, alternative.parent));
+                    let mut offsets = SVec::with_capacity(capacity);
+                    offsets.extend_from_slice(path);
+                    offsets.push(alternative.offset);
+                    extend_path(&self.nodes, alternative.parent, &mut offsets);
+                    pointers.push(Pointer::new(pointer.base.clone(), offsets));
+                }
+            })?;
+
+            progress.report(len.saturating_sub(i.saturating_add(1)), pointers.len())?;
         }
 
-        pointers.append(&mut additions);
         Ok(())
     }
 }

@@ -17,6 +17,7 @@ use anyhow::{anyhow, bail, Context as _};
 use crossbeam_queue::SegQueue;
 use dynamicvec::DynamicConverter;
 use hashbrown::{HashMap, HashSet};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::convert::{TryFrom as _, TryInto as _};
 use std::ffi::{OsStr, OsString};
@@ -146,6 +147,63 @@ impl ScanResults {
 
         self.last.retain_by_index(|index| !marked.test(index));
     }
+}
+
+/// Size of the chunks of values handed to a task, so that a few chunks per
+/// thread are available without sending a message for every value.
+fn chunk_size(pool: &rayon::ThreadPool, total: usize) -> usize {
+    (total / pool.current_num_threads().max(1).saturating_mul(4)).clamp(64, 4096)
+}
+
+/// Run `work` over `0..total` split into chunks in parallel, reporting
+/// progress per chunk. `work` returns how many values were accepted and the
+/// indices rejected, which are handed to `on_rejected` in the calling thread.
+fn run_chunks<P: ScanProgress + Send>(
+    pool: &rayon::ThreadPool,
+    cancel: &Token,
+    reporter: &mut ProgressReporter<'_, '_, P>,
+    total: usize,
+    work: impl Fn(std::ops::Range<usize>) -> anyhow::Result<(u64, Vec<usize>)> + Sync,
+    mut on_rejected: impl FnMut(usize) + Send,
+) {
+    let chunk = chunk_size(pool, total);
+    let chunks = total.div_ceil(chunk);
+    let work = &work;
+
+    pool.install(|| {
+        rayon::scope(|s| {
+            let (tx, rx) = mpsc::channel::<anyhow::Result<(usize, u64, Vec<usize>)>>();
+
+            s.spawn(move |_| {
+                (0..chunks).into_par_iter().for_each_with(tx, |tx, c| {
+                    if cancel.test() {
+                        return;
+                    }
+
+                    let start = c.saturating_mul(chunk);
+                    let end = start.saturating_add(chunk).min(total);
+
+                    let _ = tx.send(work(start..end).map(|(accepted, rejected)| {
+                        (end.saturating_sub(start), accepted, rejected)
+                    }));
+                });
+            });
+
+            let mut accepted = 0u64;
+
+            for result in rx {
+                if let Some((count, a, rejected)) = reporter.eval(result) {
+                    accepted = accepted.saturating_add(a);
+
+                    for index in rejected {
+                        on_rejected(index);
+                    }
+
+                    reporter.tick_n(count, accepted);
+                }
+            }
+        })
+    });
 }
 
 /// Size of the chunks memory is read in when scanning.
@@ -970,115 +1028,62 @@ impl ProcessHandle {
         // The values are changed below, so the initial ones need their own copy.
         let (addresses, initial, values) = results.split_mut();
 
-        if addresses.len() != values.len() {
+        if addresses.len() != values.len() || addresses.len() != initial.len() {
             return Err(anyhow!(
-                "argument length mismatch, addresses ({}) != values ({})",
+                "argument length mismatch, addresses ({}) != values ({}) or initial ({})",
                 addresses.len(),
-                values.len()
+                values.len(),
+                initial.len(),
             ));
         }
 
+        let len = values.len();
         let mut last_error = None;
-        let mut reporter = ProgressReporter::new(progress, values.len(), cancel, &mut last_error);
+        let mut reporter = ProgressReporter::new(progress, len, cancel, &mut last_error);
 
-        // how many tasks to run in parallel.
-        let mut tasks = thread_pool.current_num_threads();
-
-        let mut rejected = BitSet::with_capacity(values.len());
+        let mut rejected = BitSet::with_capacity(len);
 
         let filter = filter.type_check(self, initial.ty(), values.ty(), values.ty())?;
         let filter = &filter;
+        let values = &*values;
 
-        thread_pool.install(|| {
-            rayon::scope(|s| {
-                let (tx, rx) = mpsc::channel::<anyhow::Result<Task>>();
-                let (p_tx, p_rx) = crossbeam_channel::unbounded::<
-                    Option<(
-                        usize,
-                        Address,
-                        dynamicvec::Accessor<'_, Type>,
-                        dynamicvec::Mutator<'_, Type>,
-                    )>,
-                >();
+        run_chunks(
+            thread_pool,
+            cancel,
+            &mut reporter,
+            len,
+            |range| {
+                let mut accepted = 0u64;
+                let mut rejected = Vec::new();
 
-                for _ in 0..tasks {
-                    let tx = tx.clone();
-                    let p_rx = p_rx.clone();
+                for index in range {
+                    // Safety: the chunks are disjoint, so no other mutator to
+                    // this value exists.
+                    let (Some(address), Some(initial), Some(mut value)) =
+                        (addresses.get(index), initial.get(index), unsafe {
+                            values.get_mutator_unsafe(index)
+                        })
+                    else {
+                        rejected.push(index);
+                        continue;
+                    };
 
-                    s.spawn(move |_| {
-                        while !cancel.test() {
-                            let (index, address, initial, mut value) =
-                                match p_rx.recv().expect("failed to receive") {
-                                    Some(task) => task,
-                                    None => break,
-                                };
+                    let mut proxy = self.address_proxy(&address);
 
-                            let mut work = || {
-                                let mut proxy = self.address_proxy(&address);
-
-                                if let Test::True = filter.test(
-                                    initial.read().as_ref(),
-                                    value.read().as_ref(),
-                                    &mut proxy,
-                                )? {
-                                    value.write(proxy.eval(value.ty)?.0);
-                                    return Ok(Task::Accepted);
-                                }
-
-                                Ok(Task::Rejected(index))
-                            };
-
-                            tx.send(work()).expect("failed to send");
-                        }
-
-                        tx.send(Ok(Task::Done)).expect("failed to send");
-                    });
-                }
-
-                let mut it = addresses
-                    .iter_copied()
-                    .zip(initial.iter().zip(values.iter_mut()))
-                    .enumerate();
-
-                for (index, (address, (initial, value))) in (&mut it).take(tasks) {
-                    p_tx.send(Some((index, address, initial, value)))
-                        .expect("failed to send");
-                }
-
-                let mut count = 0u64;
-
-                while tasks > 0 {
-                    let result = rx.recv().expect("closed");
-
-                    if let Some((index, (address, (initial, value)))) = it.next() {
-                        p_tx.send(Some((index, address, initial, value)))
-                            .expect("failed to send");
+                    if let Test::True =
+                        filter.test(initial.as_ref(), value.read().as_ref(), &mut proxy)?
+                    {
+                        value.write(proxy.eval(value.ty)?.0);
+                        accepted = accepted.saturating_add(1);
                     } else {
-                        p_tx.send(None).expect("failed to send");
+                        rejected.push(index);
                     }
-
-                    if let Some(result) = reporter.eval(result) {
-                        count += match result {
-                            Task::Accepted => 1,
-                            Task::Rejected(index) => {
-                                rejected.set(index);
-                                0
-                            }
-                            Task::Done => {
-                                tasks -= 1;
-                                continue;
-                            }
-                        }
-                    }
-
-                    reporter.tick(count);
                 }
 
-                Ok::<_, anyhow::Error>(())
-            })?;
-
-            Ok::<_, anyhow::Error>(())
-        })?;
+                Ok((accepted, rejected))
+            },
+            |index| rejected.set(index),
+        );
 
         results.remove_marked(&rejected);
 
@@ -1086,16 +1091,7 @@ impl ProcessHandle {
             return Err(e);
         }
 
-        return Ok(());
-
-        enum Task {
-            /// Address was accepted.
-            Accepted,
-            /// Address was rejected.
-            Rejected(usize),
-            /// Task is done.
-            Done,
-        }
+        Ok(())
     }
 
     /// Refresh a given set of existing values without a filter.
@@ -1117,13 +1113,17 @@ impl ProcessHandle {
             return Ok(());
         }
 
+        if addresses.len() != values.len() {
+            bail!(
+                "argument length mismatch, addresses ({}) != values ({})",
+                addresses.len(),
+                values.len()
+            );
+        }
+
         let mut last_error = None;
         let mut reporter =
             ProgressReporter::new(progress, addresses.len(), cancel, &mut last_error);
-
-        // how many tasks to run in parallel.
-        let mut tasks = thread_pool.current_num_threads();
-        let cancel = &cancel;
 
         let expr_type = expr
             .type_of(
@@ -1137,72 +1137,35 @@ impl ProcessHandle {
 
         let expr = expr.type_check(self, Type::None, Type::None, values.ty(), expr_type)?;
         let expr = &expr;
+        let values = &*values;
 
-        thread_pool.install(|| {
-            rayon::scope(|s| {
-                let (tx, rx) = mpsc::channel::<anyhow::Result<bool>>();
-                let (p_tx, p_rx) = crossbeam_channel::unbounded::<
-                    Option<(Address, dynamicvec::Mutator<'_, Type>)>,
-                >();
-
-                for _ in 0..tasks {
-                    let tx = tx.clone();
-                    let p_rx = p_rx.clone();
-
-                    s.spawn(move |_| {
-                        while !cancel.test() {
-                            let (pointer, mut value) = match p_rx.recv().expect("closed") {
-                                Some(task) => task,
-                                None => {
-                                    break;
-                                }
-                            };
-
-                            let mut work = move || {
-                                let mut proxy = self.address_proxy(&pointer);
-
-                                let new_value =
-                                    expr.eval(ValueRef::None, value.read().as_ref(), &mut proxy)?;
-
-                                value.write(new_value);
-                                Ok(false)
-                            };
-
-                            tx.send(work()).expect("failed to send");
-                        }
-
-                        tx.send(Ok(true)).expect("failed to send");
-                    });
-                }
-
-                let mut it = addresses.iter_copied().zip(values.iter_mut());
-
-                for (base, value) in (&mut it).take(tasks) {
-                    p_tx.send(Some((base, value))).expect("closed");
-                }
-
+        run_chunks(
+            thread_pool,
+            cancel,
+            &mut reporter,
+            addresses.len(),
+            |range| {
                 let mut count = 0u64;
 
-                while tasks > 0 {
-                    let res = rx.recv().expect("failed to receive on channel");
+                for index in range {
+                    // Safety: the chunks are disjoint, so no other mutator to
+                    // this value exists.
+                    let (Some(address), Some(mut value)) = (addresses.get(index), unsafe {
+                        values.get_mutator_unsafe(index)
+                    }) else {
+                        bail!("missing value at index {}", index);
+                    };
 
-                    if let Some((base, value)) = it.next() {
-                        p_tx.send(Some((base, value)))
-                            .expect("failed to send on channel");
-                    } else {
-                        p_tx.send(None).expect("failed to send on channel");
-                    }
-
-                    if reporter.eval(res).unwrap_or_default() {
-                        tasks -= 1;
-                        continue;
-                    }
-
-                    count += 1;
-                    reporter.tick(count);
+                    let mut proxy = self.address_proxy(&address);
+                    let new_value = expr.eval(ValueRef::None, value.read().as_ref(), &mut proxy)?;
+                    value.write(new_value);
+                    count = count.saturating_add(1);
                 }
-            });
-        });
+
+                Ok((count, Vec::new()))
+            },
+            |_| (),
+        );
 
         if let Some(e) = last_error {
             return Err(e);
@@ -1235,96 +1198,76 @@ impl ProcessHandle {
         let mut last_error = None;
         let mut reporter = ProgressReporter::new(progress, values.len(), cancel, &mut last_error);
 
-        // how many tasks to run in parallel.
-        let mut tasks = thread_pool.current_num_threads();
-        let cancel = &cancel;
+        // Type inference and checking is done once per value type.
+        let mut exprs = HashMap::new();
+
+        for value in values.iter() {
+            let value_type = value.value_type();
+
+            if exprs.contains_key(&value_type) {
+                continue;
+            }
+
+            let expr_type = expr
+                .type_of(
+                    self,
+                    TypeHint::Explicit(Type::None),
+                    TypeHint::Explicit(Type::None),
+                    TypeHint::Explicit(value_type),
+                    TypeHint::NoHint,
+                )?
+                .ok_or_else(|| Error::TypeInference(expr.clone()))?;
+
+            let typed = expr.type_check(self, Type::None, Type::None, value_type, expr_type)?;
+            exprs.insert(value_type, typed);
+        }
+
+        let exprs = &exprs;
+        let total = values.len();
+        let chunk = chunk_size(thread_pool, total);
 
         thread_pool.install(|| {
             rayon::scope(|s| {
-                let (tx, rx) = mpsc::channel::<anyhow::Result<bool>>();
-                let (p_tx, p_rx) = crossbeam_channel::unbounded::<Option<&mut V>>();
+                let (tx, rx) = mpsc::channel::<anyhow::Result<usize>>();
 
-                for _ in 0..tasks {
-                    let tx = tx.clone();
-                    let p_rx = p_rx.clone();
+                s.spawn(move |_| {
+                    values
+                        .par_chunks_mut(chunk)
+                        .for_each_with(tx, |tx, values| {
+                            if cancel.test() {
+                                return;
+                            }
 
-                    s.spawn(move |_| {
-                        while !cancel.test() {
-                            let value = match p_rx.recv().expect("closed") {
-                                Some(task) => task,
-                                None => {
-                                    break;
+                            let result = (|| {
+                                for value in values.iter_mut() {
+                                    let Some(expr) = exprs.get(&value.value_type()) else {
+                                        bail!("missing expression for value type");
+                                    };
+
+                                    let new_value = {
+                                        let mut proxy = self.address_proxy(value.pointer());
+                                        expr.eval(ValueRef::None, ValueRef::None, &mut proxy)?
+                                    };
+
+                                    value.insert(new_value);
                                 }
-                            };
 
-                            let mut work = move || {
-                                let new_value = {
-                                    let value_type = value.value_type();
+                                Ok(values.len())
+                            })();
 
-                                    let pointer = value.pointer();
-                                    let mut proxy = self.address_proxy(pointer);
-
-                                    let expr_type = expr
-                                        .type_of(
-                                            self,
-                                            TypeHint::Explicit(Type::None),
-                                            TypeHint::Explicit(Type::None),
-                                            TypeHint::Explicit(value_type),
-                                            TypeHint::NoHint,
-                                        )?
-                                        .ok_or_else(|| Error::TypeInference(expr.clone()))?;
-
-                                    expr.type_check(
-                                        self,
-                                        Type::None,
-                                        Type::None,
-                                        value_type,
-                                        expr_type,
-                                    )?
-                                    .eval(
-                                        ValueRef::None,
-                                        ValueRef::None,
-                                        &mut proxy,
-                                    )?
-                                };
-
-                                value.insert(new_value);
-                                Ok(false)
-                            };
-
-                            tx.send(work()).expect("failed to send");
-                        }
-
-                        tx.send(Ok(true)).expect("failed to send");
-                    });
-                }
-
-                let mut it = values.iter_mut();
-
-                for value in (&mut it).take(tasks) {
-                    p_tx.send(Some(value)).expect("closed");
-                }
+                            let _ = tx.send(result);
+                        });
+                });
 
                 let mut count = 0u64;
 
-                while tasks > 0 {
-                    let res = rx.recv().expect("failed to receive on channel");
-
-                    if let Some(value) = it.next() {
-                        p_tx.send(Some(value)).expect("failed to send on channel");
-                    } else {
-                        p_tx.send(None).expect("failed to send on channel");
+                for result in rx {
+                    if let Some(n) = reporter.eval(result) {
+                        count = count.saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
+                        reporter.tick_n(n, count);
                     }
-
-                    if reporter.eval(res).unwrap_or_default() {
-                        tasks -= 1;
-                        continue;
-                    }
-
-                    count += 1;
-                    reporter.tick(count);
                 }
-            });
+            })
         });
 
         if let Some(e) = last_error {

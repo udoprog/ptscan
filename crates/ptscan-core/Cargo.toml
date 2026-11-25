@@ -24,7 +24,6 @@ num = { version = "0.4.3" }
 num-bigint = { version = "0.5.1", features = ["serde"] }
 num-traits = "0.2.12"
 bigdecimal = { version = "0.4.11", features = ["serde"] }
-crossbeam-channel = "0.5.17"
 smallvec = "1.16.4"
 memchr = "2.3.3"
 serde = { version = "1.0.115", features = ["rc", "derive"] }

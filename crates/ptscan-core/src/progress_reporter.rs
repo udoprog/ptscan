@@ -55,15 +55,7 @@ impl<'token, 'err, P> ProgressReporter<'token, 'err, P> {
         }
     }
 
-    /// Tick a single task.
-    pub(crate) fn tick(&mut self, results: u64)
-    where
-        P: ScanProgress,
-    {
-        self.tick_n(1, results);
-    }
-
-    /// Tick a single task.
+    /// Tick `count` tasks.
     pub(crate) fn tick_n(&mut self, count: usize, results: u64)
     where
         P: ScanProgress,

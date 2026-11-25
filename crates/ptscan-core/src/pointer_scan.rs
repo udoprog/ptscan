@@ -127,8 +127,11 @@ impl<'a> PointerScan<'a> {
             .collect::<Vec<_>>();
 
         self.thread_pool.install(|| {
-            forward.par_sort_unstable();
-            forward.dedup_by_key(|&mut (from, _)| from);
+            // Sorted initial scan output needs neither the sort nor the dedup.
+            if !forward.is_sorted_by(|a, b| a.0 < b.0) {
+                forward.par_sort_unstable();
+                forward.dedup_by_key(|&mut (from, _)| from);
+            }
 
             let mut reverse = forward
                 .iter()

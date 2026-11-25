@@ -1299,7 +1299,7 @@ mod tests {
             )
             .unwrap();
 
-        let kept = results.addresses.iter_copied().collect::<HashSet<_>>();
+        let kept = results.addresses().iter_copied().collect::<HashSet<_>>();
         assert_eq!(kept, found.into_iter().collect::<HashSet<_>>());
     }
 
@@ -1330,9 +1330,15 @@ mod tests {
             )
             .unwrap();
 
-        // Unmapped, so every rescan has to drop it.
+        // Unmapped, so every rescan has to drop it. Put first to keep the
+        // addresses sorted.
+        let mut scanned = (addresses, values);
+        let mut addresses = Addresses::new(handle.process.pointer_width);
+        let mut values = Values::new(Type::U64);
         addresses.push(Address::new(8));
         values.push(crate::Value::U64(1));
+        addresses.append(&mut scanned.0);
+        values.append(&mut scanned.1);
 
         let original = addresses.iter_copied().collect::<Vec<_>>();
         let results = ScanResults::unchanged(addresses, values);
@@ -1340,7 +1346,7 @@ mod tests {
 
         let read = |r: &ScanResults| {
             (
-                r.addresses.iter_copied().collect::<Vec<_>>(),
+                r.addresses().iter_copied().collect::<Vec<_>>(),
                 r.initial().iter().map(|v| v.read()).collect::<Vec<_>>(),
                 r.last().iter().map(|v| v.read()).collect::<Vec<_>>(),
             )

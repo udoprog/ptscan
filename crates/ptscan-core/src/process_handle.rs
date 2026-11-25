@@ -65,10 +65,11 @@ impl<'a, P> ScanContext<'a, P> {
 
 /// The results of a scan: addresses with their initial and last values.
 ///
-/// Invariant: all three have the same length.
+/// Invariants: all three have the same length, and the addresses are
+/// strictly increasing, so results can be found by binary search.
 #[derive(Clone)]
 pub struct ScanResults {
-    pub addresses: Addresses,
+    addresses: Addresses,
     /// Values at the initial scan, `None` while they are the same as `last`.
     initial: Option<Values>,
     last: Values,
@@ -76,6 +77,11 @@ pub struct ScanResults {
 
 impl ScanResults {
     pub fn new(addresses: Addresses, initial: Values, last: Values) -> Self {
+        debug_assert!(
+            is_strictly_increasing(&addresses, 0),
+            "scan results must be strictly increasing"
+        );
+
         Self {
             addresses,
             initial: Some(initial),
@@ -86,11 +92,45 @@ impl ScanResults {
     /// Results whose initial values are the same as `values`, which are not
     /// stored twice until `last` is about to change.
     pub fn unchanged(addresses: Addresses, values: Values) -> Self {
+        debug_assert!(
+            is_strictly_increasing(&addresses, 0),
+            "scan results must be strictly increasing"
+        );
+
         Self {
             addresses,
             initial: None,
             last: values,
         }
+    }
+
+    /// The addresses of the results, strictly increasing.
+    pub fn addresses(&self) -> &Addresses {
+        &self.addresses
+    }
+
+    /// The number of results whose address is below `address`, which is the
+    /// index of the first result at or after it.
+    pub fn lower_bound(&self, address: Address) -> usize {
+        let mut lo = 0usize;
+        let mut hi = self.addresses.len();
+
+        while lo < hi {
+            let mid = lo.saturating_add(hi.saturating_sub(lo) / 2);
+
+            match self.addresses.get(mid) {
+                Some(a) if a < address => lo = mid.saturating_add(1),
+                _ => hi = mid,
+            }
+        }
+
+        lo
+    }
+
+    /// The index of the result at `address`, if any.
+    pub fn index_of(&self, address: Address) -> Option<usize> {
+        let index = self.lower_bound(address);
+        (self.addresses.get(index)? == address).then_some(index)
     }
 
     /// The values at the initial scan.
@@ -145,6 +185,8 @@ impl ScanResults {
         }
 
         self.last.retain_by_index(|index| !marked.test(index));
+
+        debug_assert!(is_strictly_increasing(&self.addresses, 0));
     }
 }
 
@@ -699,9 +741,10 @@ impl ProcessHandle {
     /// `window_size` bytes, each read only over the span of the results inside
     /// it, and handed out to the pool one window at a time.
     ///
-    /// Results are grouped by window with a counting sort over their indices,
-    /// so they are visited in their original order, and rejected results are
-    /// removed in one stable pass at the end.
+    /// Results are sorted by address, so the results of a window are the
+    /// contiguous index range found by binary search on its bounds. Results
+    /// outside every window are rejected, and rejected results are removed in
+    /// one stable pass at the end.
     pub(crate) fn rescan_windows(
         &self,
         ctx: ScanContext<'_, impl ScanProgress + Send>,
@@ -760,87 +803,47 @@ impl ProcessHandle {
         let ranges = self.scan_ranges(false, ModuleParts::Whole)?;
 
         let mut windows = Vec::new();
-        let mut first_window = Vec::with_capacity(ranges.len());
+        let mut rejected = BitSet::with_capacity(len);
+
+        // Index ranges are clamped to start where the previous one ended, so
+        // every result is in at most one window even if ranges overlapped.
+        let mut covered = 0usize;
+        let mut matched = 0usize;
 
         for range in &ranges {
-            first_window.push(windows.len());
             let end = range.base.0.saturating_add(range.size.0);
             let mut base = range.base.0;
 
             while base < end {
                 let next = base.saturating_add(window_size).min(end);
-                windows.push(Window {
-                    base,
-                    end: next,
-                    range_end: end,
-                });
+                let first = results.lower_bound(Address(base)).max(covered);
+                let last = results.lower_bound(Address(next)).max(first);
+
+                for index in covered..first {
+                    rejected.set(index);
+                }
+
+                if first < last {
+                    windows.push(Window {
+                        range_end: end,
+                        indices: first..last,
+                    });
+                    matched = matched.saturating_add(last.saturating_sub(first));
+                }
+
+                covered = last;
                 base = next;
             }
         }
 
-        let window_of = |address: Address| {
-            let r = AddressRange::find_index_in_range(&ranges, |r| r, address)?;
-            let base = ranges.get(r)?.base.0;
-            let n = usize::try_from(address.0.checked_sub(base)? / window_size).ok()?;
-            let w = first_window.get(r)?.checked_add(n)?;
-            (w < windows.len()).then_some(w)
-        };
-
-        let mut rejected = BitSet::with_capacity(len);
-
-        // `starts[w]..starts[w + 1]` is the part of `order` holding the
-        // indices of the results in window `w`; first counted, then filled.
-        let mut starts = vec![0u32; windows.len().saturating_add(1)];
-        let mut matched = 0u32;
-
-        for (index, address) in results.addresses.iter_copied().enumerate() {
-            match window_of(address).and_then(|w| starts.get_mut(w.checked_add(1)?)) {
-                Some(count) => {
-                    *count = count.saturating_add(1);
-                    matched = matched.saturating_add(1);
-                }
-                None => rejected.set(index),
-            }
-        }
-
-        let mut sum = 0u32;
-
-        for start in &mut starts {
-            sum = sum.saturating_add(*start);
-            *start = sum;
-        }
-
-        // Each `starts[w + 1]` now ends window `w`. Shifted one to the right
-        // it starts window `w` instead and serves as its fill cursor, which
-        // leaves it at the end of window `w` again.
-        starts.rotate_right(1);
-
-        let mut order = vec![0u32; usize::try_from(matched)?];
-
-        for (index, address) in results.addresses.iter_copied().enumerate() {
-            let Some(next) = window_of(address).and_then(|w| starts.get_mut(w.checked_add(1)?))
-            else {
-                continue;
-            };
-
-            if let (Some(slot), Ok(index)) =
-                (order.get_mut(usize::try_from(*next)?), u32::try_from(index))
-            {
-                *slot = index;
-            }
-
-            *next = next.saturating_add(1);
-        }
-
-        if let Some(first) = starts.first_mut() {
-            *first = 0;
+        for index in covered..len {
+            rejected.set(index);
         }
 
         let mut last_error = None;
 
         if matched > 0 {
-            let mut reporter =
-                ProgressReporter::new(progress, usize::try_from(matched)?, cancel, &mut last_error);
+            let mut reporter = ProgressReporter::new(progress, matched, cancel, &mut last_error);
 
             let tasks = thread_pool.current_num_threads().max(1);
             let next_window = AtomicUsize::new(0);
@@ -848,8 +851,6 @@ impl ProcessHandle {
             let work = Work {
                 handle: self,
                 windows: &windows,
-                starts: &starts,
-                order: &order,
                 next_window: &next_window,
                 results: &*results,
                 filter,
@@ -909,9 +910,9 @@ impl ProcessHandle {
         return Ok(());
 
         struct Window {
-            base: u64,
-            end: u64,
             range_end: u64,
+            /// The indices of the results inside the window.
+            indices: std::ops::Range<usize>,
         }
 
         enum Task {
@@ -926,8 +927,6 @@ impl ProcessHandle {
         struct Work<'a> {
             handle: &'a ProcessHandle,
             windows: &'a [Window],
-            starts: &'a [u32],
-            order: &'a [u32],
             next_window: &'a AtomicUsize,
             results: &'a ScanResults,
             filter: &'a TypedFilterExpr<'a>,
@@ -940,7 +939,7 @@ impl ProcessHandle {
             fn run(&self, tx: &mpsc::Sender<Task>) -> anyhow::Result<()> {
                 const CHECK_INTERVAL: usize = 0x1000;
 
-                let addresses = &self.results.addresses;
+                let addresses = self.results.addresses();
                 let initial = self.results.initial();
                 let values = self.results.last();
 
@@ -953,24 +952,15 @@ impl ProcessHandle {
                         break;
                     };
 
-                    let indices = match (self.starts.get(w), w.checked_add(1)) {
-                        (Some(&start), Some(end)) => match self.starts.get(end) {
-                            Some(&end) => self.order.get(start as usize..end as usize),
-                            None => None,
-                        },
-                        _ => None,
-                    };
+                    let indices = window.indices.clone();
 
-                    let Some(indices) = indices.filter(|i| !i.is_empty()) else {
+                    // Sorted, so the first and last results bound the span.
+                    let (Some(Address(min)), Some(Address(max))) = (
+                        addresses.get(indices.start),
+                        indices.end.checked_sub(1).and_then(|i| addresses.get(i)),
+                    ) else {
                         continue;
                     };
-
-                    let (min, max) = indices
-                        .iter()
-                        .filter_map(|&index| addresses.get(index as usize))
-                        .fold((window.end, window.base), |(min, max), a| {
-                            (min.min(a.0), max.max(a.0))
-                        });
 
                     let read_end = max.saturating_add(self.tail).min(window.range_end);
                     let span = usize::try_from(read_end.saturating_sub(min))?;
@@ -988,12 +978,16 @@ impl ProcessHandle {
                     let mut accepted = 0u64;
                     let mut rejected = Vec::new();
 
-                    for (n, &index) in indices.iter().enumerate() {
+                    let count = indices.len();
+
+                    for (n, i) in indices.enumerate() {
                         if n % CHECK_INTERVAL == 0 && self.cancel.test() {
                             break;
                         }
 
-                        let i = index as usize;
+                        let Ok(index) = u32::try_from(i) else {
+                            continue;
+                        };
 
                         // Safety: every index is in exactly one window and
                         // each window is handed to one task, so no other
@@ -1031,7 +1025,7 @@ impl ProcessHandle {
                     }
 
                     let _ = tx.send(Task::Window {
-                        count: indices.len(),
+                        count,
                         accepted,
                         rejected,
                     });
@@ -1996,6 +1990,39 @@ mod tests {
     }
 
     #[test]
+    fn lower_bound_and_index_of() {
+        let mut addresses = Addresses::new(PointerWidth::Pointer64);
+        let mut values = Values::new(Type::U32);
+
+        for n in 1..=50u32 {
+            addresses.push(Address::new(u64::from(n) * 16));
+            values.push(Value::U32(n));
+        }
+
+        let results = ScanResults::unchanged(addresses, values);
+
+        assert_eq!(results.lower_bound(Address::new(0)), 0);
+        assert_eq!(results.lower_bound(Address::new(16)), 0);
+        assert_eq!(results.lower_bound(Address::new(17)), 1);
+        assert_eq!(results.lower_bound(Address::new(800)), 49);
+        assert_eq!(results.lower_bound(Address::new(801)), 50);
+
+        assert_eq!(results.index_of(Address::new(16)), Some(0));
+        assert_eq!(results.index_of(Address::new(320)), Some(19));
+        assert_eq!(results.index_of(Address::new(800)), Some(49));
+        assert_eq!(results.index_of(Address::new(321)), None);
+        assert_eq!(results.index_of(Address::new(8)), None);
+        assert_eq!(results.index_of(Address::new(1000)), None);
+
+        let empty = ScanResults::unchanged(
+            Addresses::new(PointerWidth::Pointer64),
+            Values::new(Type::U32),
+        );
+        assert_eq!(empty.lower_bound(Address::new(5)), 0);
+        assert_eq!(empty.index_of(Address::new(5)), None);
+    }
+
+    #[test]
     fn remove_marked_keeps_order() {
         let mut addresses = Addresses::new(PointerWidth::Pointer64);
         let mut initial = Values::new(Type::U32);
@@ -2025,7 +2052,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(results.len(), kept.len());
         assert_eq!(
-            results.addresses.iter_copied().collect::<Vec<_>>(),
+            results.addresses().iter_copied().collect::<Vec<_>>(),
             kept.iter()
                 .map(|&n| Address::new(u64::from(n) * 8))
                 .collect::<Vec<_>>()

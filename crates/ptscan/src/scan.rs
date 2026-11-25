@@ -1,6 +1,5 @@
 //! Scan generations of the attached process, with undo and redo.
 
-use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
@@ -56,7 +55,7 @@ impl Generations {
             undone: self.undone.len() as u32,
             results: self
                 .in_place
-                .or_else(|| self.scans.last().map(|g| g.results.addresses.len() as u64))
+                .or_else(|| self.scans.last().map(|g| g.results.len() as u64))
                 .unwrap_or(0),
             running: self.running.is_some(),
             last: self.last.clone(),
@@ -186,7 +185,7 @@ impl Shared {
 
         let previous = if in_place {
             let previous = generations.scans.pop();
-            generations.in_place = previous.as_ref().map(|g| g.results.addresses.len() as u64);
+            generations.in_place = previous.as_ref().map(|g| g.results.len() as u64);
             previous
         } else {
             generations.scans.last().cloned()
@@ -235,7 +234,7 @@ impl Shared {
             }
 
             if let Some(generation) = generation {
-                outcome.results = generation.results.addresses.len() as u64;
+                outcome.results = generation.results.len() as u64;
                 generations.scans.push(Arc::new(generation));
                 generations.undone.clear();
             }
@@ -360,14 +359,14 @@ impl Shared {
             return response;
         }
 
-        let addresses = addresses.iter().copied().collect::<HashSet<_>>();
-
         let mut marked = BitSet::new();
         let mut removed = 0u64;
 
         if let Some(g) = generations.scans.last() {
-            for (index, address) in g.results.addresses.iter_copied().enumerate() {
-                if addresses.contains(&u64::from(address)) {
+            for &address in addresses {
+                if let Some(index) = g.results.index_of(Address::new(address))
+                    && !marked.test(index)
+                {
                     marked.set(index);
                     removed = removed.saturating_add(1);
                 }
@@ -457,7 +456,7 @@ impl Shared {
             });
         };
 
-        let total = generation.results.addresses.len();
+        let total = generation.results.len();
         let start = usize::try_from(offset).unwrap_or(usize::MAX).min(total);
         let end = start
             .saturating_add(limit.min(api::MAX_SCAN_PAGE) as usize)
@@ -471,7 +470,7 @@ impl Shared {
 
         for index in start..end {
             let (Some(address), Some(value)) = (
-                generation.results.addresses.get(index),
+                generation.results.addresses().get(index),
                 generation.results.last().get(index),
             ) else {
                 break;

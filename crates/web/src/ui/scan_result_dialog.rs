@@ -183,13 +183,13 @@ impl Component for ScanResultDialog {
             <Dialog open=true on_dismiss={close} title="Scan result" dismiss={DialogDismiss::NoOutside} {actions}>
                 <form id="scan-result-form" class={class::FORM} {onsubmit}>
                     <FormRows>
-                        <FormRow id="result-address" label={html! {"Address"}}>
+                        <FormRow id="result-address" group=true label={html! {"Address"}}>
                             <span class={class::MONO}>{format!("{:#x}", result.address)}</span>
                         </FormRow>
-                        <FormRow id="result-last" label={html! {"Last value"}}>
+                        <FormRow id="result-last" group=true label={html! {"Last value"}}>
                             <span class={class::MONO}>{&result.last}</span>
                         </FormRow>
-                        <FormRow id="result-current" label={html! {"Current value"}}>
+                        <FormRow id="result-current" group=true label={html! {"Current value"}}>
                             <span class={classes!(class::MONO, changed.then_some(class::CHANGED))}>{&result.current}</span>
                         </FormRow>
                         <FormRow id="result-pointer" label={html! {"Pointer"}} error={error(&self.pointer_error)}>

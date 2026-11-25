@@ -557,10 +557,10 @@ impl Component for ScratchDialog {
             <Dialog open=true on_dismiss={close} title="Scratch entry" dismiss={DialogDismiss::NoOutside} {actions}>
                 <form id="scratch-form" class={class::FORM} {onsubmit}>
                     <FormRows>
-                        <FormRow id="scratch-address" label={html! {"Address"}}>
+                        <FormRow id="scratch-address" group=true label={html! {"Address"}}>
                             <span class={class::MONO}>{address}</span>
                         </FormRow>
-                        <FormRow id="scratch-current" label={html! {"Current value"}}>
+                        <FormRow id="scratch-current" group=true label={html! {"Current value"}}>
                             <span class={class::MONO}>{entry.value.as_deref().unwrap_or("?")}</span>
                         </FormRow>
                         <FormRow id="scratch-pointer" label={html! {"Pointer"}} error={error(&self.pointer_error)}>

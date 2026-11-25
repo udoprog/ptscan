@@ -9,12 +9,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use self::elf::LoadSpan;
 use crate::{
     error::Error,
     module::ModuleInfo,
     process::{MemoryInformation, MemoryProtect, MemoryState, MemoryType, OpenProcessBuilder},
     system, Address, AddressRange, Process, ProcessId, Size, ThreadId,
 };
+
+mod elf;
 
 fn invalid_data(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_owned())
@@ -83,6 +86,8 @@ impl RawProcess {
                     (base.min(m.start), end.max(m.end))
                 });
 
+            let end = bss_end(&maps, path, base, end, || self.load_span(path, base));
+
             modules.push(Module {
                 path: path.clone(),
                 base,
@@ -92,6 +97,29 @@ impl RawProcess {
 
         modules.sort_by_key(|m| m.base);
         Ok(modules)
+    }
+
+    /// The span of the loadable segments of the image of `path` mapped at
+    /// `base`, from its headers as mapped or else from the file.
+    fn load_span(&self, path: &Path, base: u64) -> Option<LoadSpan> {
+        let mapped = LoadSpan::read(|at, buf| {
+            let address = base
+                .checked_add(at)
+                .ok_or_else(|| invalid_data("ELF headers past the address space"))?;
+
+            match self.read_memory(Address::new(address), buf) {
+                Ok(n) if n == buf.len() => Ok(()),
+                Ok(_) => Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
+                Err(e) => Err(io::Error::other(e.to_string())),
+            }
+        });
+
+        if let Ok(span) = mapped {
+            return Some(span);
+        }
+
+        let file = fs::File::open(path).ok()?;
+        LoadSpan::read(|at, buf| file.read_exact_at(buf, at)).ok()
     }
 
     /// Write all of `buffer` at `address`, returning `false` if only part of
@@ -320,6 +348,70 @@ fn stack_pointer(syscall: &[u8]) -> io::Result<Option<u64>> {
 
     let sp = sp.strip_prefix("0x").ok_or_else(bad)?;
     Ok(Some(u64::from_str_radix(sp, 16).map_err(|_| bad())?))
+}
+
+/// The end of the image of `path` mapped from `base` to `end`, extended over
+/// the anonymous mapping holding the rest of its `.bss`.
+///
+/// When the last loadable segment is larger in memory than in the file, the
+/// loader maps what lies past its last file page anonymously, directly after
+/// the image's last mapping. That mapping is absorbed only if the image's last
+/// mapping is writable, and only up to the end of its loadable segments,
+/// rounded up to a page: an unrelated mapping placed right after it, or merged
+/// with the tail by the kernel, is left out. Without `load_span`, the image
+/// keeps `end`.
+fn bss_end(
+    maps: &[Map],
+    path: &Path,
+    base: u64,
+    end: u64,
+    load_span: impl FnOnce() -> Option<LoadSpan>,
+) -> u64 {
+    let last = maps
+        .iter()
+        .rposition(|m| m.path.as_deref() == Some(path) && m.end == end);
+
+    let tail = match last.and_then(|i| Some((maps.get(i)?, maps.get(i.checked_add(1)?)?))) {
+        Some((last, tail))
+            if last.write
+                && tail.path.is_none()
+                && !tail.shared
+                && !tail.execute
+                && tail.start == last.end =>
+        {
+            tail
+        }
+        _ => return end,
+    };
+
+    let span = match load_span() {
+        Some(span) => span,
+        None => return end,
+    };
+
+    // The image's first mapping is its lowest segment's first page.
+    let mask = page_size().saturating_sub(1);
+    let bias = base.wrapping_sub(span.start & !mask);
+
+    let load_end = bias
+        .checked_add(span.end)
+        .and_then(|e| e.checked_add(mask))
+        .map(|e| e & !mask);
+
+    match load_end {
+        Some(load_end) if load_end > end => load_end.min(tail.end),
+        _ => end,
+    }
+}
+
+fn page_size() -> u64 {
+    // SAFETY: sysconf only takes a plain integer.
+    let size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+
+    match u64::try_from(size) {
+        Ok(size) if size.is_power_of_two() => size,
+        _ => 0x1000,
+    }
 }
 
 fn free(start: u64, end: u64) -> MemoryInformation {
@@ -709,6 +801,100 @@ mod tests {
         assert!(Map::parse(b"zz-10 r--p 0 0 0").is_err());
     }
 
+    fn parse_maps(lines: &[&str]) -> Vec<Map> {
+        lines
+            .iter()
+            .map(|l| Map::parse(l.as_bytes()).unwrap())
+            .collect()
+    }
+
+    /// The image of `/bin/t` as the loader maps it at 0x10000000 for a PIE
+    /// (from 0) or at 0x400000 for a fixed executable, with the last page of
+    /// the writable segment file-backed and `after` following it.
+    fn image_maps(base: u64, after: &[&str]) -> Vec<Map> {
+        let line = |start: u64, end: u64, rest: &str| {
+            format!("{:x}-{:x} {}", base + start, base + end, rest)
+        };
+        let mut lines = vec![
+            line(0, 0x1000, "r--p 00000000 fd:01 7 /bin/t"),
+            line(0x1000, 0x6000, "r-xp 00001000 fd:01 7 /bin/t"),
+            line(0x6000, 0x8e000, "r--p 00006000 fd:01 7 /bin/t"),
+            line(0x8e000, 0x8f000, "rw-p 0008e000 fd:01 7 /bin/t"),
+        ];
+        lines.extend(after.iter().map(|rest| {
+            let (range, rest) = rest.split_once(' ').unwrap();
+            let (start, end) = range.split_once('-').unwrap();
+            let start = u64::from_str_radix(start, 16).unwrap();
+            let end = u64::from_str_radix(end, 16).unwrap();
+            line(start, end, rest)
+        }));
+        parse_maps(&lines.iter().map(String::as_str).collect::<Vec<_>>())
+    }
+
+    /// The image's file-backed end, and its end with the `.bss` tail
+    /// absorbed when its loadable segments span `span`.
+    fn image_end(base: u64, after: &[&str], span: Option<(u64, u64)>) -> u64 {
+        let maps = image_maps(base, after);
+        let path = Path::new("/bin/t");
+        let span = span.map(|(start, end)| LoadSpan { start, end });
+        bss_end(&maps, path, base, base + 0x8f000, || span) - base
+    }
+
+    #[test]
+    fn modules_absorb_their_bss_tail() {
+        // The last PT_LOAD: vaddr 0x8e478, memsz 0xd38, ending at 0x8f1b0.
+        let pie = Some((0, 0x8f1b0));
+        let fixed = Some((0x400000, 0x48f1b0));
+        let tail = "8f000-90000 rw-p 00000000 00:00 0";
+
+        assert_eq!(image_end(0x10000000, &[tail], pie), 0x90000);
+        assert_eq!(image_end(0x400000, &[tail], fixed), 0x90000);
+
+        // A tail the kernel merged with a following anonymous mapping stops
+        // at the end of the segments.
+        let merged = "8f000-a0000 rw-p 00000000 00:00 0";
+        assert_eq!(image_end(0x10000000, &[merged], pie), 0x90000);
+
+        // The segments end in the file-backed pages, so an anonymous mapping
+        // placed right after is unrelated.
+        let unrelated = "8f000-a0000 rw-p 00000000 00:00 0";
+        assert_eq!(
+            image_end(0x10000000, &[unrelated], Some((0, 0x8ef50))),
+            0x8f000
+        );
+        assert_eq!(
+            image_end(0x10000000, &[unrelated], Some((0, 0x8f000))),
+            0x8f000
+        );
+
+        // Without headers the image stays as mapped.
+        assert_eq!(image_end(0x10000000, &[tail], None), 0x8f000);
+
+        // Not directly after, not anonymous, shared or executable.
+        for after in [
+            "90000-91000 rw-p 00000000 00:00 0",
+            "8f000-90000 rw-p 00000000 fd:01 8 /bin/other",
+            "8f000-90000 rw-s 00000000 00:00 0",
+            "8f000-90000 rwxp 00000000 00:00 0",
+        ] {
+            assert_eq!(image_end(0x10000000, &[after], pie), 0x8f000, "{}", after);
+        }
+
+        // Nothing follows the image.
+        assert_eq!(image_end(0x10000000, &[], pie), 0x8f000);
+
+        // The image's last mapping is read-only: not a segment with a `.bss`.
+        let maps = parse_maps(&[
+            "10000000-10001000 r--p 00000000 fd:01 7 /bin/t",
+            "10001000-10002000 r-xp 00001000 fd:01 7 /bin/t",
+            "10002000-10003000 rw-p 00000000 00:00 0",
+        ]);
+        let end = bss_end(&maps, Path::new("/bin/t"), 0x10000000, 0x10002000, || {
+            panic!("headers read for a read-only image end")
+        });
+        assert_eq!(end, 0x10002000);
+    }
+
     #[test]
     fn parse_syscall_stack_pointer() {
         let blocked = b"0 0x3 0x7ffd1000 0x1 0x0 0x0 0x0 0x7ffc2a10 0x7f0011223344\n";
@@ -795,6 +981,133 @@ mod tests {
         assert!(modules
             .iter()
             .any(|m| m.file_name().unwrap() == exe.as_os_str()));
+    }
+
+    const BSS_ENV: &str = "PTSCAN_TEST_HOLD_BSS";
+    const BSS_HELD: u64 = 0x0b55_7a11_5eed_c0de;
+    /// Words of zero-initialised statics, enough that their end lies past the
+    /// image's last file-backed page, in the anonymous `.bss` tail.
+    const BSS_WORDS: usize = 0x4000;
+    static BSS_TAIL: [AtomicU64; BSS_WORDS] = [const { AtomicU64::new(0) }; BSS_WORDS];
+
+    /// Run in a re-executed test binary by [`bss_holder`]: stores
+    /// `BSS_HELD` in the last word of `BSS_TAIL`, prints its address and that
+    /// of a heap value, then waits for stdin to close.
+    #[test]
+    fn hold_bss_child() {
+        if std::env::var_os(BSS_ENV).is_none() {
+            return;
+        }
+
+        let heap = Box::new(std::hint::black_box(HELD));
+        let last = &BSS_TAIL[BSS_WORDS - 1];
+        last.store(BSS_HELD, std::sync::atomic::Ordering::SeqCst);
+        println!(
+            "bss {:x} {:x}",
+            last as *const AtomicU64 as usize, &*heap as *const u64 as usize
+        );
+        io::stdout().flush().unwrap();
+
+        for line in io::stdin().lines() {
+            line.unwrap();
+        }
+
+        std::hint::black_box((heap, &BSS_TAIL));
+    }
+
+    /// A child holding `BSS_HELD` in its `.bss` tail, with that word's
+    /// address and that of a heap value.
+    fn bss_holder() -> (Scratch, u64, u64) {
+        let mut child = Scratch(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "platform::linux::tests::hold_bss_child",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(BSS_ENV, "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .expect("spawn bss holder"),
+        );
+
+        let stdout = BufReader::new(child.0.stdout.take().unwrap());
+
+        for line in stdout.lines() {
+            let line = line.unwrap();
+
+            if let Some((_, rest)) = line.split_once("bss ") {
+                let (slot, heap) = rest.split_once(' ').unwrap();
+                let slot = u64::from_str_radix(slot, 16).unwrap();
+                let heap = u64::from_str_radix(heap, 16).unwrap();
+                return (child, slot, heap);
+            }
+        }
+
+        panic!("bss holder exited without printing its addresses");
+    }
+
+    /// A static in the anonymous `.bss` tail of the image is part of its
+    /// module: a modules-only value scan finds it with the module as its
+    /// base, and a pointer scan finds a path based in it.
+    #[test]
+    fn bss_tail_is_part_of_the_module() {
+        let (child, slot, heap) = bss_holder();
+        let mut handle = ProcessHandle::open(child.0.id()).unwrap().unwrap();
+        handle.refresh_modules().unwrap();
+
+        // The word lies in an anonymous mapping, past the file-backed image.
+        let maps = handle.process.handle.maps().unwrap();
+        let map = maps
+            .iter()
+            .find(|m| m.start <= slot && slot < m.end)
+            .unwrap();
+        assert_eq!(map.path, None, "{:x?}", map);
+
+        let exe = std::env::current_exe().unwrap();
+        let module = handle.find_module(Address::new(slot)).unwrap();
+        assert_eq!(Path::new(module.name.as_str()), exe.file_name().unwrap());
+
+        let filter = FilterExpr::parse(&format!("value == {}u64", BSS_HELD), &handle).unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        let mut addresses = BlockAddresses::new(1).unwrap();
+        let mut values = Values::new(Type::U64);
+        handle
+            .initial_scan(
+                ScanContext::new(&pool, None, NoProgress),
+                &filter,
+                &mut addresses,
+                &mut values,
+                crate::InitialScanConfig {
+                    modules_only: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let found = addresses.iter().collect::<Vec<_>>();
+        assert!(found.contains(&Address::new(slot)), "{:x?}", found);
+        assert!(
+            matches!(
+                handle.address_to_base(Address::new(slot)),
+                crate::pointer::Base::Module { .. }
+            ),
+            "{:x}",
+            slot
+        );
+
+        // Pointer-scan paths start only from module bases.
+        let found = pointer_paths(&handle, &[(slot, heap)], heap, 1, 0, usize::MAX);
+        assert!(
+            found.scanned.contains(&(slot, vec![Offset::zero()])),
+            "{:x}: {:x?}",
+            slot,
+            found.scanned
+        );
     }
 
     const HOLD_ENV: &str = "PTSCAN_TEST_HOLD_VALUE";

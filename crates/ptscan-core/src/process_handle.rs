@@ -5,6 +5,7 @@ use crate::{
     filter_expr::FilterExpr,
     platform::{self, Thread},
     progress_reporter::ProgressReporter,
+    scanner::{Chunk, ScanSink},
     system,
     utils::IteratorExtension as _,
     Address, AddressRange, Addresses, Base, Cached, DefaultScanner, FollowablePointer,
@@ -21,6 +22,73 @@ use std::convert::{TryFrom as _, TryInto as _};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::sync::mpsc;
+
+/// A cancellation token, either supplied by the caller or owned locally.
+pub enum Cancel<'a> {
+    Borrowed(&'a Token),
+    Owned(Token),
+}
+
+impl std::ops::Deref for Cancel<'_> {
+    type Target = Token;
+
+    fn deref(&self) -> &Token {
+        match self {
+            Cancel::Borrowed(token) => token,
+            Cancel::Owned(token) => token,
+        }
+    }
+}
+
+/// Shared environment of a scan: where it runs, how to cancel it and how to
+/// report progress.
+pub struct ScanContext<'a, P> {
+    pub pool: &'a rayon::ThreadPool,
+    pub cancel: Cancel<'a>,
+    pub progress: P,
+}
+
+impl<'a, P> ScanContext<'a, P> {
+    /// Build a context; without a `cancel` token the scan cannot be cancelled.
+    pub fn new(pool: &'a rayon::ThreadPool, cancel: Option<&'a Token>, progress: P) -> Self {
+        Self {
+            pool,
+            cancel: match cancel {
+                Some(cancel) => Cancel::Borrowed(cancel),
+                None => Cancel::Owned(Token::new()),
+            },
+            progress,
+        }
+    }
+}
+
+/// The results of a scan: addresses with their initial and last values.
+///
+/// Invariant: all three have the same length.
+#[derive(Clone)]
+pub struct ScanResults {
+    pub addresses: Addresses,
+    pub initial: Values,
+    pub last: Values,
+}
+
+impl ScanResults {
+    pub fn new(addresses: Addresses, initial: Values, last: Values) -> Self {
+        Self {
+            addresses,
+            initial,
+            last,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.addresses.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.addresses.is_empty()
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct InitialScanConfig {
@@ -452,61 +520,40 @@ impl ProcessHandle {
         Ok(ranges)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub fn rescan_values(
         &self,
-        thread_pool: &rayon::ThreadPool,
-        addresses: &mut Addresses,
-        initial: &mut Values,
-        values: &mut Values,
-        cancel: Option<&Token>,
-        progress: impl ScanProgress + Send,
+        ctx: ScanContext<'_, impl ScanProgress + Send>,
+        results: &mut ScanResults,
         filter: &FilterExpr,
     ) -> anyhow::Result<()> {
-        if addresses.len() < 100_000 {
-            self.rescan_small(
-                thread_pool,
-                addresses,
-                initial,
-                values,
-                cancel,
-                progress,
-                filter,
-            )
+        if results.len() < 100_000 {
+            self.rescan_small(ctx, results, filter)
         } else {
-            self.rescan_large(
-                thread_pool,
-                addresses,
-                initial,
-                values,
-                cancel,
-                progress,
-                filter,
-            )
+            self.rescan_large(ctx, results, filter)
         }
     }
 
     /// Read the value of many memory locations.
-    #[allow(clippy::too_many_arguments)]
     pub fn rescan_large(
         &self,
-        thread_pool: &rayon::ThreadPool,
-        addresses: &mut Addresses,
-        initial: &mut Values,
-        values: &mut Values,
-        cancel: Option<&Token>,
-        progress: impl ScanProgress + Send,
+        ctx: ScanContext<'_, impl ScanProgress + Send>,
+        results: &mut ScanResults,
         filter: &FilterExpr,
     ) -> anyhow::Result<()> {
         // Check every 100_000 addresses scanned.
         const CHECK_INTERVAL: u64 = 100_000;
 
-        let mut local_cancel = None;
-
-        let cancel = match cancel {
-            Some(cancel) => cancel,
-            None => local_cancel.get_or_insert(Token::new()),
-        };
+        let ScanContext {
+            pool: thread_pool,
+            cancel,
+            progress,
+        } = ctx;
+        let cancel = &*cancel;
+        let ScanResults {
+            addresses,
+            initial,
+            last: values,
+        } = results;
 
         if addresses.is_empty() {
             return Ok(());
@@ -732,23 +779,23 @@ impl ProcessHandle {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn rescan_small(
         &self,
-        thread_pool: &rayon::ThreadPool,
-        addresses: &mut Addresses,
-        initial: &mut Values,
-        values: &mut Values,
-        cancel: Option<&Token>,
-        progress: impl ScanProgress + Send,
+        ctx: ScanContext<'_, impl ScanProgress + Send>,
+        results: &mut ScanResults,
         filter: &FilterExpr,
     ) -> anyhow::Result<()> {
-        let mut local_cancel = None;
-
-        let cancel = match cancel {
-            Some(cancel) => cancel,
-            None => local_cancel.get_or_insert(Token::new()),
-        };
+        let ScanContext {
+            pool: thread_pool,
+            cancel,
+            progress,
+        } = ctx;
+        let cancel = &*cancel;
+        let ScanResults {
+            addresses,
+            initial,
+            last: values,
+        } = results;
 
         if addresses.is_empty() {
             return Ok(());
@@ -891,19 +938,17 @@ impl ProcessHandle {
     /// Refresh a given set of existing values without a filter.
     pub fn refresh_values(
         &self,
-        thread_pool: &rayon::ThreadPool,
+        ctx: ScanContext<'_, impl ScanProgress + Send>,
         addresses: &Addresses,
         values: &mut Values,
-        cancel: Option<&Token>,
-        progress: impl ScanProgress + Send,
         expr: &ValueExpr,
     ) -> anyhow::Result<()> {
-        let mut local_cancel = None;
-
-        let cancel = match cancel {
-            Some(cancel) => cancel,
-            None => local_cancel.get_or_insert(Token::new()),
-        };
+        let ScanContext {
+            pool: thread_pool,
+            cancel,
+            progress,
+        } = ctx;
+        let cancel = &*cancel;
 
         if addresses.is_empty() {
             return Ok(());
@@ -1006,21 +1051,19 @@ impl ProcessHandle {
     /// Refresh a dynamic collection of values in-place.
     pub fn refresh_dynamic_values<V>(
         &self,
-        thread_pool: &rayon::ThreadPool,
+        ctx: ScanContext<'_, impl ScanProgress + Send>,
         values: &mut [V],
-        cancel: Option<&Token>,
-        progress: impl ScanProgress + Send,
         expr: &ValueExpr,
     ) -> anyhow::Result<()>
     where
         V: Send + ValueHolder,
     {
-        let mut local_cancel = None;
-
-        let cancel = match cancel {
-            Some(cancel) => cancel,
-            None => local_cancel.get_or_insert(Token::new()),
-        };
+        let ScanContext {
+            pool: thread_pool,
+            cancel,
+            progress,
+        } = ctx;
+        let cancel = &*cancel;
 
         if values.is_empty() {
             return Ok(());
@@ -1141,25 +1184,22 @@ impl ProcessHandle {
     /// raised from a worker thread. Only the last error will be propagated to
     /// the user. Modifications to the provided buffers will be applied even if
     /// an error happens.
-    #[allow(clippy::too_many_arguments)]
     pub fn initial_scan(
         &self,
-        thread_pool: &rayon::ThreadPool,
+        ctx: ScanContext<'_, impl ScanProgress + Send>,
         filter: &FilterExpr,
         addresses: &mut Addresses,
         values: &mut Values,
-        cancel: Option<&Token>,
-        progress: impl ScanProgress + Send,
         config: InitialScanConfig,
     ) -> anyhow::Result<()> {
         const DEFAULT_BUFFER_SIZE: usize = 0x100_000;
 
-        let mut local_cancel = None;
-
-        let cancel = match cancel {
-            Some(cancel) => cancel,
-            None => local_cancel.get_or_insert(Token::new()),
-        };
+        let ScanContext {
+            pool: thread_pool,
+            cancel,
+            progress,
+        } = ctx;
+        let cancel = &*cancel;
 
         let mut last_error = None;
 
@@ -1357,12 +1397,16 @@ impl ProcessHandle {
                 let data = &data[..len];
 
                 scanner.scan(
-                    address,
-                    handle,
-                    data,
-                    &mut addresses,
-                    &mut values,
-                    &mut hits,
+                    Chunk {
+                        base: address,
+                        data,
+                        handle,
+                    },
+                    &mut ScanSink {
+                        addresses: &mut addresses,
+                        values: &mut values,
+                        hits: &mut hits,
+                    },
                     cancel,
                 )?;
 

@@ -8,7 +8,7 @@ use std::time::Instant;
 use anyhow::{Context as _, Result, anyhow};
 use ptscan_core::{
     Address, Addresses, FilterExpr, InitialScanConfig, PortablePointer, Process, ProcessHandle,
-    Proxy as _, Size, Token, TypeHint, Value, ValueExpr, Values,
+    Proxy as _, ScanContext, ScanResults, Size, Token, TypeHint, Value, ValueExpr, Values,
 };
 use tokio::sync::watch;
 
@@ -17,15 +17,13 @@ use crate::{Shared, lock, read, write};
 
 #[derive(Clone)]
 struct Generation {
-    addresses: Addresses,
-    initial: Values,
-    last: Values,
+    results: ScanResults,
     value: ValueExpr,
 }
 
 impl Generation {
     fn bytes(&self) -> usize {
-        self.addresses.bytes() + self.initial.bytes() + self.last.bytes()
+        self.results.addresses.bytes() + self.results.initial.bytes() + self.results.last.bytes()
     }
 }
 
@@ -57,7 +55,7 @@ impl Generations {
             undone: self.undone.len() as u32,
             results: self
                 .in_place
-                .or_else(|| self.scans.last().map(|g| g.addresses.len() as u64))
+                .or_else(|| self.scans.last().map(|g| g.results.addresses.len() as u64))
                 .unwrap_or(0),
             running: self.running.is_some(),
             last: self.last.clone(),
@@ -187,7 +185,7 @@ impl Shared {
 
         let previous = if in_place {
             let previous = generations.scans.pop();
-            generations.in_place = previous.as_ref().map(|g| g.addresses.len() as u64);
+            generations.in_place = previous.as_ref().map(|g| g.results.addresses.len() as u64);
             previous
         } else {
             generations.scans.last().cloned()
@@ -236,7 +234,7 @@ impl Shared {
             }
 
             if let Some(generation) = generation {
-                outcome.results = generation.addresses.len() as u64;
+                outcome.results = generation.results.addresses.len() as u64;
                 generations.scans.push(Arc::new(generation));
                 generations.undone.clear();
             }
@@ -272,12 +270,8 @@ impl Shared {
 
             return suspended(&handle.process, suspend, || {
                 handle.rescan_values(
-                    &self.pool,
-                    &mut generation.addresses,
-                    &mut generation.initial,
-                    &mut generation.last,
-                    Some(token),
-                    progress,
+                    ScanContext::new(&self.pool, Some(token), progress),
+                    &mut generation.results,
                     &filter,
                 )
             });
@@ -299,20 +293,16 @@ impl Shared {
 
         let result = suspended(&handle.process, suspend, || {
             handle.initial_scan(
-                &self.pool,
+                ScanContext::new(&self.pool, Some(token), progress),
                 &filter,
                 &mut addresses,
                 &mut values,
-                Some(token),
-                progress,
                 config,
             )
         });
 
         *generation = Some(Generation {
-            addresses,
-            initial: values.clone(),
-            last: values,
+            results: ScanResults::new(addresses, values.clone(), values),
             value,
         });
 
@@ -375,7 +365,8 @@ impl Shared {
             .scans
             .last()
             .map(|g| {
-                g.addresses
+                g.results
+                    .addresses
                     .iter_copied()
                     .enumerate()
                     .filter(|(_, a)| addresses.contains(&u64::from(*a)))
@@ -393,9 +384,9 @@ impl Shared {
 
         // Descending, so that swap_remove only moves results which are kept.
         for &index in indices.iter().rev() {
-            generation.addresses.swap_remove(index);
-            generation.initial.swap_remove(index);
-            generation.last.swap_remove(index);
+            generation.results.addresses.swap_remove(index);
+            generation.results.initial.swap_remove(index);
+            generation.results.last.swap_remove(index);
         }
 
         generations.undone.clear();
@@ -474,21 +465,28 @@ impl Shared {
             });
         };
 
-        let total = generation.addresses.len();
+        let total = generation.results.addresses.len();
         let start = usize::try_from(offset).unwrap_or(usize::MAX).min(total);
         let end = start
             .saturating_add(limit.min(api::MAX_SCAN_PAGE) as usize)
             .min(total);
 
         let handle = read(&handle);
-        let last_type = generation.last.ty();
+        let last_type = generation.results.last.ty();
 
         let mut addresses = Addresses::new(handle.process.pointer_width);
         let mut current = Values::new(last_type);
 
         for index in start..end {
-            addresses.push(generation.addresses.get(index).unwrap());
-            current.push(generation.last.get(index).unwrap());
+            let (Some(address), Some(value)) = (
+                generation.results.addresses.get(index),
+                generation.results.last.get(index),
+            ) else {
+                break;
+            };
+
+            addresses.push(address);
+            current.push(value);
         }
 
         let value_type = generation
@@ -504,11 +502,9 @@ impl Shared {
 
         let error = handle
             .refresh_values(
-                &self.pool,
+                ScanContext::new(&self.pool, None, NoProgress),
                 &addresses,
                 &mut current,
-                None,
-                NoProgress,
                 &generation.value,
             )
             .err()
@@ -516,16 +512,18 @@ impl Shared {
 
         let results = (start..end)
             .zip(addresses.iter_copied())
-            .map(|(index, address)| {
+            .filter_map(|(index, address)| {
+                let last = generation.results.last.get(index)?;
+                let current = current.get(index.checked_sub(start)?)?;
                 let pointer = PortablePointer::from(handle.address_to_portable_base(address));
 
-                api::ScanResult {
+                Some(api::ScanResult {
                     address: address.into(),
                     pointer: pointer.to_string(),
                     value_type: last_type.to_string(),
-                    last: generation.last.get(index).unwrap().to_string(),
-                    current: current.get(index - start).unwrap().to_string(),
-                }
+                    last: last.to_string(),
+                    current: current.to_string(),
+                })
             })
             .collect();
 

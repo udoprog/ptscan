@@ -7,7 +7,7 @@ use std::time::Instant;
 use anyhow::{Result, anyhow};
 use ptscan_core::{
     Addresses, FilterExpr, FollowablePointer as _, PointerScan, PortablePointer, ProcessHandle,
-    Size, Token, Type, ValueExpr, Values,
+    ScanContext, Size, Token, Type, ValueExpr, Values,
 };
 use tokio::sync::watch;
 
@@ -184,12 +184,14 @@ impl Shared {
         };
 
         handle.initial_scan(
-            &self.pool,
+            ScanContext::new(
+                &self.pool,
+                Some(token),
+                progress(api::PointerScanStage::Initial),
+            ),
             &filter,
             &mut addresses,
             &mut values,
-            Some(token),
-            progress(api::PointerScanStage::Initial),
             Default::default(),
         )?;
 

@@ -638,8 +638,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        process::ProcessInfo, Addresses, FilterExpr, Process, ProcessHandle, ScanProgress, Type,
-        ValueExpr, Values,
+        process::ProcessInfo, Addresses, FilterExpr, Process, ProcessHandle, ScanContext,
+        ScanProgress, ScanResults, Type, ValueExpr, Values,
     };
 
     /// Kills the scratch child when dropped, so a failing test cleans up.
@@ -949,12 +949,10 @@ mod tests {
         let mut values = Values::new(ty);
         handle
             .initial_scan(
-                &pool,
+                ScanContext::new(&pool, None, NoProgress),
                 filter,
                 &mut addresses,
                 &mut values,
-                None,
-                NoProgress,
                 Default::default(),
             )
             .unwrap();
@@ -1055,12 +1053,10 @@ mod tests {
         let mut values = Values::new(Type::U64);
         handle
             .initial_scan(
-                &pool,
+                ScanContext::new(&pool, None, NoProgress),
                 &filter,
                 &mut addresses,
                 &mut values,
-                None,
-                NoProgress,
                 Default::default(),
             )
             .unwrap();
@@ -1078,20 +1074,16 @@ mod tests {
         assert!(found.contains(&Address::new(holder.pair)), "{:?}", found);
         assert!(found.contains(&Address::new(holder.value)), "{:?}", found);
 
-        let mut initial = values.clone();
+        let mut results = ScanResults::new(addresses, values.clone(), values);
         handle
             .rescan_large(
-                &pool,
-                &mut addresses,
-                &mut initial,
-                &mut values,
-                None,
-                NoProgress,
+                ScanContext::new(&pool, None, NoProgress),
+                &mut results,
                 &filter,
             )
             .unwrap();
 
-        let kept = addresses.iter_copied().collect::<HashSet<_>>();
+        let kept = results.addresses.iter_copied().collect::<HashSet<_>>();
         assert_eq!(kept, found.into_iter().collect::<HashSet<_>>());
     }
 

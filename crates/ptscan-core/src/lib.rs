@@ -264,11 +264,12 @@ pub use self::process::{
     MemoryInformation, MemoryReader, MemoryState, MemoryType, PointerWidth, Process, ProcessInfo,
 };
 pub use self::process_handle::{
-    AddressProxy, BufferProxy, InitialScanConfig, Location, ModuleInfo, ModulesState,
-    ProcessHandle, ProcessName, ProcessThread, Proxy, ScanProgress, ValueHolder,
+    AddressProxy, BufferProxy, Cancel, InitialScanConfig, Location, ModuleInfo, ModulesState,
+    ProcessHandle, ProcessName, ProcessThread, Proxy, ScanContext, ScanProgress, ScanResults,
+    ValueHolder,
 };
 pub use self::raw_serde::{RawDeserialize, RawSerialize};
-pub use self::scanner::{DefaultScanner, Scanner};
+pub use self::scanner::{Chunk, DefaultScanner, ScanSink, Scanner};
 pub use self::sign::Sign;
 pub use self::size::Size;
 pub use self::system::processes;

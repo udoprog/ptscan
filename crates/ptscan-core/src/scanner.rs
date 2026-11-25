@@ -54,18 +54,23 @@ impl ScannerTrait for FindNonZero {
     }
 }
 
+/// A chunk of process memory to scan.
+pub struct Chunk<'a> {
+    /// Address of the first byte of `data`.
+    pub base: Address,
+    pub data: &'a [u8],
+    pub handle: &'a ProcessHandle,
+}
+
+/// Where a scan puts what it finds.
+pub struct ScanSink<'a> {
+    pub addresses: &'a mut Addresses,
+    pub values: &'a mut Values,
+    pub hits: &'a mut u64,
+}
+
 pub trait Scanner: Send + Sync {
-    #[allow(clippy::too_many_arguments)]
-    fn scan(
-        &self,
-        base: Address,
-        handle: &ProcessHandle,
-        data: &[u8],
-        addresses: &mut Addresses,
-        values: &mut Values,
-        hits: &mut u64,
-        cancel: &Token,
-    ) -> anyhow::Result<()>;
+    fn scan(&self, chunk: Chunk<'_>, out: &mut ScanSink<'_>, cancel: &Token) -> anyhow::Result<()>;
 }
 
 /// A default scanner with a filter.
@@ -96,16 +101,13 @@ impl<'a> DefaultScanner<'a> {
 }
 
 impl<'a> Scanner for DefaultScanner<'a> {
-    fn scan(
-        &self,
-        base: Address,
-        handle: &ProcessHandle,
-        data: &[u8],
-        addresses: &mut Addresses,
-        values: &mut Values,
-        hits: &mut u64,
-        cancel: &Token,
-    ) -> anyhow::Result<()> {
+    fn scan(&self, chunk: Chunk<'_>, out: &mut ScanSink<'_>, cancel: &Token) -> anyhow::Result<()> {
+        let Chunk { base, data, handle } = chunk;
+        let ScanSink {
+            addresses,
+            values,
+            hits,
+        } = out;
         let mut offset = match self.special {
             Some(special) => match special.test(data) {
                 Some(offset) => offset,
@@ -145,7 +147,7 @@ impl<'a> Scanner for DefaultScanner<'a> {
                 .filter
                 .test(ValueRef::None, ValueRef::None, &mut proxy)?
             {
-                *hits += 1;
+                **hits += 1;
                 let (value, advance) = proxy.eval(self.value_type)?;
 
                 addresses.push(address);
@@ -221,16 +223,13 @@ where
     B: Send + Sync + byteorder::ByteOrder,
     T: Send + Sync + ScannerTrait,
 {
-    fn scan(
-        &self,
-        base: Address,
-        handle: &ProcessHandle,
-        data: &[u8],
-        addresses: &mut Addresses,
-        values: &mut Values,
-        hits: &mut u64,
-        cancel: &Token,
-    ) -> anyhow::Result<()> {
+    fn scan(&self, chunk: Chunk<'_>, out: &mut ScanSink<'_>, cancel: &Token) -> anyhow::Result<()> {
+        let Chunk { base, data, handle } = chunk;
+        let ScanSink {
+            addresses,
+            values,
+            hits,
+        } = out;
         let mut offset = 0usize;
 
         while offset < data.len() && !cancel.test() {
@@ -290,7 +289,7 @@ where
 
             addresses.push(address);
             values.push(value);
-            *hits += 1;
+            **hits += 1;
             offset += self.alignment.step();
         }
 
@@ -325,16 +324,17 @@ impl<B> Scanner for BufferScanner<B>
 where
     B: Send + Sync + byteorder::ByteOrder,
 {
-    fn scan(
-        &self,
-        base: Address,
-        _: &ProcessHandle,
-        data: &[u8],
-        addresses: &mut Addresses,
-        values: &mut Values,
-        hits: &mut u64,
-        cancel: &Token,
-    ) -> anyhow::Result<()> {
+    fn scan(&self, chunk: Chunk<'_>, out: &mut ScanSink<'_>, cancel: &Token) -> anyhow::Result<()> {
+        let Chunk {
+            base,
+            data,
+            handle: _,
+        } = chunk;
+        let ScanSink {
+            addresses,
+            values,
+            hits,
+        } = out;
         let mut offset = 0usize;
 
         while offset < data.len() && !cancel.test() {
@@ -366,7 +366,7 @@ where
 
             addresses.push(address);
             values.push(value);
-            *hits += 1;
+            **hits += 1;
             offset += self.buffer.len();
         }
 

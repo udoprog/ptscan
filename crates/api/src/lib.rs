@@ -204,6 +204,9 @@ pub struct ScratchEntry {
     /// The address the pointer currently follows to.
     pub address: Option<u64>,
     pub value: Option<String>,
+    /// Why a stored pointer or type cannot be used, such as one saved in a
+    /// syntax this build no longer reads.
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
@@ -237,6 +240,13 @@ pub struct WriteScratchValueRequest {
 
 #[derive(Debug, Clone, Default, Encode, Decode)]
 pub struct RemoveScratchRequest {
+    pub ids: Vec<u64>,
+}
+
+/// Put the entries `ids` first, in that order; the rest follow in the order
+/// they had.
+#[derive(Debug, Clone, Default, Encode, Decode)]
+pub struct ReorderScratchRequest {
     pub ids: Vec<u64>,
 }
 
@@ -627,6 +637,12 @@ api::define! {
     pub type RemoveScratch;
     impl Endpoint for RemoveScratch {
         impl Request for RemoveScratchRequest;
+        type Response<'de> = ScratchList;
+    }
+
+    pub type ReorderScratch;
+    impl Endpoint for ReorderScratch {
+        impl Request for ReorderScratchRequest;
         type Response<'de> = ScratchList;
     }
 

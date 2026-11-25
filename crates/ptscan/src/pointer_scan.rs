@@ -106,8 +106,9 @@ impl Shared {
             return error("not attached to a process");
         };
 
-        let Some((pointer, value_type)) = lock(&self.scratch).get(id) else {
-            return error(&format!("no scratch entry {id}"));
+        let (pointer, value_type) = match lock(&self.scratch).get(id) {
+            Ok(entry) => entry,
+            Err(e) => return error(&e),
         };
 
         let mut current = lock(&self.pointer_results);

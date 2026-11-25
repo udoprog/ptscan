@@ -320,3 +320,233 @@ async fn attaching_records_the_target() {
     let state = session_state(&handle).await;
     assert_eq!(state.current().unwrap().target, Some(target));
 }
+
+async fn add_watch(handle: &Handle, pointer: &str) -> api::ScratchEntry {
+    let request = api::AddScratchRequest {
+        pointer: pointer.into(),
+        value_type: "u32".into(),
+    };
+
+    let response: api::ScratchResponse = timeout!(handle.request().body(request).send())
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert_eq!(response.error, None);
+    response.entry.expect("added entry")
+}
+
+async fn watches(handle: &Handle) -> Vec<(u64, String)> {
+    let list: api::ScratchList = timeout!(handle.request().body(api::GetScratchRequest).send())
+        .unwrap()
+        .decode()
+        .unwrap();
+
+    list.entries
+        .into_iter()
+        .map(|e| (e.id, e.pointer))
+        .collect()
+}
+
+async fn reorder(handle: &Handle, ids: Vec<u64>) -> Vec<(u64, String)> {
+    let list: api::ScratchList = timeout!(
+        handle
+            .request()
+            .body(api::ReorderScratchRequest { ids })
+            .send()
+    )
+    .unwrap()
+    .decode()
+    .unwrap();
+
+    list.entries
+        .into_iter()
+        .map(|e| (e.id, e.pointer))
+        .collect()
+}
+
+async fn remove(handle: &Handle, ids: Vec<u64>) {
+    let _: api::ScratchList = timeout!(
+        handle
+            .request()
+            .body(api::RemoveScratchRequest { ids })
+            .send()
+    )
+    .unwrap()
+    .decode()
+    .unwrap();
+}
+
+fn pair(entry: &api::ScratchEntry) -> (u64, String) {
+    (entry.id, entry.pointer.clone())
+}
+
+#[tokio::test]
+async fn watches_survive_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ptscan.db");
+
+    let handle = start(&path).await;
+    let a = add_watch(&handle, "0x1000").await;
+    let b = add_watch(&handle, "0x2000").await;
+    let c = add_watch(&handle, "0x3000").await;
+    assert_eq!(watches(&handle).await, [pair(&a), pair(&b), pair(&c)]);
+
+    let expected = [pair(&c), pair(&a), pair(&b)];
+    assert_eq!(reorder(&handle, vec![c.id, a.id, 9999]).await, expected);
+
+    let edited: api::ScratchResponse = timeout!(
+        handle
+            .request()
+            .body(api::EditScratchRequest {
+                id: b.id,
+                pointer: None,
+                value_type: Some("i64".into()),
+            })
+            .send()
+    )
+    .unwrap()
+    .decode()
+    .unwrap();
+    assert_eq!(edited.error, None);
+    drop(handle);
+
+    let handle = start(&path).await;
+    assert_eq!(watches(&handle).await, expected, "ids and order are kept");
+
+    let list: api::ScratchList = timeout!(handle.request().body(api::GetScratchRequest).send())
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert!(list.entries.iter().all(|e| e.error.is_none()));
+    assert_eq!(list.entries[2].value_type, "i64");
+
+    // A watch added after the restart goes last and gets a fresh id.
+    let d = add_watch(&handle, "0x4000").await;
+    assert!(![a.id, b.id, c.id].contains(&d.id));
+    assert_eq!(watches(&handle).await.last(), Some(&pair(&d)));
+}
+
+#[tokio::test]
+async fn watches_follow_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ptscan.db");
+
+    let handle = start(&path).await;
+    let first = session_state(&handle).await.current.unwrap();
+    let a = add_watch(&handle, "0x1000").await;
+
+    let second = create(&handle, "Second").await;
+    send(&handle, api::OpenSessionRequest { id: second }).await;
+    assert_eq!(watches(&handle).await, []);
+    let b = add_watch(&handle, "0x2000").await;
+
+    // Changing a watch of another session by its id does nothing.
+    remove(&handle, vec![a.id]).await;
+    assert_eq!(watches(&handle).await, [pair(&b)]);
+
+    send(&handle, api::OpenSessionRequest { id: first }).await;
+    assert_eq!(watches(&handle).await, [pair(&a)]);
+    drop(handle);
+
+    let handle = start(&path).await;
+    assert_eq!(watches(&handle).await, [pair(&a)]);
+    send(&handle, api::OpenSessionRequest { id: second }).await;
+    assert_eq!(watches(&handle).await, [pair(&b)]);
+}
+
+#[tokio::test]
+async fn removing_watches_removes_their_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ptscan.db");
+    let handle = start(&path).await;
+    let first = session_state(&handle).await.current.unwrap();
+
+    let config = "SELECT count(*) FROM watch_config WHERE watch_id = ?";
+    let rows = "SELECT count(*) FROM watches WHERE id = ?";
+
+    let a = add_watch(&handle, "0x1000").await;
+    let b = add_watch(&handle, "0x2000").await;
+    assert!(count(&path, config, a.id) > 0);
+
+    remove(&handle, vec![a.id]).await;
+    assert_eq!(watches(&handle).await, [pair(&b)]);
+    assert_eq!(count(&path, config, a.id), 0);
+    assert_eq!(count(&path, rows, a.id), 0);
+    assert!(count(&path, config, b.id) > 0);
+
+    let second = create(&handle, "Second").await;
+    send(&handle, api::OpenSessionRequest { id: second }).await;
+    let c = add_watch(&handle, "0x3000").await;
+    send(&handle, api::OpenSessionRequest { id: first }).await;
+
+    let response = send(&handle, api::DeleteSessionRequest { id: second }).await;
+    assert_eq!(response.error, None);
+    assert_eq!(count(&path, config, c.id), 0);
+    assert_eq!(count(&path, rows, c.id), 0);
+    assert_eq!(
+        count(
+            &path,
+            "SELECT count(*) FROM watches WHERE session_id = ?",
+            second
+        ),
+        0
+    );
+    assert!(count(&path, config, b.id) > 0);
+}
+
+#[tokio::test]
+async fn unreadable_watches_are_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ptscan.db");
+
+    let handle = start(&path).await;
+    let good = add_watch(&handle, "0x1000").await;
+    let bad_pointer = add_watch(&handle, "0x2000").await;
+    let bad_type = add_watch(&handle, "0x3000").await;
+    drop(handle);
+
+    let c = sqll::OpenOptions::new().read_write().open(&path).unwrap();
+    c.execute(format!(
+        r#"UPDATE watch_config SET value = '{{"version":1,"value":"0x10 +"}}'
+           WHERE watch_id = {} AND key = 'pointer';
+           UPDATE watch_config SET value = '{{"version":1,"value":"nope"}}'
+           WHERE watch_id = {} AND key = 'type';"#,
+        bad_pointer.id, bad_type.id
+    ))
+    .unwrap();
+    drop(c);
+
+    let handle = start(&path).await;
+    let list: api::ScratchList = timeout!(handle.request().body(api::GetScratchRequest).send())
+        .unwrap()
+        .decode()
+        .unwrap();
+
+    let [first, second, third] = &list.entries[..] else {
+        panic!("three watches: {list:?}");
+    };
+
+    assert_eq!(first, &good);
+    assert_eq!(second.id, bad_pointer.id);
+    assert_eq!(second.pointer, "0x10 +");
+    assert!(second.error.is_some(), "{second:?}");
+    assert_eq!(third.id, bad_type.id);
+    assert_eq!(third.value_type, "nope");
+    assert!(third.error.is_some(), "{third:?}");
+
+    // Fixing the pointer makes the watch usable again.
+    let response: api::ScratchResponse = timeout!(
+        handle
+            .request()
+            .body(api::EditScratchRequest {
+                id: bad_pointer.id,
+                pointer: Some("0x2000".into()),
+                value_type: None,
+            })
+            .send()
+    )
+    .unwrap()
+    .decode()
+    .unwrap();
+    assert_eq!(response.entry.map(|e| e.error), Some(None));
+}

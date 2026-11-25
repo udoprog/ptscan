@@ -62,7 +62,8 @@ Linux and `%LOCALAPPDATA%\ptscan\ptscan.db` on Windows. `--db` uses another
 file. Scan results are never stored; scanning again rebuilds them.
 
 Work is kept in _sessions_: named workspaces holding the process they
-target, the scan form and the pointer-scan settings, saved as they change.
+target, the scan form, the pointer-scan settings and the watches of the
+scratch list, saved as they change.
 The session that was open last is opened again at start-up, and a
 `Default` one is created when there are none. A session remembers its
 process by name, so opening it does not attach; the UI offers to attach to

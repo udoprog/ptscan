@@ -343,7 +343,14 @@ mod linux {
 
         assert_eq!(
             names,
-            ["config", "migrations", "session_config", "sessions"]
+            [
+                "config",
+                "migrations",
+                "session_config",
+                "sessions",
+                "watch_config",
+                "watches"
+            ]
         );
 
         let mut keys = c

@@ -222,6 +222,10 @@ impl Shared {
             .session_config(id)
             .await
             .with_context(|| format!("Loading session {id}"))?;
+        let watches = db
+            .watches(id)
+            .await
+            .with_context(|| format!("Loading the watches of session {id}"))?;
 
         let opened = now();
         let mut changes = Changes::new();
@@ -231,6 +235,7 @@ impl Shared {
         self.detach();
         self.reset_scan();
         self.reset_pointer_scan();
+        self.load_scratch(watches);
 
         let mut session = info(id, &config);
         session.opened = opened;

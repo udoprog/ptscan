@@ -36,6 +36,12 @@ struct Read {
     select_sessions: TypedStatement<(), i64>,
     #[sql = "SELECT key, value FROM session_config WHERE session_id = ?1 ORDER BY key"]
     select_session_config: TypedStatement<(i64,), (String, String)>,
+    #[sql = "SELECT id FROM watches WHERE session_id = ?1 ORDER BY id"]
+    select_watches: TypedStatement<(i64,), i64>,
+    #[sql = "SELECT c.watch_id, c.key, c.value FROM watch_config c"]
+    #[sql = "JOIN watches w ON w.id = c.watch_id WHERE w.session_id = ?1"]
+    #[sql = "ORDER BY c.watch_id, c.key"]
+    select_watch_config: TypedStatement<(i64,), (i64, String, String)>,
 }
 
 #[derive(Statements)]
@@ -54,10 +60,24 @@ struct Write {
     upsert_session_config: TypedStatement<(i64, ConfigKey, String), ()>,
     #[sql = "DELETE FROM session_config WHERE session_id = ? AND key = ?"]
     delete_session_config: TypedStatement<(i64, ConfigKey), ()>,
+    #[sql = "INSERT INTO watches (session_id) VALUES (?) RETURNING id"]
+    insert_watch: TypedStatement<(i64,), i64>,
+    #[sql = "DELETE FROM watches WHERE session_id = ? AND id = ?"]
+    delete_watch: TypedStatement<(i64, i64), ()>,
+    #[sql = "INSERT INTO watch_config (watch_id, key, value)"]
+    #[sql = "SELECT id, ?2, ?3 FROM watches WHERE session_id = ?4 AND id = ?1"]
+    #[sql = "ON CONFLICT(watch_id, key) DO UPDATE SET value = excluded.value"]
+    upsert_watch_config: TypedStatement<(i64, ConfigKey, String, i64), ()>,
+    #[sql = "DELETE FROM watch_config WHERE watch_id = ?1 AND key = ?2"]
+    #[sql = "AND watch_id IN (SELECT id FROM watches WHERE session_id = ?3)"]
+    delete_watch_config: TypedStatement<(i64, ConfigKey, i64), ()>,
 }
 
 /// Settings to write, by key; `None` removes the setting.
 pub type Changes = Vec<(ConfigKey, Option<String>)>;
+
+/// A stored watch: its id and its settings by key.
+pub type StoredWatch = (u64, BTreeMap<ConfigKey, String>);
 
 /// A value stored under a [`ConfigKey`].
 ///
@@ -351,6 +371,137 @@ impl Db {
 
         Ok(())
     }
+}
+
+impl Db {
+    /// Every watch of a session with its settings, by ascending id. A key this
+    /// build does not know is skipped with a warning.
+    pub async fn watches(&self, session: u64) -> Result<Vec<StoredWatch>> {
+        let session = i64::try_from(session)?;
+
+        let (ids, rows) = self
+            .pool
+            .read(move |r| {
+                let ids = r
+                    .select_watches
+                    .bind((session,))?
+                    .collect::<Result<Vec<_>, sqll::Error>>()?;
+                let rows = r
+                    .select_watch_config
+                    .bind((session,))?
+                    .collect::<Result<Vec<_>, sqll::Error>>()?;
+                Ok::<_, sqll::Error>((ids, rows))
+            })
+            .await??;
+
+        let mut out = BTreeMap::<i64, BTreeMap<ConfigKey, String>>::new();
+
+        for id in ids {
+            out.insert(id, BTreeMap::new());
+        }
+
+        for (id, key, value) in rows {
+            let Some(config) = out.get_mut(&id) else {
+                continue;
+            };
+
+            match key.parse::<ConfigKey>() {
+                Ok(parsed) => {
+                    config.insert(parsed, value);
+                }
+                Err(error) => {
+                    tracing::warn!(watch = id, key, "Skipping unknown watch key: {error}");
+                }
+            }
+        }
+
+        Ok(out
+            .into_iter()
+            .filter_map(|(id, config)| Some((u64::try_from(id).ok()?, config)))
+            .collect())
+    }
+
+    /// Create a watch in a session holding `changes`, returning its id.
+    pub async fn create_watch(&self, session: u64, changes: Changes) -> Result<u64> {
+        let session = i64::try_from(session)?;
+
+        let id = self
+            .pool
+            .write(move |w| {
+                w.transaction(|w, _| {
+                    let id = w
+                        .insert_watch
+                        .bind((session,))?
+                        .first()?
+                        .ok_or_else(|| anyhow!("Inserting a watch returned no id"))?;
+                    apply_watch(w, session, id, &changes)?;
+                    Ok::<_, anyhow::Error>(id)
+                })
+            })
+            .await??;
+
+        Ok(u64::try_from(id)?)
+    }
+
+    /// Apply changes to watches of a session in one transaction. Watches of
+    /// other sessions are left alone.
+    pub async fn update_watches(&self, session: u64, updates: Vec<(u64, Changes)>) -> Result<()> {
+        let session = i64::try_from(session)?;
+        let updates = updates
+            .into_iter()
+            .map(|(id, changes)| Ok((i64::try_from(id)?, changes)))
+            .collect::<Result<Vec<_>>>()?;
+
+        self.pool
+            .write(move |w| {
+                w.transaction(|w, _| {
+                    for (id, changes) in &updates {
+                        apply_watch(w, session, *id, changes)?;
+                    }
+
+                    Ok::<_, sqll::Error>(())
+                })
+            })
+            .await??;
+
+        Ok(())
+    }
+
+    /// Delete watches of a session and every setting they hold.
+    pub async fn delete_watches(&self, session: u64, ids: Vec<u64>) -> Result<()> {
+        let session = i64::try_from(session)?;
+        let ids = ids
+            .into_iter()
+            .map(i64::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        self.pool
+            .write(move |w| {
+                w.transaction(|w, _| {
+                    for id in &ids {
+                        w.delete_watch.execute((session, *id))?;
+                    }
+
+                    Ok::<_, sqll::Error>(())
+                })
+            })
+            .await??;
+
+        Ok(())
+    }
+}
+
+fn apply_watch(w: &mut Write, session: i64, id: i64, changes: &Changes) -> Result<(), sqll::Error> {
+    for (key, value) in changes {
+        match value {
+            Some(value) => w
+                .upsert_watch_config
+                .execute((id, *key, value.as_str(), session))?,
+            None => w.delete_watch_config.execute((id, *key, session))?,
+        };
+    }
+
+    Ok(())
 }
 
 fn apply(w: &mut Write, id: i64, changes: &Changes) -> Result<(), sqll::Error> {

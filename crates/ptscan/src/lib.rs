@@ -55,7 +55,8 @@
 //! file. Scan results are never stored; scanning again rebuilds them.
 //!
 //! Work is kept in _sessions_: named workspaces holding the process they
-//! target, the scan form and the pointer-scan settings, saved as they change.
+//! target, the scan form, the pointer-scan settings and the watches of the
+//! scratch list, saved as they change.
 //! The session that was open last is opened again at start-up, and a
 //! `Default` one is created when there are none. A session remembers its
 //! process by name, so opening it does not attach; the UI offers to attach to
@@ -691,20 +692,14 @@ impl ws::Handler for Handler {
                     return Ok(false);
                 };
 
-                let shared = self.shared.clone();
-                let response =
-                    tokio::task::spawn_blocking(move || shared.add_scratch(request)).await?;
-                outgoing.write(response);
+                outgoing.write(self.shared.add_scratch(request).await?);
             }
             api::Request::EditScratch => {
                 let Some(request) = incoming.read::<api::EditScratchRequest>() else {
                     return Ok(false);
                 };
 
-                let shared = self.shared.clone();
-                let response =
-                    tokio::task::spawn_blocking(move || shared.edit_scratch(request)).await?;
-                outgoing.write(response);
+                outgoing.write(self.shared.edit_scratch(request).await?);
             }
             api::Request::WriteScratchValue => {
                 let Some(request) = incoming.read::<api::WriteScratchValueRequest>() else {
@@ -722,11 +717,14 @@ impl ws::Handler for Handler {
                     return Ok(false);
                 };
 
-                let shared = self.shared.clone();
-                let response =
-                    tokio::task::spawn_blocking(move || shared.remove_scratch(&request.ids))
-                        .await?;
-                outgoing.write(response);
+                outgoing.write(self.shared.remove_scratch(request.ids).await?);
+            }
+            api::Request::ReorderScratch => {
+                let Some(request) = incoming.read::<api::ReorderScratchRequest>() else {
+                    return Ok(false);
+                };
+
+                outgoing.write(self.shared.reorder_scratch(request.ids).await?);
             }
             api::Request::PointerScan => {
                 let Some(request) = incoming.read::<api::PointerScanRequest>() else {

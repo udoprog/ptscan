@@ -171,11 +171,27 @@ where
 {
     let (path, dir) = writable(path)?;
 
-    let file = tempfile::Builder::new()
-        .prefix(".ptscan-")
-        .suffix(".tmp")
-        .tempfile_in(dir)
-        .map_err(Refused::io)?;
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".ptscan-").suffix(".tmp");
+
+    // tempfile creates files owner-only (0600). Give the file the mode a
+    // plain `File::create` would (0666 less the umask, which `open` applies),
+    // or keep the mode of the file being replaced.
+    #[cfg(unix)]
+    let existing = {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o666));
+        fs::metadata(path).ok().map(|m| m.permissions())
+    };
+
+    let file = builder.tempfile_in(dir).map_err(Refused::io)?;
+
+    #[cfg(unix)]
+    if let Some(permissions) = existing {
+        file.as_file()
+            .set_permissions(permissions)
+            .map_err(Refused::io)?;
+    }
 
     let mut out = BufWriter::with_capacity(1 << 16, file);
 
@@ -376,5 +392,39 @@ mod tests {
         assert_eq!(write_refusal("relative.json"), FileRefusal::Relative);
         assert_eq!(write_refusal(missing), FileRefusal::Missing);
         assert_eq!(write_refusal(dir_path), FileRefusal::Directory);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn modes() {
+        use super::{Refused, write_streamed};
+        use std::os::unix::fs::PermissionsExt;
+        use std::path::Path;
+
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+
+        let dir = tempfile::tempdir().unwrap();
+        let probe = dir.path().join("probe");
+        std::fs::File::create(&probe).unwrap();
+
+        let new = dir.path().join("new.json");
+        write(new.to_str().unwrap(), &Thing { name: "x".into() }).unwrap();
+        assert_eq!(mode(&new), mode(&probe));
+
+        let old = dir.path().join("old.json");
+        std::fs::write(&old, b"").unwrap();
+        std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o640)).unwrap();
+        write(old.to_str().unwrap(), &Thing { name: "x".into() }).unwrap();
+        assert_eq!(mode(&old), 0o640);
+
+        let streamed = dir.path().join("streamed.json");
+        std::fs::write(&streamed, b"").unwrap();
+        std::fs::set_permissions(&streamed, std::fs::Permissions::from_mode(0o604)).unwrap();
+        write_streamed::<Thing, _>(streamed.to_str().unwrap(), |out| {
+            out.write_all(b"{}").map_err(Refused::io)?;
+            Ok(true)
+        })
+        .unwrap();
+        assert_eq!(mode(&streamed), 0o604);
     }
 }

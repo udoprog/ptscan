@@ -27,7 +27,6 @@ struct Node {
 /// with `offset`.
 #[derive(Clone, Copy)]
 struct Alternative {
-    node: u32,
     parent: u32,
     offset: Offset,
 }
@@ -81,8 +80,13 @@ pub struct PointerScan<'a> {
     visited: HashMap<Address, u32>,
     /// Every pointer visited, indexed by `visited`.
     nodes: Vec<Node>,
-    /// Every path to a pointer after the first, in the order visited.
-    alternatives: Vec<Alternative>,
+    /// The address of every pointer the scan looked for pointers to, and its
+    /// node (or [`ROOT`] for the needle), in the order looked at.
+    ///
+    /// The paths to a pointer after its first are not stored, since there can
+    /// be many more of them than pointers: they are found again from these
+    /// when a result's path passes through it.
+    expanded: Vec<(Address, u32)>,
     pub visited_count: usize,
     pub max_offset: Size,
     pub max_depth: usize,
@@ -105,7 +109,7 @@ impl<'a> PointerScan<'a> {
             reverse: Default::default(),
             visited: HashMap::new(),
             nodes: Vec::new(),
-            alternatives: Vec::new(),
+            expanded: Vec::new(),
             visited_count: 0,
             max_offset: 0x1000u32.into(),
             max_depth: 7,
@@ -173,7 +177,7 @@ impl<'a> PointerScan<'a> {
             ref reverse,
             ref mut visited,
             ref mut nodes,
-            ref mut alternatives,
+            ref mut expanded,
             ref mut visited_count,
             max_depth,
             max_offset,
@@ -190,6 +194,7 @@ impl<'a> PointerScan<'a> {
                 break;
             }
 
+            expanded.push((n, parent));
             let end = reverse.partition_point(|&(to, _)| to <= n);
             let it = reverse.get(..end).unwrap_or_default().iter().rev();
 
@@ -201,12 +206,7 @@ impl<'a> PointerScan<'a> {
                 }
 
                 let node = match visited.entry(hit) {
-                    hash_map::Entry::Occupied(e) => {
-                        alternatives.push(Alternative {
-                            node: *e.get(),
-                            parent,
-                            offset,
-                        });
+                    hash_map::Entry::Occupied(..) => {
                         *visited_count = visited_count.saturating_add(1);
                         continue;
                     }
@@ -266,12 +266,59 @@ impl<'a> PointerScan<'a> {
         Ok(())
     }
 
+    /// Push the paths to the pointer at `address` after its first onto
+    /// `alternatives`, in the order [`Self::scan`] came across them.
+    ///
+    /// These are the pointers looked at by the scan that the pointer at
+    /// `address` points within [`Self::max_offset`] below, except the first,
+    /// which is the one it was reached from first. `by_address` holds
+    /// indexes into [`Self::expanded`] sorted by address, and `found` is
+    /// scratch space.
+    fn alternatives(
+        &self,
+        by_address: &[(Address, usize)],
+        address: Address,
+        found: &mut Vec<usize>,
+        alternatives: &mut Vec<Alternative>,
+    ) {
+        alternatives.clear();
+
+        let Some(to) = self.follow(address) else {
+            return;
+        };
+
+        found.clear();
+        let start = by_address.partition_point(|&(n, _)| n < to);
+
+        for &(n, index) in by_address.get(start..).unwrap_or_default() {
+            if !n.offset_of(to).is_within(self.max_offset) {
+                break;
+            }
+
+            found.push(index);
+        }
+
+        found.sort_unstable();
+
+        for &index in found.iter().skip(1) {
+            if let Some(&(n, parent)) = self.expanded.get(index) {
+                alternatives.push(Alternative {
+                    parent,
+                    offset: n.offset_of(to),
+                });
+            }
+        }
+    }
+
     /// Walk the path of `pointer` from its base, calling `f` at each pointer
     /// along it with the offsets taken so far and the alternative paths to
     /// that pointer.
     fn walk_alternatives(
         &self,
+        by_address: &[(Address, usize)],
         pointer: &Pointer,
+        found: &mut Vec<usize>,
+        alternatives: &mut Vec<Alternative>,
         mut f: impl FnMut(&[Offset], &[Alternative]),
     ) -> anyhow::Result<()> {
         let mut address = pointer
@@ -283,11 +330,9 @@ impl<'a> PointerScan<'a> {
         let mut it = pointer.offsets.iter().copied();
 
         while !self.cancel.test() {
-            if let Some(&node) = self.visited.get(&address) {
-                let start = self.alternatives.partition_point(|a| a.node < node);
-                let extra = self.alternatives.get(start..).unwrap_or_default();
-                let end = extra.partition_point(|a| a.node == node);
-                f(&path, extra.get(..end).unwrap_or_default());
+            if self.visited.contains_key(&address) {
+                self.alternatives(by_address, address, found, alternatives);
+                f(&path, alternatives);
             }
 
             if let Some(a) = self.follow(address) {
@@ -319,11 +364,16 @@ impl<'a> PointerScan<'a> {
             return Ok(());
         }
 
-        // Group the alternatives by node, keeping the order they were found
-        // in, so that each node's are a range.
-        let alternatives = &mut self.alternatives;
-        self.thread_pool
-            .install(|| alternatives.par_sort_by_key(|alternative| alternative.node));
+        let mut by_address = self
+            .expanded
+            .iter()
+            .enumerate()
+            .map(|(index, &(n, _))| (n, index))
+            .collect::<Vec<_>>();
+        self.thread_pool.install(|| by_address.par_sort_unstable());
+
+        let mut found = Vec::new();
+        let mut alternatives = Vec::new();
 
         // Count the additions first so that they can be added in place, with
         // no room to spare.
@@ -334,7 +384,13 @@ impl<'a> PointerScan<'a> {
                 break;
             }
 
-            self.walk_alternatives(pointer, |_, extra| count += extra.len())?;
+            self.walk_alternatives(
+                &by_address,
+                pointer,
+                &mut found,
+                &mut alternatives,
+                |_, extra| count = count.saturating_add(extra.len()),
+            )?;
         }
 
         let len = pointers.len();
@@ -352,24 +408,30 @@ impl<'a> PointerScan<'a> {
                 None => break,
             };
 
-            self.walk_alternatives(&pointer, |path, extra| {
-                for alternative in extra {
-                    if truncated || pointers.len() >= self.max_paths {
-                        truncated = true;
-                        return;
-                    }
+            self.walk_alternatives(
+                &by_address,
+                &pointer,
+                &mut found,
+                &mut alternatives,
+                |path, extra| {
+                    for alternative in extra {
+                        if truncated || pointers.len() >= self.max_paths {
+                            truncated = true;
+                            return;
+                        }
 
-                    let capacity = path
-                        .len()
-                        .saturating_add(1)
-                        .saturating_add(path_len(&self.nodes, alternative.parent));
-                    let mut offsets = SVec::with_capacity(capacity);
-                    offsets.extend_from_slice(path);
-                    offsets.push(alternative.offset);
-                    extend_path(&self.nodes, alternative.parent, &mut offsets);
-                    pointers.push(Pointer::new(pointer.base.clone(), offsets));
-                }
-            })?;
+                        let capacity = path
+                            .len()
+                            .saturating_add(1)
+                            .saturating_add(path_len(&self.nodes, alternative.parent));
+                        let mut offsets = SVec::with_capacity(capacity);
+                        offsets.extend_from_slice(path);
+                        offsets.push(alternative.offset);
+                        extend_path(&self.nodes, alternative.parent, &mut offsets);
+                        pointers.push(Pointer::new(pointer.base.clone(), offsets));
+                    }
+                },
+            )?;
 
             if truncated {
                 break;

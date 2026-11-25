@@ -802,6 +802,10 @@ mod tests {
     static HELD_PAIR: [AtomicU64; 2] = [AtomicU64::new(HELD), AtomicU64::new(HELD)];
     /// `HELD` in the image's read-only data, which value scans skip.
     static HELD_READ_ONLY: u64 = HELD;
+    /// Words in the image's writable data and on the heap that tests write
+    /// pointer graphs into.
+    const GRAPH_WORDS: usize = 32;
+    static HELD_GRAPH: [AtomicU64; GRAPH_WORDS] = [const { AtomicU64::new(0) }; GRAPH_WORDS];
 
     /// Run in a re-executed test binary by [`Holder::spawn`]: keeps `HELD` and
     /// a pointer to it on the heap, prints their addresses, that of
@@ -815,12 +819,15 @@ mod tests {
 
         let value = Box::new(std::hint::black_box(HELD));
         let pointer = Box::new(&*value as *const u64 as usize);
+        let heap_graph = Box::new([0u64; GRAPH_WORDS]);
         println!(
-            "held {:x} {:x} {:x} {:x}",
+            "held {:x} {:x} {:x} {:x} {:x} {:x}",
             &*value as *const u64 as usize,
             &*pointer as *const usize as usize,
             HELD_PAIR.as_ptr() as usize,
-            std::hint::black_box(&HELD_READ_ONLY) as *const u64 as usize
+            std::hint::black_box(&HELD_READ_ONLY) as *const u64 as usize,
+            HELD_GRAPH.as_ptr() as usize,
+            heap_graph.as_ptr() as usize,
         );
         io::stdout().flush().unwrap();
 
@@ -833,7 +840,7 @@ mod tests {
             io::stdout().flush().unwrap();
         }
 
-        std::hint::black_box((value, pointer, &HELD_PAIR));
+        std::hint::black_box((value, pointer, heap_graph, &HELD_PAIR, &HELD_GRAPH));
     }
 
     struct Holder {
@@ -843,6 +850,10 @@ mod tests {
         pointer: u64,
         pair: u64,
         read_only: u64,
+        /// [`GRAPH_WORDS`] words in the image.
+        image_graph: u64,
+        /// [`GRAPH_WORDS`] words on the heap.
+        heap_graph: u64,
     }
 
     impl Holder {
@@ -873,6 +884,8 @@ mod tests {
                     let pointer = it.next().unwrap();
                     let pair = it.next().unwrap();
                     let read_only = it.next().unwrap();
+                    let image_graph = it.next().unwrap();
+                    let heap_graph = it.next().unwrap();
                     return Self {
                         child,
                         stdout,
@@ -880,6 +893,8 @@ mod tests {
                         pointer,
                         pair,
                         read_only,
+                        image_graph,
+                        heap_graph,
                     };
                 }
             }
@@ -1562,6 +1577,160 @@ mod tests {
         assert!(!found.scanned_truncated);
         assert_eq!(found.all, found.scanned);
         assert!(found.all_truncated);
+    }
+
+    /// A fixed graph of pointers between [`GRAPH_WORDS`] words in the image
+    /// and as many on the heap, each pointing up to three words below a
+    /// word, with many ways to reach each word.
+    fn graph_pointers(holder: &Holder) -> Vec<(u64, u64)> {
+        let word = |i: u64| {
+            let (base, i) = if i < GRAPH_WORDS as u64 {
+                (holder.image_graph, i)
+            } else {
+                (holder.heap_graph, i - GRAPH_WORDS as u64)
+            };
+            base + i * 8
+        };
+
+        let words = 2 * GRAPH_WORDS as u64;
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+
+        (0..words)
+            .map(|from| {
+                let to = next() % words;
+                let below = (next() % 4).min(to % GRAPH_WORDS as u64);
+                (word(from), word(to) - below * 8)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn backreference_scan_matches_eager_alternatives() {
+        let holder = Holder::spawn();
+        let mut handle = holder.handle();
+        handle.refresh_modules().unwrap();
+
+        let pointers = graph_pointers(&holder);
+        let needle = holder.heap_graph + 20 * 8;
+        let found = pointer_paths(&handle, &pointers, needle, 5, 0x18, usize::MAX);
+        assert!(!found.all_truncated);
+
+        // Each path as the word its base is at and its offsets, in the order
+        // found, hashed with FNV-1a.
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut feed = |bytes: &[u8]| {
+            for &b in bytes {
+                hash = (hash ^ u64::from(b)).wrapping_mul(0x100_0000_01b3);
+            }
+        };
+
+        for (base, offsets) in &found.all {
+            assert!(*base >= holder.image_graph);
+            feed(&((base - holder.image_graph) / 8).to_le_bytes());
+
+            for o in offsets {
+                feed(format!("{} ", o).as_bytes());
+            }
+
+            feed(b";");
+        }
+
+        // Captured from the scan as of e5ae649, which stored every
+        // alternative path during the initial scan.
+        assert_eq!(
+            (found.scanned.len(), found.all.len(), hash),
+            (32, 412, 16664696828504641264),
+            "{:x?}",
+            found.all
+        );
+    }
+
+    /// Peak resident memory of this process since the last reset, in KiB.
+    fn peak_rss_kib() -> u64 {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let line = status.lines().find(|l| l.starts_with("VmHWM:")).unwrap();
+        line.split_whitespace().nth(1).unwrap().parse().unwrap()
+    }
+
+    /// Measures a pointer scan at the default settings on a python3 child,
+    /// printing what it kept and the growth in peak memory.
+    ///
+    /// Run alone, in release: `cargo test --release -p ptscan-core --lib
+    /// pointer_scan_python_peak -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "measurement; needs python3"]
+    fn pointer_scan_python_peak() {
+        let mut child = Command::new("python3")
+            .args([
+                "-c",
+                "import sys, asyncio, json, email, http.client, unittest, decimal; \
+                 x = [object() for _ in range(1000)]; \
+                 print(hex(id(x[500])), flush=True); sys.stdin.read()",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn python3");
+        let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
+        let child = Scratch(child);
+        let line = stdout.next().unwrap().unwrap();
+        let needle = u64::from_str_radix(line.trim_start_matches("0x"), 16).unwrap();
+
+        let mut handle = ProcessHandle::open(child.0.id()).unwrap().unwrap();
+        handle.refresh_modules().unwrap();
+        let pool = rayon::ThreadPoolBuilder::new().build().unwrap();
+        let filter = FilterExpr::pointer(ValueExpr::Value, &handle.process).unwrap();
+        let mut addresses = Addresses::new(handle.process.pointer_width);
+        let mut values = Values::new(handle.process.pointer_width.into_type());
+        handle
+            .initial_scan(
+                ScanContext::new(&pool, None, NoProgress),
+                &filter,
+                &mut addresses,
+                &mut values,
+                Default::default(),
+            )
+            .unwrap();
+
+        // At the server's default cap on stored paths, then without one.
+        for max_paths in [1_000_000, usize::MAX] {
+            let token = Token::new();
+            let mut scan = PointerScan::new(&pool, &handle, &token);
+            scan.max_paths = max_paths;
+            scan.build_references(addresses.iter_copied(), values.iter())
+                .unwrap();
+
+            std::fs::write("/proc/self/clear_refs", "5").unwrap();
+            let before = peak_rss_kib();
+            let start = std::time::Instant::now();
+            let mut pointers = Vec::new();
+            scan.scan(Address::new(needle), &mut pointers, &mut NoPathProgress)
+                .unwrap();
+            let scanned = pointers.len();
+            let alternatives = scan.visited_count;
+            scan.backreference_scan(&mut pointers, &mut NoPathProgress)
+                .unwrap();
+            let peak = peak_rss_kib().saturating_sub(before);
+
+            println!(
+                "max_paths {} references {} paths {} all {} alternatives {} \
+                 truncated {} peak +{} MiB in {:?}",
+                max_paths,
+                scan.forward.len(),
+                scanned,
+                pointers.len(),
+                alternatives,
+                scan.truncated(),
+                peak / 1024,
+                start.elapsed()
+            );
+        }
     }
 
     #[test]

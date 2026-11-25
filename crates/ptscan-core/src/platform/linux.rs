@@ -638,8 +638,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        process::ProcessInfo, Addresses, FilterExpr, Process, ProcessHandle, ScanContext,
-        ScanProgress, ScanResults, Type, ValueExpr, Values,
+        process::ProcessInfo, Addresses, FilterExpr, Offset, Pointer, PointerScan, Process,
+        ProcessHandle, ScanContext, ScanProgress, ScanResults, Sign, Token, Type, Value, ValueExpr,
+        Values,
     };
 
     /// Kills the scratch child when dropped, so a failing test cleans up.
@@ -1147,6 +1148,115 @@ mod tests {
         let filter = FilterExpr::pointer(ValueExpr::Value, &handle.process).unwrap();
         let found = scan(&handle, &filter, handle.process.pointer_width.into_type());
         assert!(found.contains(&Address::new(holder.pointer)));
+    }
+
+    struct NoPathProgress;
+
+    impl crate::PointerScanInitialProgress for NoPathProgress {
+        fn report(&mut self, _: usize, _: usize) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl crate::PointerScanBackreferenceProgress for NoPathProgress {
+        fn report(&mut self, _: usize, _: usize) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Writes each `(from, to)` pointer into the child and pointer-scans
+    /// those from `needle`, returning each path found as its base address and
+    /// offsets, before and after the backreference scan.
+    ///
+    /// The pointers are handed to the scan as written rather than found by an
+    /// initial scan, so the test does not depend on where the child's
+    /// allocations land.
+    #[allow(clippy::type_complexity)]
+    fn pointer_paths(
+        handle: &ProcessHandle,
+        pointers: &[(u64, u64)],
+        needle: u64,
+        max_depth: usize,
+        max_offset: u64,
+    ) -> (Vec<(u64, Vec<Offset>)>, Vec<(u64, Vec<Offset>)>) {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        let mut addresses = Addresses::new(handle.process.pointer_width);
+        let mut values = Values::new(handle.process.pointer_width.into_type());
+
+        for &(from, to) in pointers {
+            assert!(handle
+                .process
+                .handle
+                .write_memory(Address::new(from), &to.to_ne_bytes())
+                .unwrap());
+            addresses.push(Address::new(from));
+            values.push(Value::Pointer(Address::new(to)));
+        }
+
+        let token = Token::new();
+        let mut scan = PointerScan::new(&pool, handle, &token);
+        scan.max_depth = max_depth;
+        scan.max_offset = Size::new(max_offset);
+        scan.build_references(addresses.iter_copied(), values.iter())
+            .unwrap();
+
+        let paths = |pointers: &[Pointer]| {
+            pointers
+                .iter()
+                .map(|p| (p.base.eval(handle).unwrap().unwrap().0, p.offsets.clone()))
+                .collect::<Vec<_>>()
+        };
+
+        let mut pointers = Vec::new();
+        scan.scan(Address::new(needle), &mut pointers, &mut NoPathProgress)
+            .unwrap();
+        let scanned = paths(&pointers);
+        scan.backreference_scan(&mut pointers, &mut NoPathProgress)
+            .unwrap();
+        (scanned, paths(&pointers))
+    }
+
+    #[test]
+    fn pointer_scan_keeps_every_pointer_to_a_shared_target() {
+        let holder = Holder::spawn();
+        let mut handle = holder.handle();
+        handle.refresh_modules().unwrap();
+
+        // Both words of the pair, in the image, point at the heap value.
+        let pointers = [(holder.pair, holder.value), (holder.pair + 8, holder.value)];
+        let (scanned, _) = pointer_paths(&handle, &pointers, holder.value, 1, 0);
+
+        for base in [holder.pair, holder.pair + 8] {
+            assert!(
+                scanned.contains(&(base, vec![Offset::zero()])),
+                "{:x}: {:x?}",
+                base,
+                scanned
+            );
+        }
+    }
+
+    #[test]
+    fn backreference_scan_adds_alternative_paths() {
+        let holder = Holder::spawn();
+        let mut handle = holder.handle();
+        handle.refresh_modules().unwrap();
+
+        // The first word points at itself, so the needle (the second word)
+        // is reached from it both directly and through the first word again.
+        let pointers = [(holder.pair, holder.pair)];
+        let eight = Offset::new(Sign::Plus, Size::new(8));
+        let direct = (holder.pair, vec![eight]);
+        let through = (holder.pair, vec![Offset::zero(), eight]);
+
+        let (scanned, all) = pointer_paths(&handle, &pointers, holder.pair + 8, 2, 8);
+        assert!(scanned.contains(&direct), "{:x?}", scanned);
+        assert!(!scanned.contains(&through), "{:x?}", scanned);
+        assert!(all.contains(&direct), "{:x?}", all);
+        assert!(all.contains(&through), "{:x?}", all);
     }
 
     #[test]

@@ -1,10 +1,8 @@
-use crate::{
-    Address, Base, FollowablePointer as _, Location, Offset, Pointer, ProcessHandle, Size, Token,
-    Type,
-};
+use crate::{Address, Base, Location, Offset, Pointer, ProcessHandle, Size, Token, Type};
 use anyhow::anyhow;
 use hashbrown::{hash_map, HashMap};
-use std::collections::{BTreeMap, VecDeque};
+use rayon::slice::ParallelSliceMut as _;
+use std::collections::VecDeque;
 
 type SVec = Vec<Offset>;
 
@@ -26,14 +24,14 @@ pub trait PointerScanBackreferenceProgress {
 /// max_offset: 0x1000
 /// max_depth: 7
 pub struct PointerScan<'a> {
-    #[allow(unused)]
     thread_pool: &'a rayon::ThreadPool,
     handle: &'a ProcessHandle,
     cancel: &'a Token,
-    /// Forward references used.
-    pub forward: HashMap<Address, Address>,
-    /// Reverse references used.
-    pub reverse: BTreeMap<Address, Address>,
+    /// Every pointer as `(from, to)`, sorted with one entry per `from`.
+    pub forward: Vec<(Address, Address)>,
+    /// Every pointer as `(to, from)`, sorted, so that all pointers to a
+    /// shared target are kept.
+    pub reverse: Vec<(Address, Address)>,
     // contains both all visited links and alternative paths for each address.
     pub visited: HashMap<Address, Vec<SVec>>,
     pub visited_count: usize,
@@ -66,17 +64,36 @@ impl<'a> PointerScan<'a> {
         A: IntoIterator<Item = Address>,
         V: IntoIterator<Item = dynamicvec::Accessor<'v, Type>>,
     {
-        for (from, value) in addresses.into_iter().zip(values) {
-            let to = match value.read().as_address() {
-                Some(address) => address,
-                None => continue,
-            };
+        let mut forward = addresses
+            .into_iter()
+            .zip(values)
+            .filter_map(|(from, value)| Some((from, value.read().as_address()?)))
+            .collect::<Vec<_>>();
 
-            self.forward.insert(from, to);
-            self.reverse.insert(to, from);
-        }
+        self.thread_pool.install(|| {
+            forward.par_sort_unstable();
+            forward.dedup_by_key(|&mut (from, _)| from);
+
+            let mut reverse = forward
+                .iter()
+                .map(|&(from, to)| (to, from))
+                .collect::<Vec<_>>();
+            reverse.par_sort_unstable();
+
+            self.forward = forward;
+            self.reverse = reverse;
+        });
 
         Ok(())
+    }
+
+    fn follow(&self, from: Address) -> Option<Address> {
+        let index = self.forward.partition_point(|&(f, _)| f < from);
+
+        match self.forward.get(index) {
+            Some(&(f, to)) if f == from => Some(to),
+            _ => None,
+        }
     }
 
     /// Perform the initial backwards pointer scan.
@@ -105,10 +122,11 @@ impl<'a> PointerScan<'a> {
                 break;
             }
 
-            let it = reverse.range(..=n).rev();
+            let end = reverse.partition_point(|&(to, _)| to <= n);
+            let it = reverse.get(..end).unwrap_or_default().iter().rev();
 
-            for (from, hit) in it {
-                let offset = n.offset_of(*from);
+            for &(to, hit) in it {
+                let offset = n.offset_of(to);
 
                 if !offset.is_within(max_offset) {
                     break;
@@ -117,7 +135,7 @@ impl<'a> PointerScan<'a> {
                 let mut path = path.clone();
                 path.push(offset);
 
-                match visited.entry(*hit) {
+                match visited.entry(hit) {
                     hash_map::Entry::Occupied(mut e) => {
                         e.get_mut().push(path);
                         *visited_count += 1;
@@ -128,7 +146,7 @@ impl<'a> PointerScan<'a> {
                     }
                 }
 
-                match handle.find_location(*hit) {
+                match handle.find_location(hit) {
                     Location::Module(module) => {
                         let mut path = path.clone();
                         let offset = hit.offset_of(module.range.base);
@@ -154,7 +172,7 @@ impl<'a> PointerScan<'a> {
                 let depth = depth + 1;
 
                 if depth < max_depth {
-                    queue.push_back((*hit, depth, path));
+                    queue.push_back((hit, depth, path));
                 }
             }
 
@@ -184,8 +202,9 @@ impl<'a> PointerScan<'a> {
             }
 
             let mut address = pointer
-                .follow_default(self.handle)?
-                .ok_or_else(|| anyhow!("could not resolve pointer to address"))?;
+                .base
+                .eval(self.handle)?
+                .ok_or_else(|| anyhow!("could not resolve pointer base to address"))?;
 
             let mut path = SVec::new();
             let mut it = pointer.offsets.iter().copied();
@@ -201,7 +220,7 @@ impl<'a> PointerScan<'a> {
                     }
                 }
 
-                if let Some(a) = self.forward.get(&address).copied() {
+                if let Some(a) = self.follow(address) {
                     if let Some(o) = it.next() {
                         address = a.saturating_offset(o);
                         path.push(o);

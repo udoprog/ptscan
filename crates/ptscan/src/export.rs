@@ -4,7 +4,7 @@
 //! same style as stored settings, with a `kind` naming what it holds.
 
 use std::fs::{self, File};
-use std::io::{self, ErrorKind, Read as _, Write as _};
+use std::io::{self, BufWriter, ErrorKind, Read as _};
 use std::path::Path;
 
 use api::FileRefusal;
@@ -12,8 +12,8 @@ use musli::alloc::Global;
 use musli::mode::Text;
 use musli::{Decode, Encode};
 
-/// Something written to and read from an exported file.
-pub(crate) trait Export: Encode<Text> + for<'de> Decode<'de, Text, Global> {
+/// What an exported file holds.
+pub(crate) trait Export {
     const KIND: &'static str;
     const VERSION: u32;
     /// The largest file read back.
@@ -27,14 +27,14 @@ pub(crate) struct Refused {
 }
 
 impl Refused {
-    fn new(refusal: FileRefusal, error: impl Into<String>) -> Self {
+    pub(crate) fn new(refusal: FileRefusal, error: impl Into<String>) -> Self {
         Self {
             refusal,
             error: error.into(),
         }
     }
 
-    fn io(error: io::Error) -> Self {
+    pub(crate) fn io(error: io::Error) -> Self {
         let refusal = match error.kind() {
             ErrorKind::NotFound => FileRefusal::Missing,
             ErrorKind::PermissionDenied | ErrorKind::ReadOnlyFilesystem => FileRefusal::Denied,
@@ -78,12 +78,8 @@ fn absolute(path: &str) -> Result<&Path, Refused> {
     Ok(path)
 }
 
-/// Write `value` to `path` through a temporary file beside it, so a failed
-/// write never leaves a partial file behind.
-pub(crate) fn write<T>(path: &str, value: &T) -> Result<(), Refused>
-where
-    T: Export,
-{
+/// The path a file can be written to and the directory it is in.
+pub(crate) fn writable(path: &str) -> Result<(&Path, &Path), Refused> {
     let path = absolute(path)?;
 
     if path.is_dir() {
@@ -100,34 +96,11 @@ where
         ));
     };
 
-    let envelope = EnvelopeRef {
-        version: T::VERSION,
-        kind: T::KIND,
-        value,
-    };
-
-    let json = musli::json::to_vec_pretty(&envelope)
-        .map_err(|error| Refused::new(FileRefusal::Failed, error.to_string()))?;
-
-    let mut file = tempfile::Builder::new()
-        .prefix(".ptscan-")
-        .suffix(".tmp")
-        .tempfile_in(dir)
-        .map_err(Refused::io)?;
-
-    file.write_all(&json).map_err(Refused::io)?;
-    file.write_all(b"\n").map_err(Refused::io)?;
-    file.as_file().sync_all().map_err(Refused::io)?;
-    file.persist(path)
-        .map_err(|error| Refused::io(error.error))?;
-    Ok(())
+    Ok((path, dir))
 }
 
-/// Read a value written by [`write`].
-pub(crate) fn read<T>(path: &str) -> Result<T, Refused>
-where
-    T: Export,
-{
+/// The path of a file that can be read.
+pub(crate) fn readable(path: &str) -> Result<&Path, Refused> {
     let path = absolute(path)?;
 
     if fs::metadata(path).map_err(Refused::io)?.is_dir() {
@@ -137,30 +110,157 @@ where
         ));
     }
 
-    let mut bytes = Vec::new();
+    Ok(path)
+}
 
-    File::open(path)
-        .map_err(Refused::io)?
-        .take(T::MAX_SIZE.saturating_add(1))
-        .read_to_end(&mut bytes)
+/// Write `value` to `path` through a temporary file beside it, so a failed
+/// write never leaves a partial file behind.
+pub(crate) fn write<T>(path: &str, value: &T) -> Result<(), Refused>
+where
+    T: Export + Encode<Text>,
+{
+    let envelope = EnvelopeRef {
+        version: T::VERSION,
+        kind: T::KIND,
+        value,
+    };
+
+    let json = musli::json::to_vec_pretty(&envelope)
+        .map_err(|error| Refused::new(FileRefusal::Failed, error.to_string()))?;
+
+    atomic(path, |out| {
+        out.write_all(&json).map_err(Refused::io)?;
+        out.write_all(b"\n").map_err(Refused::io)?;
+        Ok(true)
+    })?;
+
+    Ok(())
+}
+
+/// Write a file of kind `T` whose value `body` writes as JSON, piece by piece,
+/// through a temporary file like [`write`]. When `body` returns `false` the
+/// write is abandoned, leaving `path` as it was, and so is this.
+pub(crate) fn write_streamed<T, F>(path: &str, body: F) -> Result<bool, Refused>
+where
+    T: Export,
+    F: FnOnce(&mut dyn io::Write) -> Result<bool, Refused>,
+{
+    atomic(path, |out| {
+        let kind = musli::json::to_string(T::KIND)
+            .map_err(|error| Refused::new(FileRefusal::Failed, error.to_string()))?;
+
+        write!(
+            out,
+            "{{\n  \"version\": {},\n  \"kind\": {kind},\n  \"value\": ",
+            T::VERSION
+        )
         .map_err(Refused::io)?;
 
-    if u64::try_from(bytes.len()).map_or(true, |len| len > T::MAX_SIZE) {
-        return Err(Refused::new(
-            FileRefusal::TooLarge,
-            format!("files of this kind are at most {} bytes", T::MAX_SIZE),
-        ));
+        if !body(out)? {
+            return Ok(false);
+        }
+
+        out.write_all(b"\n}\n").map_err(Refused::io)?;
+        Ok(true)
+    })
+}
+
+fn atomic<F>(path: &str, body: F) -> Result<bool, Refused>
+where
+    F: FnOnce(&mut dyn io::Write) -> Result<bool, Refused>,
+{
+    let (path, dir) = writable(path)?;
+
+    let file = tempfile::Builder::new()
+        .prefix(".ptscan-")
+        .suffix(".tmp")
+        .tempfile_in(dir)
+        .map_err(Refused::io)?;
+
+    let mut out = BufWriter::with_capacity(1 << 16, file);
+
+    // Dropping the temporary file removes it.
+    if !body(&mut out)? {
+        return Ok(false);
     }
 
+    let file = out
+        .into_inner()
+        .map_err(|error| Refused::io(error.into_error()))?;
+    file.as_file().sync_all().map_err(Refused::io)?;
+    file.persist(path)
+        .map_err(|error| Refused::io(error.error))?;
+    Ok(true)
+}
+
+/// Read a value written by [`write`].
+pub(crate) fn read<T>(path: &str) -> Result<T, Refused>
+where
+    T: Export + for<'de> Decode<'de, Text, Global>,
+{
+    let bytes = read_bytes::<T>(path, |_, _| true)?.unwrap_or_default();
     let text = String::from_utf8(bytes)
         .map_err(|_| Refused::new(FileRefusal::Malformed, "not UTF-8 text"))?;
-
     decode(&text)
 }
 
-fn decode<T>(text: &str) -> Result<T, Refused>
+/// Read the bytes of a file of kind `T`, telling `progress` how many have
+/// been read of how many; it returns `false` to stop, and then this returns
+/// `None`.
+pub(crate) fn read_bytes<T>(
+    path: &str,
+    mut progress: impl FnMut(u64, u64) -> bool,
+) -> Result<Option<Vec<u8>>, Refused>
 where
     T: Export,
+{
+    const CHUNK: usize = 1 << 20;
+
+    let path = readable(path)?;
+    let file = File::open(path).map_err(Refused::io)?;
+    let size = file.metadata().map_err(Refused::io)?.len();
+    let too_large = || {
+        Refused::new(
+            FileRefusal::TooLarge,
+            format!("files of this kind are at most {} bytes", T::MAX_SIZE),
+        )
+    };
+
+    if size > T::MAX_SIZE {
+        return Err(too_large());
+    }
+
+    let mut file = file.take(T::MAX_SIZE.saturating_add(1));
+    let mut bytes = Vec::with_capacity(usize::try_from(size).unwrap_or(0));
+    let mut chunk = vec![0; CHUNK];
+
+    loop {
+        let n = match file.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) => return Err(Refused::io(error)),
+        };
+
+        bytes.extend_from_slice(chunk.get(..n).unwrap_or_default());
+
+        let read = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+
+        if read > T::MAX_SIZE {
+            return Err(too_large());
+        }
+
+        if !progress(read, size.max(read)) {
+            return Ok(None);
+        }
+    }
+
+    Ok(Some(bytes))
+}
+
+pub(crate) fn decode<T>(text: &str) -> Result<T, Refused>
+where
+    T: Export + for<'de> Decode<'de, Text, Global>,
 {
     let malformed =
         |error: musli::json::Error| Refused::new(FileRefusal::Malformed, error.to_string());

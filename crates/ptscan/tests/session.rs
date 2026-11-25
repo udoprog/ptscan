@@ -868,3 +868,328 @@ async fn malformed_scratch_files_are_refused() {
 
     assert_eq!(texts(&scratch_list(&handle).await), before);
 }
+
+async fn pointer_state(handle: &Handle) -> api::PointerScanState {
+    timeout!(
+        handle
+            .request()
+            .body(api::GetPointerScanStateRequest)
+            .send()
+    )
+    .unwrap()
+    .decode()
+    .unwrap()
+}
+
+/// Start a save or load, which must start, and wait for its outcome.
+async fn pointer_file<T>(handle: &Handle, body: T) -> api::PointerScanFileOutcome
+where
+    T: musli_web::api::Request,
+{
+    let serial = pointer_state(handle)
+        .await
+        .last_file
+        .map_or(0, |outcome| outcome.serial);
+
+    let response: api::PointerScanFileResponse = timeout!(handle.request().body(body).send())
+        .unwrap()
+        .decode_any()
+        .unwrap();
+    assert_eq!(response, api::PointerScanFileResponse::default());
+
+    timeout!(async {
+        loop {
+            let state = pointer_state(handle).await;
+
+            if let Some(outcome) = state.last_file.filter(|o| o.serial != serial) {
+                assert_eq!(state.file, None);
+                return outcome;
+            }
+
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+}
+
+async fn save_paths(handle: &Handle, path: &str) -> api::PointerScanFileOutcome {
+    pointer_file(handle, api::SavePointerScanRequest { path: path.into() }).await
+}
+
+async fn load_paths(handle: &Handle, path: &str) -> api::PointerScanFileOutcome {
+    pointer_file(handle, api::LoadPointerScanRequest { path: path.into() }).await
+}
+
+async fn all_paths(handle: &Handle) -> Vec<String> {
+    let mut paths = Vec::new();
+
+    loop {
+        let page: api::PointerScanResultsResponse = timeout!(
+            handle
+                .request()
+                .body(api::PointerScanResultsRequest {
+                    offset: paths.len() as u64,
+                    limit: api::MAX_SCAN_PAGE,
+                })
+                .send()
+        )
+        .unwrap()
+        .decode()
+        .unwrap();
+
+        if page.results.is_empty() {
+            return paths;
+        }
+
+        paths.extend(page.results);
+    }
+}
+
+/// A pointer-scan file of `count` paths through two modules.
+fn paths_file(path: &Path, count: usize) {
+    use std::io::Write as _;
+
+    let mut out = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+    write!(
+        out,
+        r#"{{"version": 1, "kind": "pointer-scan", "value": {{
+            "value_type": "u32", "target": "\"game.exe\" + 0x10",
+            "settings": {{"max_depth": 5, "max_offset": 4096, "max_paths": 2000000}},
+            "truncated": true, "modules": ["game.exe", "engine.dll"], "paths": ["#
+    )
+    .unwrap();
+
+    for n in 0..count {
+        let comma = if n == 0 { "" } else { "," };
+        write!(
+            out,
+            "{comma}{{\"module\":{},\"offset\":{},\"offsets\":[{},{},-8]}}",
+            n % 2,
+            0x1000 + n,
+            n % 0x1000,
+            (n * 8) % 0x800
+        )
+        .unwrap();
+    }
+
+    out.write_all(b"]}}").unwrap();
+}
+
+#[tokio::test]
+async fn pointer_paths_round_trip_through_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.ptscan.json");
+    let saved = dir.path().join("saved.ptscan.json");
+    paths_file(&source, 2500);
+
+    let handle = connect(server(ptscan::Shared::default()).await).await;
+
+    let request = api::SavePointerScanRequest {
+        path: saved.to_str().unwrap().into(),
+    };
+    let response: api::PointerScanFileResponse = timeout!(handle.request().body(request).send())
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert!(response.error.is_some(), "nothing to save yet");
+
+    let outcome = load_paths(&handle, source.to_str().unwrap()).await;
+    assert_eq!(outcome.refusal, None, "{:?}", outcome.error);
+    assert_eq!(outcome.paths, 2500);
+    assert!(!outcome.cancelled);
+
+    let state = pointer_state(&handle).await;
+    assert_eq!(state.results, 2500);
+    assert_eq!(state.value_type.as_deref(), Some("u32"));
+    assert_eq!(state.source.as_deref(), source.to_str());
+    assert!(state.last.as_ref().is_some_and(|last| last.truncated));
+
+    let loaded = all_paths(&handle).await;
+    assert_eq!(loaded.len(), 2500);
+    assert_eq!(loaded[0], "\"game.exe\" + 0x1000 -> 0x0 -> 0x0 -> -0x8");
+    assert_eq!(loaded[1], "\"engine.dll\" + 0x1001 -> 0x1 -> 0x8 -> -0x8");
+
+    let outcome = save_paths(&handle, saved.to_str().unwrap()).await;
+    assert_eq!(outcome.refusal, None, "{:?}", outcome.error);
+    assert_eq!(outcome.paths, 2500);
+
+    let json = std::fs::read_to_string(&saved).unwrap();
+    assert!(json.contains("\"kind\": \"pointer-scan\""), "{json:.200}");
+    assert!(json.contains("\"max_depth\": 5"), "{json:.400}");
+
+    // Loading what was saved gives the same paths.
+    let outcome = load_paths(&handle, saved.to_str().unwrap()).await;
+    assert_eq!(outcome.refusal, None, "{:?}", outcome.error);
+    assert_eq!(all_paths(&handle).await, loaded);
+
+    // A loaded path can be added to the scratch list, unresolved without
+    // the module.
+    let entry = add_watch(&handle, &loaded[0]).await;
+    assert_eq!(entry.pointer, loaded[0]);
+}
+
+#[tokio::test]
+async fn cancelled_pointer_path_save_leaves_no_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.ptscan.json");
+    let saved = dir.path().join("saved.ptscan.json");
+    paths_file(&source, 1_000_000);
+
+    let handle = connect(server(ptscan::Shared::default()).await).await;
+    let outcome = load_paths(&handle, source.to_str().unwrap()).await;
+    assert_eq!(outcome.refusal, None, "{:?}", outcome.error);
+    assert_eq!(outcome.paths, 1_000_000);
+
+    let response: api::PointerScanFileResponse = timeout!(
+        handle
+            .request()
+            .body(api::SavePointerScanRequest {
+                path: saved.to_str().unwrap().into(),
+            })
+            .send()
+    )
+    .unwrap()
+    .decode()
+    .unwrap();
+    assert_eq!(response, api::PointerScanFileResponse::default());
+
+    let state = pointer_state(&handle).await;
+    assert_eq!(state.file, Some(api::PointerScanFileKind::Save));
+    assert!(!state.running);
+
+    // While saving, nothing else starts.
+    let busy = timeout!(
+        handle
+            .request()
+            .body(api::LoadPointerScanRequest {
+                path: source.to_str().unwrap().into(),
+            })
+            .send()
+    )
+    .unwrap()
+    .decode()
+    .unwrap();
+    assert!(busy.error.is_some());
+
+    let _: api::PointerScanState =
+        timeout!(handle.request().body(api::CancelPointerScanRequest).send())
+            .unwrap()
+            .decode()
+            .unwrap();
+
+    let outcome = timeout!(async {
+        loop {
+            if let Some(outcome) = pointer_state(&handle)
+                .await
+                .last_file
+                .filter(|o| o.kind == api::PointerScanFileKind::Save)
+            {
+                return outcome;
+            }
+
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+
+    assert!(outcome.cancelled, "{outcome:?}");
+    assert_eq!(outcome.refusal, None);
+
+    let names = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["source.ptscan.json"]);
+
+    // The paths are as they were.
+    assert_eq!(pointer_state(&handle).await.results, 1_000_000);
+}
+
+#[tokio::test]
+async fn malformed_pointer_path_files_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.ptscan.json");
+    paths_file(&source, 10);
+    let json = std::fs::read(&source).unwrap();
+
+    let handle = connect(server(ptscan::Shared::default()).await).await;
+    assert_eq!(
+        load_paths(&handle, source.to_str().unwrap()).await.paths,
+        10
+    );
+    let before = all_paths(&handle).await;
+
+    let cases: [(&str, &[u8], api::FileRefusal); 7] = [
+        ("empty", b"", api::FileRefusal::Malformed),
+        ("truncated", &json[..json.len() / 2], api::FileRefusal::Malformed),
+        ("garbage", b"\xff\x00not json", api::FileRefusal::Malformed),
+        (
+            "module",
+            br#"{"version": 1, "kind": "pointer-scan", "value": {"modules": [], "paths": [{"module": 3, "offsets": []}]}}"#,
+            api::FileRefusal::Malformed,
+        ),
+        (
+            "kind",
+            br#"{"version": 1, "kind": "scratch", "value": {"entries": []}}"#,
+            api::FileRefusal::WrongKind,
+        ),
+        (
+            "version",
+            br#"{"version": 2, "kind": "pointer-scan", "value": {}}"#,
+            api::FileRefusal::UnsupportedVersion,
+        ),
+        (
+            "type",
+            br#"{"version": 1, "kind": "pointer-scan", "value": {"value_type": "none", "modules": [], "paths": []}}"#,
+            api::FileRefusal::Malformed,
+        ),
+    ];
+
+    for (name, bytes, refusal) in cases {
+        let path = dir.path().join(format!("{name}.ptscan.json"));
+        std::fs::write(&path, bytes).unwrap();
+
+        let outcome = load_paths(&handle, path.to_str().unwrap()).await;
+        assert_eq!(outcome.refusal, Some(refusal), "{name}: {outcome:?}");
+        assert!(outcome.error.is_some(), "{name}");
+        assert_eq!(all_paths(&handle).await, before, "{name}");
+    }
+
+    let refused = |body: api::LoadPointerScanRequest| async {
+        let response: api::PointerScanFileResponse = timeout!(handle.request().body(body).send())
+            .unwrap()
+            .decode()
+            .unwrap();
+        response.refusal
+    };
+
+    let missing = dir.path().join("missing.ptscan.json");
+    let load = |path: &Path| api::LoadPointerScanRequest {
+        path: path.to_str().unwrap().into(),
+    };
+    assert_eq!(
+        refused(load(&missing)).await,
+        Some(api::FileRefusal::Missing)
+    );
+    assert_eq!(
+        refused(load(dir.path())).await,
+        Some(api::FileRefusal::Directory)
+    );
+    assert_eq!(
+        refused(load(Path::new("relative.ptscan.json"))).await,
+        Some(api::FileRefusal::Relative)
+    );
+
+    let save = api::SavePointerScanRequest {
+        path: dir
+            .path()
+            .join("no")
+            .join("such.ptscan.json")
+            .to_str()
+            .unwrap()
+            .into(),
+    };
+    let response = timeout!(handle.request().body(save).send())
+        .unwrap()
+        .decode()
+        .unwrap();
+    assert_eq!(response.refusal, Some(api::FileRefusal::Missing));
+}

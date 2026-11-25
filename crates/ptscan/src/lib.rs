@@ -781,6 +781,28 @@ impl ws::Handler for Handler {
                 .await?;
                 outgoing.write(response);
             }
+            api::Request::SavePointerScan => {
+                let Some(request) = incoming.read::<api::SavePointerScanRequest>() else {
+                    return Ok(false);
+                };
+
+                let shared = self.shared.clone();
+                let response =
+                    tokio::task::spawn_blocking(move || shared.save_pointer_scan(request.path))
+                        .await?;
+                outgoing.write(response);
+            }
+            api::Request::LoadPointerScan => {
+                let Some(request) = incoming.read::<api::LoadPointerScanRequest>() else {
+                    return Ok(false);
+                };
+
+                let shared = self.shared.clone();
+                let response =
+                    tokio::task::spawn_blocking(move || shared.load_pointer_scan(request.path))
+                        .await?;
+                outgoing.write(response);
+            }
             api::Request::CancelPointerScan => {
                 outgoing.write(self.shared.cancel_pointer_scan());
             }

@@ -12,7 +12,7 @@ use crate::class;
 use crate::clipboard;
 use crate::icons::{AppIcon, icon};
 use crate::ui::actions::{Action, RowMenu, more, tool};
-use crate::ui::file_browser::{FileBrowser, FileMode};
+use crate::ui::file_browser::{FileBrowser, FileMode, file_name, refused, split_path};
 use crate::ui::pane::{Pane, PaneHead};
 
 const REFRESH_MS: u32 = 1000;
@@ -344,7 +344,9 @@ impl Component for ScratchView {
                 match result.and_then(|p| p.decode_response()) {
                     Ok(response) => ctx.props().on_notice.emit(match response.refusal {
                         None => format!("Saved {} to {name}", entries(response.entries)),
-                        Some(refusal) => refused("save", name, refusal, response.error),
+                        Some(refusal) => {
+                            refused("save", name, "a scratch list", refusal, response.error)
+                        }
                     }),
                     Err(error) => on_error.emit(format!("Saving scratch list: {error}")),
                 }
@@ -356,7 +358,9 @@ impl Component for ScratchView {
                     Ok(response) => {
                         let notice = match response.refusal {
                             None => format!("Loaded {} from {name}", entries(response.entries)),
-                            Some(refusal) => refused("load", name, refusal, response.error),
+                            Some(refusal) => {
+                                refused("load", name, "a scratch list", refusal, response.error)
+                            }
                         };
 
                         ctx.props().on_notice.emit(notice);
@@ -613,52 +617,10 @@ impl ScratchView {
     }
 }
 
-/// The directory and file name of a path; a root directory keeps its
-/// separator.
-fn split_path(path: &str) -> (Option<String>, &str) {
-    let Some(at) = path.rfind(['/', '\\']) else {
-        return (None, path);
-    };
-
-    let name = path.get(at.saturating_add(1)..).unwrap_or_default();
-    let dir = path.get(..at).unwrap_or_default();
-
-    let dir = if dir.is_empty() || dir.ends_with(':') {
-        path.get(..=at)
-    } else {
-        Some(dir)
-    };
-
-    (dir.map(str::to_owned), name)
-}
-
-fn file_name(path: &str) -> &str {
-    split_path(path).1
-}
-
 fn entries(count: u64) -> String {
     match count {
         1 => String::from("1 entry"),
         n => format!("{n} entries"),
-    }
-}
-
-fn refused(what: &str, name: &str, refusal: api::FileRefusal, error: Option<String>) -> String {
-    let reason = match refusal {
-        api::FileRefusal::Relative => "not an absolute path",
-        api::FileRefusal::Missing => "it does not exist",
-        api::FileRefusal::Directory => "it is a folder",
-        api::FileRefusal::Denied => "permission denied",
-        api::FileRefusal::TooLarge => "the file is too large",
-        api::FileRefusal::Malformed => "not a ptscan file, or cut short",
-        api::FileRefusal::WrongKind => "it holds something other than a scratch list",
-        api::FileRefusal::UnsupportedVersion => "written by a newer ptscan",
-        api::FileRefusal::Failed => "it failed",
-    };
-
-    match error {
-        Some(error) => format!("Could not {what} {name}: {reason} ({error})"),
-        None => format!("Could not {what} {name}: {reason}"),
     }
 }
 

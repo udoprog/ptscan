@@ -1,5 +1,7 @@
 //! Pointer scans for the address of a scratch entry.
 
+mod file;
+
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
@@ -11,6 +13,7 @@ use ptscan_core::{
 };
 use tokio::sync::watch;
 
+use crate::export::{self, Refused};
 use crate::{Shared, lock, read};
 
 /// The paths of a pointer scan, as the scan produced them.
@@ -50,8 +53,19 @@ pub(crate) struct PointerResults {
     entry: Option<u64>,
     value_type: Option<Type>,
     results: Arc<Paths>,
+    /// The scan, save or load running; one at a time, so that each cancels
+    /// the same way.
     running: Option<Arc<AtomicBool>>,
+    /// What runs, when it is a save or load rather than a scan.
+    file: Option<api::PointerScanFileKind>,
     last: Option<api::PointerScanOutcome>,
+    /// The settings and pointer of the scan, kept to be saved with the paths.
+    settings: Option<api::PointerScanSettings>,
+    target: Option<String>,
+    /// The file the paths were loaded from.
+    source: Option<String>,
+    last_file: Option<api::PointerScanFileOutcome>,
+    serial: u64,
     /// Bumped whenever the results are discarded, so that a scan started
     /// before that does not store its result.
     epoch: u64,
@@ -63,8 +77,11 @@ impl PointerResults {
             entry: self.entry,
             value_type: self.value_type.map(|t| t.to_string()),
             results: self.results.pointers.len() as u64,
-            running: self.running.is_some(),
+            running: self.running.is_some() && self.file.is_none(),
             last: self.last.clone(),
+            source: self.source.clone(),
+            file: self.file,
+            last_file: self.last_file.clone(),
         }
     }
 
@@ -150,7 +167,10 @@ impl Shared {
         let mut current = lock(&self.pointer_results);
 
         if current.running.is_some() {
-            return error("a pointer scan is already running");
+            return error(match current.file {
+                None => "a pointer scan is already running",
+                Some(_) => "the pointer paths are being saved or loaded",
+            });
         }
 
         let token = Arc::new(AtomicBool::new(false));
@@ -159,6 +179,9 @@ impl Shared {
         current.value_type = Some(value_type);
         current.results = Arc::default();
         current.last = None;
+        current.settings = Some(settings.clone());
+        current.target = Some(pointer.to_string());
+        current.source = None;
         let epoch = current.epoch;
         self.pointer_progress
             .send_replace(api::PointerScanProgress::default());
@@ -291,6 +314,7 @@ impl Shared {
         let epoch = current.epoch + 1;
         *current = PointerResults {
             epoch,
+            serial: current.serial,
             ..PointerResults::default()
         };
         self.publish_pointer_scan_state(&current);
@@ -321,4 +345,236 @@ impl Shared {
             value_type: value_type.map(|t| t.to_string()),
         }
     }
+
+    /// Start writing the paths of the last pointer scan to `path` in the
+    /// background.
+    pub fn save_pointer_scan(self: &Arc<Self>, path: String) -> api::PointerScanFileResponse {
+        let mut current = lock(&self.pointer_results);
+
+        if let Some(response) = busy(&current) {
+            return response;
+        }
+
+        if current.last.is_none() {
+            return api::PointerScanFileResponse {
+                refusal: None,
+                error: Some("there are no pointer paths to save".into()),
+            };
+        }
+
+        if let Err(refused) = export::writable(&path) {
+            return refusal(refused);
+        }
+
+        let results = current.results.clone();
+        let meta = file::Meta {
+            value_type: current.value_type.map(|t| t.to_string()),
+            target: current.target.clone(),
+            settings: current.settings.clone(),
+        };
+
+        let total = results.pointers.len() as u64;
+
+        self.start_file(
+            &mut current,
+            api::PointerScanFileKind::Save,
+            path,
+            move |shared, path, token| {
+                let progress = |written: u64| {
+                    shared
+                        .pointer_progress
+                        .send_replace(api::PointerScanProgress {
+                            stage: api::PointerScanStage::Saving,
+                            percentage: percentage(written, total),
+                            remaining: total.saturating_sub(written),
+                            results: written,
+                        });
+                };
+
+                let done = export::write_streamed::<file::PointerFile, _>(path, |out| {
+                    file::write_value(out, &results, &meta, token, &mut |written| {
+                        progress(written)
+                    })
+                })?;
+
+                Ok(done.then_some((total, None)))
+            },
+        )
+    }
+
+    /// Start reading paths from the file at `path` in the background, which
+    /// replace those of the last pointer scan once read.
+    pub fn load_pointer_scan(self: &Arc<Self>, path: String) -> api::PointerScanFileResponse {
+        let mut current = lock(&self.pointer_results);
+
+        if let Some(response) = busy(&current) {
+            return response;
+        }
+
+        if let Err(refused) = export::readable(&path) {
+            return refusal(refused);
+        }
+
+        self.start_file(
+            &mut current,
+            api::PointerScanFileKind::Load,
+            path,
+            |shared, path, token| {
+                let progress = |percentage: u32, results: u64| {
+                    shared
+                        .pointer_progress
+                        .send_replace(api::PointerScanProgress {
+                            stage: api::PointerScanStage::Loading,
+                            percentage,
+                            remaining: 0,
+                            results,
+                        });
+                };
+
+                let bytes = export::read_bytes::<file::PointerFile>(path, |read, size| {
+                    progress(percentage(read, size), 0);
+                    !token.test()
+                })?;
+
+                let Some(bytes) = bytes else {
+                    return Ok(None);
+                };
+
+                let text = String::from_utf8(bytes)
+                    .map_err(|_| Refused::new(api::FileRefusal::Malformed, "not UTF-8 text"))?;
+                let decoded = export::decode::<file::PointerFile>(&text)?;
+                drop(text);
+
+                let Some((paths, meta, value_type)) =
+                    file::into_paths(decoded, token, &mut |done| progress(100, done))?
+                else {
+                    return Ok(None);
+                };
+
+                let total = paths.pointers.len() as u64;
+                Ok(Some((total, Some((paths, meta, value_type)))))
+            },
+        )
+    }
+
+    /// Run a save or load in the background, as `run` does it: `None` when
+    /// cancelled, else the number of paths and, for a load, what was read.
+    fn start_file<F>(
+        self: &Arc<Self>,
+        current: &mut PointerResults,
+        kind: api::PointerScanFileKind,
+        path: String,
+        run: F,
+    ) -> api::PointerScanFileResponse
+    where
+        F: 'static
+            + Send
+            + FnOnce(&Shared, &str, &Token) -> Result<Option<(u64, Option<Loaded>)>, Refused>,
+    {
+        let token = Arc::new(AtomicBool::new(false));
+        current.running = Some(token.clone());
+        current.file = Some(kind);
+        let epoch = current.epoch;
+        self.pointer_progress
+            .send_replace(api::PointerScanProgress {
+                stage: match kind {
+                    api::PointerScanFileKind::Save => api::PointerScanStage::Saving,
+                    api::PointerScanFileKind::Load => api::PointerScanStage::Loading,
+                },
+                ..Default::default()
+            });
+        self.publish_pointer_scan_state(current);
+
+        let shared = self.clone();
+
+        std::thread::spawn(move || {
+            let started = Instant::now();
+            let token_ref = Token::from_raw(&token);
+            let result = run(&shared, &path, token_ref);
+
+            let mut current = lock(&shared.pointer_results);
+
+            if current.epoch != epoch {
+                return;
+            }
+
+            current.running = None;
+            current.file = None;
+            current.serial = current.serial.wrapping_add(1);
+
+            let mut outcome = api::PointerScanFileOutcome {
+                serial: current.serial,
+                kind,
+                path: path.clone(),
+                paths: 0,
+                cancelled: false,
+                refusal: None,
+                error: None,
+                duration_ms: started.elapsed().as_millis() as u64,
+            };
+
+            match result {
+                Ok(None) => outcome.cancelled = true,
+                Ok(Some((paths, loaded))) => {
+                    outcome.paths = paths;
+
+                    if let Some((results, meta, value_type)) = loaded {
+                        current.entry = None;
+                        current.value_type = value_type;
+                        current.settings = meta.settings;
+                        current.target = meta.target;
+                        current.source = Some(path);
+                        current.last = Some(api::PointerScanOutcome {
+                            results: paths,
+                            cancelled: false,
+                            truncated: results.truncated,
+                            error: None,
+                            duration_ms: outcome.duration_ms,
+                        });
+                        current.results = Arc::new(results);
+                    }
+                }
+                Err(refused) => {
+                    outcome.refusal = Some(refused.refusal);
+                    outcome.error = Some(refused.error);
+                }
+            }
+
+            current.last_file = Some(outcome);
+            shared.publish_pointer_scan_state(&current);
+        });
+
+        api::PointerScanFileResponse::default()
+    }
+}
+
+/// What a load read: the paths, what the file says of them and their type.
+type Loaded = (Paths, file::Meta, Option<Type>);
+
+fn busy(current: &PointerResults) -> Option<api::PointerScanFileResponse> {
+    let error = match (&current.running, current.file) {
+        (None, _) => return None,
+        (Some(_), None) => "a pointer scan is running",
+        (Some(_), Some(_)) => "the pointer paths are already being saved or loaded",
+    };
+
+    Some(api::PointerScanFileResponse {
+        refusal: None,
+        error: Some(error.into()),
+    })
+}
+
+fn refusal(refused: Refused) -> api::PointerScanFileResponse {
+    api::PointerScanFileResponse {
+        refusal: Some(refused.refusal),
+        error: Some(refused.error),
+    }
+}
+
+fn percentage(done: u64, total: u64) -> u32 {
+    if total == 0 {
+        return 100;
+    }
+
+    u32::try_from(u128::from(done.min(total)) * 100 / u128::from(total)).unwrap_or(100)
 }

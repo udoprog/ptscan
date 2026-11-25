@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use gloo_timers::callback::Timeout;
 use musli_web::web03::prelude::*;
 use sockel::{
-    Button, ButtonSize, ButtonVariant, Checkbox, EmptyState, InputSize, Menu, MenuWidth, Pager,
-    PagerCounts, Table, TableCell, TextInput, ToolbarSpacer,
+    Button, ButtonSize, ButtonVariant, Checkbox, Dialog, EmptyState, InputSize, Menu, MenuWidth,
+    Pager, PagerCounts, Table, TableCell, TextInput, ToolbarSpacer,
 };
 use yew::prelude::*;
 
@@ -12,11 +12,15 @@ use crate::class;
 use crate::clipboard;
 use crate::icons::{AppIcon, icon};
 use crate::ui::actions::{Action, RowMenu, more};
+use crate::ui::file_browser::{FileBrowser, FileMode, file_name, refused, split_path};
 use crate::ui::pane::{Pane, PaneBar, PaneHead, StatusLine, StatusTone};
 
 const PAGE: u32 = 100;
 /// How long the settings rest after an edit before they are saved.
 const SAVE_MS: u32 = 500;
+const EXTENSION: &str = ".ptscan.json";
+const DEFAULT_NAME: &str = "pointer-scan.ptscan.json";
+const KIND: &str = "pointer-scan paths";
 
 #[derive(Properties, PartialEq)]
 pub struct Props {
@@ -55,6 +59,16 @@ pub enum Msg {
     CopyPaths,
     AddSelected,
     Added(Result<ws::Packet<api::AddScratch>, ws::Error>),
+    Browse(FileMode),
+    CloseBrowser,
+    Chosen(String),
+    /// Load the chosen file in place of the paths shown.
+    ConfirmLoad,
+    CancelLoad,
+    FileStarted(
+        api::PointerScanFileKind,
+        Result<api::PointerScanFileResponse, ws::Error>,
+    ),
 }
 
 pub struct PointerScanView {
@@ -82,6 +96,15 @@ pub struct PointerScanView {
     cancel: ws::Request,
     page: ws::Request,
     adding: Vec<ws::Request>,
+    browser: Option<FileMode>,
+    /// The file chosen to load, while asking whether it replaces the paths.
+    loading: Option<String>,
+    /// The file last saved or loaded, which the browser starts at.
+    file: Option<String>,
+    file_request: ws::Request,
+    /// The serial of the last save or load told of; `None` until the first
+    /// state, so that one ended before is not.
+    file_serial: Option<u64>,
     _state_listener: ws::Listener,
     _progress_listener: ws::Listener,
 }
@@ -105,6 +128,16 @@ impl PointerScanView {
     }
 
     fn set_state(&mut self, ctx: &Context<Self>, state: api::PointerScanState) {
+        let serial = state.last_file.as_ref().map_or(0, |o| o.serial);
+
+        if let Some(outcome) = &state.last_file
+            && self.file_serial.is_some_and(|seen| seen != serial)
+        {
+            ctx.props().on_notice.emit(file_notice(outcome));
+        }
+
+        self.file_serial = Some(serial);
+
         if state == self.state {
             return;
         }
@@ -211,6 +244,11 @@ impl Component for PointerScanView {
             cancel: ws::Request::default(),
             page: ws::Request::default(),
             adding: Vec::new(),
+            browser: None,
+            loading: None,
+            file: None,
+            file_request: ws::Request::default(),
+            file_serial: None,
             _state_listener: ws.on_broadcast(ctx.link().callback(Msg::StateChanged)),
             _progress_listener: ws.on_broadcast(ctx.link().callback(Msg::Progressed)),
         };
@@ -423,6 +461,49 @@ impl Component for PointerScanView {
 
                 return false;
             }
+            Msg::Browse(mode) => self.browser = Some(mode),
+            Msg::CloseBrowser => self.browser = None,
+            Msg::Chosen(path) => match self.browser {
+                Some(FileMode::Save) => self.start_file(ctx, api::PointerScanFileKind::Save, path),
+                Some(FileMode::Open) if self.state.results == 0 => {
+                    self.start_file(ctx, api::PointerScanFileKind::Load, path);
+                }
+                Some(FileMode::Open) => self.loading = Some(path),
+                None => return false,
+            },
+            Msg::ConfirmLoad => {
+                let Some(path) = self.loading.take() else {
+                    return false;
+                };
+
+                self.start_file(ctx, api::PointerScanFileKind::Load, path);
+            }
+            Msg::CancelLoad => self.loading = None,
+            Msg::FileStarted(kind, result) => {
+                let what = match kind {
+                    api::PointerScanFileKind::Save => "save",
+                    api::PointerScanFileKind::Load => "load",
+                };
+
+                let name = self.file.as_deref().map(file_name).unwrap_or_default();
+
+                match result {
+                    Ok(response) => match (response.refusal, response.error) {
+                        (Some(refusal), error) => {
+                            ctx.props()
+                                .on_notice
+                                .emit(refused(what, name, KIND, refusal, error));
+                        }
+                        (None, Some(error)) => {
+                            ctx.props()
+                                .on_notice
+                                .emit(format!("Could not {what} {name}: {error}"));
+                        }
+                        (None, None) => {}
+                    },
+                    Err(error) => on_error.emit(format!("Pointer paths, {what}: {error}")),
+                }
+            }
         }
 
         true
@@ -475,10 +556,16 @@ impl Component for PointerScanView {
             .is_empty()
             .then(|| html! { <EmptyState title={self.empty_label()} compact=true /> });
 
-        let cancel = running.then(|| {
+        let cancel_tip = match self.state.file {
+            None => "Stop the pointer scan, keeping the paths found so far",
+            Some(api::PointerScanFileKind::Save) => "Stop saving, leaving no file written",
+            Some(api::PointerScanFileKind::Load) => "Stop loading, keeping the paths shown",
+        };
+
+        let cancel = (running || self.state.file.is_some()).then(|| {
             html! {
                 <Button size={ButtonSize::Small} icon={icon(AppIcon::Stop)}
-                    busy={self.cancel.is_pending()} tip="Stop the pointer scan, keeping the paths found so far"
+                    busy={self.cancel.is_pending()} tip={cancel_tip}
                     onclick={link.callback(|_| Msg::Cancel)}>{"Cancel"}</Button>
             }
         });
@@ -498,6 +585,7 @@ impl Component for PointerScanView {
             .disabled(selected == 0),
         ];
 
+        let overflow = [actions.clone(), self.file_actions(ctx)].concat();
         let pages = pages(self.total);
         let page = usize::try_from(self.offset / PAGE as u64).unwrap_or(usize::MAX);
         let total = usize::try_from(self.total).unwrap_or(usize::MAX);
@@ -528,7 +616,7 @@ impl Component for PointerScanView {
                             n => format!("Add {n}"),
                         }}
                     </Button>
-                    {more("More path actions", &actions)}
+                    {more("More path actions", &overflow)}
                 </PaneBar>
                 <RowMenu label="Path actions" actions={actions.clone()}>
                     <div class={class::SCROLL} tabindex="0" onkeydown={link.batch_callback(|e: KeyboardEvent| {
@@ -537,6 +625,7 @@ impl Component for PointerScanView {
                         <Table {head} columns={2} {empty} fixed=true label="Pointer paths">{rows}</Table>
                     </div>
                 </RowMenu>
+                {self.file_dialogs(ctx)}
             </Pane>
         }
     }
@@ -595,6 +684,13 @@ impl PointerScanView {
     }
 
     fn target(&self) -> String {
+        if let Some(source) = &self.state.source {
+            return match &self.state.value_type {
+                Some(value_type) => format!("from {} ({value_type})", file_name(source)),
+                None => format!("from {}", file_name(source)),
+            };
+        }
+
         match (self.state.entry, &self.state.value_type) {
             (Some(id), Some(value_type)) => format!("scratch entry {id} ({value_type})"),
             (Some(id), None) => format!("scratch entry {id}"),
@@ -603,7 +699,7 @@ impl PointerScanView {
     }
 
     fn status(&self) -> Html {
-        if self.state.running {
+        if self.state.running || self.state.file.is_some() {
             let progress = &self.progress;
 
             let (bar, text) = match progress.stage {
@@ -631,6 +727,38 @@ impl PointerScanView {
                         progress.remaining, progress.results
                     ),
                 ),
+                api::PointerScanStage::Saving => {
+                    let percentage = progress.percentage.min(100);
+                    (
+                        html! { <progress class={class::PROGRESS} max="100" value={percentage.to_string()} /> },
+                        format!(
+                            "Saving to {}, {percentage}%, {} of {} paths",
+                            self.file.as_deref().map(file_name).unwrap_or("file"),
+                            progress.results,
+                            progress.results.saturating_add(progress.remaining)
+                        ),
+                    )
+                }
+                api::PointerScanStage::Loading => {
+                    let percentage = progress.percentage.min(100);
+                    let name = self.file.as_deref().map(file_name).unwrap_or("file");
+                    if percentage < 100 {
+                        (
+                            html! { <progress class={class::PROGRESS} max="100" value={percentage.to_string()} /> },
+                            format!("Loading {name}, {percentage}%"),
+                        )
+                    } else if progress.results == 0 {
+                        (
+                            html! { <progress class={class::PROGRESS} /> },
+                            format!("Reading the paths of {name}"),
+                        )
+                    } else {
+                        (
+                            html! { <progress class={class::PROGRESS} /> },
+                            format!("Reading the paths of {name}, {} so far", progress.results),
+                        )
+                    }
+                }
             };
 
             return html! { <StatusLine lead={bar} {text} /> };
@@ -640,9 +768,15 @@ impl PointerScanView {
             return html! {};
         };
 
-        let mut text = match &last.error {
-            Some(error) => format!("Pointer scan failed: {error}"),
-            None => format!(
+        let mut text = match (&last.error, &self.state.source) {
+            (Some(error), _) => format!("Pointer scan failed: {error}"),
+            (None, Some(source)) => format!(
+                "Loaded {} from {} in {}",
+                paths(last.results),
+                file_name(source),
+                duration(last.duration_ms)
+            ),
+            (None, None) => format!(
                 "Found {} paths in {}",
                 last.results,
                 duration(last.duration_ms)
@@ -651,6 +785,8 @@ impl PointerScanView {
 
         if last.cancelled {
             text.push_str("; cancelled, paths found so far kept");
+        } else if last.truncated && self.state.source.is_some() {
+            text.push_str("; the scan stopped at its max paths limit");
         } else if last.truncated {
             text.push_str("; stopped at the max paths limit, raise it to find more");
         }
@@ -714,6 +850,144 @@ fn pages(total: u64) -> usize {
 
 fn last_page(total: u64) -> u64 {
     total.saturating_sub(1) / PAGE as u64 * PAGE as u64
+}
+
+impl PointerScanView {
+    fn start_file(&mut self, ctx: &Context<Self>, kind: api::PointerScanFileKind, path: String) {
+        let ws = ctx.props().ws.request();
+        self.file_request = match kind {
+            api::PointerScanFileKind::Save => ws
+                .body(api::SavePointerScanRequest { path: path.clone() })
+                .on_packet(ctx.link().callback(
+                    move |r: Result<ws::Packet<api::SavePointerScan>, _>| {
+                        Msg::FileStarted(kind, r.and_then(|p| p.decode_response()))
+                    },
+                ))
+                .send(),
+            api::PointerScanFileKind::Load => ws
+                .body(api::LoadPointerScanRequest { path: path.clone() })
+                .on_packet(ctx.link().callback(
+                    move |r: Result<ws::Packet<api::LoadPointerScan>, _>| {
+                        Msg::FileStarted(kind, r.and_then(|p| p.decode_response()))
+                    },
+                ))
+                .send(),
+        };
+        self.file = Some(path);
+    }
+
+    /// Saving and loading every path, which only the overflow menu offers.
+    fn file_actions(&self, ctx: &Context<Self>) -> Vec<Action> {
+        let link = ctx.link();
+        let busy = !ctx.props().open
+            || self.file_request.is_pending()
+            || self.state.running
+            || self.state.file.is_some();
+
+        vec![
+            Action::new(
+                AppIcon::Save,
+                "Save paths to file…",
+                link.callback(|_| Msg::Browse(FileMode::Save)),
+            )
+            .disabled(busy || self.state.last.is_none()),
+            Action::new(
+                AppIcon::Load,
+                "Load paths from file…",
+                link.callback(|_| Msg::Browse(FileMode::Open)),
+            )
+            .disabled(busy),
+        ]
+    }
+
+    fn file_dialogs(&self, ctx: &Context<Self>) -> Html {
+        let props = ctx.props();
+        let link = ctx.link();
+
+        let (dir, name) = match self.file.as_deref().or(self.state.source.as_deref()) {
+            Some(path) => split_path(path),
+            None => (None, DEFAULT_NAME),
+        };
+
+        let browser = self.browser.map(|mode| {
+            let title = match mode {
+                FileMode::Save => "Save pointer paths",
+                FileMode::Open => "Load pointer paths",
+            };
+
+            html! {
+                <FileBrowser ws={props.ws.clone()} open=true {mode} {title}
+                    path={dir.map(AttrValue::from)} name={AttrValue::from(name.to_owned())}
+                    extensions={vec![AttrValue::Static(EXTENSION)]}
+                    on_choose={link.callback(Msg::Chosen)}
+                    on_close={link.callback(|()| Msg::CloseBrowser)}
+                    testid="pointer-file" />
+            }
+        });
+
+        let loading = self.loading.as_deref().map(|path| {
+            let actions = html! {
+                <>
+                    <Button variant={ButtonVariant::Quiet}
+                        onclick={link.callback(|_| Msg::CancelLoad)}>{"Cancel"}</Button>
+                    <Button variant={ButtonVariant::Danger} icon={icon(AppIcon::Load)}
+                        onclick={link.callback(|_| Msg::ConfirmLoad)}>{"Replace"}</Button>
+                </>
+            };
+
+            html! {
+                <Dialog open=true title="Load pointer paths" icon={icon(AppIcon::Load)}
+                    on_dismiss={link.callback(|_| Msg::CancelLoad)} {actions}
+                    testid="pointer-load">
+                    <p>
+                        {format!("Replace the {} shown with those of {}?", paths(self.state.results), file_name(path))}
+                    </p>
+                </Dialog>
+            }
+        });
+
+        html! { <>{browser}{loading}</> }
+    }
+}
+
+fn paths(count: u64) -> String {
+    match count {
+        1 => String::from("1 path"),
+        n => format!("{n} paths"),
+    }
+}
+
+/// Tells how a save or load ended.
+fn file_notice(outcome: &api::PointerScanFileOutcome) -> String {
+    let name = file_name(&outcome.path);
+
+    let what = match outcome.kind {
+        api::PointerScanFileKind::Save => "save",
+        api::PointerScanFileKind::Load => "load",
+    };
+
+    if let Some(refusal) = outcome.refusal {
+        return refused(what, name, KIND, refusal, outcome.error.clone());
+    }
+
+    match (outcome.kind, outcome.cancelled) {
+        (api::PointerScanFileKind::Save, false) => format!(
+            "Saved {} to {name} in {}",
+            paths(outcome.paths),
+            duration(outcome.duration_ms)
+        ),
+        (api::PointerScanFileKind::Load, false) => format!(
+            "Loaded {} from {name} in {}",
+            paths(outcome.paths),
+            duration(outcome.duration_ms)
+        ),
+        (api::PointerScanFileKind::Save, true) => {
+            format!("Cancelled saving {name}; no file was written")
+        }
+        (api::PointerScanFileKind::Load, true) => {
+            format!("Cancelled loading {name}; the paths are as they were")
+        }
+    }
 }
 
 fn duration(ms: u64) -> String {

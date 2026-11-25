@@ -292,6 +292,35 @@ pub struct PointerScanState {
     pub results: u64,
     pub running: bool,
     pub last: Option<PointerScanOutcome>,
+    /// The file the paths were loaded from, if they were.
+    pub source: Option<String>,
+    /// A save or load of the paths, while one runs.
+    pub file: Option<PointerScanFileKind>,
+    /// How the last save or load ended.
+    pub last_file: Option<PointerScanFileOutcome>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub enum PointerScanFileKind {
+    Save,
+    Load,
+}
+
+/// How a save or load of the pointer-scan paths ended.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct PointerScanFileOutcome {
+    /// Counts up with every save or load, so each is told of once.
+    pub serial: u64,
+    pub kind: PointerScanFileKind,
+    pub path: String,
+    /// Paths written or read.
+    pub paths: u64,
+    /// Cancelled, leaving no file written and the paths as they were.
+    pub cancelled: bool,
+    pub refusal: Option<FileRefusal>,
+    /// What went wrong, alongside a refusal.
+    pub error: Option<String>,
+    pub duration_ms: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
@@ -314,6 +343,12 @@ pub enum PointerScanStage {
     Paths,
     /// Adding paths through already visited pointers.
     Backreferences,
+    /// Writing the paths to a file; [`PointerScanProgress::results`] are
+    /// written and [`PointerScanProgress::remaining`] still to write.
+    Saving,
+    /// Reading paths from a file, by percentage of its bytes, then
+    /// [`PointerScanProgress::results`] paths converted.
+    Loading,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
@@ -706,6 +741,34 @@ pub struct LoadScratchResponse {
     pub error: Option<String>,
 }
 
+/// Write the last pointer scan's paths, settings and type to a file on the
+/// server's machine in the background, replacing it. Progress shows as
+/// [`PointerScanStage::Saving`], [`CancelPointerScanRequest`] stops it, and
+/// the outcome arrives as [`PointerScanState::last_file`].
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct SavePointerScanRequest {
+    /// An absolute path.
+    pub path: String,
+}
+
+/// Read a file written by [`SavePointerScanRequest`] in the background, as the
+/// last pointer scan's paths. A cancelled or refused load keeps the paths as
+/// they were.
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct LoadPointerScanRequest {
+    /// An absolute path.
+    pub path: String,
+}
+
+/// Whether a save or load started; how it ended comes as
+/// [`PointerScanState::last_file`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct PointerScanFileResponse {
+    pub refusal: Option<FileRefusal>,
+    /// Why it did not start, alongside a refusal or on its own.
+    pub error: Option<String>,
+}
+
 api::define! {
     pub type ListProcesses;
     impl Endpoint for ListProcesses {
@@ -874,6 +937,18 @@ api::define! {
     impl Endpoint for PointerScanResults {
         impl Request for PointerScanResultsRequest;
         type Response<'de> = PointerScanResultsResponse;
+    }
+
+    pub type SavePointerScan;
+    impl Endpoint for SavePointerScan {
+        impl Request for SavePointerScanRequest;
+        type Response<'de> = PointerScanFileResponse;
+    }
+
+    pub type LoadPointerScan;
+    impl Endpoint for LoadPointerScan {
+        impl Request for LoadPointerScanRequest;
+        type Response<'de> = PointerScanFileResponse;
     }
 
     pub type PointerScanStateChanged;

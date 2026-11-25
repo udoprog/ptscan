@@ -609,7 +609,7 @@ fn join(directory: &str, separator: &str, name: &str) -> String {
     }
 }
 
-fn file_name(path: &str) -> &str {
+pub(crate) fn file_name(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
@@ -638,6 +638,56 @@ fn format_size(bytes: u64) -> String {
 fn format_time(seconds: u64) -> String {
     let date = js_sys::Date::new(&JsValue::from_f64(seconds as f64 * 1000.0));
     String::from(date.to_locale_string("default", &JsValue::UNDEFINED))
+}
+
+/// The directory and file name of a path; a root directory keeps its
+/// separator.
+pub(crate) fn split_path(path: &str) -> (Option<String>, &str) {
+    let Some(at) = path.rfind(['/', '\\']) else {
+        return (None, path);
+    };
+
+    let name = path.get(at.saturating_add(1)..).unwrap_or_default();
+    let dir = path.get(..at).unwrap_or_default();
+
+    let dir = if dir.is_empty() || dir.ends_with(':') {
+        path.get(..=at)
+    } else {
+        Some(dir)
+    };
+
+    (dir.map(str::to_owned), name)
+}
+
+/// Why a file of `kind`, such as "a scratch list", was not saved or loaded.
+pub(crate) fn refused(
+    what: &str,
+    name: &str,
+    kind: &str,
+    refusal: api::FileRefusal,
+    error: Option<String>,
+) -> String {
+    let other;
+
+    let reason = match refusal {
+        api::FileRefusal::Relative => "not an absolute path",
+        api::FileRefusal::Missing => "it does not exist",
+        api::FileRefusal::Directory => "it is a folder",
+        api::FileRefusal::Denied => "permission denied",
+        api::FileRefusal::TooLarge => "the file is too large",
+        api::FileRefusal::Malformed => "not a ptscan file, or cut short",
+        api::FileRefusal::WrongKind => {
+            other = format!("it holds something other than {kind}");
+            other.as_str()
+        }
+        api::FileRefusal::UnsupportedVersion => "written by a newer ptscan",
+        api::FileRefusal::Failed => "it failed",
+    };
+
+    match error {
+        Some(error) => format!("Could not {what} {name}: {reason} ({error})"),
+        None => format!("Could not {what} {name}: {reason}"),
+    }
 }
 
 #[cfg(test)]

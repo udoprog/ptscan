@@ -770,6 +770,14 @@ mod linux {
             .unwrap();
         assert_eq!((undone.generations, undone.undone), (1, 1));
 
+        let listed = |page: api::ScanResultsResponse| {
+            page.results
+                .into_iter()
+                .map(|r| r.address)
+                .collect::<Vec<_>>()
+        };
+        let before = listed(results(&handle).await);
+
         let response = remove_results(&handle, vec![held.address, 0]).await;
         assert_eq!(response.error, None);
         assert_eq!(response.removed, 1);
@@ -777,6 +785,16 @@ mod linux {
         assert_eq!(response.state.undone, 0, "removal discards the redo stack");
         assert_eq!(response.state.results, first.results - 1);
         assert!(find_held(&handle, &holder).await.is_none());
+
+        let kept = before
+            .into_iter()
+            .filter(|&a| a != held.address)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            listed(results(&handle).await),
+            kept,
+            "the others keep their order"
+        );
 
         // The undo's broadcast may still be queued before the removal's.
         loop {

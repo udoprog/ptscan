@@ -436,4 +436,88 @@ mod tests {
         assert!(values.is_empty());
         assert!(!values.swap_remove(0));
     }
+
+    #[test]
+    fn retain_by_index_keeps_order() {
+        let read = |values: &Values| values.iter().map(|v| v.read()).collect::<Vec<_>>();
+
+        let mut values = Values::new(Type::U32);
+
+        for n in 0..10 {
+            values.push(Value::U32(n));
+        }
+
+        let mut seen = Vec::new();
+        values.retain_by_index(|index| {
+            seen.push(index);
+            index % 3 != 0
+        });
+        assert_eq!(seen, (0..10).collect::<Vec<_>>());
+        assert_eq!(read(&values), [1, 2, 4, 5, 7, 8].map(Value::U32).to_vec());
+        assert_eq!(values.bytes(), 6 * 4);
+
+        values.retain_by_index(|_| true);
+        assert_eq!(values.len(), 6);
+        values.retain_by_index(|_| false);
+        assert!(values.is_empty());
+        assert_eq!(values.bytes(), 0);
+
+        let mut none = Values::new(Type::None);
+
+        for _ in 0..5 {
+            none.push(Value::None);
+        }
+
+        none.retain_by_index(|index| index < 2);
+        assert_eq!(none.len(), 2);
+    }
+
+    #[test]
+    fn retain_by_index_drops_removed_strings() {
+        let mut values = Values::new(Type::String(Encoding::default()));
+
+        for n in 0..6 {
+            values.push(Value::String(format!("value {n}")));
+        }
+
+        values.retain_by_index(|index| index == 1 || index == 4);
+        assert_eq!(
+            values.iter().map(|v| v.read()).collect::<Vec<_>>(),
+            [
+                Value::String("value 1".into()),
+                Value::String("value 4".into())
+            ]
+        );
+
+        // A copy owns its strings, so dropping both would double free if
+        // retain had left a removed or moved string behind.
+        let copy = values.clone();
+        drop(values);
+        assert_eq!(copy.len(), 2);
+    }
+
+    #[test]
+    fn retain_by_index_survives_a_panic() {
+        let mut values = Values::new(Type::String(Encoding::default()));
+
+        for n in 0..6 {
+            values.push(Value::String(format!("value {n}")));
+        }
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            values.retain_by_index(|index| {
+                assert!(index < 3, "stop");
+                index != 1
+            });
+        }));
+        assert!(result.is_err());
+
+        // Visited: 0 kept, 1 dropped, 2 kept; 3.. untouched behind them.
+        assert_eq!(
+            values.iter().map(|v| v.read()).collect::<Vec<_>>(),
+            [0, 2, 3, 4, 5]
+                .map(|n| Value::String(format!("value {n}")))
+                .to_vec()
+        );
+    }
 }

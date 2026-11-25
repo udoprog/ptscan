@@ -7,8 +7,9 @@ use std::time::Instant;
 
 use anyhow::{Context as _, Result, anyhow};
 use ptscan_core::{
-    Address, Addresses, FilterExpr, InitialScanConfig, PortablePointer, Process, ProcessHandle,
-    Proxy as _, ScanContext, ScanResults, Size, Token, TypeHint, Value, ValueExpr, Values,
+    Address, Addresses, BitSet, FilterExpr, InitialScanConfig, PortablePointer, Process,
+    ProcessHandle, Proxy as _, ScanContext, ScanResults, Size, Token, TypeHint, Value, ValueExpr,
+    Values,
 };
 use tokio::sync::watch;
 
@@ -361,36 +362,27 @@ impl Shared {
 
         let addresses = addresses.iter().copied().collect::<HashSet<_>>();
 
-        let indices = generations
-            .scans
-            .last()
-            .map(|g| {
-                g.results
-                    .addresses
-                    .iter_copied()
-                    .enumerate()
-                    .filter(|(_, a)| addresses.contains(&u64::from(*a)))
-                    .map(|(index, _)| index)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let mut marked = BitSet::new();
+        let mut removed = 0u64;
 
-        if indices.is_empty() {
+        if let Some(g) = generations.scans.last() {
+            for (index, address) in g.results.addresses.iter_copied().enumerate() {
+                if addresses.contains(&u64::from(address)) {
+                    marked.set(index);
+                    removed = removed.saturating_add(1);
+                }
+            }
+        }
+
+        let Some(generation) = generations.scans.last_mut().filter(|_| removed > 0) else {
             response.state = generations.state();
             return response;
-        }
+        };
 
-        let generation = Arc::make_mut(generations.scans.last_mut().unwrap());
-
-        // Descending, so that swap_remove only moves results which are kept.
-        for &index in indices.iter().rev() {
-            generation.results.addresses.swap_remove(index);
-            generation.results.initial.swap_remove(index);
-            generation.results.last.swap_remove(index);
-        }
+        Arc::make_mut(generation).results.remove_marked(&marked);
 
         generations.undone.clear();
-        response.removed = indices.len() as u64;
+        response.removed = removed;
         response.state = self.publish_scan_state(&generations);
         response
     }

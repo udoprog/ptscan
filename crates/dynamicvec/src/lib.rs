@@ -378,6 +378,101 @@ where
         }
     }
 
+    /// Keep only the elements whose index `keep` accepts, dropping the others,
+    /// in one pass which preserves the order of what is kept.
+    ///
+    /// `keep` is called once for every index, in ascending order.
+    pub fn retain_by_index<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(usize) -> bool,
+    {
+        let len = self.len;
+        let element_size = self.element_size;
+
+        if element_size == 0 {
+            self.len = (0..len).filter(|&index| keep(index)).count();
+            return;
+        }
+
+        // Restores a consistent collection however the loop ends: elements
+        // not visited yet are moved down behind the ones kept, so a panicking
+        // `keep` neither drops an element twice nor leaves a hole. Offsets are
+        // in bytes, `write <= read <= data.len()`.
+        struct Guard<'a, T>
+        where
+            T: DynamicType,
+        {
+            vec: &'a mut DynamicVec<T>,
+            read: usize,
+            write: usize,
+            kept: usize,
+        }
+
+        impl<T> Drop for Guard<'_, T>
+        where
+            T: DynamicType,
+        {
+            fn drop(&mut self) {
+                let end = self.vec.data.len();
+                let rest = end.saturating_sub(self.read);
+                let size = self.vec.element_size;
+
+                unsafe {
+                    if rest > 0 && self.read != self.write {
+                        let base = self.vec.data.as_mut_ptr();
+                        ptr::copy(base.add(self.read), base.add(self.write), rest);
+                    }
+
+                    self.vec
+                        .data
+                        .set_len(self.write.saturating_add(rest).min(end));
+                }
+
+                self.vec.len = self.kept.saturating_add(rest / size);
+            }
+        }
+
+        let mut guard = Guard {
+            vec: self,
+            read: 0,
+            write: 0,
+            kept: 0,
+        };
+
+        for index in 0..len {
+            let Some(next) = guard.read.checked_add(element_size) else {
+                break;
+            };
+
+            if next > guard.vec.data.len() {
+                break;
+            }
+
+            // Safety: `read..next` is an initialized element inside `data`,
+            // and the element at `write <= read` was moved out or dropped
+            // before it is overwritten.
+            unsafe {
+                let base = guard.vec.data.as_mut_ptr();
+                let src = base.add(guard.read);
+
+                if keep(index) {
+                    if guard.write != guard.read {
+                        ptr::copy_nonoverlapping(src, base.add(guard.write), element_size);
+                    }
+
+                    guard.write = guard.write.saturating_add(element_size);
+                    guard.kept = guard.kept.saturating_add(1);
+                    guard.read = next;
+                } else {
+                    // Visited before it is dropped, so a panicking drop does
+                    // not drop it again.
+                    guard.read = next;
+                    guard.vec.ty.drop_element(src);
+                }
+            }
+        }
+    }
+
     /// Iterate over the current collection, providing accessors as we go.
     pub fn iter(&self) -> Iter<'_, T> {
         let len = self.len.checked_mul(self.element_size).expect("overflow");

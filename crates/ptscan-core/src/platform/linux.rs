@@ -1141,6 +1141,84 @@ mod tests {
         assert_eq!(kept, found.into_iter().collect::<HashSet<_>>());
     }
 
+    /// Windowed rescans, whatever the window size, keep exactly what
+    /// `rescan_small` keeps, with the same values and in the original order,
+    /// and drop results outside the scanned memory.
+    #[test]
+    fn rescan_windows_match_rescan_small() {
+        let holder = Holder::spawn();
+        let mut handle = holder.handle();
+        handle.refresh_modules().unwrap();
+        handle.refresh_threads().unwrap();
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+        let filter = FilterExpr::parse("value != 0", &handle).unwrap();
+        let mut addresses = Addresses::new(handle.process.pointer_width);
+        let mut values = Values::new(Type::U64);
+        handle
+            .initial_scan(
+                ScanContext::new(&pool, None, NoProgress),
+                &filter,
+                &mut addresses,
+                &mut values,
+                Default::default(),
+            )
+            .unwrap();
+
+        // Unmapped, so every rescan has to drop it.
+        addresses.push(Address::new(8));
+        values.push(crate::Value::U64(1));
+
+        let original = addresses.iter_copied().collect::<Vec<_>>();
+        let results = ScanResults::new(addresses, values.clone(), values);
+        let filter = FilterExpr::parse("value < 4294967296", &handle).unwrap();
+
+        let read = |r: &ScanResults| {
+            (
+                r.addresses.iter_copied().collect::<Vec<_>>(),
+                r.initial.iter().map(|v| v.read()).collect::<Vec<_>>(),
+                r.last.iter().map(|v| v.read()).collect::<Vec<_>>(),
+            )
+        };
+
+        let mut small = results.clone();
+        handle
+            .rescan_small(
+                ScanContext::new(&pool, None, NoProgress),
+                &mut small,
+                &filter,
+            )
+            .unwrap();
+        let expected = read(&small);
+
+        assert!(!expected.0.is_empty() && expected.0.len() < original.len() - 1);
+        assert!(!expected.0.contains(&Address::new(8)));
+        let kept = expected.0.iter().collect::<HashSet<_>>();
+        let in_order = original
+            .iter()
+            .filter(|a| kept.contains(a))
+            .copied()
+            .collect::<Vec<_>>();
+        assert_eq!(expected.0, in_order);
+
+        // 1001 puts window ends inside values, 0x100_000 is the default.
+        for window in [1001, 0x10_000, 0x100_000] {
+            let mut windowed = results.clone();
+            handle
+                .rescan_windows(
+                    ScanContext::new(&pool, None, NoProgress),
+                    &mut windowed,
+                    &filter,
+                    window,
+                )
+                .unwrap();
+            assert!(read(&windowed) == expected, "window {}", window);
+        }
+    }
+
     #[test]
     fn pointer_scan_finds_child_pointer() {
         let holder = Holder::spawn();

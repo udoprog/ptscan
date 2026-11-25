@@ -8,10 +8,10 @@ use crate::{
     scanner::{Chunk, ScanSink},
     system,
     utils::IteratorExtension as _,
-    Address, AddressRange, Addresses, Base, Cached, DefaultScanner, FollowablePointer,
+    Address, AddressRange, Addresses, Base, BitSet, Cached, DefaultScanner, FollowablePointer,
     MemoryInformation, MemoryReader, Pointer, PointerInfo, PointerWidth, PortableBase, Process,
-    ProcessId, ProcessInfo, Scanner, Size, Test, ThreadId, Token, Type, TypeHint, Value, ValueExpr,
-    ValueRef, Values,
+    ProcessId, ProcessInfo, Scanner, Size, Test, ThreadId, Token, Type, TypeHint, TypedFilterExpr,
+    Value, ValueExpr, ValueRef, Values,
 };
 use anyhow::{anyhow, bail, Context as _};
 use crossbeam_queue::SegQueue;
@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::convert::{TryFrom as _, TryInto as _};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 
 /// A cancellation token, either supplied by the caller or owned locally.
@@ -88,7 +89,22 @@ impl ScanResults {
     pub fn is_empty(&self) -> bool {
         self.addresses.is_empty()
     }
+
+    /// Remove the results whose index is set in `marked`, keeping the order
+    /// of the others.
+    pub fn remove_marked(&mut self, marked: &BitSet) {
+        if marked.is_empty() {
+            return;
+        }
+
+        self.addresses.retain_by_index(|index| !marked.test(index));
+        self.initial.retain_by_index(|index| !marked.test(index));
+        self.last.retain_by_index(|index| !marked.test(index));
+    }
 }
+
+/// Size of the chunks memory is read in when scanning.
+const DEFAULT_BUFFER_SIZE: usize = 0x100_000;
 
 #[derive(Debug, Clone, Default)]
 pub struct InitialScanConfig {
@@ -540,8 +556,27 @@ impl ProcessHandle {
         results: &mut ScanResults,
         filter: &FilterExpr,
     ) -> anyhow::Result<()> {
-        // Check every 100_000 addresses scanned.
-        const CHECK_INTERVAL: u64 = 100_000;
+        self.rescan_windows(ctx, results, filter, DEFAULT_BUFFER_SIZE)
+    }
+
+    /// Rescan `results` by splitting the scanned memory into windows of
+    /// `window_size` bytes, each read only over the span of the results inside
+    /// it, and handed out to the pool one window at a time.
+    ///
+    /// Results are grouped by window with a counting sort over their indices,
+    /// so they are visited in their original order, and rejected results are
+    /// removed in one stable pass at the end.
+    pub(crate) fn rescan_windows(
+        &self,
+        ctx: ScanContext<'_, impl ScanProgress + Send>,
+        results: &mut ScanResults,
+        filter: &FilterExpr,
+        window_size: usize,
+    ) -> anyhow::Result<()> {
+        /// Bytes read past the last result of a window, so a value starting
+        /// in it decodes as it would from the whole region. Strings decode at
+        /// most 256 bytes.
+        const MIN_TAIL: usize = 0x1000;
 
         let ScanContext {
             pool: thread_pool,
@@ -549,213 +584,184 @@ impl ProcessHandle {
             progress,
         } = ctx;
         let cancel = &*cancel;
-        let ScanResults {
-            addresses,
-            initial,
-            last: values,
-        } = results;
 
-        if addresses.is_empty() {
+        if results.is_empty() {
             return Ok(());
         }
 
-        if addresses.len() != values.len() {
-            return Err(anyhow!(
-                "argument length mismatch, addresses ({}) != values ({})",
-                addresses.len(),
-                values.len()
-            ));
+        let len = results.len();
+
+        if len != results.last.len() || len != results.initial.len() {
+            bail!(
+                "argument length mismatch, addresses ({}) != values ({}) or initial ({})",
+                len,
+                results.last.len(),
+                results.initial.len(),
+            );
         }
 
-        // how many tasks to run in parallel.
-        let mut tasks = thread_pool.current_num_threads();
+        if u32::try_from(len).is_err() {
+            bail!("cannot rescan more than {} results", u32::MAX);
+        }
 
-        let mut to_remove = Vec::new();
-
-        let filter = filter.type_check(self, initial.ty(), values.ty(), values.ty())?;
+        let filter = filter.type_check(
+            self,
+            results.initial.ty(),
+            results.last.ty(),
+            results.last.ty(),
+        )?;
         let filter = &filter;
+
+        let tail = [results.initial.ty(), results.last.ty()]
+            .iter()
+            .filter_map(|ty| ty.size())
+            .fold(MIN_TAIL, usize::max);
+        let window_size = u64::try_from(window_size.max(1))?;
 
         let ranges = self.scan_ranges(false)?;
 
-        // Divide up into partitions.
-        let mut partitions = ranges
-            .iter()
-            .map(|_| Vec::with_capacity(0x10))
-            .collect::<Vec<_>>();
+        let mut windows = Vec::new();
+        let mut first_window = Vec::with_capacity(ranges.len());
 
-        for (index, address) in addresses.iter_copied().enumerate() {
-            match AddressRange::find_index_in_range(&ranges, |r| r, address)
-                .and_then(|i| partitions.get_mut(i))
-            {
-                Some(p) => p.push(index),
-                None => to_remove.push(index),
+        for range in &ranges {
+            first_window.push(windows.len());
+            let end = range.base.0.saturating_add(range.size.0);
+            let mut base = range.base.0;
+
+            while base < end {
+                let next = base.saturating_add(window_size).min(end);
+                windows.push(Window {
+                    base,
+                    end: next,
+                    range_end: end,
+                });
+                base = next;
             }
         }
 
+        let window_of = |address: Address| {
+            let r = AddressRange::find_index_in_range(&ranges, |r| r, address)?;
+            let base = ranges.get(r)?.base.0;
+            let n = usize::try_from(address.0.checked_sub(base)? / window_size).ok()?;
+            let w = first_window.get(r)?.checked_add(n)?;
+            (w < windows.len()).then_some(w)
+        };
+
+        let mut rejected = BitSet::with_capacity(len);
+
+        // `starts[w]..starts[w + 1]` is the part of `order` holding the
+        // indices of the results in window `w`; first counted, then filled.
+        let mut starts = vec![0u32; windows.len().saturating_add(1)];
+        let mut matched = 0u32;
+
+        for (index, address) in results.addresses.iter_copied().enumerate() {
+            match window_of(address).and_then(|w| starts.get_mut(w.checked_add(1)?)) {
+                Some(count) => {
+                    *count = count.saturating_add(1);
+                    matched = matched.saturating_add(1);
+                }
+                None => rejected.set(index),
+            }
+        }
+
+        let mut sum = 0u32;
+
+        for start in &mut starts {
+            sum = sum.saturating_add(*start);
+            *start = sum;
+        }
+
+        // Each `starts[w + 1]` now ends window `w`. Shifted one to the right
+        // it starts window `w` instead and serves as its fill cursor, which
+        // leaves it at the end of window `w` again.
+        starts.rotate_right(1);
+
+        let mut order = vec![0u32; usize::try_from(matched)?];
+
+        for (index, address) in results.addresses.iter_copied().enumerate() {
+            let Some(next) = window_of(address).and_then(|w| starts.get_mut(w.checked_add(1)?))
+            else {
+                continue;
+            };
+
+            if let (Some(slot), Ok(index)) =
+                (order.get_mut(usize::try_from(*next)?), u32::try_from(index))
+            {
+                *slot = index;
+            }
+
+            *next = next.saturating_add(1);
+        }
+
+        if let Some(first) = starts.first_mut() {
+            *first = 0;
+        }
+
         let mut last_error = None;
-        let mut reporter = ProgressReporter::new(
-            progress,
-            addresses.len() - to_remove.len(),
-            cancel,
-            &mut last_error,
-        );
 
-        thread_pool.install(|| {
-            rayon::scope(|s| {
-                let (tx, rx) = mpsc::channel::<anyhow::Result<Task>>();
-                let (p_tx, p_rx) =
-                    crossbeam_channel::unbounded::<Option<(&AddressRange, Vec<usize>)>>();
+        if matched > 0 {
+            let mut reporter =
+                ProgressReporter::new(progress, usize::try_from(matched)?, cancel, &mut last_error);
 
-                for _ in 0..tasks {
-                    let tx = tx.clone();
-                    let p_rx = p_rx.clone();
+            let tasks = thread_pool.current_num_threads().max(1);
+            let next_window = AtomicUsize::new(0);
 
-                    let addresses = &*addresses;
-                    let initial = &*initial;
-                    let values = &*values;
+            let work = Work {
+                handle: self,
+                windows: &windows,
+                starts: &starts,
+                order: &order,
+                next_window: &next_window,
+                results: &*results,
+                filter,
+                cancel,
+                buffer_size: usize::try_from(window_size)?.saturating_add(tail),
+                tail: u64::try_from(tail)?,
+            };
 
-                    s.spawn(move |_| {
-                        while !cancel.test() {
-                            let (range, task) = match p_rx.recv().expect("failed to receive") {
-                                Some(task) => task,
-                                None => break,
-                            };
+            thread_pool.install(|| {
+                rayon::scope(|s| {
+                    let (tx, rx) = mpsc::channel::<Task>();
 
-                            let work = |tx: &mpsc::Sender<anyhow::Result<Task>>| {
-                                let address = range.base;
-                                let size = range.size.as_usize();
-                                let mut buffer = vec![0u8; size];
-                                let read =
-                                    self.process.read_process_memory(address, &mut buffer)?;
-                                let buffer = &buffer[..read];
+                    for _ in 0..tasks {
+                        let tx = tx.clone();
+                        let work = &work;
 
-                                let mut accepted = 0u64;
-                                let mut rejected = Vec::new();
+                        s.spawn(move |_| {
+                            let result = work.run(&tx);
+                            let _ = tx.send(Task::Done(result));
+                        });
+                    }
 
-                                let mut count = 0u64;
+                    drop(tx);
 
-                                for index in task {
-                                    if count > CHECK_INTERVAL {
-                                        if cancel.test() {
-                                            break;
-                                        }
+                    let mut accepted = 0u64;
 
-                                        tx.send(Ok(Task::Progress { count, accepted }))
-                                            .expect("failed to send progress");
-                                        count = 0;
-                                        accepted = 0;
-                                    }
+                    for task in rx {
+                        match task {
+                            Task::Window {
+                                count,
+                                accepted: a,
+                                rejected: r,
+                            } => {
+                                accepted = accepted.saturating_add(a);
 
-                                    count += 1;
-
-                                    let address = addresses.get(index).expect("missing address");
-                                    let initial =
-                                        initial.get(index).expect("missing initial value");
-                                    let mut value = unsafe { values.get_mutator_unsafe(index) }
-                                        .expect("missing value");
-
-                                    let offset =
-                                        match usize::try_from(address.offset_of(range.base)) {
-                                            Ok(offset) => offset,
-                                            Err(..) => {
-                                                rejected.push(index);
-                                                continue;
-                                            }
-                                        };
-
-                                    if offset >= buffer.len() {
-                                        rejected.push(index);
-                                        continue;
-                                    }
-
-                                    let buffer = &buffer[offset..];
-                                    let mut proxy = BufferProxy::new(address, buffer, self);
-
-                                    if let Test::True = filter.test(
-                                        initial.as_ref(),
-                                        value.read().as_ref(),
-                                        &mut proxy,
-                                    )? {
-                                        accepted += 1;
-                                        value.write(proxy.eval(value.ty)?.0);
-                                    } else {
-                                        rejected.push(index);
-                                    }
+                                for index in r {
+                                    rejected.set(index as usize);
                                 }
 
-                                Ok(Task::Result {
-                                    count,
-                                    accepted,
-                                    rejected,
-                                })
-                            };
-
-                            let result = work(&tx);
-                            tx.send(result).expect("failed to send");
-                        }
-
-                        tx.send(Ok(Task::Done)).expect("failed to send");
-                    });
-                }
-
-                let mut it = partitions
-                    .into_iter()
-                    .enumerate()
-                    .filter(|(_, p)| !p.is_empty());
-
-                for (index, task) in (&mut it).take(tasks) {
-                    p_tx.send(Some((&ranges[index], task)))
-                        .expect("failed to send");
-                }
-
-                let mut results = 0u64;
-
-                while tasks > 0 {
-                    let result = rx.recv().expect("closed");
-
-                    if let Some((index, task)) = it.next() {
-                        p_tx.send(Some((&ranges[index], task)))
-                            .expect("failed to send");
-                    } else {
-                        p_tx.send(None).expect("failed to send");
-                    }
-
-                    if let Some(result) = reporter.eval(result) {
-                        match result {
-                            Task::Result {
-                                count,
-                                accepted,
-                                mut rejected,
-                            } => {
-                                results += accepted;
-                                reporter.tick_n(count as usize, results);
-                                to_remove.append(&mut rejected);
+                                reporter.tick_n(count, accepted);
                             }
-                            Task::Progress { count, accepted } => {
-                                results += accepted;
-                                reporter.tick_n(count as usize, results);
-                            }
-                            Task::Done => {
-                                tasks -= 1;
-                                continue;
+                            Task::Done(result) => {
+                                reporter.eval(result);
                             }
                         }
                     }
-                }
-
-                Ok::<_, anyhow::Error>(())
-            })?;
-
-            Ok::<_, anyhow::Error>(())
-        })?;
-
-        to_remove.sort_by(|a, b| b.cmp(a));
-
-        for index in to_remove {
-            initial.swap_remove(index);
-            values.swap_remove(index);
-            addresses.swap_remove(index);
+                })
+            });
         }
+
+        results.remove_marked(&rejected);
 
         if let Some(e) = last_error {
             return Err(e);
@@ -763,23 +769,143 @@ impl ProcessHandle {
 
         return Ok(());
 
+        struct Window {
+            base: u64,
+            end: u64,
+            range_end: u64,
+        }
+
         enum Task {
-            /// Address was accepted.
-            Result {
-                count: u64,
+            Window {
+                count: usize,
                 accepted: u64,
-                rejected: Vec<usize>,
+                rejected: Vec<u32>,
             },
-            Progress {
-                count: u64,
-                accepted: u64,
-            },
-            /// Task is done.
-            Done,
+            Done(anyhow::Result<()>),
+        }
+
+        struct Work<'a> {
+            handle: &'a ProcessHandle,
+            windows: &'a [Window],
+            starts: &'a [u32],
+            order: &'a [u32],
+            next_window: &'a AtomicUsize,
+            results: &'a ScanResults,
+            filter: &'a TypedFilterExpr<'a>,
+            cancel: &'a Token,
+            buffer_size: usize,
+            tail: u64,
+        }
+
+        impl Work<'_> {
+            fn run(&self, tx: &mpsc::Sender<Task>) -> anyhow::Result<()> {
+                const CHECK_INTERVAL: usize = 0x1000;
+
+                let ScanResults {
+                    addresses,
+                    initial,
+                    last: values,
+                } = self.results;
+
+                let mut buffer = vec![0u8; self.buffer_size];
+
+                while !self.cancel.test() {
+                    let w = self.next_window.fetch_add(1, Ordering::Relaxed);
+
+                    let Some(window) = self.windows.get(w) else {
+                        break;
+                    };
+
+                    let indices = match (self.starts.get(w), w.checked_add(1)) {
+                        (Some(&start), Some(end)) => match self.starts.get(end) {
+                            Some(&end) => self.order.get(start as usize..end as usize),
+                            None => None,
+                        },
+                        _ => None,
+                    };
+
+                    let Some(indices) = indices.filter(|i| !i.is_empty()) else {
+                        continue;
+                    };
+
+                    let (min, max) = indices
+                        .iter()
+                        .filter_map(|&index| addresses.get(index as usize))
+                        .fold((window.end, window.base), |(min, max), a| {
+                            (min.min(a.0), max.max(a.0))
+                        });
+
+                    let read_end = max.saturating_add(self.tail).min(window.range_end);
+                    let span = usize::try_from(read_end.saturating_sub(min))?;
+
+                    let Some(data) = buffer.get_mut(..span) else {
+                        bail!("window span {} exceeds the buffer", span);
+                    };
+
+                    let read = self
+                        .handle
+                        .process
+                        .read_process_memory(Address(min), data)?;
+                    let data = data.get(..read).unwrap_or_default();
+
+                    let mut accepted = 0u64;
+                    let mut rejected = Vec::new();
+
+                    for (n, &index) in indices.iter().enumerate() {
+                        if n % CHECK_INTERVAL == 0 && self.cancel.test() {
+                            break;
+                        }
+
+                        let i = index as usize;
+
+                        // Safety: every index is in exactly one window and
+                        // each window is handed to one task, so no other
+                        // mutator to this value exists.
+                        let (Some(address), Some(initial), Some(mut value)) =
+                            (addresses.get(i), initial.get(i), unsafe {
+                                values.get_mutator_unsafe(i)
+                            })
+                        else {
+                            rejected.push(index);
+                            continue;
+                        };
+
+                        let buffer = usize::try_from(address.0.saturating_sub(min))
+                            .ok()
+                            .and_then(|offset| data.get(offset..))
+                            .filter(|b| !b.is_empty());
+
+                        let Some(buffer) = buffer else {
+                            rejected.push(index);
+                            continue;
+                        };
+
+                        let mut proxy = BufferProxy::new(address, buffer, self.handle);
+
+                        if let Test::True =
+                            self.filter
+                                .test(initial.as_ref(), value.read().as_ref(), &mut proxy)?
+                        {
+                            accepted = accepted.saturating_add(1);
+                            value.write(proxy.eval(value.ty)?.0);
+                        } else {
+                            rejected.push(index);
+                        }
+                    }
+
+                    let _ = tx.send(Task::Window {
+                        count: indices.len(),
+                        accepted,
+                        rejected,
+                    });
+                }
+
+                Ok(())
+            }
         }
     }
 
-    fn rescan_small(
+    pub(crate) fn rescan_small(
         &self,
         ctx: ScanContext<'_, impl ScanProgress + Send>,
         results: &mut ScanResults,
@@ -795,7 +921,7 @@ impl ProcessHandle {
             addresses,
             initial,
             last: values,
-        } = results;
+        } = &mut *results;
 
         if addresses.is_empty() {
             return Ok(());
@@ -815,7 +941,7 @@ impl ProcessHandle {
         // how many tasks to run in parallel.
         let mut tasks = thread_pool.current_num_threads();
 
-        let mut to_remove = Vec::new();
+        let mut rejected = BitSet::with_capacity(values.len());
 
         let filter = filter.type_check(self, initial.ty(), values.ty(), values.ty())?;
         let filter = &filter;
@@ -892,7 +1018,7 @@ impl ProcessHandle {
                         count += match result {
                             Task::Accepted => 1,
                             Task::Rejected(index) => {
-                                to_remove.push(index);
+                                rejected.set(index);
                                 0
                             }
                             Task::Done => {
@@ -911,13 +1037,7 @@ impl ProcessHandle {
             Ok::<_, anyhow::Error>(())
         })?;
 
-        to_remove.sort_by(|a, b| b.cmp(a));
-
-        for index in to_remove {
-            initial.swap_remove(index);
-            values.swap_remove(index);
-            addresses.swap_remove(index);
-        }
+        results.remove_marked(&rejected);
 
         if let Some(e) = last_error {
             return Err(e);
@@ -1192,8 +1312,6 @@ impl ProcessHandle {
         values: &mut Values,
         config: InitialScanConfig,
     ) -> anyhow::Result<()> {
-        const DEFAULT_BUFFER_SIZE: usize = 0x100_000;
-
         let ScanContext {
             pool: thread_pool,
             cancel,
@@ -1724,5 +1842,58 @@ impl fmt::Display for ProcessThread {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ScanResults;
+    use crate::{Address, Addresses, BitSet, PointerWidth, Type, Value, Values};
+
+    #[test]
+    fn remove_marked_keeps_order() {
+        let mut addresses = Addresses::new(PointerWidth::Pointer64);
+        let mut initial = Values::new(Type::U32);
+        let mut last = Values::new(Type::U64);
+
+        for n in 0..100u32 {
+            addresses.push(Address::new(u64::from(n) * 8));
+            initial.push(Value::U32(n));
+            last.push(Value::U64(u64::from(n) * 2));
+        }
+
+        let mut results = ScanResults::new(addresses, initial, last);
+
+        results.remove_marked(&BitSet::new());
+        assert_eq!(results.len(), 100);
+
+        let mut marked = BitSet::new();
+
+        for index in (0..100).filter(|n| n % 7 == 0 || *n == 99) {
+            marked.set(index);
+        }
+
+        results.remove_marked(&marked);
+
+        let kept = (0..100u32)
+            .filter(|n| n % 7 != 0 && *n != 99)
+            .collect::<Vec<_>>();
+        assert_eq!(results.len(), kept.len());
+        assert_eq!(
+            results.addresses.iter_copied().collect::<Vec<_>>(),
+            kept.iter()
+                .map(|&n| Address::new(u64::from(n) * 8))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            results.initial.iter().map(|v| v.read()).collect::<Vec<_>>(),
+            kept.iter().map(|&n| Value::U32(n)).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            results.last.iter().map(|v| v.read()).collect::<Vec<_>>(),
+            kept.iter()
+                .map(|&n| Value::U64(u64::from(n) * 2))
+                .collect::<Vec<_>>()
+        );
     }
 }

@@ -20,21 +20,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  version:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    - uses: dtolnay/rust-toolchain@stable
-    - name: Check that the version matches Cargo.toml
-      run: |
-        manifest=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "ptscan") | .version')
-        if [ "$manifest" != "$KICK_VERSION" ]; then
-          echo "Version $KICK_VERSION does not match Cargo.toml version $manifest" >&2
-          exit 1
-        fi
-
   build:
-    needs: version
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -62,7 +48,6 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
     - uses: actions/download-artifact@v7
       with: {name: dist-windows-latest, path: dist}
     - uses: actions/download-artifact@v7

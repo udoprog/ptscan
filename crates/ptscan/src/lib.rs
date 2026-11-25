@@ -824,6 +824,13 @@ impl ws::Handler for Handler {
                         .await,
                 );
             }
+            api::Request::SetLayout => {
+                let Some(request) = incoming.read::<api::SetLayoutRequest>() else {
+                    return Ok(false);
+                };
+
+                outgoing.write(self.shared.set_layout(request.layout).await);
+            }
             _ => return Ok(false),
         }
 

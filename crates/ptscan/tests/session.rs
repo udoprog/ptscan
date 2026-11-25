@@ -100,6 +100,65 @@ async fn starts_with_a_default_session() {
     assert_eq!(current.target, None);
     assert_eq!(state.scan, api::ScanForm::default());
     assert_eq!(state.pointer_scan, api::PointerScanSettings::default());
+    assert_eq!(state.layout, api::Layout::default());
+}
+
+#[tokio::test]
+async fn layout_is_kept_per_session_and_reaches_every_client() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("ptscan.db");
+
+    let db = ptscan::Db::open(&path).unwrap();
+    let addr = server(ptscan::Shared::default().with_db(db)).await;
+    let handle = connect(addr).await;
+    let other = connect(addr).await;
+    let mut changes = other.on_broadcast::<api::SessionStateChanged>();
+    let first = session_state(&handle).await.current.unwrap();
+
+    let layout = api::Layout {
+        side: 300,
+        results: 450,
+        scratch: 700,
+    };
+
+    let response = send(&handle, api::SetLayoutRequest { layout }).await;
+    assert_eq!(response.error, None);
+    assert_eq!(response.state.layout, layout);
+
+    let seen = loop {
+        let state = timeout!(changes.recv())
+            .unwrap()
+            .unwrap()
+            .decode_event()
+            .unwrap();
+
+        if state.layout == layout {
+            break state;
+        }
+    };
+    assert_eq!(seen.current, Some(first));
+
+    let response = send(
+        &handle,
+        api::SetLayoutRequest {
+            layout: api::Layout {
+                side: api::Layout::SCALE + 1,
+                ..layout
+            },
+        },
+    )
+    .await;
+    assert!(response.error.is_some());
+    assert_eq!(response.state.layout, layout);
+
+    let second = create(&handle, "Second").await;
+    let response = send(&handle, api::OpenSessionRequest { id: second }).await;
+    assert_eq!(response.state.layout, api::Layout::default());
+    send(&handle, api::OpenSessionRequest { id: first }).await;
+    drop((changes, other, handle));
+
+    let handle = start(&path).await;
+    assert_eq!(session_state(&handle).await.layout, layout);
 }
 
 #[tokio::test]

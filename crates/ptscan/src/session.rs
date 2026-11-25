@@ -28,12 +28,19 @@ const SCAN_MODULES_ONLY: ConfigKey = ConfigKey::nested(ConfigField::Scan, Config
 const MAX_DEPTH: ConfigKey = ConfigKey::nested(ConfigField::PointerScan, ConfigField::MaxDepth);
 const MAX_OFFSET: ConfigKey = ConfigKey::nested(ConfigField::PointerScan, ConfigField::MaxOffset);
 const MAX_PATHS: ConfigKey = ConfigKey::nested(ConfigField::PointerScan, ConfigField::MaxPaths);
+const LAYOUT_SIDE: ConfigKey = ConfigKey::nested(ConfigField::Layout, ConfigField::Side);
+const LAYOUT_RESULTS: ConfigKey = ConfigKey::nested(ConfigField::Layout, ConfigField::Results);
+const LAYOUT_SCRATCH: ConfigKey = ConfigKey::nested(ConfigField::Layout, ConfigField::Scratch);
 
 impl Setting for String {
     const VERSION: u32 = 1;
 }
 
 impl Setting for bool {
+    const VERSION: u32 = 1;
+}
+
+impl Setting for u16 {
     const VERSION: u32 = 1;
 }
 
@@ -118,6 +125,34 @@ fn pointer_scan(id: u64, config: &BTreeMap<ConfigKey, String>) -> api::PointerSc
         max_offset: get(id, config, MAX_OFFSET).unwrap_or(default.max_offset),
         max_paths: get(id, config, MAX_PATHS).unwrap_or(default.max_paths),
     }
+}
+
+fn layout(id: u64, config: &BTreeMap<ConfigKey, String>) -> api::Layout {
+    let default = api::Layout::default();
+    let share = |key, default: u16| {
+        get(id, config, key)
+            .filter(|share: &u16| *share <= api::Layout::SCALE)
+            .unwrap_or(default)
+    };
+
+    api::Layout {
+        side: share(LAYOUT_SIDE, default.side),
+        results: share(LAYOUT_RESULTS, default.results),
+        scratch: share(LAYOUT_SCRATCH, default.scratch),
+    }
+}
+
+fn validate_layout(layout: &api::Layout) -> Result<()> {
+    let max = api::Layout::SCALE;
+
+    if [layout.side, layout.results, layout.scratch]
+        .iter()
+        .any(|share| *share > max)
+    {
+        bail!("A region's share must be at most {max}");
+    }
+
+    Ok(())
 }
 
 fn validate_name(name: &str) -> Result<String> {
@@ -249,6 +284,7 @@ impl Shared {
         session.opened = opened;
         let scan = scan_form(id, &config);
         let pointer_scan = pointer_scan(id, &config);
+        let layout = layout(id, &config);
 
         self.session_state.send_modify(|state| {
             state.sessions.retain(|s| s.id != id);
@@ -257,6 +293,7 @@ impl Shared {
             state.current = Some(id);
             state.scan = scan;
             state.pointer_scan = pointer_scan;
+            state.layout = layout;
         });
 
         Ok(())
@@ -388,6 +425,29 @@ impl Shared {
 
             self.session_state
                 .send_modify(|state| state.pointer_scan = settings);
+            Ok(())
+        };
+
+        self.respond(result.await)
+    }
+
+    pub async fn set_layout(&self, layout: api::Layout) -> api::SessionResponse {
+        let result = async {
+            validate_layout(&layout)?;
+            let _guard = self.session_lock.lock().await;
+
+            let current = self.session_state.borrow().current;
+
+            if let (Some(db), Some(id)) = (&self.db, current) {
+                let mut changes = Changes::new();
+                put(&mut changes, LAYOUT_SIDE, Some(&layout.side))?;
+                put(&mut changes, LAYOUT_RESULTS, Some(&layout.results))?;
+                put(&mut changes, LAYOUT_SCRATCH, Some(&layout.scratch))?;
+                db.update_session(id, changes).await?;
+            }
+
+            self.session_state
+                .send_modify(|state| state.layout = layout);
             Ok(())
         };
 

@@ -451,6 +451,45 @@ impl Default for PointerScanSettings {
     }
 }
 
+/// How the main screen's regions divide it, each the first region's share of
+/// its split in thousandths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub struct Layout {
+    /// The process list beside the rest.
+    pub side: u16,
+    /// The scan results over the lower regions.
+    pub results: u16,
+    /// The scratch list beside the pointer scan.
+    pub scratch: u16,
+}
+
+impl Layout {
+    pub const SCALE: u16 = 1000;
+
+    /// Each share as a fraction, `side`, `results`, `scratch`.
+    pub fn fractions(&self) -> [f64; 3] {
+        [self.side, self.results, self.scratch]
+            .map(|share| f64::from(share.min(Self::SCALE)) / f64::from(Self::SCALE))
+    }
+
+    /// A share from a fraction, clamped to `0..=SCALE`.
+    pub fn share(fraction: f64) -> u16 {
+        let scaled = (fraction.clamp(0.0, 1.0) * f64::from(Self::SCALE)).round();
+        // In range by the clamp above.
+        scaled as u16
+    }
+}
+
+impl Default for Layout {
+    fn default() -> Self {
+        Self {
+            side: 250,
+            results: 600,
+            scratch: 500,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct SessionInfo {
     pub id: u64,
@@ -471,6 +510,7 @@ pub struct SessionState {
     pub sessions: Vec<SessionInfo>,
     pub scan: ScanForm,
     pub pointer_scan: PointerScanSettings,
+    pub layout: Layout,
 }
 
 impl SessionState {
@@ -522,6 +562,11 @@ pub struct SetScanFormRequest {
 #[derive(Debug, Clone, Encode, Decode)]
 pub struct SetPointerScanSettingsRequest {
     pub settings: PointerScanSettings,
+}
+
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct SetLayoutRequest {
+    pub layout: Layout,
 }
 
 api::define! {
@@ -737,6 +782,12 @@ api::define! {
     pub type SetPointerScanSettings;
     impl Endpoint for SetPointerScanSettings {
         impl Request for SetPointerScanSettingsRequest;
+        type Response<'de> = SessionResponse;
+    }
+
+    pub type SetLayout;
+    impl Endpoint for SetLayout {
+        impl Request for SetLayoutRequest;
         type Response<'de> = SessionResponse;
     }
 

@@ -1,5 +1,5 @@
 use musli_web::web03::prelude::*;
-use sockel::{Button, ButtonSize, Count, Gap, Pill, Stack, Tone, Toolbar, ToolbarSpacer};
+use sockel::{AppShell, Button, ButtonSize, Count, Pill, Seam, SeamAxis, Tone};
 use yew::prelude::*;
 
 use crate::class;
@@ -24,6 +24,17 @@ pub enum Msg {
     ToggleErrors,
     ToggleProcessInformation,
     ClearErrors,
+    Resize(Region, f64),
+    SaveLayout,
+    LayoutSaved(Result<ws::Packet<api::SetLayout>, ws::Error>),
+}
+
+/// A resizable split of the main screen.
+#[derive(Clone, Copy)]
+pub enum Region {
+    Side,
+    Results,
+    Scratch,
 }
 
 pub struct App {
@@ -33,6 +44,10 @@ pub struct App {
     _session_listener: ws::Listener,
     attach_request: ws::Request,
     session_request: ws::Request,
+    layout_request: ws::Request,
+    /// The layout shown, which runs ahead of the session's while a divider
+    /// is dragged.
+    layout: api::Layout,
     connection: ws::State,
     attach: api::AttachState,
     session: api::SessionState,
@@ -44,6 +59,11 @@ pub struct App {
 }
 
 impl App {
+    fn set_session(&mut self, state: api::SessionState) {
+        self.layout = state.layout;
+        self.session = state;
+    }
+
     fn raise(&mut self, message: String) -> bool {
         self.errors.push(ErrorEntry::now(message));
         true
@@ -99,6 +119,8 @@ impl Component for App {
             _session_listener: session_listener,
             attach_request: ws::Request::default(),
             session_request: ws::Request::default(),
+            layout_request: ws::Request::default(),
+            layout: api::Layout::default(),
             connection,
             attach: api::AttachState::default(),
             session: api::SessionState::default(),
@@ -153,7 +175,7 @@ impl Component for App {
             }
             Msg::SessionState(result) => {
                 match result.and_then(|packet| packet.decode_response()) {
-                    Ok(state) => self.session = state,
+                    Ok(state) => self.set_session(state),
                     Err(error) => return self.raise(format!("Reading sessions: {error}")),
                 }
 
@@ -161,7 +183,7 @@ impl Component for App {
             }
             Msg::SessionChanged(result) => {
                 match result.and_then(|packet| packet.decode_event()) {
-                    Ok(state) => self.session = state,
+                    Ok(state) => self.set_session(state),
                     Err(error) => return self.raise(format!("Session update: {error}")),
                 }
 
@@ -184,6 +206,39 @@ impl Component for App {
                 self.errors.clear();
                 true
             }
+            Msg::Resize(region, at) => {
+                let share = api::Layout::share(at);
+
+                match region {
+                    Region::Side => self.layout.side = share,
+                    Region::Results => self.layout.results = share,
+                    Region::Scratch => self.layout.scratch = share,
+                }
+
+                true
+            }
+            Msg::SaveLayout => {
+                if self.layout != self.session.layout {
+                    self.layout_request = self
+                        .service
+                        .handle()
+                        .request()
+                        .body(api::SetLayoutRequest {
+                            layout: self.layout,
+                        })
+                        .on_packet(ctx.link().callback(Msg::LayoutSaved))
+                        .send();
+                }
+
+                false
+            }
+            Msg::LayoutSaved(result) => match result.and_then(|p| p.decode_response()) {
+                Ok(response) => match response.error {
+                    Some(error) => self.raise(format!("Saving the layout: {error}")),
+                    None => false,
+                },
+                Err(error) => self.raise(format!("Saving the layout: {error}")),
+            },
         }
     }
 
@@ -213,68 +268,105 @@ impl Component for App {
         let error_count = u32::try_from(self.errors.len()).unwrap_or(u32::MAX);
         let error_after = (error_count > 0).then(|| html! { <Count value={error_count} /> });
 
+        let [side, results, scratch] = self.layout.fractions();
+        let resize = |region| ctx.link().callback(move |at| Msg::Resize(region, at));
+        let save = ctx.link().callback(|_| Msg::SaveLayout);
+
+        let start = html! {
+            <>
+                <span class={class::TITLE}>{"ptscan"}</span>
+                <Pill {tone}>{label}</Pill>
+                {attached}
+            </>
+        };
+
+        let end = html! {
+            <>
+                <Button size={ButtonSize::Small}
+                    disabled={self.session.current.is_none()}
+                    title="Switch, create, rename and delete sessions"
+                    onclick={ctx.link().callback(|_| Msg::ToggleSessions)}>
+                    {format!("Session: {session_name}")}
+                </Button>
+                <Button size={ButtonSize::Small}
+                    disabled={self.attach.process.is_none()}
+                    title="Show the attached process's modules, threads and memory regions"
+                    onclick={ctx.link().callback(|_| Msg::ToggleProcessInformation)}>
+                    {"Process info"}
+                </Button>
+                <Button size={ButtonSize::Small}
+                    after={error_after}
+                    onclick={ctx.link().callback(|_| Msg::ToggleErrors)}>
+                    {"Errors"}
+                </Button>
+            </>
+        };
+
+        let process_picker = html! {
+            <ProcessPicker
+                ws={self.service.handle().clone()}
+                open={self.connection.is_open()}
+                attach={self.attach.clone()}
+                target={self.session.current().and_then(|s| s.target.clone())}
+                on_error={self.on_error.clone()}
+            />
+        };
+
+        let scan_view = html! {
+            <ScanView
+                ws={self.service.handle().clone()}
+                open={self.connection.is_open()}
+                attached={self.attach.process.is_some()}
+                session={self.session.current}
+                form={self.session.scan.clone()}
+                on_error={self.on_error.clone()}
+            />
+        };
+
+        let scratch_view = html! {
+            <ScratchView
+                ws={self.service.handle().clone()}
+                open={self.connection.is_open()}
+                attached={self.attach.process.is_some()}
+                on_error={self.on_error.clone()}
+            />
+        };
+
+        let pointer_scan_view = html! {
+            <PointerScanView
+                ws={self.service.handle().clone()}
+                open={self.connection.is_open()}
+                attached={self.attach.process.is_some()}
+                session={self.session.current}
+                settings={self.session.pointer_scan.clone()}
+                on_error={self.on_error.clone()}
+            />
+        };
+
+        let defaults = api::Layout::default().fractions();
+
+        let lower = html! {
+            <Seam class={class::FILL} label="Resize the scratch list and the pointer scan"
+                at={scratch} reset={defaults[2]} min={0.1} max={0.9}
+                on_change={resize(Region::Scratch)} on_settle={save.clone()}
+                start={scratch_view} end={pointer_scan_view} />
+        };
+
+        let main = html! {
+            <Seam class={class::FILL} axis={SeamAxis::Rows} label="Resize the scan results"
+                at={results} reset={defaults[1]} min={0.1} max={0.9}
+                on_change={resize(Region::Results)} on_settle={save.clone()}
+                start={scan_view} end={lower} />
+        };
+
         html! {
-            <Stack gap={Gap::None} class={class::APP}>
-                <Toolbar label="Application" band=true chrome=true>
-                    <span class={class::TITLE}>{"ptscan"}</span>
-                    <Pill {tone}>{label}</Pill>
-                    {attached}
-                    <ToolbarSpacer />
-                    <Button size={ButtonSize::Small}
-                        disabled={self.session.current.is_none()}
-                        title="Switch, create, rename and delete sessions"
-                        onclick={ctx.link().callback(|_| Msg::ToggleSessions)}>
-                        {format!("Session: {session_name}")}
-                    </Button>
-                    <Button size={ButtonSize::Small}
-                        disabled={self.attach.process.is_none()}
-                        title="Show the attached process's modules, threads and memory regions"
-                        onclick={ctx.link().callback(|_| Msg::ToggleProcessInformation)}>
-                        {"Process info"}
-                    </Button>
-                    <Button size={ButtonSize::Small}
-                        after={error_after}
-                        onclick={ctx.link().callback(|_| Msg::ToggleErrors)}>
-                        {"Errors"}
-                    </Button>
-                </Toolbar>
-                <div class={class::WORKSPACE}>
-                    <div class={class::SIDE}>
-                        <ProcessPicker
-                            ws={self.service.handle().clone()}
-                            open={self.connection.is_open()}
-                            attach={self.attach.clone()}
-                            target={self.session.current().and_then(|s| s.target.clone())}
-                            on_error={self.on_error.clone()}
-                        />
-                    </div>
-                    <div class={class::MAIN}>
-                        <ScanView
-                            ws={self.service.handle().clone()}
-                            open={self.connection.is_open()}
-                            attached={self.attach.process.is_some()}
-                            session={self.session.current}
-                            form={self.session.scan.clone()}
-                            on_error={self.on_error.clone()}
-                        />
-                        <div class={class::LOWER}>
-                            <ScratchView
-                                ws={self.service.handle().clone()}
-                                open={self.connection.is_open()}
-                                attached={self.attach.process.is_some()}
-                                on_error={self.on_error.clone()}
-                            />
-                            <PointerScanView
-                                ws={self.service.handle().clone()}
-                                open={self.connection.is_open()}
-                                attached={self.attach.process.is_some()}
-                                session={self.session.current}
-                                settings={self.session.pointer_scan.clone()}
-                                on_error={self.on_error.clone()}
-                            />
-                        </div>
-                    </div>
-                </div>
+            <>
+                <AppShell {start} {end}>
+                    <Seam class={class::WORKSPACE} label="Resize the process list"
+                        at={side} reset={defaults[0]} min={0.1} max={0.6}
+                        on_change={resize(Region::Side)} on_settle={save}
+                        start={process_picker} end={main} />
+                </AppShell>
                 <ProcessInformation
                     open={self.show_process_information}
                     ws={self.service.handle().clone()}
@@ -296,7 +388,7 @@ impl Component for App {
                     on_clear={ctx.link().callback(|()| Msg::ClearErrors)}
                     on_close={ctx.link().callback(|()| Msg::ToggleErrors)}
                 />
-            </Stack>
+            </>
         }
     }
 }

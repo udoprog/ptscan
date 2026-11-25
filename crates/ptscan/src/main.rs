@@ -97,11 +97,12 @@ async fn run(args: Args) -> Result<()> {
     }
 
     let shared = Arc::new(
-        args.dev_origin
-            .into_iter()
-            .fold(ptscan::Shared::default().with_db(db), |shared, origin| {
-                shared.with_dev_origin(origin)
-            }),
+        args.dev_origin.into_iter().fold(
+            ptscan::Shared::default()
+                .with_db(db)
+                .with_places(ptscan::Places::from_env().with_data(&path)),
+            |shared, origin| shared.with_dev_origin(origin),
+        ),
     );
 
     shared

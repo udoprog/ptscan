@@ -572,6 +572,80 @@ pub struct SetLayoutRequest {
     pub layout: Layout,
 }
 
+/// List a directory on the server's machine, for choosing a file to save to
+/// or load from. Read only.
+#[derive(Debug, Clone, Default, Encode, Decode)]
+pub struct ListDirectoryRequest {
+    /// An absolute path; `None` lists the home directory.
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub enum EntryKind {
+    Directory,
+    File,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct DirectoryEntry {
+    pub name: String,
+    /// The entry's absolute path.
+    pub path: String,
+    pub kind: EntryKind,
+    /// Size in bytes, for files.
+    pub size: Option<u64>,
+    /// Unix time in seconds.
+    pub modified: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub enum PlaceKind {
+    Home,
+    /// Where ptscan keeps its database.
+    Data,
+    /// A filesystem root: `/`, or a drive on Windows.
+    Root,
+}
+
+/// A directory offered as a shortcut.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct Place {
+    pub kind: PlaceKind,
+    pub name: String,
+    pub path: String,
+}
+
+/// One directory of a listed path, from the root down.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct Crumb {
+    pub name: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub enum ListDirectoryRefusal {
+    /// The path is not absolute.
+    Relative,
+    Missing,
+    NotADirectory,
+    /// The directory exists but could not be read.
+    Unreadable,
+}
+
+/// A directory's entries, directories first, each group by name.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct ListDirectoryResponse {
+    /// The listed directory; with a refusal, the asked-for path.
+    pub path: String,
+    pub parent: Option<String>,
+    pub crumbs: Vec<Crumb>,
+    pub entries: Vec<DirectoryEntry>,
+    pub places: Vec<Place>,
+    /// The separator to join a file name onto `path` with.
+    pub separator: String,
+    pub refusal: Option<ListDirectoryRefusal>,
+}
+
 api::define! {
     pub type ListProcesses;
     impl Endpoint for ListProcesses {
@@ -797,5 +871,11 @@ api::define! {
     pub type SessionStateChanged;
     impl Broadcast for SessionStateChanged {
         impl Event for SessionState;
+    }
+
+    pub type ListDirectory;
+    impl Endpoint for ListDirectory {
+        impl Request for ListDirectoryRequest;
+        type Response<'de> = ListDirectoryResponse;
     }
 }

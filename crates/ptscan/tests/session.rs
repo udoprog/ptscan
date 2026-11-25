@@ -625,3 +625,64 @@ async fn unreadable_watches_are_kept() {
     .unwrap();
     assert_eq!(response.entry.map(|e| e.error), Some(None));
 }
+
+#[tokio::test]
+async fn lists_directories_with_the_servers_places() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::create_dir(home.join("saves")).unwrap();
+    std::fs::write(home.join("list.ptscan.json"), b"{}").unwrap();
+
+    let db_path = dir.path().join("ptscan.db");
+    let db = ptscan::Db::open(&db_path).unwrap();
+    let places = ptscan::Places {
+        home: Some(home.clone()),
+        data: None,
+    }
+    .with_data(&db_path);
+    let handle =
+        connect(server(ptscan::Shared::default().with_db(db).with_places(places)).await).await;
+
+    let listed: api::ListDirectoryResponse = timeout!(
+        handle
+            .request()
+            .body(api::ListDirectoryRequest { path: None })
+            .send()
+    )
+    .unwrap()
+    .decode()
+    .unwrap();
+
+    assert_eq!(listed.refusal, None);
+    assert_eq!(listed.path, home.display().to_string());
+    let names = listed
+        .entries
+        .iter()
+        .map(|e| e.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["saves", "list.ptscan.json"]);
+
+    let data = listed
+        .places
+        .iter()
+        .find(|p| p.kind == api::PlaceKind::Data)
+        .expect("data place");
+    assert_eq!(data.path, dir.path().display().to_string());
+
+    let missing = home.join("missing").display().to_string();
+    let listed: api::ListDirectoryResponse = timeout!(
+        handle
+            .request()
+            .body(api::ListDirectoryRequest {
+                path: Some(missing.clone()),
+            })
+            .send()
+    )
+    .unwrap()
+    .decode()
+    .unwrap();
+
+    assert_eq!(listed.refusal, Some(api::ListDirectoryRefusal::Missing));
+    assert_eq!(listed.path, missing);
+}

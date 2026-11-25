@@ -267,9 +267,11 @@
 //! You can find them at <https://www.gnome.org>.
 
 pub mod db;
+mod files;
 mod origin;
 
 pub use self::db::Db;
+pub use self::files::Places;
 pub use self::origin::DevOrigin;
 mod pointer_scan;
 mod process_information;
@@ -312,6 +314,7 @@ pub struct Shared {
     /// Held while a session change is written, so that the database and
     /// `session_state` change together.
     session_lock: tokio::sync::Mutex<()>,
+    places: Places,
 }
 
 impl Default for Shared {
@@ -337,6 +340,7 @@ impl Default for Shared {
             db: None,
             session_state: watch::Sender::new(api::SessionState::default()),
             session_lock: tokio::sync::Mutex::new(()),
+            places: Places::default(),
         }
     }
 }
@@ -376,6 +380,12 @@ impl Shared {
     /// Keep settings in `db`.
     pub fn with_db(mut self, db: Db) -> Self {
         self.db = Some(db);
+        self
+    }
+
+    /// Offer `places` as shortcuts when browsing for files.
+    pub fn with_places(mut self, places: Places) -> Self {
+        self.places = places;
         self
     }
 
@@ -841,6 +851,18 @@ impl ws::Handler for Handler {
                 };
 
                 outgoing.write(self.shared.set_layout(request.layout).await);
+            }
+            api::Request::ListDirectory => {
+                let Some(request) = incoming.read::<api::ListDirectoryRequest>() else {
+                    return Ok(false);
+                };
+
+                let shared = self.shared.clone();
+                let response = tokio::task::spawn_blocking(move || {
+                    files::list_directory(request.path.as_deref(), &shared.places)
+                })
+                .await?;
+                outgoing.write(response);
             }
             _ => return Ok(false),
         }

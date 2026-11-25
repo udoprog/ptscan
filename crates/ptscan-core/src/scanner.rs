@@ -6,12 +6,22 @@ use crate::{
 use anyhow::bail;
 use std::{convert::TryInto as _, marker, ops::Bound};
 
-fn align(to_align: &mut usize, alignment: usize) {
-    let rem = *to_align % alignment;
+/// Where to resume scanning after a skip found a first interesting byte
+/// `skip` bytes past `offset`.
+///
+/// A value reaching that byte can start up to `lookbehind` bytes before it, so
+/// the result is rounded *down* to the alignment, never below `offset`.
+/// Rounding up would jump past a word whose first non-zero byte is not its
+/// first.
+fn skip_to(offset: usize, skip: usize, lookbehind: usize, alignment: Option<usize>) -> usize {
+    let target = offset.saturating_add(skip.saturating_sub(lookbehind));
 
-    if rem > 0 {
-        *to_align += alignment - rem;
-    }
+    let target = match alignment.and_then(|a| target.checked_rem(a)) {
+        Some(rem) => target.saturating_sub(rem),
+        None => target,
+    };
+
+    usize::max(target, offset)
 }
 
 /// How many bytes [`DefaultScanner`] scans between checks for cancellation.
@@ -21,6 +31,12 @@ const CANCEL_CHECK_INTERVAL: usize = 0x1000;
 pub trait ScannerTrait {
     /// Find the first offset which satistifes the trait.
     fn find_trait_offset(&self, data: &[u8]) -> Option<usize>;
+
+    /// How many bytes before the found offset an element containing it can
+    /// start, for an element of `type_size` bytes.
+    fn lookbehind(&self, _type_size: usize) -> usize {
+        0
+    }
 
     /// Test if the found byte slice satisfies the trait.
     fn test(&self, data: &[u8]) -> bool;
@@ -51,9 +67,15 @@ impl ScannerTrait for FindNonZero {
     }
 
     #[inline(always)]
-    fn test(&self, _: &[u8]) -> bool {
-        // NB: doesn't matter
-        true
+    fn lookbehind(&self, type_size: usize) -> usize {
+        type_size.saturating_sub(1)
+    }
+
+    #[inline(always)]
+    fn test(&self, data: &[u8]) -> bool {
+        // NB: the aligned element holding the found byte might not reach it
+        // when the alignment is wider than the element.
+        !is_all_zeros(data)
     }
 }
 
@@ -111,17 +133,15 @@ impl<'a> Scanner for DefaultScanner<'a> {
             values,
             hits,
         } = out;
+        let lookbehind = self.special.map(Special::lookbehind).unwrap_or_default();
+
         let mut offset = match self.special {
             Some(special) => match special.test(data) {
-                Some(offset) => offset,
+                Some(skip) => skip_to(0, skip, lookbehind, self.alignment),
                 None => return Ok(()),
             },
             None => 0usize,
         };
-
-        if let Some(size) = self.alignment {
-            align(&mut offset, size);
-        }
 
         let mut last_address = None;
         let mut next_cancel_check = 0usize;
@@ -189,14 +209,10 @@ impl<'a> Scanner for DefaultScanner<'a> {
                     break;
                 };
 
-                offset += match special.test(rest) {
-                    Some(o) => o,
+                offset = match special.test(rest) {
+                    Some(skip) => skip_to(offset, skip, lookbehind, self.alignment),
                     None => return Ok(()),
                 };
-
-                if let Some(size) = self.alignment {
-                    align(&mut offset, size);
-                }
             }
         }
 
@@ -256,7 +272,8 @@ where
                 None => break,
             };
 
-            offset += o;
+            let lookbehind = self.scanner_trait.lookbehind(self.type_size);
+            offset = offset.saturating_add(o.saturating_sub(lookbehind));
 
             self.alignment.align(&mut offset);
 
@@ -776,7 +793,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{Chunk, DefaultScanner, ScanSink, Scanner};
-    use crate::{Address, Addresses, FilterExpr, PointerWidth, ProcessHandle, Token, Type, Values};
+    use crate::{
+        Address, Addresses, FilterExpr, PointerWidth, ProcessHandle, Special, Token, Type, Values,
+    };
 
     /// Bytes holding values near the constants the tests compare against, in
     /// every width and both signs, and floats including NaN and infinities.
@@ -859,6 +878,157 @@ mod tests {
             .enumerate()
             .map(|(i, a)| (a, format!("{:?}", values.get(i))))
             .collect()
+    }
+
+    /// Words that are zero, or non-zero only in a byte other than the first,
+    /// so that a skip to the first non-zero byte lands inside a word.
+    fn sparse_data() -> Vec<u8> {
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut out = Vec::new();
+
+        for _ in 0..2_000 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+
+            let word: u64 = match x % 8 {
+                0 => 0x1234_5600,
+                1 => 0x100,
+                2 => 0xff00_0000_0000_0000,
+                3 => x << 8,
+                4 => x,
+                _ => 0,
+            };
+
+            out.extend_from_slice(&word.to_ne_bytes());
+        }
+
+        out.extend_from_slice(&[0u8; 16]);
+        out
+    }
+
+    /// A skip to the first non-zero byte must not jump past an aligned word
+    /// whose low byte is zero, for the default scanner with a special and for
+    /// the aligned `value != 0` scanner, including alignments narrower and
+    /// wider than the value.
+    #[test]
+    fn nonzero_skip_keeps_aligned_words() {
+        let handle = ProcessHandle::open(std::process::id()).unwrap().unwrap();
+
+        let data = sparse_data();
+        let pad = (16 - data.as_ptr() as usize % 16) % 16;
+        let data = &data[pad..data.len() - 16];
+        let base = data.as_ptr() as u64;
+
+        for (ty, alignments) in [
+            (Type::U64, &[8usize, 16, 4, 2][..]),
+            (Type::U32, &[4, 8, 2][..]),
+            (Type::U16, &[2, 4, 8][..]),
+            (Type::Pointer(PointerWidth::Pointer64), &[8, 16, 4][..]),
+        ] {
+            let size = ty.size().unwrap();
+            let expr = FilterExpr::parse("value != 0", &handle).unwrap();
+            let typed = expr
+                .type_check(&handle, Type::None, Type::None, ty)
+                .unwrap();
+
+            let special = Special::NonZero(Some(size));
+
+            for &alignment in alignments {
+                let skipping = DefaultScanner::new(
+                    typed.clone(),
+                    Some(&special),
+                    Some(alignment),
+                    alignment,
+                    ty,
+                );
+                let bytes = expr.scanner(Some(alignment), &handle, ty).unwrap().unwrap();
+
+                let mut scanners = Vec::new();
+
+                // NB: the default scanner steps over the value after a hit,
+                // which is unaligned when the alignment is wider than it.
+                if alignment <= size {
+                    scanners.push(("default scanner with special", &skipping as &dyn Scanner));
+                }
+
+                // NB: this scanner steps by the alignment after a hit, so
+                // finds overlapping values the default scanner doesn't.
+                if alignment >= size {
+                    scanners.push(("aligned scanner", &*bytes));
+                }
+
+                // NB: a value straddling a chunk boundary is only found from
+                // the chunk it starts in if a skip lands in it, so scan
+                // narrow alignments as one chunk.
+                let chunk_sizes = if alignment >= size {
+                    vec![0x1000, 1008, 48, 16]
+                } else {
+                    vec![data.len()]
+                };
+
+                // The aligned values with a non-zero byte, which the scanners
+                // find unless the alignment is narrower than the value, where
+                // they skip those overlapping a hit.
+                let expected = (0..data.len().saturating_sub(size) + 1)
+                    .step_by(alignment)
+                    .filter(|a| data[*a..a.saturating_add(size)].iter().any(|b| *b != 0))
+                    .map(|a| Address::new(base + a as u64))
+                    .collect::<Vec<_>>();
+
+                assert!(!expected.is_empty());
+
+                for chunk_size in chunk_sizes {
+                    for &(name, scanner) in &scanners {
+                        let actual = scan(&handle, scanner, data, chunk_size, ty)
+                            .into_iter()
+                            .map(|(a, _)| a)
+                            .collect::<Vec<_>>();
+
+                        // Without overlap, hits are at least `size` apart.
+                        let expected = if alignment >= size {
+                            expected.clone()
+                        } else {
+                            let mut next = 0;
+
+                            expected
+                                .iter()
+                                .copied()
+                                .filter(|a| {
+                                    if a.0 < next {
+                                        return false;
+                                    }
+
+                                    next = a.0 + size as u64;
+                                    true
+                                })
+                                .collect()
+                        };
+
+                        let first = expected
+                            .iter()
+                            .zip(&actual)
+                            .position(|(e, a)| e != a)
+                            .unwrap_or(expected.len().min(actual.len()));
+
+                        assert!(
+                            expected == actual,
+                            "{} on {}, alignment {}, chunks of {}: {} expected, {} found, \
+                             first difference at {}: {:?} != {:?}",
+                            name,
+                            ty,
+                            alignment,
+                            chunk_size,
+                            expected.len(),
+                            actual.len(),
+                            first,
+                            expected.get(first),
+                            actual.get(first),
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// The compare scanner finds the same values as the generic path does
@@ -949,8 +1119,23 @@ mod tests {
                         continue;
                     }
 
-                    // NB: aligned `value != 0` has its own scanner.
-                    if alignment.is_some() && *filter == "value != 0" {
+                    // NB: aligned `value != 0` has its own scanner, which
+                    // steps by the alignment after a hit where the generic
+                    // path steps over the value, so they differ when the
+                    // alignment is narrower than the value.
+                    if index == 1 && *filter == "value != 0" {
+                        continue;
+                    }
+
+                    // NB: and it finds bytes that aren't zero, so `-0.0`, and
+                    // sizes the value by the process, not the type.
+                    if alignment.is_some()
+                        && *filter == "value != 0"
+                        && matches!(
+                            ty,
+                            Type::F32 | Type::F64 | Type::Pointer(PointerWidth::Pointer32)
+                        )
+                    {
                         continue;
                     }
 

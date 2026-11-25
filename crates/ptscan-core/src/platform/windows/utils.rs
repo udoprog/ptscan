@@ -41,7 +41,7 @@ pub fn growable_string(cb: impl Fn(PWSTR, u32) -> u32) -> io::Result<OsString> {
 
         match last_error {
             Foundation::ERROR_INSUFFICIENT_BUFFER => {
-                buf.extend(std::iter::repeat(0u16).take(64));
+                buf.extend(std::iter::repeat_n(0u16, 64));
                 continue;
             }
             Foundation::ERROR_ACCESS_DENIED => {

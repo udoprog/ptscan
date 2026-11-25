@@ -64,6 +64,21 @@ pub enum Special {
 }
 
 impl Special {
+    /// How many bytes before an offset found by [`Special::test`] a value
+    /// containing that byte can start.
+    ///
+    /// A non-zero special finds the first non-zero byte, which is anywhere in
+    /// the value.
+    pub fn lookbehind(&self) -> usize {
+        match *self {
+            Self::NonZero(Some(width)) => width.saturating_sub(1),
+            Self::All(ref inner) | Self::Any(ref inner) => {
+                inner.iter().map(Self::lookbehind).max().unwrap_or_default()
+            }
+            _ => 0,
+        }
+    }
+
     pub fn test(&self, mut data: &[u8]) -> Option<usize> {
         match *self {
             Self::All(ref all) => all.iter().flat_map(|s| s.test(data)).max(),

@@ -58,10 +58,7 @@ pub enum Arch {
 
 impl Arch {
     pub fn is_64bit(&self) -> bool {
-        match *self {
-            Arch::Amd64 => true,
-            _ => false,
-        }
+        matches!(*self, Arch::Amd64)
     }
 }
 
@@ -76,7 +73,7 @@ pub struct Threads {
     entry: Option<tlhelp32::THREADENTRY32>,
 }
 
-impl<'a> Iterator for Threads {
+impl Iterator for Threads {
     type Item = Thread;
 
     fn next(&mut self) -> Option<Self::Item> {

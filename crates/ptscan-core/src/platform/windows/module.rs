@@ -59,11 +59,9 @@ impl Module {
         }
 
         Ok(ModuleInfo {
-            base_of_dll: Address::try_from(out.lpBaseOfDll)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
+            base_of_dll: Address::try_from(out.lpBaseOfDll).map_err(io::Error::other)?,
             size_of_image: Size::from(out.SizeOfImage),
-            entry_point: Address::try_from(out.EntryPoint)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?,
+            entry_point: Address::try_from(out.EntryPoint).map_err(io::Error::other)?,
         })
     }
 }

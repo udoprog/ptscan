@@ -181,6 +181,46 @@ impl ScanResults {
         debug_assert_eq!(self.addresses.len(), self.last.len());
         Ok(())
     }
+
+    /// Replace the addresses with `addresses`, which must be the current ones
+    /// without those whose index is set in `marked`, and remove the marked
+    /// values.
+    ///
+    /// Fails without changing anything if `addresses` has a different step,
+    /// or a length other than the number of unmarked results.
+    pub fn retain_with(
+        &mut self,
+        addresses: BlockAddresses,
+        marked: &BitSet,
+    ) -> Result<(), BlockError> {
+        if addresses.step() != self.addresses.step() {
+            return Err(BlockError::StepMismatch(
+                self.addresses.step(),
+                addresses.step(),
+            ));
+        }
+
+        let removed = marked.count_below(self.len());
+
+        if Some(addresses.len()) != self.len().checked_sub(removed) {
+            return Err(BlockError::Corrupt);
+        }
+
+        self.addresses = addresses;
+
+        if removed == 0 {
+            return Ok(());
+        }
+
+        if let Some(initial) = &mut self.initial {
+            initial.retain_by_index(|index| !marked.test(index));
+            debug_assert_eq!(self.addresses.len(), initial.len());
+        }
+
+        self.last.retain_by_index(|index| !marked.test(index));
+        debug_assert_eq!(self.addresses.len(), self.last.len());
+        Ok(())
+    }
 }
 
 /// Size of the chunks of values handed to a task, so that a few chunks per
@@ -736,8 +776,10 @@ impl ProcessHandle {
     ///
     /// Results are sorted by address, so the results of a window are the
     /// contiguous index range found by binary search on its bounds. Results
-    /// outside every window are rejected, and rejected results are removed in
-    /// one stable pass at the end.
+    /// outside every window are rejected. Each window task decodes the
+    /// addresses of its blocks as it tests them and re-encodes the survivors,
+    /// which are concatenated in window order into the new address set. The
+    /// rejected values are removed in one stable pass at the end.
     pub(crate) fn rescan_windows(
         &self,
         ctx: ScanContext<'_, impl ScanProgress + Send>,
@@ -834,6 +876,12 @@ impl ProcessHandle {
         }
 
         let mut last_error = None;
+        let mut outputs = Vec::new();
+        outputs.resize_with(windows.len(), || None);
+        let mut concat = Concat {
+            builder: BlockAddressesBuilder::new(results.step()),
+            next: 0,
+        };
 
         if matched > 0 {
             let mut reporter = ProgressReporter::new(progress, matched, cancel, &mut last_error);
@@ -873,9 +921,11 @@ impl ProcessHandle {
                     for task in rx {
                         match task {
                             Task::Window {
+                                window,
                                 count,
                                 accepted: a,
                                 rejected: r,
+                                kept,
                             } => {
                                 accepted = accepted.saturating_add(a);
 
@@ -883,6 +933,11 @@ impl ProcessHandle {
                                     rejected.set(index as usize);
                                 }
 
+                                if let Some(slot) = outputs.get_mut(window) {
+                                    *slot = Some(kept);
+                                }
+
+                                concat.drain(&mut outputs);
                                 reporter.tick_n(count, accepted);
                             }
                             Task::Done(result) => {
@@ -894,7 +949,12 @@ impl ProcessHandle {
             });
         }
 
-        let removed = results.remove_marked(&rejected);
+        // Windows without output (cancelled or failed) keep all of their
+        // results, and none of them are marked as rejected.
+        let removed = match concat.finish(&mut outputs, results.addresses(), &windows) {
+            Ok(kept) => results.retain_with(kept, &rejected),
+            Err(e) => Err(e),
+        };
 
         if let Some(e) = last_error {
             return Err(e);
@@ -912,11 +972,69 @@ impl ProcessHandle {
 
         enum Task {
             Window {
+                window: usize,
                 count: usize,
                 accepted: u64,
                 rejected: Vec<u32>,
+                /// The addresses of the window which were not rejected.
+                kept: BlockAddresses,
             },
             Done(anyhow::Result<()>),
+        }
+
+        /// Concatenates the kept addresses of each window in window order.
+        struct Concat {
+            builder: Result<BlockAddressesBuilder, BlockError>,
+            /// The next window to append.
+            next: usize,
+        }
+
+        impl Concat {
+            /// Append the outputs of windows that are ready, in order.
+            fn drain(&mut self, outputs: &mut [Option<BlockAddresses>]) {
+                let Ok(builder) = &mut self.builder else {
+                    return;
+                };
+
+                while let Some(kept) = outputs.get_mut(self.next).and_then(Option::take) {
+                    if let Err(e) = builder.append(&kept) {
+                        self.builder = Err(e);
+                        return;
+                    }
+
+                    self.next = self.next.saturating_add(1);
+                }
+            }
+
+            /// Append every remaining window, using the window's original
+            /// addresses where it has no output.
+            fn finish(
+                mut self,
+                outputs: &mut [Option<BlockAddresses>],
+                addresses: &BlockAddresses,
+                windows: &[Window],
+            ) -> Result<BlockAddresses, BlockError> {
+                loop {
+                    self.drain(outputs);
+
+                    let builder = self.builder.as_mut().map_err(|e| e.clone())?;
+
+                    let Some(window) = windows.get(self.next) else {
+                        break;
+                    };
+
+                    for address in addresses
+                        .iter_from(window.indices.start)
+                        .take(window.indices.len())
+                    {
+                        builder.push(address)?;
+                    }
+
+                    self.next = self.next.saturating_add(1);
+                }
+
+                self.builder?.finish()
+            }
         }
 
         struct Work<'a> {
@@ -975,19 +1093,25 @@ impl ProcessHandle {
 
                     let mut accepted = 0u64;
                     let mut rejected = Vec::new();
+                    let mut kept = BlockAddressesBuilder::new(addresses.step())?;
 
                     let count = indices.len();
                     let mut window_addresses = addresses.iter_from(indices.start);
 
                     for (n, i) in indices.enumerate() {
-                        let address = window_addresses.next();
-
                         if n % CHECK_INTERVAL == 0 && self.cancel.test() {
+                            // The rest of the window is kept as it is.
+                            for address in window_addresses.by_ref().take(count.saturating_sub(n)) {
+                                kept.push(address)?;
+                            }
+
                             break;
                         }
 
+                        let address = window_addresses.next();
+
                         let Ok(index) = u32::try_from(i) else {
-                            continue;
+                            bail!("result index {} out of range", i);
                         };
 
                         // Safety: every index is in exactly one window and
@@ -1020,15 +1144,18 @@ impl ProcessHandle {
                         {
                             accepted = accepted.saturating_add(1);
                             value.write(proxy.eval(value.ty)?.0);
+                            kept.push(address)?;
                         } else {
                             rejected.push(index);
                         }
                     }
 
                     let _ = tx.send(Task::Window {
+                        window: w,
                         count,
                         accepted,
                         rejected,
+                        kept: kept.finish()?,
                     });
                 }
 
@@ -2071,6 +2198,69 @@ mod tests {
         let empty = ScanResults::unchanged(BlockAddresses::new(4).unwrap(), Values::new(Type::U32));
         assert_eq!(empty.lower_bound(Address::new(5)), 0);
         assert_eq!(empty.index_of(Address::new(5)), None);
+    }
+
+    #[test]
+    fn retain_with_checks_and_keeps_pairs() {
+        let mut addresses = Vec::new();
+        let mut initial = Values::new(Type::U32);
+        let mut last = Values::new(Type::U32);
+
+        for n in 0..20u32 {
+            addresses.push(Address::new(u64::from(n) * 0x4000));
+            initial.push(Value::U32(n));
+            last.push(Value::U32(n + 100));
+        }
+
+        let mut results = ScanResults::new(block(addresses.clone()), initial, last);
+        let mut marked = BitSet::new();
+
+        for index in [0, 3, 4, 5, 19] {
+            marked.set(index);
+        }
+
+        let kept = (0..20).filter(|i| !marked.test(*i)).collect::<Vec<_>>();
+        let kept_addresses = block(kept.iter().map(|&i| addresses[i]).collect());
+
+        // Wrong length or step: nothing changes.
+        assert_eq!(
+            results.retain_with(block(addresses.clone()), &marked),
+            Err(crate::BlockError::Corrupt)
+        );
+        let other_step =
+            BlockAddresses::from_sorted(8, kept.iter().map(|&i| addresses[i])).unwrap();
+        assert_eq!(
+            results.retain_with(other_step, &marked),
+            Err(crate::BlockError::StepMismatch(4, 8))
+        );
+        assert_eq!(results.len(), 20);
+        assert_eq!(results.last().len(), 20);
+
+        results
+            .retain_with(kept_addresses.clone(), &marked)
+            .unwrap();
+        assert_eq!(results.addresses(), &kept_addresses);
+        assert_eq!(
+            results
+                .initial()
+                .iter()
+                .map(|v| v.read())
+                .collect::<Vec<_>>(),
+            kept.iter()
+                .map(|&i| Value::U32(i as u32))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            results.last().iter().map(|v| v.read()).collect::<Vec<_>>(),
+            kept.iter()
+                .map(|&i| Value::U32(i as u32 + 100))
+                .collect::<Vec<_>>()
+        );
+
+        // Nothing marked keeps every value.
+        results.retain_with(kept_addresses, &BitSet::new()).unwrap();
+        assert_eq!(results.len(), kept.len());
+        assert_eq!(results.last().len(), kept.len());
     }
 
     #[test]

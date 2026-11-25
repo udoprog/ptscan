@@ -230,10 +230,21 @@ impl BlockAddresses {
     {
         let mut builder = BlockAddressesBuilder::new(self.step)?;
 
-        for (index, address) in self.iter().enumerate() {
-            if keep(index) {
-                builder.push(address)?;
+        // Blocks are already sorted and distinct, so kept slots go straight
+        // into the pending block without re-validating every address.
+        for block in self.blocks() {
+            builder.pending_block = block.base >> BLOCK_SHIFT;
+
+            for (k, slot) in block.slots().enumerate() {
+                let index = block.rank.checked_add(k).ok_or(BlockError::Overflow)?;
+
+                if keep(index) {
+                    let slot = u16::try_from(slot.0).map_err(|_| BlockError::Corrupt)?;
+                    builder.pending.push(slot);
+                }
             }
+
+            builder.flush()?;
         }
 
         *self = builder.finish()?;
@@ -665,6 +676,16 @@ impl<'a> Block<'a> {
     /// Iterate over the block's addresses.
     pub fn iter(&self) -> BlockIter<'a> {
         self.iter_from(0)
+    }
+
+    /// Iterate over the block's slot indexes, as addresses relative to the
+    /// block in units of slots.
+    fn slots(&self) -> BlockIter<'a> {
+        BlockIter {
+            base: 0,
+            shift: 0,
+            ..self.iter()
+        }
     }
 
     /// Iterate over the block's addresses from its `k`th address.

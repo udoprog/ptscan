@@ -74,6 +74,23 @@ impl BitSet {
             n.saturating_add(slot.count_ones() as usize)
         })
     }
+
+    /// The number of bits set below `end`.
+    pub fn count_below(&self, end: usize) -> usize {
+        let full = end / Self::BITS_IN_SLOT;
+        let rest = end % Self::BITS_IN_SLOT;
+
+        let n = self.slots.iter().take(full).fold(0usize, |n, slot| {
+            n.saturating_add(slot.count_ones() as usize)
+        });
+
+        match self.slots.get(full) {
+            Some(slot) if rest > 0 => {
+                n.saturating_add((slot & ((1u64 << rest) - 1)).count_ones() as usize)
+            }
+            _ => n,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -95,6 +112,13 @@ mod tests {
         }
 
         assert_eq!(set.count(), 5);
+        assert_eq!(set.count_below(0), 0);
+        assert_eq!(set.count_below(1), 1);
+        assert_eq!(set.count_below(63), 2);
+        assert_eq!(set.count_below(64), 3);
+        assert_eq!(set.count_below(65), 4);
+        assert_eq!(set.count_below(201), 5);
+        assert_eq!(set.count_below(10_000), 5);
 
         set.clear(64);
         set.clear(1000);

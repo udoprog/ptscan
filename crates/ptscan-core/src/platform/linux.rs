@@ -805,7 +805,10 @@ mod tests {
     /// Words in the image's writable data and on the heap that tests write
     /// pointer graphs into.
     const GRAPH_WORDS: usize = 32;
-    static HELD_GRAPH: [AtomicU64; GRAPH_WORDS] = [const { AtomicU64::new(0) }; GRAPH_WORDS];
+    /// Non-zero so it lands in `.data`, which is file-backed. In `.bss` it can
+    /// straddle into the anonymous page past the image's last file-backed
+    /// page, where words are not found as static bases.
+    static HELD_GRAPH: [AtomicU64; GRAPH_WORDS] = [const { AtomicU64::new(1) }; GRAPH_WORDS];
 
     /// Run in a re-executed test binary by [`Holder::spawn`]: keeps `HELD` and
     /// a pointer to it on the heap, prints their addresses, that of
@@ -1401,6 +1404,142 @@ mod tests {
                 )
                 .unwrap();
             assert!(read(&windowed) == expected, "window {}", window);
+        }
+    }
+
+    const HOLD_BLOCKS_ENV: &str = "PTSCAN_TEST_HOLD_BLOCKS";
+    /// `u32` words held by [`hold_blocks_child`], spanning several 64 KiB
+    /// blocks.
+    const BLOCK_WORDS: usize = 7 * 0x4000 + 123;
+
+    /// The word [`hold_blocks_child`] holds at index `i`.
+    fn block_word(i: usize) -> u32 {
+        (i as u32).wrapping_mul(2_654_435_761).rotate_left(7)
+    }
+
+    /// Run in a re-executed test binary: holds [`BLOCK_WORDS`] words of
+    /// [`block_word`], prints their address and waits for stdin to close.
+    #[test]
+    fn hold_blocks_child() {
+        if std::env::var_os(HOLD_BLOCKS_ENV).is_none() {
+            return;
+        }
+
+        let words = (0..BLOCK_WORDS).map(block_word).collect::<Vec<u32>>();
+        println!("blocks {:x}", words.as_ptr() as usize);
+        io::stdout().flush().unwrap();
+
+        for line in io::stdin().lines() {
+            line.unwrap();
+        }
+
+        std::hint::black_box(&words);
+    }
+
+    /// A windowed rescan that rejects a mix of results within and across
+    /// block and window boundaries keeps addresses, initial and last values
+    /// rank-aligned, checked against a plain `Vec` oracle.
+    #[test]
+    fn rescan_windows_keep_pairs_across_blocks() {
+        let mut child = Scratch(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "platform::linux::tests::hold_blocks_child",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(HOLD_BLOCKS_ENV, "1")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .expect("spawn holder"),
+        );
+
+        let mut stdout = BufReader::new(child.0.stdout.take().unwrap()).lines();
+        let base = loop {
+            let line = stdout.next().expect("holder exited").unwrap();
+
+            if let Some((_, rest)) = line.split_once("blocks ") {
+                break u64::from_str_radix(rest, 16).unwrap();
+            }
+        };
+
+        let mut handle = ProcessHandle::open(child.0.id()).unwrap().unwrap();
+        handle.refresh_modules().unwrap();
+        handle.refresh_threads().unwrap();
+
+        // Densities per 16 KiB of words, so some blocks are bitmaps, some
+        // offsets and one is empty. The base is not block aligned, so blocks
+        // straddle the density bands.
+        let density = [100, 1, 50, 0, 90, 5, 30, 100];
+        let mut oracle = Vec::new();
+
+        // Unmapped, so it is rejected before any window.
+        oracle.push((8u64, None));
+
+        for i in 0..BLOCK_WORDS {
+            let band = density.get(i / 0x4000).copied().unwrap_or(100);
+
+            if (block_word(i) >> 3) % 100 < band {
+                oracle.push((base + i as u64 * 4, Some(block_word(i))));
+            }
+        }
+
+        let addresses =
+            BlockAddresses::from_sorted(4, oracle.iter().map(|&(a, _)| Address::new(a))).unwrap();
+        assert!(addresses.blocks().len() >= 7, "{:?}", addresses);
+        let mut initial = Values::new(Type::U32);
+        let mut last = Values::new(Type::U32);
+
+        // Initial values are the rank, so a misaligned pair shows.
+        for (rank, &(_, word)) in oracle.iter().enumerate() {
+            initial.push(Value::U32(rank as u32));
+            last.push(Value::U32(word.unwrap_or(0) ^ 1));
+        }
+
+        let results = ScanResults::new(addresses, initial, last);
+        let filter = FilterExpr::parse("value < 2147483648u32", &handle).unwrap();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap();
+
+        let expected = oracle
+            .iter()
+            .enumerate()
+            .filter_map(|(rank, &(a, word))| {
+                let word = word.filter(|w| *w < 0x8000_0000)?;
+                Some((Address::new(a), Value::U32(rank as u32), Value::U32(word)))
+            })
+            .collect::<Vec<_>>();
+        assert!(expected.len() > 1000 && expected.len() + 1000 < oracle.len());
+
+        // 1001 and 0x3000 split blocks across windows, 0x100_000 is the
+        // default.
+        for window in [1001, 0x3000, 0x10_000, 0x100_000] {
+            let mut rescanned = results.clone();
+            handle
+                .rescan_windows(
+                    ScanContext::new(&pool, None, NoProgress),
+                    &mut rescanned,
+                    &filter,
+                    window,
+                )
+                .unwrap();
+
+            let found = rescanned
+                .addresses()
+                .iter()
+                .zip(rescanned.initial().iter().map(|v| v.read()))
+                .zip(rescanned.last().iter().map(|v| v.read()))
+                .map(|((a, i), l)| (a, i, l))
+                .collect::<Vec<_>>();
+
+            assert_eq!(rescanned.len(), expected.len(), "window {}", window);
+            assert_eq!(rescanned.initial().len(), expected.len());
+            assert_eq!(rescanned.last().len(), expected.len());
+            assert!(found == expected, "window {}", window);
         }
     }
 

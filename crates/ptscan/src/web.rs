@@ -1,8 +1,8 @@
 //! Serves the trug-built web UI embedded into the binary.
 //!
 //! The UI is built into `target/dist` with `trug build --release` before the
-//! server is built. Without it the server still builds, but serves a page
-//! saying the UI is missing and warns on startup.
+//! server is built. Without it only a debug build succeeds, serving a page
+//! saying the UI is missing and warning on startup.
 
 use axum::http::{StatusCode, Uri, header};
 use axum::response::{Html, IntoResponse, Response};

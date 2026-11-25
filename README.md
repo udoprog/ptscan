@@ -92,8 +92,8 @@ trug build --release
 cargo build --release -p ptscan
 ```
 
-Without the first step the server still builds, but serves a page saying the
-UI is missing. Releases are packaged for Linux (`.tar.gz`) and Windows
+A release build fails without the first step; a debug build still builds,
+but serves a page saying the UI is missing. Releases are packaged for Linux (`.tar.gz`) and Windows
 (`.zip`) by [kick](https://github.com/udoprog/kick).
 
 For development, run the server and serve the UI with `trug serve`, which

@@ -441,19 +441,22 @@ impl Component for PointerScanView {
                         <TextInput id="pointer-depth" size={InputSize::Small} class={class::NARROW}
                             inputmode="numeric" invalid={parse_depth(&self.depth).is_none()}
                             disabled={running} value={self.depth.clone()}
-                            on_input={link.callback(Msg::Depth)} />
+                            on_input={link.callback(Msg::Depth)}
+                            on_change={link.callback(|_| Msg::Save)} />
                         <label class={class::MUTED} for="pointer-offset">{"Max offset"}</label>
                         <TextInput id="pointer-offset" size={InputSize::Small}
                             class={classes!(class::NARROW, class::MONO)}
                             invalid={parse_offset(&self.offset_limit).is_none()}
                             disabled={running} value={self.offset_limit.clone()}
-                            on_input={link.callback(Msg::Offset)} />
+                            on_input={link.callback(Msg::Offset)}
+                            on_change={link.callback(|_| Msg::Save)} />
                         <label class={class::MUTED} for="pointer-max-paths"
                             title="The scan stops once it has found this many paths">{"Max paths"}</label>
                         <TextInput id="pointer-max-paths" size={InputSize::Small} class={class::NARROW}
                             inputmode="numeric" invalid={parse_max_paths(&self.max_paths).is_none()}
                             disabled={running} value={self.max_paths.clone()}
-                            on_input={link.callback(Msg::MaxPaths)} />
+                            on_input={link.callback(Msg::MaxPaths)}
+                            on_change={link.callback(|_| Msg::Save)} />
                     </Cluster>
                     if running {
                         <Button size={ButtonSize::Small} busy={self.cancel.is_pending()}

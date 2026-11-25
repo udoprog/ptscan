@@ -361,6 +361,7 @@ impl Component for App {
                 attached={self.attach.process.is_some()}
                 pointer_scan={self.pointer_scan.clone()}
                 on_error={self.on_error.clone()}
+                on_notice={self.on_notice.clone()}
             />
         };
 

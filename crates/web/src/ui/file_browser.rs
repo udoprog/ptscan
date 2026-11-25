@@ -10,9 +10,7 @@ use web_sys::HtmlInputElement;
 use yew::prelude::*;
 
 use crate::class;
-use crate::ui::file_icons::{
-    data_glyph, drive_glyph, file_glyph, folder_glyph, glyph, home_glyph, save_glyph, up_glyph,
-};
+use crate::icons::{AppIcon, icon};
 
 /// What a [`FileBrowser`] picks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -260,7 +258,7 @@ impl FileBrowser {
         html! {
             <nav class={class::FILE_BROWSER_CRUMBS} aria-label="Path">
                 <Button size={ButtonSize::Small} variant={ButtonVariant::Quiet}
-                    icon={glyph(up_glyph())} {disabled} title="Parent folder"
+                    icon={icon(AppIcon::Up)} {disabled} title="Parent folder"
                     onclick={link.callback(move |_| Msg::Navigate(up.clone()))} />
                 {for crumbs}
             </nav>
@@ -276,13 +274,13 @@ impl FileBrowser {
             .places
             .iter()
             .map(|place| {
-                let icon = match place.kind {
-                    api::PlaceKind::Home => home_glyph(),
-                    api::PlaceKind::Data => data_glyph(),
-                    api::PlaceKind::Root => drive_glyph(),
+                let kind = match place.kind {
+                    api::PlaceKind::Home => AppIcon::Home,
+                    api::PlaceKind::Data => AppIcon::Data,
+                    api::PlaceKind::Root => AppIcon::Drive,
                 };
 
-                NavItem::new(place.path.clone(), place.name.clone()).icon(glyph(icon))
+                NavItem::new(place.path.clone(), place.name.clone()).icon(icon(kind))
             })
             .collect::<Vec<_>>();
 
@@ -336,7 +334,7 @@ impl FileBrowser {
             .enumerate()
             .map(|(index, entry)| {
                 let directory = entry.kind == api::EntryKind::Directory;
-                let mark = glyph(if directory { folder_glyph() } else { file_glyph() });
+                let mark = icon(if directory { AppIcon::Folder } else { AppIcon::File });
 
                 let detail = (!directory).then(|| {
                     let size = entry.size.map(format_size).unwrap_or_default();
@@ -503,9 +501,9 @@ impl Component for FileBrowser {
 
         let chosen = self.chosen(ctx);
 
-        let (accept, icon) = match props.mode {
-            FileMode::Open => ("Open", file_glyph()),
-            FileMode::Save => ("Save", save_glyph()),
+        let (accept, mode_icon) = match props.mode {
+            FileMode::Open => ("Open", AppIcon::File),
+            FileMode::Save => ("Save", AppIcon::Save),
         };
 
         let filtered = !props.extensions.is_empty();
@@ -553,7 +551,7 @@ impl Component for FileBrowser {
         html! {
             <>
                 <Dialog open={props.open} on_dismiss={props.on_close.reform(|_| ())}
-                    title={props.title.clone()} icon={glyph(icon)} {testid}
+                    title={props.title.clone()} icon={icon(mode_icon)} {testid}
                     size={DialogSize::WideTall} flush=true {actions} {actions_start}
                     onkeydown={link.callback(Msg::Key)}>
                     <div class={class::FILE_BROWSER}>

@@ -443,6 +443,48 @@ impl Db {
         Ok(u64::try_from(id)?)
     }
 
+    /// Delete the watches `remove` of a session and create one per entry of
+    /// `create`, in one transaction, returning the new ids in order.
+    pub async fn import_watches(
+        &self,
+        session: u64,
+        remove: Vec<u64>,
+        create: Vec<Changes>,
+    ) -> Result<Vec<u64>> {
+        let session = i64::try_from(session)?;
+        let remove = remove
+            .into_iter()
+            .map(i64::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let ids = self
+            .pool
+            .write(move |w| {
+                w.transaction(|w, _| {
+                    for id in &remove {
+                        w.delete_watch.execute((session, *id))?;
+                    }
+
+                    let mut ids = Vec::with_capacity(create.len());
+
+                    for changes in &create {
+                        let id = w
+                            .insert_watch
+                            .bind((session,))?
+                            .first()?
+                            .ok_or_else(|| anyhow!("Inserting a watch returned no id"))?;
+                        apply_watch(w, session, id, changes)?;
+                        ids.push(id);
+                    }
+
+                    Ok::<_, anyhow::Error>(ids)
+                })
+            })
+            .await??;
+
+        ids.into_iter().map(|id| Ok(u64::try_from(id)?)).collect()
+    }
+
     /// Apply changes to watches of a session in one transaction. Watches of
     /// other sessions are left alone.
     pub async fn update_watches(&self, session: u64, updates: Vec<(u64, Changes)>) -> Result<()> {

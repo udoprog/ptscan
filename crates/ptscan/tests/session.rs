@@ -687,3 +687,184 @@ async fn lists_directories_with_the_servers_places() {
     assert_eq!(listed.refusal, Some(api::ListDirectoryRefusal::Missing));
     assert_eq!(listed.path, missing);
 }
+
+async fn save_scratch(handle: &Handle, path: &str) -> api::SaveScratchResponse {
+    timeout!(
+        handle
+            .request()
+            .body(api::SaveScratchRequest { path: path.into() })
+            .send()
+    )
+    .unwrap()
+    .decode()
+    .unwrap()
+}
+
+async fn load_scratch(handle: &Handle, path: &str, replace: bool) -> api::LoadScratchResponse {
+    timeout!(
+        handle
+            .request()
+            .body(api::LoadScratchRequest {
+                path: path.into(),
+                replace,
+            })
+            .send()
+    )
+    .unwrap()
+    .decode()
+    .unwrap()
+}
+
+fn texts(list: &api::ScratchList) -> Vec<(String, String, bool)> {
+    list.entries
+        .iter()
+        .map(|e| (e.pointer.clone(), e.value_type.clone(), e.error.is_some()))
+        .collect()
+}
+
+async fn scratch_list(handle: &Handle) -> api::ScratchList {
+    timeout!(handle.request().body(api::GetScratchRequest).send())
+        .unwrap()
+        .decode()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn scratch_list_round_trips_through_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("ptscan.db");
+    let file = dir.path().join("list.ptscan.json");
+    let file = file.to_str().unwrap();
+
+    let handle = start(&db_path).await;
+    let a = add_watch(&handle, "0x1000").await;
+    let b = add_watch(&handle, "\"game.exe\" + 0x10 -> 0x8").await;
+    let saved = texts(&scratch_list(&handle).await);
+    assert_eq!(saved.len(), 2);
+
+    let response = save_scratch(&handle, file).await;
+    assert_eq!(response.refusal, None, "{:?}", response.error);
+    assert_eq!(response.entries, 2);
+
+    let json = std::fs::read_to_string(file).unwrap();
+    assert!(json.contains("\"kind\": \"scratch\""), "{json}");
+    assert!(json.contains("\"version\": 1"), "{json}");
+
+    remove(&handle, vec![a.id, b.id]).await;
+    assert!(watches(&handle).await.is_empty());
+
+    let response = load_scratch(&handle, file, false).await;
+    assert_eq!(response.refusal, None, "{:?}", response.error);
+    assert_eq!(response.entries, 2);
+    assert_eq!(texts(&response.list), saved);
+
+    let response = load_scratch(&handle, file, false).await;
+    let twice = [saved.clone(), saved.clone()].concat();
+    assert_eq!(texts(&response.list), twice);
+
+    let response = load_scratch(&handle, file, true).await;
+    assert_eq!(texts(&response.list), saved);
+    let ids = response
+        .list
+        .entries
+        .iter()
+        .map(|e| e.id)
+        .collect::<Vec<_>>();
+
+    drop(handle);
+    let handle = start(&db_path).await;
+    let list = scratch_list(&handle).await;
+    assert_eq!(texts(&list), saved);
+    assert_eq!(list.entries.iter().map(|e| e.id).collect::<Vec<_>>(), ids);
+}
+
+#[tokio::test]
+async fn unusable_entries_in_a_file_are_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("list.ptscan.json");
+    let file = file.to_str().unwrap();
+
+    std::fs::write(
+        file,
+        r#"{"version": 1, "kind": "scratch", "value": {"entries": [
+            {"pointer": "0x10", "type": "u32", "comment": "ignored"},
+            {"pointer": "0x20", "type": "not-a-type"},
+            {"pointer": "+++", "type": "u8"}
+        ]}}"#,
+    )
+    .unwrap();
+
+    let handle = connect(server(ptscan::Shared::default()).await).await;
+    let response = load_scratch(&handle, file, false).await;
+    assert_eq!(response.refusal, None, "{:?}", response.error);
+
+    let expected = [
+        ("0x10", "u32", false),
+        ("0x20", "not-a-type", true),
+        ("+++", "u8", true),
+    ]
+    .map(|(p, t, e)| (p.to_owned(), t.to_owned(), e));
+    assert_eq!(texts(&response.list), expected);
+}
+
+#[tokio::test]
+async fn malformed_scratch_files_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = start(&dir.path().join("ptscan.db")).await;
+    add_watch(&handle, "0x1000").await;
+    let before = texts(&scratch_list(&handle).await);
+
+    let good = dir.path().join("good.ptscan.json");
+    let good = good.to_str().unwrap();
+    assert_eq!(save_scratch(&handle, good).await.refusal, None);
+    let json = std::fs::read(good).unwrap();
+
+    let cases: [(&str, &[u8], api::FileRefusal); 6] = [
+        ("empty", b"", api::FileRefusal::Malformed),
+        (
+            "truncated",
+            &json[..json.len() / 2],
+            api::FileRefusal::Malformed,
+        ),
+        ("garbage", b"\xff\x00not json", api::FileRefusal::Malformed),
+        ("array", b"[1, 2, 3]", api::FileRefusal::Malformed),
+        (
+            "kind",
+            br#"{"version": 1, "kind": "pointer-scan", "value": {}}"#,
+            api::FileRefusal::WrongKind,
+        ),
+        (
+            "version",
+            br#"{"version": 99, "kind": "scratch", "value": {}}"#,
+            api::FileRefusal::UnsupportedVersion,
+        ),
+    ];
+
+    for (name, bytes, refusal) in cases {
+        let path = dir.path().join(format!("{name}.ptscan.json"));
+        std::fs::write(&path, bytes).unwrap();
+
+        for replace in [false, true] {
+            let response = load_scratch(&handle, path.to_str().unwrap(), replace).await;
+            assert_eq!(response.refusal, Some(refusal), "{name}");
+            assert!(response.error.is_some(), "{name}");
+            assert_eq!(texts(&response.list), before, "{name}");
+        }
+    }
+
+    let missing = dir.path().join("missing.ptscan.json");
+    let response = load_scratch(&handle, missing.to_str().unwrap(), true).await;
+    assert_eq!(response.refusal, Some(api::FileRefusal::Missing));
+
+    let response = load_scratch(&handle, "relative.ptscan.json", true).await;
+    assert_eq!(response.refusal, Some(api::FileRefusal::Relative));
+
+    let no_dir = dir.path().join("no").join("such.ptscan.json");
+    let response = save_scratch(&handle, no_dir.to_str().unwrap()).await;
+    assert_eq!(response.refusal, Some(api::FileRefusal::Missing));
+
+    let response = save_scratch(&handle, dir.path().to_str().unwrap()).await;
+    assert_eq!(response.refusal, Some(api::FileRefusal::Directory));
+
+    assert_eq!(texts(&scratch_list(&handle).await), before);
+}

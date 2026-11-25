@@ -12,9 +12,12 @@ use crate::class;
 use crate::clipboard;
 use crate::icons::{AppIcon, icon};
 use crate::ui::actions::{Action, RowMenu, more, tool};
+use crate::ui::file_browser::{FileBrowser, FileMode};
 use crate::ui::pane::{Pane, PaneHead};
 
 const REFRESH_MS: u32 = 1000;
+const EXTENSION: &str = ".ptscan.json";
+const DEFAULT_NAME: &str = "scratch.ptscan.json";
 
 #[derive(Properties, PartialEq)]
 pub struct Props {
@@ -25,6 +28,7 @@ pub struct Props {
     /// The pointer scan settings as edited, or none while they are invalid.
     pub pointer_scan: Option<api::PointerScanSettings>,
     pub on_error: Callback<String>,
+    pub on_notice: Callback<String>,
 }
 
 pub enum Msg {
@@ -45,6 +49,14 @@ pub enum Msg {
     PointerScanStarted(Result<ws::Packet<api::PointerScan>, ws::Error>),
     PointerScanState(Result<ws::Packet<api::GetPointerScanState>, ws::Error>),
     PointerScanChanged(Result<ws::Packet<api::PointerScanStateChanged>, ws::Error>),
+    Browse(FileMode),
+    CloseBrowser,
+    Chosen(String),
+    /// Load the chosen file, replacing the entries or not.
+    LoadFile(bool),
+    CancelLoad,
+    FileSaved(Result<ws::Packet<api::SaveScratch>, ws::Error>),
+    FileLoaded(Result<ws::Packet<api::LoadScratch>, ws::Error>),
 }
 
 pub struct ScratchView {
@@ -56,6 +68,12 @@ pub struct ScratchView {
     pointer_scan: ws::Request,
     pointer_scan_state: ws::Request,
     pointer_scan_running: bool,
+    browser: Option<FileMode>,
+    /// The file chosen to load, while asking whether it replaces the entries.
+    loading: Option<String>,
+    /// The file last saved or loaded, which the browser starts at.
+    file: Option<String>,
+    file_request: ws::Request,
     _listener: ws::Listener,
     _pointer_scan_listener: ws::Listener,
     _timer: Interval,
@@ -95,6 +113,20 @@ impl ScratchView {
         self.entries = entries;
     }
 
+    fn load_file(&mut self, ctx: &Context<Self>, path: String, replace: bool) {
+        self.file_request = ctx
+            .props()
+            .ws
+            .request()
+            .body(api::LoadScratchRequest {
+                path: path.clone(),
+                replace,
+            })
+            .on_packet(ctx.link().callback(Msg::FileLoaded))
+            .send();
+        self.file = Some(path);
+    }
+
     fn picked(&self) -> impl Iterator<Item = &api::ScratchEntry> {
         self.entries
             .iter()
@@ -118,6 +150,10 @@ impl Component for ScratchView {
             pointer_scan: ws::Request::default(),
             pointer_scan_state: ws::Request::default(),
             pointer_scan_running: false,
+            browser: None,
+            loading: None,
+            file: None,
+            file_request: ws::Request::default(),
             _listener: ctx
                 .props()
                 .ws
@@ -275,6 +311,60 @@ impl Component for ScratchView {
                 Ok(state) => self.pointer_scan_running = state.running,
                 Err(error) => on_error.emit(format!("Pointer scan state update: {error}")),
             },
+            Msg::Browse(mode) => self.browser = Some(mode),
+            Msg::CloseBrowser => self.browser = None,
+            Msg::Chosen(path) => match self.browser {
+                Some(FileMode::Save) => {
+                    self.file_request = ctx
+                        .props()
+                        .ws
+                        .request()
+                        .body(api::SaveScratchRequest { path: path.clone() })
+                        .on_packet(ctx.link().callback(Msg::FileSaved))
+                        .send();
+                    self.file = Some(path);
+                }
+                Some(FileMode::Open) if self.entries.is_empty() => {
+                    self.load_file(ctx, path, false);
+                }
+                Some(FileMode::Open) => self.loading = Some(path),
+                None => return false,
+            },
+            Msg::LoadFile(replace) => {
+                let Some(path) = self.loading.take() else {
+                    return false;
+                };
+
+                self.load_file(ctx, path, replace);
+            }
+            Msg::CancelLoad => self.loading = None,
+            Msg::FileSaved(result) => {
+                let name = self.file.as_deref().map(file_name).unwrap_or_default();
+
+                match result.and_then(|p| p.decode_response()) {
+                    Ok(response) => ctx.props().on_notice.emit(match response.refusal {
+                        None => format!("Saved {} to {name}", entries(response.entries)),
+                        Some(refusal) => refused("save", name, refusal, response.error),
+                    }),
+                    Err(error) => on_error.emit(format!("Saving scratch list: {error}")),
+                }
+            }
+            Msg::FileLoaded(result) => {
+                let name = self.file.as_deref().map(file_name).unwrap_or_default();
+
+                match result.and_then(|p| p.decode_response()) {
+                    Ok(response) => {
+                        let notice = match response.refusal {
+                            None => format!("Loaded {} from {name}", entries(response.entries)),
+                            Some(refusal) => refused("load", name, refusal, response.error),
+                        };
+
+                        ctx.props().on_notice.emit(notice);
+                        self.set_entries(response.list.entries);
+                    }
+                    Err(error) => on_error.emit(format!("Loading scratch list: {error}")),
+                }
+            }
         }
 
         true
@@ -348,17 +438,18 @@ impl Component for ScratchView {
         );
 
         let actions = self.actions(ctx);
-        let meta = match self.entries.len() {
-            0 => None,
-            1 => Some(AttrValue::from("1 entry")),
-            n => Some(AttrValue::from(format!("{n} entries"))),
-        };
+        let overflow = [actions.clone(), self.file_actions(ctx)].concat();
+        let meta = (!self.entries.is_empty()).then(|| {
+            AttrValue::from(entries(
+                u64::try_from(self.entries.len()).unwrap_or(u64::MAX),
+            ))
+        });
 
         html! {
             <Pane label="Scratch">
                 <PaneHead title="Scratch" {meta}>
                     {for actions.iter().take(2).map(tool)}
-                    {more("More scratch actions", &actions)}
+                    {more("More scratch actions", &overflow)}
                 </PaneHead>
                 <RowMenu label="Scratch entry actions" actions={actions.clone()}>
                     <div class={class::SCROLL} tabindex="0" onkeydown={link.batch_callback(|e: KeyboardEvent| {
@@ -368,6 +459,7 @@ impl Component for ScratchView {
                     </div>
                 </RowMenu>
                 {dialog}
+                {self.file_dialogs(ctx)}
             </Pane>
         }
     }
@@ -441,6 +533,132 @@ impl ScratchView {
             .disabled(none || !props.open || self.remove.is_pending())
             .danger(),
         ]
+    }
+}
+
+impl ScratchView {
+    /// Saving and loading the whole list, which only the overflow menu
+    /// offers.
+    fn file_actions(&self, ctx: &Context<Self>) -> Vec<Action> {
+        let link = ctx.link();
+        let busy = !ctx.props().open || self.file_request.is_pending();
+
+        vec![
+            Action::new(
+                AppIcon::Save,
+                "Save to file…",
+                link.callback(|_| Msg::Browse(FileMode::Save)),
+            )
+            .disabled(busy),
+            Action::new(
+                AppIcon::Load,
+                "Load from file…",
+                link.callback(|_| Msg::Browse(FileMode::Open)),
+            )
+            .disabled(busy),
+        ]
+    }
+
+    fn file_dialogs(&self, ctx: &Context<Self>) -> Html {
+        let props = ctx.props();
+        let link = ctx.link();
+
+        let (dir, name) = match self.file.as_deref() {
+            Some(path) => split_path(path),
+            None => (None, DEFAULT_NAME),
+        };
+
+        let browser = self.browser.map(|mode| {
+            let title = match mode {
+                FileMode::Save => "Save scratch list",
+                FileMode::Open => "Load scratch list",
+            };
+
+            html! {
+                <FileBrowser ws={props.ws.clone()} open=true {mode} {title}
+                    path={dir.map(AttrValue::from)} name={AttrValue::from(name.to_owned())}
+                    extensions={vec![AttrValue::Static(EXTENSION)]}
+                    on_choose={link.callback(Msg::Chosen)}
+                    on_close={link.callback(|()| Msg::CloseBrowser)}
+                    testid="scratch-file" />
+            }
+        });
+
+        let loading = self.loading.as_deref().map(|path| {
+            let actions = html! {
+                <>
+                    <Button variant={ButtonVariant::Quiet}
+                        onclick={link.callback(|_| Msg::CancelLoad)}>{"Cancel"}</Button>
+                    <Button variant={ButtonVariant::Danger} icon={icon(AppIcon::Remove)}
+                        onclick={link.callback(|_| Msg::LoadFile(true))}>{"Replace"}</Button>
+                    <Button variant={ButtonVariant::Primary} icon={icon(AppIcon::Add)}
+                        onclick={link.callback(|_| Msg::LoadFile(false))}>{"Append"}</Button>
+                </>
+            };
+
+            let count = entries(u64::try_from(self.entries.len()).unwrap_or(u64::MAX));
+
+            html! {
+                <Dialog open=true title="Load scratch list" icon={icon(AppIcon::Load)}
+                    on_dismiss={link.callback(|_| Msg::CancelLoad)} {actions}
+                    testid="scratch-load">
+                    <p>
+                        {format!("Add the entries of {} after the {count} in the list, or replace them?", file_name(path))}
+                    </p>
+                </Dialog>
+            }
+        });
+
+        html! { <>{browser}{loading}</> }
+    }
+}
+
+/// The directory and file name of a path; a root directory keeps its
+/// separator.
+fn split_path(path: &str) -> (Option<String>, &str) {
+    let Some(at) = path.rfind(['/', '\\']) else {
+        return (None, path);
+    };
+
+    let name = path.get(at.saturating_add(1)..).unwrap_or_default();
+    let dir = path.get(..at).unwrap_or_default();
+
+    let dir = if dir.is_empty() || dir.ends_with(':') {
+        path.get(..=at)
+    } else {
+        Some(dir)
+    };
+
+    (dir.map(str::to_owned), name)
+}
+
+fn file_name(path: &str) -> &str {
+    split_path(path).1
+}
+
+fn entries(count: u64) -> String {
+    match count {
+        1 => String::from("1 entry"),
+        n => format!("{n} entries"),
+    }
+}
+
+fn refused(what: &str, name: &str, refusal: api::FileRefusal, error: Option<String>) -> String {
+    let reason = match refusal {
+        api::FileRefusal::Relative => "not an absolute path",
+        api::FileRefusal::Missing => "it does not exist",
+        api::FileRefusal::Directory => "it is a folder",
+        api::FileRefusal::Denied => "permission denied",
+        api::FileRefusal::TooLarge => "the file is too large",
+        api::FileRefusal::Malformed => "not a ptscan file, or cut short",
+        api::FileRefusal::WrongKind => "it holds something other than a scratch list",
+        api::FileRefusal::UnsupportedVersion => "written by a newer ptscan",
+        api::FileRefusal::Failed => "it failed",
+    };
+
+    match error {
+        Some(error) => format!("Could not {what} {name}: {reason} ({error})"),
+        None => format!("Could not {what} {name}: {reason}"),
     }
 }
 

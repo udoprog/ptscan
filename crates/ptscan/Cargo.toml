@@ -25,6 +25,7 @@ tracing-subscriber = { version = "0.3.19", features = ["fmt", "env-filter"] }
 zip = { version = "9.7.3", default-features = false, features = ["deflate-flate2"] }
 sqll = { version = "0.15.1", features = ["bundled", "pool"] }
 musli = { version = "0.2.1", features = ["json", "alloc"] }
+tempfile = "3.27.0"
 
 [target.'cfg(windows)'.dependencies.windows-sys]
 version = "0.61.2"
@@ -38,4 +39,3 @@ features = [
 
 [dev-dependencies]
 musli-web = { version = "0.6.0", default-features = false, features = ["axum08", "client", "tungstenite029", "format-descriptive"] }
-tempfile = "3.27.0"

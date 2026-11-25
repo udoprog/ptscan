@@ -267,6 +267,7 @@
 //! You can find them at <https://www.gnome.org>.
 
 pub mod db;
+mod export;
 mod files;
 mod origin;
 
@@ -743,6 +744,20 @@ impl ws::Handler for Handler {
                 };
 
                 outgoing.write(self.shared.reorder_scratch(request.ids).await?);
+            }
+            api::Request::SaveScratch => {
+                let Some(request) = incoming.read::<api::SaveScratchRequest>() else {
+                    return Ok(false);
+                };
+
+                outgoing.write(self.shared.save_scratch_file(request.path).await?);
+            }
+            api::Request::LoadScratch => {
+                let Some(request) = incoming.read::<api::LoadScratchRequest>() else {
+                    return Ok(false);
+                };
+
+                outgoing.write(self.shared.load_scratch_file(request).await?);
             }
             api::Request::PointerScan => {
                 let Some(request) = incoming.read::<api::PointerScanRequest>() else {

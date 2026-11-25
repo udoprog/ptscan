@@ -9,9 +9,11 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use api::{ConfigField, ConfigKey};
+use musli::{Decode, Encode};
 use ptscan_core::{Address, PortablePointer, ProcessHandle, Proxy as _, Type, Value};
 
 use crate::db::{self, Changes, Db, StoredWatch};
+use crate::export::{self, Export};
 use crate::{Shared, lock, read};
 
 const POINTER: ConfigKey = ConfigKey::field(ConfigField::Pointer);
@@ -48,17 +50,28 @@ impl Entry {
         Ok((pointer.clone(), value_type))
     }
 
+    /// The pointer and type as text, as stored and shown.
+    fn texts(&self) -> (String, String) {
+        let pointer = match &self.pointer {
+            Ok(pointer) => pointer.to_string(),
+            Err(broken) => broken.text.clone(),
+        };
+
+        let value_type = match &self.value_type {
+            Ok(value_type) => value_type.to_string(),
+            Err(broken) => broken.text.clone(),
+        };
+
+        (pointer, value_type)
+    }
+
     fn read(&self, handle: Option<&ProcessHandle>) -> api::ScratchEntry {
+        let (pointer, value_type) = self.texts();
+
         let mut entry = api::ScratchEntry {
             id: self.id,
-            pointer: match &self.pointer {
-                Ok(pointer) => pointer.to_string(),
-                Err(broken) => broken.text.clone(),
-            },
-            value_type: match &self.value_type {
-                Ok(value_type) => value_type.to_string(),
-                Err(broken) => broken.text.clone(),
-            },
+            pointer,
+            value_type,
             address: None,
             value: None,
             error: None,
@@ -122,6 +135,49 @@ impl Entry {
 
         Self {
             id,
+            order,
+            pointer,
+            value_type,
+        }
+    }
+}
+
+/// A scratch list as saved to a file. Pointers are module relative, so a
+/// file stays usable across runs.
+#[derive(Debug, Encode, Decode)]
+struct ScratchFile {
+    entries: Vec<FileEntry>,
+}
+
+#[derive(Debug, Encode, Decode)]
+struct FileEntry {
+    pointer: String,
+    #[musli(Text, name = "type")]
+    value_type: String,
+}
+
+impl Export for ScratchFile {
+    const KIND: &'static str = "scratch";
+    const VERSION: u32 = 1;
+    const MAX_SIZE: u64 = 4 << 20;
+}
+
+impl FileEntry {
+    /// An entry to add, keeping what does not parse as [`Broken`] like a
+    /// stored watch.
+    fn into_entry(self, order: u64) -> Entry {
+        let pointer = parse_pointer(&self.pointer).map_err(|error| Broken {
+            text: self.pointer,
+            error,
+        });
+
+        let value_type = parse_type(&self.value_type).map_err(|error| Broken {
+            text: self.value_type,
+            error,
+        });
+
+        Entry {
+            id: 0,
             order,
             pointer,
             value_type,
@@ -517,6 +573,142 @@ impl Shared {
             this.publish_scratch(scratch, handle)
         })
         .await
+    }
+
+    /// Write the scratch list to the file at `path`.
+    pub async fn save_scratch_file(
+        self: &Arc<Self>,
+        path: String,
+    ) -> Result<api::SaveScratchResponse> {
+        let file = ScratchFile {
+            entries: lock(&self.scratch)
+                .entries
+                .iter()
+                .map(|entry| {
+                    let (pointer, value_type) = entry.texts();
+                    FileEntry {
+                        pointer,
+                        value_type,
+                    }
+                })
+                .collect(),
+        };
+
+        let entries = u64::try_from(file.entries.len()).unwrap_or(u64::MAX);
+        let written = tokio::task::spawn_blocking(move || export::write(&path, &file)).await?;
+
+        Ok(match written {
+            Ok(()) => api::SaveScratchResponse {
+                entries,
+                ..Default::default()
+            },
+            Err(refused) => api::SaveScratchResponse {
+                entries: 0,
+                refusal: Some(refused.refusal),
+                error: Some(refused.error),
+            },
+        })
+    }
+
+    /// Add the entries of a file written by [`Shared::save_scratch_file`],
+    /// after the current ones or in place of them.
+    pub async fn load_scratch_file(
+        self: &Arc<Self>,
+        request: api::LoadScratchRequest,
+    ) -> Result<api::LoadScratchResponse> {
+        let api::LoadScratchRequest { path, replace } = request;
+        let read = tokio::task::spawn_blocking(move || export::read::<ScratchFile>(&path)).await?;
+
+        let refuse = |refusal, error| async move {
+            let list = self
+                .with_scratch_blocking(|_, scratch, handle| Self::list(scratch, handle))
+                .await?;
+
+            Ok(api::LoadScratchResponse {
+                list,
+                entries: 0,
+                refusal: Some(refusal),
+                error: Some(error),
+            })
+        };
+
+        let file = match read {
+            Ok(file) => file,
+            Err(refused) => return refuse(refused.refusal, refused.error).await,
+        };
+
+        let _guard = self.session_lock.lock().await;
+
+        let (remove, first) = {
+            let scratch = lock(&self.scratch);
+
+            if replace {
+                (scratch.entries.iter().map(|e| e.id).collect(), 0)
+            } else {
+                (Vec::new(), scratch.next_order())
+            }
+        };
+
+        let mut entries = file
+            .entries
+            .into_iter()
+            .zip(0u64..)
+            .map(|(entry, index)| entry.into_entry(first.saturating_add(index)))
+            .collect::<Vec<_>>();
+
+        let ids = match self.watch_store() {
+            Some((db, session)) => {
+                let mut create = Vec::with_capacity(entries.len());
+
+                for entry in &entries {
+                    let (pointer, value_type) = entry.texts();
+                    let mut changes = Changes::new();
+                    put_text(&mut changes, POINTER, &pointer)?;
+                    put_text(&mut changes, TYPE, &value_type)?;
+                    put_order(&mut changes, entry.order)?;
+                    create.push(changes);
+                }
+
+                match db.import_watches(session, remove.clone(), create).await {
+                    Ok(ids) => ids,
+                    Err(error) => {
+                        let error = format!("Saving the watches: {error:#}");
+                        return refuse(api::FileRefusal::Failed, error).await;
+                    }
+                }
+            }
+            None => {
+                let mut scratch = lock(&self.scratch);
+                entries.iter().map(|_| scratch.take_id()).collect()
+            }
+        };
+
+        for (entry, id) in entries.iter_mut().zip(ids) {
+            entry.id = id;
+        }
+
+        let loaded = u64::try_from(entries.len()).unwrap_or(u64::MAX);
+
+        let list = self
+            .with_scratch_blocking(move |this, scratch, handle| {
+                scratch.entries.retain(|e| !remove.contains(&e.id));
+
+                for entry in entries {
+                    scratch.next_id = scratch.next_id.max(entry.id.saturating_add(1));
+                    scratch.entries.push(entry);
+                }
+
+                scratch.entries.sort_by_key(|e| (e.order, e.id));
+                this.publish_scratch(scratch, handle)
+            })
+            .await?;
+
+        Ok(api::LoadScratchResponse {
+            list,
+            entries: loaded,
+            refusal: None,
+            error: None,
+        })
     }
 }
 

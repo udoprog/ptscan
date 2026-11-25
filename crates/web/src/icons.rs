@@ -17,6 +17,14 @@ pub enum AppIcon {
     Target,
     Json,
     Options,
+    Save,
+    Load,
+    Folder,
+    File,
+    Up,
+    Home,
+    Data,
+    Drive,
     Add,
     Copy,
     Show,
@@ -27,7 +35,7 @@ pub enum AppIcon {
 }
 
 impl AppIcon {
-    const ALL: [AppIcon; 15] = [
+    const ALL: [AppIcon; 23] = [
         AppIcon::Scan,
         AppIcon::Stop,
         AppIcon::Undo,
@@ -43,6 +51,14 @@ impl AppIcon {
         AppIcon::Attach,
         AppIcon::Detach,
         AppIcon::Open,
+        AppIcon::Save,
+        AppIcon::Load,
+        AppIcon::Folder,
+        AppIcon::File,
+        AppIcon::Up,
+        AppIcon::Home,
+        AppIcon::Data,
+        AppIcon::Drive,
     ];
 
     fn glyph(self) -> Option<Glyph> {
@@ -69,6 +85,14 @@ impl AppIcon {
             AppIcon::Target => "target",
             AppIcon::Json => "json",
             AppIcon::Options => "options",
+            AppIcon::Save => "save",
+            AppIcon::Load => "load",
+            AppIcon::Folder => "folder",
+            AppIcon::File => "file",
+            AppIcon::Up => "up",
+            AppIcon::Home => "home",
+            AppIcon::Data => "data",
+            AppIcon::Drive => "drive",
             AppIcon::Add => "add",
             AppIcon::Copy => "copy",
             AppIcon::Show => "show",
@@ -110,6 +134,23 @@ impl AppIcon {
                 <path d="M7 4.5l1-1a2.5 2.5 0 0 1 3.5 3.5l-1 1M9 11.5l-1 1a2.5 2.5 0 0 1-3.5-3.5l1-1M2.5 2.5l2 2M13.5 13.5l-2-2" />
             },
             AppIcon::Open => html! { <path d="M9 2.5h4.5v11H9M2.5 8h7.5M7.5 5.5L10 8l-2.5 2.5" /> },
+            AppIcon::Save => html! { <path d="M8 2v8M4.5 6.5L8 10l3.5-3.5M2.5 11v2.5h11V11" /> },
+            AppIcon::Load => html! { <path d="M8 10V2M4.5 5.5L8 2l3.5 3.5M2.5 11v2.5h11V11" /> },
+            AppIcon::Folder => html! {
+                <path d="M1.5 4.5a1 1 0 0 1 1-1h3.5l1.5 1.5h6a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z" />
+            },
+            AppIcon::File => html! {
+                <path d="M4 1.5h5l3.5 3.5v9a.5.5 0 0 1-.5.5H4a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5zM9 1.5V5h3.5" />
+            },
+            AppIcon::Up => html! { <path d="M8 13V3M4 7l4-4 4 4" /> },
+            AppIcon::Home => html! { <path d="M2 7.5L8 2.5l6 5M3.5 6.5v7h3.5v-4h2v4h3.5v-7" /> },
+            AppIcon::Data => html! {
+                <><ellipse cx="8" cy="3.5" rx="5.5" ry="2" />
+                <path d="M2.5 3.5v9c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2v-9M2.5 8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2" /></>
+            },
+            AppIcon::Drive => {
+                html! { <><rect x="1.5" y="5" width="13" height="6" rx="1" /><path d="M11 8h1" /></> }
+            }
             AppIcon::Add | AppIcon::Copy | AppIcon::Show | AppIcon::More => html! {},
         }
     }

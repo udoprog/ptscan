@@ -646,6 +646,66 @@ pub struct ListDirectoryResponse {
     pub refusal: Option<ListDirectoryRefusal>,
 }
 
+/// Why a file on the server's machine was not read or written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+pub enum FileRefusal {
+    /// The path is not absolute.
+    Relative,
+    /// The file, or the directory it would be written in, does not exist.
+    Missing,
+    /// The path names a directory.
+    Directory,
+    /// Not allowed to read or write it.
+    Denied,
+    /// Larger than a file of this kind can be.
+    TooLarge,
+    /// Not a ptscan file, or cut short.
+    Malformed,
+    /// A ptscan file holding something else.
+    WrongKind,
+    /// Written in a format version this build does not read.
+    UnsupportedVersion,
+    /// Reading or writing failed for another reason.
+    Failed,
+}
+
+/// Write the scratch list to a file on the server's machine, replacing it.
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct SaveScratchRequest {
+    /// An absolute path.
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct SaveScratchResponse {
+    /// Number of entries written.
+    pub entries: u64,
+    pub refusal: Option<FileRefusal>,
+    /// What went wrong, alongside a refusal.
+    pub error: Option<String>,
+}
+
+/// Add the entries of a file written by [`SaveScratchRequest`] to the
+/// scratch list.
+#[derive(Debug, Clone, Encode, Decode)]
+pub struct LoadScratchRequest {
+    /// An absolute path.
+    pub path: String,
+    /// Remove the current entries first.
+    pub replace: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]
+pub struct LoadScratchResponse {
+    /// The scratch list after loading; unchanged when refused.
+    pub list: ScratchList,
+    /// Number of entries loaded.
+    pub entries: u64,
+    pub refusal: Option<FileRefusal>,
+    /// What went wrong, alongside a refusal.
+    pub error: Option<String>,
+}
+
 api::define! {
     pub type ListProcesses;
     impl Endpoint for ListProcesses {
@@ -773,6 +833,18 @@ api::define! {
     impl Endpoint for ReorderScratch {
         impl Request for ReorderScratchRequest;
         type Response<'de> = ScratchList;
+    }
+
+    pub type SaveScratch;
+    impl Endpoint for SaveScratch {
+        impl Request for SaveScratchRequest;
+        type Response<'de> = SaveScratchResponse;
+    }
+
+    pub type LoadScratch;
+    impl Endpoint for LoadScratch {
+        impl Request for LoadScratchRequest;
+        type Response<'de> = LoadScratchResponse;
     }
 
     pub type ScratchChanged;

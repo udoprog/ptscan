@@ -1,12 +1,15 @@
 use musli_web::web03::prelude::*;
 use sockel::{
-    Button, ButtonSize, ButtonVariant, Confirm, Dialog, DialogSize, EmptyState, InputSize, Notice,
-    Pill, Table, TableCell, TextInput, Tone, Toolbar, ToolbarSpacer,
+    Button, ButtonSize, ButtonVariant, Confirm, Dialog, DialogSize, EmptyState, InputSize, Pill,
+    Table, TableCell, TextInput, Tone,
 };
 use wasm_bindgen::JsValue;
 use yew::prelude::*;
 
 use crate::class;
+use crate::icons::{AppIcon, icon};
+use crate::ui::actions::{Action, RowMenu};
+use crate::ui::pane::{PaneBar, StatusLine, StatusTone};
 
 #[derive(Properties, PartialEq)]
 pub struct Props {
@@ -230,12 +233,13 @@ impl Component for SessionDialog {
                 html! {
                     <tr key={id} {class}
                         onclick={link.callback(move |_| Msg::Select(id))}
+                        oncontextmenu={link.callback(move |_| Msg::Select(id))}
                         ondblclick={link.callback(move |_| Msg::Open(id))}>
                         <TableCell cut=true>{&session.name}</TableCell>
                         <TableCell cut=true class={class::MUTED}>
                             {session.target.as_ref().map(|t| t.name.clone()).unwrap_or_default()}
                         </TableCell>
-                        <TableCell class={class::MUTED}>{time(session.opened)}</TableCell>
+                        <TableCell class={class::MUTED} cut=true>{time(session.opened)}</TableCell>
                         <TableCell>
                             if state.current == Some(id) {
                                 <Pill tone={Tone::Success}>{"open"}</Pill>
@@ -249,9 +253,9 @@ impl Component for SessionDialog {
         let head = html! {
             <>
                 <TableCell head=true>{"Name"}</TableCell>
-                <TableCell head=true>{"Target"}</TableCell>
-                <TableCell head=true>{"Last opened"}</TableCell>
-                <TableCell head=true><span class={sockel::class::VISUALLY_HIDDEN}>{"State"}</span></TableCell>
+                <TableCell head=true width="22%">{"Target"}</TableCell>
+                <TableCell head=true width="12rem">{"Last opened"}</TableCell>
+                <TableCell head=true width="6rem"><span class={sockel::class::VISUALLY_HIDDEN}>{"State"}</span></TableCell>
             </>
         };
 
@@ -280,61 +284,80 @@ impl Component for SessionDialog {
             .map(|id| link.callback(move |_| Msg::Open(id)));
 
         let error = self.error.as_ref().map(|error| {
-            html! {
-                <div class={class::STATUS_BAR}>
-                    <Notice tone={Tone::Danger} status=true>{error.clone()}</Notice>
-                </div>
-            }
+            html! { <StatusLine tone={StatusTone::Danger} text={error.clone()} /> }
         });
 
+        let can_delete = ready && selected.is_some() && !is_current;
+        let delete_tip = if is_current {
+            "The open session cannot be deleted"
+        } else {
+            "Delete the selected session and its watches"
+        };
+
+        let row_actions = vec![
+            Action::new(AppIcon::Open, "Open", open.clone().unwrap_or_default())
+                .disabled(open.is_none()),
+            Action::new(AppIcon::Remove, "Delete", link.callback(|_| Msg::AskDelete))
+                .disabled(!can_delete)
+                .danger(),
+        ];
+
         let actions = html! {
-            <Button variant={ButtonVariant::Primary} disabled={open.is_none()}
-                title="Switch to the selected session: detaches and drops the scan and pointer-scan results"
-                onclick={open.unwrap_or_default()}>
+            <Button variant={ButtonVariant::Primary} icon={icon(AppIcon::Open)} disabled={open.is_none()}
+                tip="Switch to the selected session: detaches and drops the scan and pointer-scan results"
+                onclick={open.clone().unwrap_or_default()}>
                 {"Open"}
             </Button>
         };
 
+        let actions_start = html! {
+            <Button variant={ButtonVariant::Danger} icon={icon(AppIcon::Remove)}
+                tip={delete_tip} disabled={!can_delete}
+                onclick={link.callback(|_| Msg::AskDelete)}>
+                {"Delete"}
+            </Button>
+        };
+
+        let enter = selected.filter(|_| open.is_some()).map(|s| s.id);
         let delete_name = selected.map(|s| s.name.clone()).unwrap_or_default();
 
         html! {
             <>
                 <Dialog open={props.open} on_dismiss={props.on_close.reform(|_| ())} title="Sessions"
-                    size={DialogSize::Wide} flush=true {actions}>
+                    size={DialogSize::Wide} flush=true {actions} {actions_start}>
                     <div class={class::DIALOG_BODY}>
                         <form class={class::FORM} onsubmit={on_create}>
-                            <Toolbar label="New session" band=true chrome=true>
+                            <PaneBar label="New session">
                                 <TextInput size={InputSize::Small} class={class::SEARCH}
                                     label="New session name" placeholder="New session name"
                                     value={self.new_name.clone()} on_input={link.callback(Msg::NewName)} />
-                                <Button size={ButtonSize::Small} submit=true
+                                <Button size={ButtonSize::Small} submit=true icon={icon(AppIcon::Add)}
+                                    tip="Create a session with this name"
                                     disabled={!ready || self.new_name.trim().is_empty()}>
                                     {"Create"}
                                 </Button>
-                            </Toolbar>
+                            </PaneBar>
                         </form>
                         {error}
-                        <div class={class::SCROLL}>
-                            <Table {head} columns={4} {empty} label="Sessions">{rows}</Table>
-                        </div>
+                        <RowMenu label="Session actions" actions={row_actions}>
+                            <div class={class::SCROLL} tabindex="0" onkeydown={link.batch_callback(move |e: KeyboardEvent| {
+                                enter.filter(|_| e.key() == "Enter").map(Msg::Open)
+                            })}>
+                                <Table {head} columns={4} {empty} fixed=true label="Sessions">{rows}</Table>
+                            </div>
+                        </RowMenu>
                         <form class={class::FORM} onsubmit={on_rename}>
-                            <Toolbar label="Selected session" band=true chrome=true>
+                            <PaneBar label="Selected session">
                                 <TextInput size={InputSize::Small} class={class::SEARCH}
                                     label="Name of the selected session" placeholder="Session name"
                                     disabled={selected.is_none()}
                                     value={self.name.clone()} on_input={link.callback(Msg::Name)} />
-                                <Button size={ButtonSize::Small} submit=true
+                                <Button size={ButtonSize::Small} submit=true icon={icon(AppIcon::Edit)}
+                                    tip="Rename the selected session"
                                     disabled={!ready || selected.is_none_or(|s| s.name == self.name || self.name.trim().is_empty())}>
                                     {"Rename"}
                                 </Button>
-                                <ToolbarSpacer />
-                                <Button size={ButtonSize::Small} variant={ButtonVariant::Danger}
-                                    title={if is_current { "The open session cannot be deleted" } else { "Delete the selected session and its watches" }}
-                                    disabled={!ready || selected.is_none() || is_current}
-                                    onclick={link.callback(|_| Msg::AskDelete)}>
-                                    {"Delete"}
-                                </Button>
-                            </Toolbar>
+                            </PaneBar>
                         </form>
                     </div>
                 </Dialog>

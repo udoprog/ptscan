@@ -21,10 +21,13 @@ pub enum AppIcon {
     Copy,
     Show,
     More,
+    Attach,
+    Detach,
+    Open,
 }
 
 impl AppIcon {
-    const ALL: [AppIcon; 12] = [
+    const ALL: [AppIcon; 15] = [
         AppIcon::Scan,
         AppIcon::Stop,
         AppIcon::Undo,
@@ -37,6 +40,9 @@ impl AppIcon {
         AppIcon::Target,
         AppIcon::Json,
         AppIcon::Options,
+        AppIcon::Attach,
+        AppIcon::Detach,
+        AppIcon::Open,
     ];
 
     fn glyph(self) -> Option<Glyph> {
@@ -67,6 +73,9 @@ impl AppIcon {
             AppIcon::Copy => "copy",
             AppIcon::Show => "show",
             AppIcon::More => "more",
+            AppIcon::Attach => "attach",
+            AppIcon::Detach => "detach",
+            AppIcon::Open => "open",
         }
     }
 
@@ -94,6 +103,13 @@ impl AppIcon {
                 <circle cx="5.5" cy="4.5" r="1.75" fill="var(--surface)" />
                 <circle cx="10.5" cy="11.5" r="1.75" fill="var(--surface)" /></>
             },
+            AppIcon::Attach => html! {
+                <path d="M6.5 9.5l3-3M7 4.5l1-1a2.5 2.5 0 0 1 3.5 3.5l-1 1M9 11.5l-1 1a2.5 2.5 0 0 1-3.5-3.5l1-1" />
+            },
+            AppIcon::Detach => html! {
+                <path d="M7 4.5l1-1a2.5 2.5 0 0 1 3.5 3.5l-1 1M9 11.5l-1 1a2.5 2.5 0 0 1-3.5-3.5l1-1M2.5 2.5l2 2M13.5 13.5l-2-2" />
+            },
+            AppIcon::Open => html! { <path d="M9 2.5h4.5v11H9M2.5 8h7.5M7.5 5.5L10 8l-2.5 2.5" /> },
             AppIcon::Add | AppIcon::Copy | AppIcon::Show | AppIcon::More => html! {},
         }
     }

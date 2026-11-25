@@ -3,13 +3,16 @@ use std::collections::BTreeSet;
 use gloo_timers::callback::Timeout;
 use musli_web::web03::prelude::*;
 use sockel::{
-    Button, ButtonSize, ButtonVariant, Checkbox, Cluster, EmptyState, Gap, InputSize, Notice,
-    Table, TableCell, TextInput, Tone, Toolbar, ToolbarSpacer,
+    Button, ButtonSize, ButtonVariant, Checkbox, EmptyState, InputSize, Menu, MenuWidth, Pager,
+    PagerCounts, Table, TableCell, TextInput, ToolbarSpacer,
 };
 use yew::prelude::*;
 
 use crate::class;
-use crate::ui::pane::Pane;
+use crate::clipboard;
+use crate::icons::{AppIcon, icon};
+use crate::ui::actions::{Action, RowMenu, more};
+use crate::ui::pane::{Pane, PaneBar, PaneHead, StatusLine, StatusTone};
 
 const PAGE: u32 = 100;
 /// How long the settings rest after an edit before they are saved.
@@ -29,6 +32,8 @@ pub struct Props {
     /// so a scan started elsewhere uses what is shown.
     pub on_edit: Callback<Option<api::PointerScanSettings>>,
     pub on_error: Callback<String>,
+    /// Tells of a finished action in passing.
+    pub on_notice: Callback<String>,
 }
 
 pub enum Msg {
@@ -44,7 +49,10 @@ pub enum Msg {
     Page(u64),
     Loaded(Result<ws::Packet<api::PointerScanResults>, ws::Error>),
     Select(u64, bool),
+    /// Selects a path a context menu opens on, unless it already is.
+    Pick(u64),
     SelectPage,
+    CopyPaths,
     AddSelected,
     Added(Result<ws::Packet<api::AddScratch>, ws::Error>),
 }
@@ -66,7 +74,10 @@ pub struct PointerScanView {
     value_type: Option<String>,
     /// Indexes of the selected paths.
     selected: BTreeSet<u64>,
-    added: Option<String>,
+    /// Paths sent to the scratch list whose responses are still to come, and
+    /// how many of the received ones were added; one notice tells of them all.
+    adding_left: usize,
+    added: usize,
     state_request: ws::Request,
     cancel: ws::Request,
     page: ws::Request,
@@ -194,7 +205,8 @@ impl Component for PointerScanView {
             paths: Vec::new(),
             value_type: None,
             selected: BTreeSet::new(),
-            added: None,
+            adding_left: 0,
+            added: 0,
             state_request: ws::Request::default(),
             cancel: ws::Request::default(),
             page: ws::Request::default(),
@@ -235,13 +247,7 @@ impl Component for PointerScanView {
                 Err(error) => on_error.emit(format!("{what}: {error}")),
             },
             Msg::StateChanged(result) => match result.and_then(|p| p.decode_event()) {
-                Ok(state) => {
-                    if state.running {
-                        self.added = None;
-                    }
-
-                    self.set_state(ctx, state);
-                }
+                Ok(state) => self.set_state(ctx, state),
                 Err(error) => on_error.emit(format!("Pointer scan state update: {error}")),
             },
             Msg::Progressed(result) => match result.and_then(|p| p.decode_event()) {
@@ -330,6 +336,19 @@ impl Component for PointerScanView {
                     self.selected.insert(index);
                 }
             }
+            Msg::Pick(index) => {
+                if self.selected.contains(&index) {
+                    return false;
+                }
+
+                self.selected.clear();
+                self.selected.insert(index);
+            }
+            Msg::CopyPaths => {
+                let text = clipboard::text(self.picked().map(|path| vec![path.as_str()]));
+                clipboard::copy(text, on_error);
+                return false;
+            }
             Msg::SelectPage => {
                 if self.selected.len() == self.paths.len() {
                     self.selected.clear();
@@ -342,14 +361,14 @@ impl Component for PointerScanView {
                     return false;
                 };
 
-                let picked = self
-                    .page_indexes()
-                    .zip(&self.paths)
-                    .filter(|(index, _)| self.selected.contains(index))
-                    .map(|(_, path)| path.clone())
-                    .collect::<Vec<_>>();
+                let picked = self.picked().cloned().collect::<Vec<_>>();
 
                 self.adding.retain(|r| r.is_pending());
+                if self.adding_left == 0 {
+                    self.added = 0;
+                }
+
+                self.adding_left = self.adding_left.saturating_add(picked.len());
 
                 for pointer in picked {
                     let request = ctx
@@ -366,24 +385,44 @@ impl Component for PointerScanView {
                     self.adding.push(request);
                 }
             }
-            Msg::Added(result) => match result.and_then(|p| p.decode_response()) {
-                Ok(response) => {
-                    let errors = [
-                        response.pointer_error.map(|e| format!("pointer: {e}")),
-                        response.value_type_error.map(|e| format!("type: {e}")),
-                        response.error,
-                    ];
+            Msg::Added(result) => {
+                match result.and_then(|p| p.decode_response()) {
+                    Ok(response) => {
+                        let errors = [
+                            response.pointer_error.map(|e| format!("pointer: {e}")),
+                            response.value_type_error.map(|e| format!("type: {e}")),
+                            response.error,
+                        ];
 
-                    for error in errors.into_iter().flatten() {
-                        on_error.emit(format!("Adding path to scratch: {error}"));
+                        for error in errors.into_iter().flatten() {
+                            on_error.emit(format!("Adding path to scratch: {error}"));
+                        }
+
+                        if response.entry.is_some() {
+                            self.added = self.added.saturating_add(1);
+                        }
                     }
+                    Err(error) => on_error.emit(format!("Adding path to scratch: {error}")),
+                }
 
-                    if let Some(entry) = response.entry {
-                        self.added = Some(format!("Added {} to the scratch list", entry.pointer));
+                self.adding_left = self.adding_left.saturating_sub(1);
+
+                if self.adding_left == 0 {
+                    match self.added {
+                        0 => {}
+                        1 => ctx
+                            .props()
+                            .on_notice
+                            .emit(String::from("Added 1 path to the scratch list")),
+                        n => ctx
+                            .props()
+                            .on_notice
+                            .emit(format!("Added {n} paths to the scratch list")),
                     }
                 }
-                Err(error) => on_error.emit(format!("Adding path to scratch: {error}")),
-            },
+
+                return false;
+            }
         }
 
         true
@@ -393,13 +432,6 @@ impl Component for PointerScanView {
         let props = ctx.props();
         let link = ctx.link();
         let running = self.state.running;
-
-        let page_end = self.offset + self.paths.len() as u64;
-        let can_prev = self.offset > 0;
-        let can_next = page_end < self.total;
-        let prev = self.offset.saturating_sub(PAGE as u64);
-        let next = self.offset + PAGE as u64;
-        let last = last_page(self.total);
 
         let rows = self
             .page_indexes()
@@ -415,20 +447,22 @@ impl Component for PointerScanView {
                 });
 
                 html! {
-                    <tr key={index} {class} {onclick}>
-                        <TableCell numeric=true class={class::MUTED}>{index}</TableCell>
-                        <TableCell class={class::MONO}>{path}</TableCell>
+                    <tr key={index} {class} {onclick}
+                        oncontextmenu={link.callback(move |_| Msg::Pick(index))}>
+                        <TableCell numeric=true cut=true class={class::MUTED}>{index}</TableCell>
+                        <TableCell class={class::MONO} cut=true tip={AttrValue::from(path.clone())}>{path}</TableCell>
                     </tr>
                 }
             })
             .collect::<Html>();
 
         let all = !self.paths.is_empty() && self.selected.len() == self.paths.len();
-        let can_add = !self.selected.is_empty() && props.open && self.value_type.is_some();
+        let selected = self.selected.len();
+        let can_add = selected > 0 && props.open && self.value_type.is_some();
 
         let head = html! {
             <>
-                <TableCell head=true numeric=true>
+                <TableCell head=true numeric=true width="5.5rem">
                     <Checkbox title="Select every path on this page"
                         checked={all} on_change={link.callback(|_| Msg::SelectPage)}>{"#"}</Checkbox>
                 </TableCell>
@@ -441,71 +475,125 @@ impl Component for PointerScanView {
             .is_empty()
             .then(|| html! { <EmptyState title={self.empty_label()} compact=true /> });
 
-        let added = self.added.clone().unwrap_or_default();
+        let cancel = running.then(|| {
+            html! {
+                <Button size={ButtonSize::Small} icon={icon(AppIcon::Stop)}
+                    busy={self.cancel.is_pending()} tip="Stop the pointer scan, keeping the paths found so far"
+                    onclick={link.callback(|_| Msg::Cancel)}>{"Cancel"}</Button>
+            }
+        });
+
+        let actions = vec![
+            Action::new(
+                AppIcon::Add,
+                "Add to scratch",
+                link.callback(|_| Msg::AddSelected),
+            )
+            .disabled(!can_add),
+            Action::new(
+                AppIcon::Copy,
+                "Copy as text",
+                link.callback(|_| Msg::CopyPaths),
+            )
+            .disabled(selected == 0),
+        ];
+
+        let pages = pages(self.total);
+        let page = usize::try_from(self.offset / PAGE as u64).unwrap_or(usize::MAX);
+        let total = usize::try_from(self.total).unwrap_or(usize::MAX);
+        let meta = Some(self.target())
+            .filter(|t| !t.is_empty())
+            .map(AttrValue::from);
 
         html! {
             <Pane label="Pointer scan">
-                <Toolbar label="Pointer scan" band=true chrome=true>
-                    <span class={class::TITLE}>{"Pointer scan"}</span>
-                    <span class={class::MUTED}>{self.target()}</span>
-                    <ToolbarSpacer />
-                    <Cluster gap={Gap::Tight} nowrap=true>
-                        <label class={class::MUTED} for="pointer-depth">{"Depth"}</label>
-                        <TextInput id="pointer-depth" size={InputSize::Small} class={class::NARROW}
-                            inputmode="numeric" invalid={parse_depth(&self.depth).is_none()}
-                            disabled={running} value={self.depth.clone()}
-                            on_input={link.callback(Msg::Depth)}
-                            on_change={link.callback(|_| Msg::Save)} />
-                        <label class={class::MUTED} for="pointer-offset">{"Max offset"}</label>
-                        <TextInput id="pointer-offset" size={InputSize::Small}
-                            class={classes!(class::NARROW, class::MONO)}
-                            invalid={parse_offset(&self.offset_limit).is_none()}
-                            disabled={running} value={self.offset_limit.clone()}
-                            on_input={link.callback(Msg::Offset)}
-                            on_change={link.callback(|_| Msg::Save)} />
-                        <label class={class::MUTED} for="pointer-max-paths"
-                            title="The scan stops once it has found this many paths">{"Max paths"}</label>
-                        <TextInput id="pointer-max-paths" size={InputSize::Small} class={class::NARROW}
-                            inputmode="numeric" invalid={parse_max_paths(&self.max_paths).is_none()}
-                            disabled={running} value={self.max_paths.clone()}
-                            on_input={link.callback(Msg::MaxPaths)}
-                            on_change={link.callback(|_| Msg::Save)} />
-                    </Cluster>
-                    if running {
-                        <Button size={ButtonSize::Small} busy={self.cancel.is_pending()}
-                            onclick={link.callback(|_| Msg::Cancel)}>{"Cancel"}</Button>
-                    }
-                </Toolbar>
+                <PaneHead title="Pointer scan" {meta}>
+                    {self.settings_menu(ctx)}
+                    {cancel}
+                </PaneHead>
                 {self.status()}
-                <Toolbar label="Pointer scan results" band=true chrome=true>
-                    <span class={classes!(class::MUTED, sockel::class::NUMERIC)}>{self.range_label(page_end)}</span>
-                    <Cluster gap={Gap::Hair} nowrap=true>
-                        <Button size={ButtonSize::Small} disabled={!can_prev} onclick={link.callback(|_| Msg::Page(0))}>{"First"}</Button>
-                        <Button size={ButtonSize::Small} disabled={!can_prev} onclick={link.callback(move |_| Msg::Page(prev))}>{"Prev"}</Button>
-                        <Button size={ButtonSize::Small} disabled={!can_next} onclick={link.callback(move |_| Msg::Page(next))}>{"Next"}</Button>
-                        <Button size={ButtonSize::Small} disabled={!can_next} onclick={link.callback(move |_| Msg::Page(last))}>{"Last"}</Button>
-                    </Cluster>
-                    <span class={classes!(class::MUTED, class::ADDED, sockel::class::TRUNCATE)} title={added.clone()}>
-                        {added}
-                    </span>
-                    <Button size={ButtonSize::Small} variant={ButtonVariant::Primary} disabled={!can_add}
-                        title="Add the selected paths to the scratch list"
+                <PaneBar label="Pointer scan results">
+                    <Pager {page} {pages} label="Pointer path pages" titles=true
+                        counts={PagerCounts::new(total, PAGE as usize)}
+                        on_page={link.callback(|page: usize| {
+                            Msg::Page(u64::try_from(page).unwrap_or(u64::MAX).saturating_mul(PAGE as u64))
+                        })} />
+                    <ToolbarSpacer />
+                    <Button size={ButtonSize::Small} variant={ButtonVariant::Primary}
+                        icon={icon(AppIcon::Add)} tip="Add the selected paths to the scratch list"
+                        disabled={!can_add}
                         onclick={link.callback(|_| Msg::AddSelected)}>
-                        {match self.selected.len() {
-                            0 | 1 => String::from("Add to scratch"),
-                            n => format!("Add {n} to scratch"),
+                        {match selected {
+                            0 | 1 => String::from("Add"),
+                            n => format!("Add {n}"),
                         }}
                     </Button>
-                </Toolbar>
-                <div class={class::SCROLL}>
-                    <Table {head} columns={2} {empty} label="Pointer paths">{rows}</Table>
-                </div>
+                    {more("More path actions", &actions)}
+                </PaneBar>
+                <RowMenu label="Path actions" actions={actions.clone()}>
+                    <div class={class::SCROLL} tabindex="0" onkeydown={link.batch_callback(|e: KeyboardEvent| {
+                        (e.key() == "Enter").then_some(Msg::AddSelected)
+                    })}>
+                        <Table {head} columns={2} {empty} fixed=true label="Pointer paths">{rows}</Table>
+                    </div>
+                </RowMenu>
             </Pane>
         }
     }
 }
 
 impl PointerScanView {
+    fn picked(&self) -> impl Iterator<Item = &String> {
+        self.page_indexes()
+            .zip(&self.paths)
+            .filter(|(index, _)| self.selected.contains(index))
+            .map(|(_, path)| path)
+    }
+
+    /// The scan's limits, in a menu so the head stays one line in a narrow
+    /// pane; they save as they are edited.
+    fn settings_menu(&self, ctx: &Context<Self>) -> Html {
+        let link = ctx.link();
+        let running = self.state.running;
+        let invalid = self.settings().is_none();
+        let tip = if invalid {
+            "Pointer scan settings: some are invalid"
+        } else {
+            "Pointer scan settings"
+        };
+
+        let field = |id: &'static str,
+                     label: &'static str,
+                     tip: &'static str,
+                     value: &str,
+                     valid: bool,
+                     mono: bool,
+                     on_input: Callback<String>| {
+            html! {
+                <div class={class::MENU_FIELD}>
+                    <label class={class::MUTED} for={id} title={tip}>{label}</label>
+                    <TextInput {id} size={InputSize::Small}
+                        class={classes!(class::NARROW, mono.then_some(class::MONO))}
+                        inputmode={(!mono).then_some("numeric")} invalid={!valid}
+                        disabled={running} value={value.to_owned()} {on_input}
+                        on_change={link.callback(|_| Msg::Save)} />
+                </div>
+            }
+        };
+
+        html! {
+            <Menu icon={icon(AppIcon::Options)} label={tip} tip={tip}
+                size={ButtonSize::Small} variant={ButtonVariant::Quiet} width={MenuWidth::Wide}>
+                {field("pointer-depth", "Depth", "Most pointers followed in one path",
+                    &self.depth, parse_depth(&self.depth).is_some(), false, link.callback(Msg::Depth))}
+                {field("pointer-offset", "Max offset", "Largest offset from a pointer to the next address, in hex or decimal",
+                    &self.offset_limit, parse_offset(&self.offset_limit).is_some(), true, link.callback(Msg::Offset))}
+                {field("pointer-max-paths", "Max paths", "The scan stops once it has found this many paths",
+                    &self.max_paths, parse_max_paths(&self.max_paths).is_some(), false, link.callback(Msg::MaxPaths))}
+            </Menu>
+        }
+    }
+
     fn target(&self) -> String {
         match (self.state.entry, &self.state.value_type) {
             (Some(id), Some(value_type)) => format!("scratch entry {id} ({value_type})"),
@@ -545,12 +633,7 @@ impl PointerScanView {
                 ),
             };
 
-            return html! {
-                <Cluster nowrap=true class={class::STATUS_BAR}>
-                    {bar}
-                    <span class={sockel::class::TRUNCATE}>{text}</span>
-                </Cluster>
-            };
+            return html! { <StatusLine lead={bar} {text} /> };
         }
 
         let Some(last) = &self.state.last else {
@@ -573,31 +656,14 @@ impl PointerScanView {
         }
 
         let tone = if last.error.is_some() {
-            Tone::Danger
+            StatusTone::Danger
         } else if last.cancelled || last.truncated {
-            Tone::Warning
+            StatusTone::Warning
         } else {
-            Tone::Neutral
+            StatusTone::Neutral
         };
 
-        html! {
-            <div class={class::STATUS_BAR}>
-                <Notice {tone} status=true>{text}</Notice>
-            </div>
-        }
-    }
-
-    fn range_label(&self, page_end: u64) -> String {
-        if self.total == 0 {
-            return String::from("No paths");
-        }
-
-        format!(
-            "{}-{} of {}",
-            self.offset + 1,
-            page_end.max(self.offset + 1),
-            self.total
-        )
+        html! { <StatusLine {tone} {text} /> }
     }
 
     fn empty_label(&self) -> &'static str {
@@ -639,6 +705,11 @@ fn parse_max_paths(text: &str) -> Option<u32> {
     (1..=api::PointerScanSettings::MAX_PATHS)
         .contains(&paths)
         .then_some(paths)
+}
+
+/// How many pages `total` paths fill; at least one.
+fn pages(total: u64) -> usize {
+    usize::try_from(total.div_ceil(PAGE as u64).max(1)).unwrap_or(usize::MAX)
 }
 
 fn last_page(total: u64) -> u64 {

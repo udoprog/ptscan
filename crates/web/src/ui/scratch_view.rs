@@ -307,9 +307,9 @@ impl Component for ScratchView {
                         oncontextmenu={link.callback(move |_| Msg::Pick(id))}
                         ondblclick={link.callback(move |_| Msg::Edit(id))}>
                         <TableCell class={class::MONO} cut=true>{&entry.pointer}</TableCell>
-                        <TableCell class={class::MONO}>{&entry.value_type}</TableCell>
-                        <TableCell class={classes!(class::MONO, class::MUTED)}>{address}</TableCell>
-                        <TableCell class={class::MONO}>{entry.value.as_deref().unwrap_or("?")}</TableCell>
+                        <TableCell class={class::MONO} cut=true>{&entry.value_type}</TableCell>
+                        <TableCell class={classes!(class::MONO, class::MUTED)} cut=true>{address}</TableCell>
+                        <TableCell class={class::MONO} cut=true>{entry.value.as_deref().unwrap_or("?")}</TableCell>
                     </tr>
                 }
             })
@@ -337,9 +337,9 @@ impl Component for ScratchView {
                     <Checkbox title="Select every entry" checked={all}
                         on_change={link.callback(|_| Msg::SelectAll)}>{"Pointer"}</Checkbox>
                 </TableCell>
-                <TableCell head=true>{"Type"}</TableCell>
-                <TableCell head=true>{"Address"}</TableCell>
-                <TableCell head=true>{"Value"}</TableCell>
+                <TableCell head=true width="4rem">{"Type"}</TableCell>
+                <TableCell head=true width="22%">{"Address"}</TableCell>
+                <TableCell head=true width="16%">{"Value"}</TableCell>
             </>
         };
 
@@ -364,7 +364,7 @@ impl Component for ScratchView {
                     <div class={class::SCROLL} tabindex="0" onkeydown={link.batch_callback(|e: KeyboardEvent| {
                         (e.key() == "Delete").then_some(Msg::RemoveSelected)
                     })}>
-                        <Table {head} columns={4} {empty} label="Scratch entries">{rows}</Table>
+                        <Table {head} columns={4} {empty} fixed=true label="Scratch entries">{rows}</Table>
                     </div>
                 </RowMenu>
                 {dialog}

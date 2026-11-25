@@ -1,8 +1,10 @@
-use sockel::{Button, Dialog, DialogSize, EmptyState, Stack};
+use sockel::{Dialog, DialogSize, EmptyState, Stack};
 use yew::prelude::*;
 
 use crate::class;
 use crate::error::ErrorEntry;
+use crate::icons::AppIcon;
+use crate::ui::actions::{Action, tool};
 
 #[derive(Properties, PartialEq)]
 pub struct Props {
@@ -36,13 +38,13 @@ pub fn error_log(props: &Props) -> Html {
             .collect::<Html>()
     };
 
-    let actions = html! {
-        <Button onclick={clear} disabled={props.errors.is_empty()}>{"Clear"}</Button>
-    };
+    let head_actions = tool(
+        &Action::new(AppIcon::Remove, "Clear the errors", clear).disabled(props.errors.is_empty()),
+    );
 
     html! {
         <Dialog open={props.open} on_dismiss={close} title="Errors"
-            size={DialogSize::WideTall} flush=true {actions}>
+            size={DialogSize::WideTall} flush=true {head_actions}>
             <div class={class::SCROLL}>{entries}</div>
         </Dialog>
     }

@@ -1,12 +1,14 @@
 use musli_web::web03::prelude::*;
 use sockel::{
-    Button, ButtonSize, ButtonVariant, EmptyState, InputSize, Pill, Table, TableCell, TextInput,
-    Tone, Toolbar, ToolbarSpacer,
+    Button, ButtonSize, ButtonVariant, EmptyState, InputSize, Table, TableCell, TextInput,
+    ToolbarSpacer,
 };
 use yew::prelude::*;
 
 use crate::class;
-use crate::ui::pane::Pane;
+use crate::icons::{AppIcon, icon};
+use crate::ui::actions::{Action, RowMenu, more};
+use crate::ui::pane::{Pane, PaneBar, PaneHead, StatusLine, StatusTone};
 
 #[derive(Properties, PartialEq)]
 pub struct Props {
@@ -218,8 +220,7 @@ impl Component for ProcessPicker {
             _ => None,
         };
 
-        let detach =
-            (props.open && !busy && attached.is_some()).then(|| link.callback(|_| Msg::Detach));
+        let can_detach = props.open && !busy && attached.is_some();
 
         let rows = self
             .processes
@@ -236,33 +237,36 @@ impl Component for ProcessPicker {
                 html! {
                     <tr key={pid} {class}
                         onclick={link.callback(move |_| Msg::Select(pid))}
+                        oncontextmenu={link.callback(move |_| Msg::Select(pid))}
                         ondblclick={link.callback(move |_| Msg::Attach(pid))}>
-                        <TableCell numeric=true>{pid}</TableCell>
+                        <TableCell numeric=true cut=true>{pid}</TableCell>
                         <TableCell cut=true>{process.name.as_deref().unwrap_or("")}</TableCell>
-                        <TableCell>
-                            if attached == Some(pid) {
-                                <Pill tone={Tone::Success}>{"attached"}</Pill>
-                            }
-                        </TableCell>
+                        if attached == Some(pid) {
+                            <TableCell tip="Attached">
+                                {icon(AppIcon::Attach)}
+                                <span class={sockel::class::VISUALLY_HIDDEN}>{"attached"}</span>
+                            </TableCell>
+                        } else {
+                            <TableCell />
+                        }
                     </tr>
                 }
             })
             .collect::<Html>();
 
-        let summary = match self.unreadable.len() {
+        let unreadable = match self.unreadable.len() {
             0 => html! {},
-            n => html! {
-                <span class={class::MUTED} title={self.unreadable.join("\n")}>
-                    {format!("{n} could not be read")}
-                </span>
-            },
+            n => {
+                let text = format!("{n} could not be read: {}", self.unreadable.join(", "));
+                html! { <StatusLine tone={StatusTone::Warning} {text} /> }
+            }
         };
 
         let head = html! {
             <>
-                <TableCell head=true numeric=true>{"PID"}</TableCell>
+                <TableCell head=true numeric=true width="5.5rem">{"PID"}</TableCell>
                 <TableCell head=true>{"Name"}</TableCell>
-                <TableCell head=true><span class={sockel::class::VISUALLY_HIDDEN}>{"State"}</span></TableCell>
+                <TableCell head=true width="2.5rem"><span class={sockel::class::VISUALLY_HIDDEN}>{"State"}</span></TableCell>
             </>
         };
 
@@ -275,34 +279,63 @@ impl Component for ProcessPicker {
             html! { <EmptyState {title} compact=true /> }
         });
 
+        let actions = vec![
+            Action::new(
+                AppIcon::Attach,
+                "Attach",
+                attach.clone().unwrap_or_default(),
+            )
+            .disabled(attach.is_none()),
+            Action::new(AppIcon::Detach, "Detach", link.callback(|_| Msg::Detach))
+                .disabled(!can_detach),
+            Action::new(
+                AppIcon::Refresh,
+                "Refresh the list",
+                link.callback(|_| Msg::Refresh),
+            )
+            .disabled(!props.open || self.list.is_pending()),
+        ];
+
+        let enter = self.selected.filter(|_| attach.is_some());
+        let meta =
+            (!self.processes.is_empty()).then(|| AttrValue::from(self.processes.len().to_string()));
         let offer = self.offer(ctx, busy);
 
         html! {
             <Pane label="Processes">
-                <Toolbar label="Processes" band=true chrome=true>
-                    <span class={class::TITLE}>{"Processes"}</span>
+                <PaneHead title="Processes" {meta}>
+                    if attached.is_some() && attached == self.selected {
+                        <Button size={ButtonSize::Small}
+                            icon={icon(AppIcon::Detach)} tip="Detach from the process"
+                            busy={busy} disabled={!can_detach}
+                            onclick={link.callback(|_| Msg::Detach)}>{"Detach"}</Button>
+                    } else {
+                        <Button size={ButtonSize::Small} variant={ButtonVariant::Primary}
+                            icon={icon(AppIcon::Attach)} tip="Attach to the selected process"
+                            busy={busy} disabled={attach.is_none()}
+                            onclick={attach.unwrap_or_default()}>{"Attach"}</Button>
+                    }
+                    {more("More process actions", &actions)}
+                </PaneHead>
+                <PaneBar label="Filter processes">
                     <TextInput size={InputSize::Small}
                         class={class::SEARCH}
                         placeholder="Filter by name or pid" label="Filter processes"
                         value={self.filter.clone()} {on_input} />
-                    <Button size={ButtonSize::Small} busy={self.list.is_pending()}
-                        onclick={link.callback(|_| Msg::Refresh)} disabled={!props.open}>
-                        {"Refresh"}
-                    </Button>
-                </Toolbar>
-                <Toolbar label="Process actions" band=true chrome=true>
-                    {summary}
-                    <ToolbarSpacer />
-                    <Button size={ButtonSize::Small} variant={ButtonVariant::Primary}
-                        busy={busy} disabled={attach.is_none()}
-                        onclick={attach.unwrap_or_default()}>{"Attach"}</Button>
-                    <Button size={ButtonSize::Small} disabled={detach.is_none()}
-                        onclick={detach.unwrap_or_default()}>{"Detach"}</Button>
-                </Toolbar>
+                    <Button size={ButtonSize::Small} variant={ButtonVariant::Quiet}
+                        icon={icon(AppIcon::Refresh)} label="Refresh the list" tip="Refresh the list"
+                        busy={self.list.is_pending()} disabled={!props.open}
+                        onclick={link.callback(|_| Msg::Refresh)} />
+                </PaneBar>
                 {offer}
-                <div class={class::SCROLL}>
-                    <Table {head} columns={3} {empty} label="Processes">{rows}</Table>
-                </div>
+                {unreadable}
+                <RowMenu label="Process actions" actions={actions.clone()}>
+                    <div class={class::SCROLL} tabindex="0" onkeydown={link.batch_callback(move |e: KeyboardEvent| {
+                        enter.filter(|_| e.key() == "Enter").map(Msg::Attach)
+                    })}>
+                        <Table {head} columns={3} {empty} fixed=true label="Processes">{rows}</Table>
+                    </div>
+                </RowMenu>
             </Pane>
         }
     }
@@ -333,7 +366,7 @@ impl ProcessPicker {
                     format!("Session target {name} is running ({pid})"),
                     html! {
                         <Button size={ButtonSize::Small} variant={ButtonVariant::Primary}
-                            busy={busy} disabled={!props.open || busy}
+                            icon={icon(AppIcon::Attach)} busy={busy} disabled={!props.open || busy}
                             onclick={link.callback(move |_| Msg::Attach(pid))}>
                             {"Attach"}
                         </Button>
@@ -358,11 +391,11 @@ impl ProcessPicker {
         };
 
         html! {
-            <Toolbar label="Session target" band=true chrome=true>
+            <PaneBar label="Session target">
                 <span class={classes!(class::MUTED, sockel::class::TRUNCATE)} title={text.clone()}>{text}</span>
                 <ToolbarSpacer />
                 {action}
-            </Toolbar>
+            </PaneBar>
         }
     }
 }

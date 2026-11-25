@@ -373,6 +373,7 @@ impl Component for App {
                 settings={self.session.pointer_scan.clone()}
                 on_edit={ctx.link().callback(Msg::PointerScanEdit)}
                 on_error={self.on_error.clone()}
+                on_notice={self.on_notice.clone()}
             />
         };
 

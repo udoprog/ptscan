@@ -1,11 +1,13 @@
 use musli_web::web03::prelude::*;
 use sockel::{
-    Button, ButtonSize, Checkbox, Cluster, Dialog, DialogSize, EmptyState, TabItem, Table,
-    TableCell, TableRow, Tabs,
+    Button, ButtonSize, ButtonVariant, Dialog, DialogSize, EmptyState, Menu, MenuCheck,
+    MenuHeading, MenuSeparator, MenuWidth, PropertyList, PropertyRow, TabItem, Table, TableCell,
+    TableRow, Tabs,
 };
 use yew::prelude::*;
 
 use crate::class;
+use crate::icons::{AppIcon, icon};
 
 #[derive(Properties, PartialEq)]
 pub struct Props {
@@ -181,28 +183,29 @@ impl Component for ProcessInformation {
         };
 
         let head_actions = html! {
-            <Button size={ButtonSize::Small}
-                busy={self.request.is_pending()}
-                disabled={!props.connected || props.process.is_none()}
-                title="Read the process information again"
-                onclick={link.callback(|_| Msg::Refresh)}>{"Refresh"}</Button>
+            <>
+                if self.tab == Tab::Memory {
+                    {self.filters(ctx)}
+                }
+                <Button size={ButtonSize::Small} variant={ButtonVariant::Quiet}
+                    icon={icon(AppIcon::Refresh)} label="Read the process information again"
+                    tip="Read the process information again"
+                    busy={self.request.is_pending()}
+                    disabled={!props.connected || props.process.is_none()}
+                    onclick={link.callback(|_| Msg::Refresh)} />
+            </>
         };
 
         html! {
             <Dialog open={props.open} on_dismiss={close} title={title}
                 size={DialogSize::WideTall} flush=true {head_actions}>
                 <div class={class::DIALOG_BODY}>
-                    <div class={class::DETAILS}>
-                        <span class={class::MUTED}>{"Name"}</span>
-                        <span>{name}</span>
-                        <span class={class::MUTED}>{"File"}</span>
-                        <span class={class::MONO}>{file_name}</span>
-                    </div>
+                    <PropertyList label="Process" class={class::DETAILS}>
+                        <PropertyRow label="Name">{name}</PropertyRow>
+                        <PropertyRow label="File"><span class={class::MONO}>{file_name}</span></PropertyRow>
+                    </PropertyList>
                     <Tabs class={class::TABS} label="Process information" {tabs}
                         value={AttrValue::from(self.tab.value())} on_change={on_tab} />
-                    if self.tab == Tab::Memory {
-                        {self.filters(ctx)}
-                    }
                     <div class={class::SCROLL}>{body}</div>
                 </div>
             </Dialog>
@@ -238,35 +241,39 @@ impl Tab {
 }
 
 impl ProcessInformation {
+    /// Which memory regions the Memory tab lists, in a menu beside the
+    /// refresh.
     fn filters(&self, ctx: &Context<Self>) -> Html {
         let link = ctx.link();
         let busy = self.request.is_pending();
         let filter = &self.filter;
 
-        let check = |flag: Flag, label: &str, checked: bool, disabled: bool, title: &str| {
-            let title = (!title.is_empty()).then(|| AttrValue::from(title.to_string()));
+        let check = |flag: Flag, label: &str, checked: bool, disabled: bool, detail: &str| {
+            let detail = (!detail.is_empty()).then(|| AttrValue::from(detail.to_string()));
 
             html! {
-                <Checkbox {checked} {disabled} {title}
+                <MenuCheck {checked} {disabled} {detail}
                     on_change={link.callback(move |value: bool| Msg::Filter(flag, value))}>
                     {label.to_string()}
-                </Checkbox>
+                </MenuCheck>
             }
         };
 
         let flags = busy || filter.other;
 
         html! {
-            <Cluster class={class::FIELDS}>
-                <span class={class::MUTED}>{"Only regions which are"}</span>
+            <Menu icon={icon(AppIcon::Options)} label="Filter memory regions" tip="Filter memory regions"
+                size={ButtonSize::Small} variant={ButtonVariant::Quiet} width={MenuWidth::Wide}>
+                <MenuHeading>{"Only regions which are"}</MenuHeading>
                 {check(Flag::Readable, "Readable", filter.readable, flags, "")}
                 {check(Flag::Writable, "Writable", filter.writable, flags, "")}
                 {check(Flag::Executable, "Executable", filter.executable, flags, "")}
                 {check(Flag::Modules, "Modules", filter.modules, flags, "Part of a module")}
                 {check(Flag::ThreadStacks, "Thread stacks", filter.thread_stacks, flags, "Holding a thread's stack")}
+                <MenuSeparator />
                 {check(Flag::Other, "Other", filter.other, busy,
                     "Neither accessible nor part of a module or thread stack; overrides the other filters")}
-            </Cluster>
+            </Menu>
         }
     }
 }

@@ -34,8 +34,11 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
       with:
         targets: wasm32-unknown-unknown
+        components: clippy
     - uses: udoprog/actions@trug
     - run: trug build --release
+    - run: cargo test -p web
+    - run: cargo clippy -p web --target wasm32-unknown-unknown -- -D warnings
 
   rustfmt:
     runs-on: ubuntu-latest

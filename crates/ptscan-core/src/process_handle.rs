@@ -69,17 +69,58 @@ impl<'a, P> ScanContext<'a, P> {
 #[derive(Clone)]
 pub struct ScanResults {
     pub addresses: Addresses,
-    pub initial: Values,
-    pub last: Values,
+    /// Values at the initial scan, `None` while they are the same as `last`.
+    initial: Option<Values>,
+    last: Values,
 }
 
 impl ScanResults {
     pub fn new(addresses: Addresses, initial: Values, last: Values) -> Self {
         Self {
             addresses,
-            initial,
+            initial: Some(initial),
             last,
         }
+    }
+
+    /// Results whose initial values are the same as `values`, which are not
+    /// stored twice until `last` is about to change.
+    pub fn unchanged(addresses: Addresses, values: Values) -> Self {
+        Self {
+            addresses,
+            initial: None,
+            last: values,
+        }
+    }
+
+    /// The values at the initial scan.
+    pub fn initial(&self) -> &Values {
+        self.initial.as_ref().unwrap_or(&self.last)
+    }
+
+    /// The values at the last scan.
+    pub fn last(&self) -> &Values {
+        &self.last
+    }
+
+    /// Bytes used by the results.
+    pub fn bytes(&self) -> usize {
+        self.addresses
+            .bytes()
+            .saturating_add(self.initial.as_ref().map_or(0, Values::bytes))
+            .saturating_add(self.last.bytes())
+    }
+
+    /// Store the initial values separately, which must be done before `last`
+    /// is changed. Returns the addresses, initial values and last values.
+    pub fn split_mut(&mut self) -> (&Addresses, &Values, &mut Values) {
+        let Self {
+            addresses,
+            initial,
+            last,
+        } = self;
+        let initial = &*initial.get_or_insert_with(|| last.clone());
+        (addresses, initial, last)
     }
 
     pub fn len(&self) -> usize {
@@ -98,7 +139,11 @@ impl ScanResults {
         }
 
         self.addresses.retain_by_index(|index| !marked.test(index));
-        self.initial.retain_by_index(|index| !marked.test(index));
+
+        if let Some(initial) = &mut self.initial {
+            initial.retain_by_index(|index| !marked.test(index));
+        }
+
         self.last.retain_by_index(|index| !marked.test(index));
     }
 }
@@ -589,14 +634,17 @@ impl ProcessHandle {
             return Ok(());
         }
 
+        // The values are changed below, so the initial ones need their own copy.
+        results.split_mut();
+
         let len = results.len();
 
-        if len != results.last.len() || len != results.initial.len() {
+        if len != results.last().len() || len != results.initial().len() {
             bail!(
                 "argument length mismatch, addresses ({}) != values ({}) or initial ({})",
                 len,
-                results.last.len(),
-                results.initial.len(),
+                results.last().len(),
+                results.initial().len(),
             );
         }
 
@@ -606,13 +654,13 @@ impl ProcessHandle {
 
         let filter = filter.type_check(
             self,
-            results.initial.ty(),
-            results.last.ty(),
-            results.last.ty(),
+            results.initial().ty(),
+            results.last().ty(),
+            results.last().ty(),
         )?;
         let filter = &filter;
 
-        let tail = [results.initial.ty(), results.last.ty()]
+        let tail = [results.initial().ty(), results.last().ty()]
             .iter()
             .filter_map(|ty| ty.size())
             .fold(MIN_TAIL, usize::max);
@@ -801,11 +849,9 @@ impl ProcessHandle {
             fn run(&self, tx: &mpsc::Sender<Task>) -> anyhow::Result<()> {
                 const CHECK_INTERVAL: usize = 0x1000;
 
-                let ScanResults {
-                    addresses,
-                    initial,
-                    last: values,
-                } = self.results;
+                let addresses = &self.results.addresses;
+                let initial = self.results.initial();
+                let values = self.results.last();
 
                 let mut buffer = vec![0u8; self.buffer_size];
 
@@ -917,15 +963,12 @@ impl ProcessHandle {
             progress,
         } = ctx;
         let cancel = &*cancel;
-        let ScanResults {
-            addresses,
-            initial,
-            last: values,
-        } = &mut *results;
-
-        if addresses.is_empty() {
+        if results.is_empty() {
             return Ok(());
         }
+
+        // The values are changed below, so the initial ones need their own copy.
+        let (addresses, initial, values) = results.split_mut();
 
         if addresses.len() != values.len() {
             return Err(anyhow!(
@@ -1851,6 +1894,36 @@ mod tests {
     use crate::{Address, Addresses, BitSet, PointerWidth, Type, Value, Values};
 
     #[test]
+    fn unchanged_initial_is_materialized_before_last_changes() {
+        let mut addresses = Addresses::new(PointerWidth::Pointer64);
+        let mut last = Values::new(Type::U32);
+
+        for n in 0..10u32 {
+            addresses.push(Address::new(u64::from(n) * 4));
+            last.push(Value::U32(n));
+        }
+
+        let mut results = ScanResults::unchanged(addresses, last);
+        let shared = results.bytes();
+        let read = |v: &Values| v.iter().map(|v| v.read()).collect::<Vec<_>>();
+        let before = read(results.last());
+        assert_eq!(read(results.initial()), before);
+
+        let mut marked = BitSet::new();
+        marked.set(0);
+        results.remove_marked(&marked);
+        assert_eq!(results.len(), 9);
+        assert_eq!(read(results.initial()), read(results.last()));
+
+        let (_, _, last) = results.split_mut();
+        last.iter_mut().next().unwrap().write(Value::U32(100));
+        assert!(results.bytes() > shared - 4);
+        assert_eq!(results.initial().len(), 9);
+        assert_eq!(results.initial().get(0), Some(Value::U32(1)));
+        assert_eq!(results.last().get(0), Some(Value::U32(100)));
+    }
+
+    #[test]
     fn remove_marked_keeps_order() {
         let mut addresses = Addresses::new(PointerWidth::Pointer64);
         let mut initial = Values::new(Type::U32);
@@ -1886,11 +1959,15 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert_eq!(
-            results.initial.iter().map(|v| v.read()).collect::<Vec<_>>(),
+            results
+                .initial()
+                .iter()
+                .map(|v| v.read())
+                .collect::<Vec<_>>(),
             kept.iter().map(|&n| Value::U32(n)).collect::<Vec<_>>()
         );
         assert_eq!(
-            results.last.iter().map(|v| v.read()).collect::<Vec<_>>(),
+            results.last().iter().map(|v| v.read()).collect::<Vec<_>>(),
             kept.iter()
                 .map(|&n| Value::U64(u64::from(n) * 2))
                 .collect::<Vec<_>>()

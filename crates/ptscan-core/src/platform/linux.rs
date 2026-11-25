@@ -1128,7 +1128,7 @@ mod tests {
         assert!(found.contains(&Address::new(holder.pair)), "{:?}", found);
         assert!(found.contains(&Address::new(holder.value)), "{:?}", found);
 
-        let mut results = ScanResults::new(addresses, values.clone(), values);
+        let mut results = ScanResults::unchanged(addresses, values);
         handle
             .rescan_large(
                 ScanContext::new(&pool, None, NoProgress),
@@ -1173,14 +1173,14 @@ mod tests {
         values.push(crate::Value::U64(1));
 
         let original = addresses.iter_copied().collect::<Vec<_>>();
-        let results = ScanResults::new(addresses, values.clone(), values);
+        let results = ScanResults::unchanged(addresses, values);
         let filter = FilterExpr::parse("value < 4294967296", &handle).unwrap();
 
         let read = |r: &ScanResults| {
             (
                 r.addresses.iter_copied().collect::<Vec<_>>(),
-                r.initial.iter().map(|v| v.read()).collect::<Vec<_>>(),
-                r.last.iter().map(|v| v.read()).collect::<Vec<_>>(),
+                r.initial().iter().map(|v| v.read()).collect::<Vec<_>>(),
+                r.last().iter().map(|v| v.read()).collect::<Vec<_>>(),
             )
         };
 

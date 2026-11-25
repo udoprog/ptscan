@@ -24,7 +24,7 @@ struct Generation {
 
 impl Generation {
     fn bytes(&self) -> usize {
-        self.results.addresses.bytes() + self.results.initial.bytes() + self.results.last.bytes()
+        self.results.bytes()
     }
 }
 
@@ -303,7 +303,7 @@ impl Shared {
         });
 
         *generation = Some(Generation {
-            results: ScanResults::new(addresses, values.clone(), values),
+            results: ScanResults::unchanged(addresses, values),
             value,
         });
 
@@ -464,7 +464,7 @@ impl Shared {
             .min(total);
 
         let handle = read(&handle);
-        let last_type = generation.results.last.ty();
+        let last_type = generation.results.last().ty();
 
         let mut addresses = Addresses::new(handle.process.pointer_width);
         let mut current = Values::new(last_type);
@@ -472,7 +472,7 @@ impl Shared {
         for index in start..end {
             let (Some(address), Some(value)) = (
                 generation.results.addresses.get(index),
-                generation.results.last.get(index),
+                generation.results.last().get(index),
             ) else {
                 break;
             };
@@ -505,7 +505,7 @@ impl Shared {
         let results = (start..end)
             .zip(addresses.iter_copied())
             .filter_map(|(index, address)| {
-                let last = generation.results.last.get(index)?;
+                let last = generation.results.last().get(index)?;
                 let current = current.get(index.checked_sub(start)?)?;
                 let pointer = PortablePointer::from(handle.address_to_portable_base(address));
 

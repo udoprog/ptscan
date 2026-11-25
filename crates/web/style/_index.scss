@@ -47,19 +47,94 @@ body {
 // splits nested in it fill their panes.
 .ptscan-workspace {
     height: 100%;
-    padding: var(--space-3);
+    padding: var(--space-2);
 }
 
 .ptscan-fill {
     height: 100%;
 }
 
+// A region of the main screen: a flat surface on the workspace's ground,
+// with no ring or shadow of its own.
 .ptscan-pane {
     display: flex;
     flex-direction: column;
     height: 100%;
     min-width: 0;
     min-height: 0;
+    overflow: hidden;
+    background: var(--surface);
+    border-radius: var(--radius-md);
+}
+
+.ptscan-pane-head {
+    flex: none;
+    padding: var(--space-2) var(--space-2) var(--space-2) var(--space-4);
+    min-height: calc(var(--control-height-small) + 2 * var(--space-2));
+}
+
+.ptscan-pane-title {
+    margin: 0;
+    font-size: var(--text-md);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+}
+
+.ptscan-pane-meta {
+    min-width: 0;
+    color: var(--muted);
+    font-size: var(--text-sm);
+}
+
+.ptscan-pane-bar {
+    flex: none;
+    padding: var(--space-1) var(--space-2) var(--space-1) var(--space-4);
+    border-block: var(--space-px) solid var(--border);
+}
+
+// One quiet line of how the pane's work went; its tone marks the dot.
+.ptscan-status-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    padding: 0 var(--space-4) var(--space-2);
+    color: var(--muted);
+    font-size: var(--text-sm);
+
+    &::before {
+        content: "";
+        flex: none;
+        width: var(--space-2);
+        height: var(--space-2);
+        border-radius: var(--radius-pill);
+        background: var(--success);
+    }
+
+    &.ptscan-warning::before {
+        background: var(--warning);
+    }
+
+    &.ptscan-danger {
+        color: var(--danger);
+
+        &::before {
+            background: var(--danger);
+        }
+    }
+}
+
+.ptscan-status-text {
+    min-width: 0;
+}
+
+// A labelled field among a menu's items.
+.ptscan-menu-field {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-2);
 }
 
 .ptscan-scroll {
@@ -100,8 +175,7 @@ body {
 }
 
 .ptscan-fields {
-    padding: var(--space-2) var(--space-3);
-    border-bottom: var(--space-px) solid var(--border);
+    padding: 0 var(--space-4) var(--space-3);
 }
 
 .ptscan-status-bar {

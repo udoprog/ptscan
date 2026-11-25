@@ -3,12 +3,13 @@ use std::collections::BTreeSet;
 use gloo_timers::callback::Timeout;
 use musli_web::web03::prelude::*;
 use sockel::{
-    Button, ButtonSize, ButtonVariant, Card, Checkbox, Cluster, EmptyState, Gap, InputSize, Inset,
-    Notice, Table, TableCell, TextInput, Tone, Toolbar, ToolbarSpacer,
+    Button, ButtonSize, ButtonVariant, Checkbox, Cluster, EmptyState, Gap, InputSize, Notice,
+    Table, TableCell, TextInput, Tone, Toolbar, ToolbarSpacer,
 };
 use yew::prelude::*;
 
 use crate::class;
+use crate::ui::pane::Pane;
 
 const PAGE: u32 = 100;
 /// How long the settings rest after an edit before they are saved.
@@ -24,6 +25,9 @@ pub struct Props {
     pub session: Option<u64>,
     /// The open session's settings, as the server holds them.
     pub settings: api::PointerScanSettings,
+    /// Told the settings as edited whenever they change, none while invalid,
+    /// so a scan started elsewhere uses what is shown.
+    pub on_edit: Callback<Option<api::PointerScanSettings>>,
     pub on_error: Callback<String>,
 }
 
@@ -158,6 +162,10 @@ impl PointerScanView {
         }
     }
 
+    fn report(&self, ctx: &Context<Self>) {
+        ctx.props().on_edit.emit(self.settings());
+    }
+
     fn schedule_save(&mut self, ctx: &Context<Self>) {
         let link = ctx.link().clone();
         self.save_timer = Some(Timeout::new(SAVE_MS, move || link.send_message(Msg::Save)));
@@ -196,6 +204,7 @@ impl Component for PointerScanView {
         };
 
         this.apply_settings(&ctx.props().settings);
+        this.report(ctx);
 
         if ctx.props().open {
             this.load_state(ctx);
@@ -212,6 +221,7 @@ impl Component for PointerScanView {
         }
 
         self.sync_settings(ctx);
+        self.report(ctx);
 
         true
     }
@@ -256,14 +266,17 @@ impl Component for PointerScanView {
             }
             Msg::Depth(text) => {
                 self.depth = text;
+                self.report(ctx);
                 self.schedule_save(ctx);
             }
             Msg::Offset(text) => {
                 self.offset_limit = text;
+                self.report(ctx);
                 self.schedule_save(ctx);
             }
             Msg::MaxPaths(text) => {
                 self.max_paths = text;
+                self.report(ctx);
                 self.schedule_save(ctx);
             }
             Msg::Save => {
@@ -431,7 +444,7 @@ impl Component for PointerScanView {
         let added = self.added.clone().unwrap_or_default();
 
         html! {
-            <Card inset={Inset::Flush} class={class::PANE}>
+            <Pane label="Pointer scan">
                 <Toolbar label="Pointer scan" band=true chrome=true>
                     <span class={class::TITLE}>{"Pointer scan"}</span>
                     <span class={class::MUTED}>{self.target()}</span>
@@ -487,7 +500,7 @@ impl Component for PointerScanView {
                 <div class={class::SCROLL}>
                     <Table {head} columns={2} {empty} label="Pointer paths">{rows}</Table>
                 </div>
-            </Card>
+            </Pane>
         }
     }
 }

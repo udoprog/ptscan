@@ -129,7 +129,11 @@ impl Shared {
 
     /// Start a pointer scan in the background for the address the scratch
     /// entry `id` currently follows to, replacing the paths of the last one.
-    pub fn start_pointer_scan(self: &Arc<Self>, id: u64) -> api::PointerScanResponse {
+    pub fn start_pointer_scan(
+        self: &Arc<Self>,
+        id: u64,
+        settings: api::PointerScanSettings,
+    ) -> api::PointerScanResponse {
         let error = |e: &str| api::PointerScanResponse {
             error: Some(e.into()),
         };
@@ -167,7 +171,8 @@ impl Shared {
             let started = Instant::now();
             let token_ref = Token::from_raw(&token);
             let mut results = Paths::default();
-            let result = shared.run_pointer_scan(&handle, &pointer, &mut results, token_ref);
+            let result =
+                shared.run_pointer_scan(&handle, &pointer, &settings, &mut results, token_ref);
 
             let mut current = lock(&shared.pointer_results);
 
@@ -196,6 +201,7 @@ impl Shared {
         &self,
         handle: &RwLock<ProcessHandle>,
         pointer: &PortablePointer,
+        settings: &api::PointerScanSettings,
         results: &mut Paths,
         token: &Token,
     ) -> Result<()> {
@@ -228,7 +234,6 @@ impl Shared {
             Default::default(),
         )?;
 
-        let settings = self.pointer_scan_settings();
         let mut scan = PointerScan::new(&self.pool, &handle, token);
         scan.max_depth = usize::try_from(settings.max_depth)?;
         scan.max_offset = Size::new(settings.max_offset.into());

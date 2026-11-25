@@ -3,13 +3,16 @@ use std::collections::BTreeSet;
 use gloo_timers::callback::{Interval, Timeout};
 use musli_web::web03::prelude::*;
 use sockel::{
-    Button, ButtonSize, ButtonVariant, Card, Checkbox, Cluster, EmptyState, FormRow, FormRows, Gap,
-    InputSize, Inset, Notice, Stack, Table, TableCell, TextInput, Tone, Toolbar, ToolbarSpacer,
+    Button, ButtonSize, ButtonVariant, Checkbox, EmptyState, FormRow, FormRows, InputSize, Menu,
+    MenuCheck, MenuWidth, Pager, PagerCounts, Table, TableCell, TextInput, ToolbarSpacer,
 };
 use yew::prelude::*;
 
 use crate::class;
 use crate::clipboard;
+use crate::icons::{AppIcon, icon};
+use crate::ui::actions::{Action, RowMenu, more, tool};
+use crate::ui::pane::{Pane, PaneBar, PaneHead, StatusLine, StatusTone};
 use crate::ui::scan_result_dialog::ScanResultDialog;
 
 const PAGE: u32 = 100;
@@ -28,6 +31,8 @@ pub struct Props {
     /// The open session's scan form, as the server holds it.
     pub form: api::ScanForm,
     pub on_error: Callback<String>,
+    /// Tells of a finished action in passing.
+    pub on_notice: Callback<String>,
 }
 
 pub enum Msg {
@@ -52,6 +57,8 @@ pub enum Msg {
     Page(u64),
     Loaded(Result<ws::Packet<api::ScanResults>, ws::Error>),
     Select(u64, bool),
+    /// Selects a result a context menu opens on, unless it already is.
+    Pick(u64),
     SelectPage,
     Show(u64),
     CloseDialog,
@@ -85,7 +92,6 @@ pub struct ScanView {
     /// Addresses of the selected results.
     selected: BTreeSet<u64>,
     dialog: Option<u64>,
-    added: Option<String>,
     scan: ws::Request,
     action: ws::Request,
     state_request: ws::Request,
@@ -272,7 +278,6 @@ impl Component for ScanView {
             page_error: None,
             selected: BTreeSet::new(),
             dialog: None,
-            added: None,
             scan: ws::Request::default(),
             action: ws::Request::default(),
             state_request: ws::Request::default(),
@@ -482,6 +487,14 @@ impl Component for ScanView {
                     self.selected.insert(address);
                 }
             }
+            Msg::Pick(address) => {
+                if self.selected.contains(&address) {
+                    return false;
+                }
+
+                self.selected.clear();
+                self.selected.insert(address);
+            }
             Msg::SelectPage => {
                 let all = self
                     .results
@@ -523,7 +536,9 @@ impl Component for ScanView {
                     }
 
                     if let Some(entry) = response.entry {
-                        self.added = Some(format!("Added {} to the scratch list", entry.pointer));
+                        ctx.props()
+                            .on_notice
+                            .emit(format!("Added {} to the scratch list", entry.pointer));
                     }
                 }
                 Err(error) => on_error.emit(format!("Adding to scratch: {error}")),
@@ -547,7 +562,7 @@ impl Component for ScanView {
                         on_error.emit(format!("Removing results: {error}"));
                     } else {
                         self.selected.clear();
-                        self.added = Some(match response.removed {
+                        ctx.props().on_notice.emit(match response.removed {
                             1 => String::from("Removed 1 result"),
                             n => format!("Removed {n} results"),
                         });
@@ -606,28 +621,15 @@ impl Component for ScanView {
             Msg::Scan
         });
 
-        let scan_label = if self.state.generations == 0 {
-            "Scan"
-        } else {
-            "Rescan"
-        };
-
-        let undo_title = match &self.state.last {
+        let undo_label = match &self.state.last {
             Some(last) if last.in_place && !self.state.can_undo() => {
-                "The last scan replaced its results in place since they were too large to copy, so it cannot be undone"
+                "Undo: the last scan replaced its results in place since they were too large to copy, so it cannot be undone"
             }
             Some(last) if last.in_place => {
-                "The last scan replaced its results in place since they were too large to copy; undo returns to the scan before it"
+                "Undo: the last scan replaced its results in place since they were too large to copy; undo returns to the scan before it"
             }
-            _ => "Return to the previous scan",
+            _ => "Undo: return to the previous scan",
         };
-
-        let page_end = (self.offset + self.results.len() as u64).min(self.total);
-        let can_prev = self.offset > 0;
-        let can_next = page_end < self.total;
-        let prev = self.offset.saturating_sub(PAGE as u64);
-        let next = self.offset + PAGE as u64;
-        let last = last_page(self.total);
 
         let selected_here = self
             .results
@@ -654,6 +656,7 @@ impl Component for ScanView {
 
                 html! {
                     <tr key={self.offset + index as u64} {class} {onclick}
+                        oncontextmenu={link.callback(move |_| Msg::Pick(address))}
                         ondblclick={link.callback(move |_| Msg::Show(address))}>
                         <TableCell numeric=true class={class::MUTED}>{self.offset + index as u64}</TableCell>
                         <TableCell class={class::MONO} cut=true>{&result.pointer}</TableCell>
@@ -696,117 +699,195 @@ impl Component for ScanView {
             .is_empty()
             .then(|| html! { <EmptyState title={self.empty_label(ready)} compact=true /> });
 
-        let added = self.added.clone().unwrap_or_default();
+        let history = [
+            Action::new(AppIcon::Undo, undo_label, link.callback(|_| Msg::Undo))
+                .disabled(!ready || running || busy || !self.state.can_undo()),
+            Action::new(
+                AppIcon::Redo,
+                "Redo: restore the scan that was undone",
+                link.callback(|_| Msg::Redo),
+            )
+            .disabled(!ready || running || busy || !self.state.can_redo()),
+        ];
+
+        let reset = [Action::new(
+            AppIcon::Reset,
+            "Discard every scan",
+            link.callback(|_| Msg::Reset),
+        )
+        .disabled(!ready || busy || self.state.generations == 0)
+        .danger()];
+
+        let primary = if running {
+            html! {
+                <Button size={ButtonSize::Small} icon={icon(AppIcon::Stop)}
+                    busy={self.action.is_pending()} tip="Stop the scan, keeping what it found"
+                    onclick={link.callback(|_| Msg::Cancel)}>{"Cancel"}</Button>
+            }
+        } else {
+            let label = if self.state.generations == 0 {
+                "Scan"
+            } else {
+                "Rescan"
+            };
+
+            html! {
+                <Button size={ButtonSize::Small} submit=true variant={ButtonVariant::Primary}
+                    icon={icon(AppIcon::Scan)} busy={self.scan.is_pending()}
+                    disabled={!ready || self.action.is_pending()}>
+                    {label}
+                </Button>
+            }
+        };
+
+        let options = html! {
+            <Menu icon={icon(AppIcon::Options)} label="Scan options" tip="Scan options"
+                size={ButtonSize::Small} variant={ButtonVariant::Quiet} width={MenuWidth::Wide}>
+                <div class={class::MENU_FIELD}>
+                    <label class={class::MUTED} for="scan-alignment">{"Alignment"}</label>
+                    <TextInput id="scan-alignment" size={InputSize::Small} class={class::NARROW}
+                        placeholder="auto"
+                        value={self.alignment.clone()}
+                        on_input={link.callback(Msg::Alignment)} />
+                </div>
+                <MenuCheck checked={self.suspend} on_change={link.callback(Msg::Suspend)}>
+                    {"Suspend while scanning"}
+                </MenuCheck>
+                <MenuCheck checked={self.modules_only} detail="Applies to the first scan"
+                    on_change={link.callback(Msg::ModulesOnly)}>
+                    {"Modules only"}
+                </MenuCheck>
+            </Menu>
+        };
+
+        let actions = self.result_actions(ctx, ready, busy, selected_here);
+        let pages = pages(self.total);
+        let page = usize::try_from(self.offset / PAGE as u64).unwrap_or(usize::MAX);
+        let total = usize::try_from(self.total).unwrap_or(usize::MAX);
 
         html! {
-            <Card inset={Inset::Flush} class={class::PANE}>
+            <Pane label="Scan">
                 <form class={class::FORM} {onsubmit}>
-                    <Toolbar label="Scan" band=true chrome=true>
-                        <span class={class::TITLE}>{"Scan"}</span>
-                        <ToolbarSpacer />
-                        <Button size={ButtonSize::Small} submit=true variant={ButtonVariant::Primary}
-                            busy={self.scan.is_pending()}
-                            disabled={!ready || running || self.action.is_pending()}>
-                            {scan_label}
-                        </Button>
-                        if running {
-                            <Button size={ButtonSize::Small} onclick={link.callback(|_| Msg::Cancel)}>{"Cancel"}</Button>
-                        }
-                        <Button size={ButtonSize::Small} title={undo_title}
-                            disabled={!ready || running || busy || !self.state.can_undo()}
-                            onclick={link.callback(|_| Msg::Undo)}>{"Undo"}</Button>
-                        <Button size={ButtonSize::Small} title="Restore the scan that was undone"
-                            disabled={!ready || running || busy || !self.state.can_redo()}
-                            onclick={link.callback(|_| Msg::Redo)}>{"Redo"}</Button>
-                        <Button size={ButtonSize::Small} title="Discard every scan"
-                            disabled={!ready || busy || self.state.generations == 0}
-                            onclick={link.callback(|_| Msg::Reset)}>{"Reset"}</Button>
-                    </Toolbar>
-                    <Stack gap={Gap::Tight} class={class::FIELDS}>
-                        <FormRows>
-                            {field("Filter", "value == 42u32", &self.filter, &self.filter_error,
-                                link.callback(Msg::Filter))}
-                            {field("Value", "the value itself", &self.value, &self.value_error,
-                                link.callback(Msg::Value))}
-                        </FormRows>
-                        <Cluster>
-                            <label class={class::MUTED} for="scan-alignment">{"Alignment"}</label>
-                            <TextInput id="scan-alignment" size={InputSize::Small} class={class::NARROW}
-                                placeholder="auto"
-                                value={self.alignment.clone()}
-                                on_input={link.callback(Msg::Alignment)} />
-                            <Checkbox checked={self.suspend} on_change={link.callback(Msg::Suspend)}>
-                                {"Suspend while scanning"}
-                            </Checkbox>
-                            <Checkbox checked={self.modules_only} title="Applies to the first scan"
-                                on_change={link.callback(Msg::ModulesOnly)}>
-                                {"Modules only"}
-                            </Checkbox>
-                        </Cluster>
-                    </Stack>
+                    <PaneHead title="Scan" meta={self.meta()}>
+                        {options}
+                        {for history.iter().map(tool)}
+                        {more("More scan actions", &reset)}
+                        {primary}
+                    </PaneHead>
+                    <FormRows class={class::FIELDS}>
+                        {field("Filter", "value == 42u32", &self.filter, &self.filter_error,
+                            link.callback(Msg::Filter))}
+                        {field("Value", "the value itself", &self.value, &self.value_error,
+                            link.callback(Msg::Value))}
+                    </FormRows>
                 </form>
                 {self.status()}
-                <Toolbar label="Scan results" band=true chrome=true>
-                    <span class={classes!(class::MUTED, sockel::class::NUMERIC)}>{self.range_label(page_end)}</span>
-                    <Cluster gap={Gap::Hair} nowrap=true>
-                        <Button size={ButtonSize::Small} disabled={!can_prev} onclick={link.callback(|_| Msg::Page(0))}>{"First"}</Button>
-                        <Button size={ButtonSize::Small} disabled={!can_prev} onclick={link.callback(move |_| Msg::Page(prev))}>{"Prev"}</Button>
-                        <Button size={ButtonSize::Small} disabled={!can_next} onclick={link.callback(move |_| Msg::Page(next))}>{"Next"}</Button>
-                        <Button size={ButtonSize::Small} disabled={!can_next} onclick={link.callback(move |_| Msg::Page(last))}>{"Last"}</Button>
-                    </Cluster>
-                    <Button size={ButtonSize::Small} disabled={!ready || running || self.state.results == 0}
-                        onclick={link.callback(|_| Msg::Refresh)}>{"Refresh"}</Button>
-                    <span class={classes!(class::MUTED, class::ADDED, sockel::class::TRUNCATE)} title={added.clone()}>
-                        {added}
-                    </span>
-                    <Button size={ButtonSize::Small} disabled={self.selected.len() != 1}
-                        onclick={self.selected.first().copied().map(|a| link.callback(move |_| Msg::Show(a))).unwrap_or_default()}>
-                        {"Show"}
-                    </Button>
-                    <Button size={ButtonSize::Small} variant={ButtonVariant::Danger}
-                        title="Remove the selected results from the current scan; this discards the scan to redo"
-                        disabled={self.selected.is_empty() || !ready || running || busy}
-                        onclick={link.callback(|_| Msg::RemoveSelected)}>
-                        {match self.selected.len() {
-                            0 | 1 => String::from("Remove"),
-                            n => format!("Remove {n}"),
-                        }}
-                    </Button>
-                    <Button size={ButtonSize::Small} title="Copy the selected results on this page as tab-separated text"
-                        disabled={selected_here == 0} onclick={link.callback(|_| Msg::CopyText)}>{"Copy"}</Button>
-                    <Button size={ButtonSize::Small} title="Copy the selected results on this page as JSON"
-                        disabled={selected_here == 0} onclick={link.callback(|_| Msg::CopyJson)}>{"Copy JSON"}</Button>
+                <PaneBar label="Scan results">
+                    <Pager {page} {pages} label="Scan result pages" titles=true
+                        counts={PagerCounts::new(total, PAGE as usize)}
+                        on_page={link.callback(|page: usize| {
+                            Msg::Page(u64::try_from(page).unwrap_or(u64::MAX).saturating_mul(PAGE as u64))
+                        })} />
+                    <ToolbarSpacer />
+                    {tool(&Action::new(AppIcon::Refresh, "Refresh the values", link.callback(|_| Msg::Refresh))
+                        .disabled(!ready || running || self.state.results == 0))}
                     <Button size={ButtonSize::Small} variant={ButtonVariant::Primary}
+                        icon={icon(AppIcon::Add)} tip="Add the selected results to the scratch list"
                         disabled={selected_here == 0 || !ready}
                         onclick={link.callback(|_| Msg::AddSelected)}>
                         {match selected_here {
-                            0 | 1 => String::from("Add to scratch"),
-                            n => format!("Add {n} to scratch"),
+                            0 | 1 => String::from("Add"),
+                            n => format!("Add {n}"),
                         }}
                     </Button>
-                </Toolbar>
-                <div class={class::SCROLL} tabindex="0" onkeydown={link.batch_callback(|e: KeyboardEvent| {
-                    (e.key() == "Delete").then_some(Msg::RemoveSelected)
-                })}>
-                    <Table {head} columns={5} {empty} label="Scan results">{rows}</Table>
-                </div>
+                    {more("More result actions", &actions)}
+                </PaneBar>
+                <RowMenu label="Result actions" actions={actions.clone()}>
+                    <div class={class::SCROLL} tabindex="0" onkeydown={link.batch_callback(|e: KeyboardEvent| {
+                        (e.key() == "Delete").then_some(Msg::RemoveSelected)
+                    })}>
+                        <Table {head} columns={5} {empty} label="Scan results">{rows}</Table>
+                    </div>
+                </RowMenu>
                 {dialog}
-            </Card>
+            </Pane>
         }
     }
 }
 
 impl ScanView {
+    /// What can be done with the selected results, in the toolbar's overflow
+    /// menu and the rows' context menu alike.
+    fn result_actions(
+        &self,
+        ctx: &Context<Self>,
+        ready: bool,
+        busy: bool,
+        selected_here: usize,
+    ) -> Vec<Action> {
+        let link = ctx.link();
+        let one = self
+            .selected
+            .first()
+            .copied()
+            .filter(|_| self.selected.len() == 1);
+
+        let remove = match self.selected.len() {
+            0 | 1 => String::from("Remove from the scan"),
+            n => format!("Remove {n} from the scan"),
+        };
+
+        vec![
+            Action::new(
+                AppIcon::Show,
+                "Show details",
+                one.map(|a| link.callback(move |_| Msg::Show(a)))
+                    .unwrap_or_default(),
+            )
+            .disabled(one.is_none()),
+            Action::new(
+                AppIcon::Add,
+                "Add to scratch",
+                link.callback(|_| Msg::AddSelected),
+            )
+            .disabled(selected_here == 0 || !ready),
+            Action::new(
+                AppIcon::Copy,
+                "Copy as text",
+                link.callback(|_| Msg::CopyText),
+            )
+            .disabled(selected_here == 0),
+            Action::new(
+                AppIcon::Json,
+                "Copy as JSON",
+                link.callback(|_| Msg::CopyJson),
+            )
+            .disabled(selected_here == 0),
+            Action::new(
+                AppIcon::Remove,
+                remove,
+                link.callback(|_| Msg::RemoveSelected),
+            )
+            .disabled(self.selected.is_empty() || !ready || self.state.running || busy)
+            .danger(),
+        ]
+    }
+
+    fn meta(&self) -> Option<AttrValue> {
+        match self.state.generations {
+            0 => None,
+            1 => Some(AttrValue::from("1 scan")),
+            n => Some(AttrValue::from(format!("{n} scans"))),
+        }
+    }
+
     fn status(&self) -> Html {
         if self.state.running {
             let percentage = self.progress.percentage.min(100);
+            let lead = html! { <progress class={class::PROGRESS} max="100" value={percentage.to_string()} /> };
+            let text = format!("{percentage}%, {} results so far", self.progress.results);
 
-            return html! {
-                <Cluster nowrap=true class={class::STATUS_BAR}>
-                    <progress class={class::PROGRESS} max="100" value={percentage.to_string()} />
-                    <span class={sockel::class::NUMERIC}>{format!("{percentage}%, {} results so far", self.progress.results)}</span>
-                </Cluster>
-            };
+            return html! { <StatusLine {lead} {text} /> };
         }
 
         let Some(last) = &self.state.last else {
@@ -833,31 +914,14 @@ impl ScanView {
         }
 
         let tone = if last.error.is_some() {
-            Tone::Danger
+            StatusTone::Danger
         } else if last.cancelled || last.in_place {
-            Tone::Warning
+            StatusTone::Warning
         } else {
-            Tone::Neutral
+            StatusTone::Neutral
         };
 
-        html! {
-            <div class={class::STATUS_BAR}>
-                <Notice {tone} status=true>{text}</Notice>
-            </div>
-        }
-    }
-
-    fn range_label(&self, page_end: u64) -> String {
-        if self.total == 0 {
-            return String::from("No results");
-        }
-
-        format!(
-            "{}-{} of {}",
-            self.offset + 1,
-            page_end.max(self.offset + 1),
-            self.total
-        )
+        html! { <StatusLine {tone} {text} /> }
     }
 
     fn empty_label(&self, ready: bool) -> String {
@@ -898,6 +962,11 @@ fn field(
                 {placeholder} value={value.to_owned()} {on_input} />
         </FormRow>
     }
+}
+
+/// How many pages `total` results fill; at least one.
+fn pages(total: u64) -> usize {
+    usize::try_from(total.div_ceil(PAGE as u64).max(1)).unwrap_or(usize::MAX)
 }
 
 fn last_page(total: u64) -> u64 {

@@ -265,6 +265,9 @@ pub struct ScratchResponse {
 pub struct PointerScanRequest {
     /// The scratch entry whose address to find pointer paths to.
     pub id: u64,
+    /// The settings to scan with, which are also saved to the session, so a
+    /// scan started right after an edit never uses the settings before it.
+    pub settings: PointerScanSettings,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Encode, Decode)]

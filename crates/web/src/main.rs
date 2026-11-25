@@ -1,6 +1,7 @@
 mod app;
 mod clipboard;
 mod error;
+mod icons;
 mod ui;
 
 pub mod class {
@@ -11,12 +12,17 @@ const STYLESHEET: &str = include_str!(concat!(env!("OUT_DIR"), "/style.css"));
 
 #[yew::function_component]
 fn Root() -> yew::Html {
+    let icons = yew::use_memo((), |()| icons::set());
+
     yew::html! {
         <>
             <sockel::Styles css={STYLESHEET} />
-            <sockel::OverlayHost>
-                <app::App />
-            </sockel::OverlayHost>
+            <yew::ContextProvider<sockel::IconSet> context={(*icons).clone()}>
+                <sockel::OverlayHost>
+                    <app::App />
+                    <sockel::DataTips />
+                </sockel::OverlayHost>
+            </yew::ContextProvider<sockel::IconSet>>
         </>
     }
 }

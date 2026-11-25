@@ -739,10 +739,21 @@ impl ws::Handler for Handler {
                     return Ok(false);
                 };
 
+                let saved = self
+                    .shared
+                    .set_pointer_scan_settings(request.settings.clone())
+                    .await;
+
+                if let Some(error) = saved.error {
+                    outgoing.write(api::PointerScanResponse { error: Some(error) });
+                    return Ok(true);
+                }
+
                 let shared = self.shared.clone();
-                let response =
-                    tokio::task::spawn_blocking(move || shared.start_pointer_scan(request.id))
-                        .await?;
+                let response = tokio::task::spawn_blocking(move || {
+                    shared.start_pointer_scan(request.id, request.settings)
+                })
+                .await?;
                 outgoing.write(response);
             }
             api::Request::CancelPointerScan => {

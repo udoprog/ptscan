@@ -1,4 +1,6 @@
+pub mod actions;
 pub mod error_log;
+pub mod pane;
 pub mod pointer_scan_view;
 pub mod process_information;
 pub mod process_picker;

@@ -3,6 +3,7 @@ use sockel::{Button, ButtonVariant, Cluster, Dialog, DialogDismiss, FormRow, For
 use yew::prelude::*;
 
 use crate::class;
+use crate::icons::{AppIcon, icon};
 
 #[derive(Properties, PartialEq)]
 pub struct Props {
@@ -173,6 +174,7 @@ impl Component for ScanResultDialog {
             <>
                 {added}
                 <Button submit=true form="scan-result-form" variant={ButtonVariant::Primary}
+                    icon={icon(AppIcon::Add)}
                     busy={self.request.is_pending()}>
                     {"Add to scratch"}
                 </Button>
@@ -212,7 +214,8 @@ impl Component for ScanResultDialog {
                                     value={self.value.clone()}
                                     on_input={link.callback(Msg::Value)}
                                     on_keydown={on_write_key} />
-                                <Button title="Write the value as the type above at the address"
+                                <Button tip="Write the value as the type above at the address"
+                                    icon={icon(AppIcon::Write)}
                                     busy={self.write.is_pending()}
                                     onclick={link.callback(|_| Msg::Write)}>
                                     {"Write"}

@@ -1,5 +1,5 @@
 use musli_web::web03::prelude::*;
-use sockel::{AppShell, Button, ButtonSize, Count, Pill, Seam, SeamAxis, Tone};
+use sockel::{AppShell, Button, ButtonSize, Count, Pill, Seam, SeamAxis, Toast, ToastHost, Tone};
 use yew::prelude::*;
 
 use crate::class;
@@ -21,6 +21,9 @@ pub enum Msg {
     SessionChanged(Result<ws::Packet<api::SessionStateChanged>, ws::Error>),
     ToggleSessions,
     Error(String),
+    Notice(String),
+    DismissNotice(u64),
+    PointerScanEdit(Option<api::PointerScanSettings>),
     ToggleErrors,
     ToggleProcessInformation,
     ClearErrors,
@@ -56,6 +59,12 @@ pub struct App {
     show_errors: bool,
     show_process_information: bool,
     on_error: Callback<String>,
+    /// Transient notices, each under its own key.
+    notices: Vec<(u64, String)>,
+    next_notice: u64,
+    on_notice: Callback<String>,
+    /// The pointer scan settings as edited, none while they are invalid.
+    pointer_scan: Option<api::PointerScanSettings>,
 }
 
 impl App {
@@ -129,6 +138,10 @@ impl Component for App {
             show_errors: false,
             show_process_information: false,
             on_error: ctx.link().callback(Msg::Error),
+            notices: Vec::new(),
+            next_notice: 0,
+            on_notice: ctx.link().callback(Msg::Notice),
+            pointer_scan: Some(api::PointerScanSettings::default()),
         };
 
         if this.connection.is_open() {
@@ -194,6 +207,23 @@ impl Component for App {
                 true
             }
             Msg::Error(message) => self.raise(message),
+            Msg::Notice(message) => {
+                self.notices.push((self.next_notice, message));
+                self.next_notice = self.next_notice.wrapping_add(1);
+                true
+            }
+            Msg::DismissNotice(key) => {
+                self.notices.retain(|(k, _)| *k != key);
+                true
+            }
+            Msg::PointerScanEdit(settings) => {
+                if settings == self.pointer_scan {
+                    return false;
+                }
+
+                self.pointer_scan = settings;
+                true
+            }
             Msg::ToggleErrors => {
                 self.show_errors = !self.show_errors;
                 true
@@ -320,6 +350,7 @@ impl Component for App {
                 session={self.session.current}
                 form={self.session.scan.clone()}
                 on_error={self.on_error.clone()}
+                on_notice={self.on_notice.clone()}
             />
         };
 
@@ -328,6 +359,7 @@ impl Component for App {
                 ws={self.service.handle().clone()}
                 open={self.connection.is_open()}
                 attached={self.attach.process.is_some()}
+                pointer_scan={self.pointer_scan.clone()}
                 on_error={self.on_error.clone()}
             />
         };
@@ -339,6 +371,7 @@ impl Component for App {
                 attached={self.attach.process.is_some()}
                 session={self.session.current}
                 settings={self.session.pointer_scan.clone()}
+                on_edit={ctx.link().callback(Msg::PointerScanEdit)}
                 on_error={self.on_error.clone()}
             />
         };
@@ -382,6 +415,17 @@ impl Component for App {
                     state={self.session.clone()}
                     on_close={ctx.link().callback(|()| Msg::ToggleSessions)}
                 />
+                <ToastHost>
+                    {for self.notices.iter().map(|(key, text)| {
+                        let key = *key;
+                        html! {
+                            <Toast {key} tone={Tone::Neutral} duration={4000}
+                                ondismiss={ctx.link().callback(move |()| Msg::DismissNotice(key))}>
+                                {text.clone()}
+                            </Toast>
+                        }
+                    })}
+                </ToastHost>
                 <ErrorLog
                     open={self.show_errors}
                     errors={self.errors.clone()}

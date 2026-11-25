@@ -865,7 +865,17 @@ mod linux {
     }
 
     async fn pointer_scan(handle: &Handle, id: u64) -> api::PointerScanResponse {
-        timeout!(handle.request().body(api::PointerScanRequest { id }).send())
+        pointer_scan_with(handle, id, api::PointerScanSettings::default()).await
+    }
+
+    async fn pointer_scan_with(
+        handle: &Handle,
+        id: u64,
+        settings: api::PointerScanSettings,
+    ) -> api::PointerScanResponse {
+        let request = api::PointerScanRequest { id, settings };
+
+        timeout!(handle.request().body(request).send())
             .unwrap()
             .decode()
             .unwrap()
@@ -951,6 +961,45 @@ mod linux {
         let added = add_scratch(&handle, path).await;
         assert_eq!(added.address, Some(holder.address), "{path}");
         assert_eq!(added.value, Some(HELD.to_string()));
+    }
+
+    /// The settings sent with a start are the ones it scans with, and are
+    /// saved, even when the session still holds others.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pointer_scan_uses_the_settings_it_is_started_with() {
+        let holder = Holder::spawn();
+        let handle = connect(server().await).await;
+        let mut changes = handle.on_broadcast::<api::PointerScanStateChanged>();
+        attach(&handle, holder.child.id()).await;
+        let entry = add_scratch(&handle, &format!("{:#x}", holder.address)).await;
+
+        let settings = api::PointerScanSettings {
+            max_paths: 1,
+            ..api::PointerScanSettings::default()
+        };
+
+        let response = pointer_scan_with(&handle, entry.id, settings.clone()).await;
+        assert_eq!(response, api::PointerScanResponse::default());
+
+        let state = pointer_finished(&mut changes).await;
+        let outcome = state.last.unwrap();
+        assert_eq!(outcome.error, None);
+        assert!(outcome.truncated, "{outcome:?}");
+        assert_eq!(state.results, 1);
+
+        let session: api::SessionState =
+            timeout!(handle.request().body(api::GetSessionStateRequest).send())
+                .unwrap()
+                .decode()
+                .unwrap();
+        assert_eq!(session.pointer_scan, settings);
+
+        let invalid = api::PointerScanSettings {
+            max_depth: 0,
+            ..settings
+        };
+        let response = pointer_scan_with(&handle, entry.id, invalid).await;
+        assert!(response.error.is_some(), "{response:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

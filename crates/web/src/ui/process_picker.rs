@@ -1,11 +1,12 @@
 use musli_web::web03::prelude::*;
 use sockel::{
-    Button, ButtonSize, ButtonVariant, Card, EmptyState, InputSize, Inset, Pill, Table, TableCell,
-    TextInput, Tone, Toolbar, ToolbarSpacer,
+    Button, ButtonSize, ButtonVariant, EmptyState, InputSize, Pill, Table, TableCell, TextInput,
+    Tone, Toolbar, ToolbarSpacer,
 };
 use yew::prelude::*;
 
 use crate::class;
+use crate::ui::pane::Pane;
 
 #[derive(Properties, PartialEq)]
 pub struct Props {
@@ -277,7 +278,7 @@ impl Component for ProcessPicker {
         let offer = self.offer(ctx, busy);
 
         html! {
-            <Card inset={Inset::Flush} class={class::PANE}>
+            <Pane label="Processes">
                 <Toolbar label="Processes" band=true chrome=true>
                     <span class={class::TITLE}>{"Processes"}</span>
                     <TextInput size={InputSize::Small}
@@ -302,7 +303,7 @@ impl Component for ProcessPicker {
                 <div class={class::SCROLL}>
                     <Table {head} columns={3} {empty} label="Processes">{rows}</Table>
                 </div>
-            </Card>
+            </Pane>
         }
     }
 }

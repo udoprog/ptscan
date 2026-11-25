@@ -3,13 +3,16 @@ use std::collections::BTreeSet;
 use gloo_timers::callback::Interval;
 use musli_web::web03::prelude::*;
 use sockel::{
-    Button, ButtonSize, ButtonVariant, Card, Checkbox, Cluster, Dialog, DialogDismiss, EmptyState,
-    FormRow, FormRows, Inset, Table, TableCell, TextInput, Toolbar, ToolbarSpacer,
+    Button, ButtonVariant, Checkbox, Cluster, Dialog, DialogDismiss, EmptyState, FormRow, FormRows,
+    Table, TableCell, TextInput,
 };
 use yew::prelude::*;
 
 use crate::class;
 use crate::clipboard;
+use crate::icons::{AppIcon, icon};
+use crate::ui::actions::{Action, RowMenu, more, tool};
+use crate::ui::pane::{Pane, PaneHead};
 
 const REFRESH_MS: u32 = 1000;
 
@@ -19,6 +22,8 @@ pub struct Props {
     /// The connection is open.
     pub open: bool,
     pub attached: bool,
+    /// The pointer scan settings as edited, or none while they are invalid.
+    pub pointer_scan: Option<api::PointerScanSettings>,
     pub on_error: Callback<String>,
 }
 
@@ -27,6 +32,8 @@ pub enum Msg {
     Changed(Result<ws::Packet<api::ScratchChanged>, ws::Error>),
     Tick,
     Select(u64, bool),
+    /// Selects an entry a context menu opens on, unless it already is.
+    Pick(u64),
     SelectAll,
     Edit(u64),
     CloseDialog,
@@ -174,6 +181,14 @@ impl Component for ScratchView {
                     self.selected.insert(id);
                 }
             }
+            Msg::Pick(id) => {
+                if self.selected.contains(&id) {
+                    return false;
+                }
+
+                self.selected.clear();
+                self.selected.insert(id);
+            }
             Msg::SelectAll => {
                 if self.selected.len() == self.entries.len() {
                     self.selected.clear();
@@ -233,11 +248,15 @@ impl Component for ScratchView {
                 return false;
             }
             Msg::PointerScan(id) => {
+                let Some(settings) = ctx.props().pointer_scan.clone() else {
+                    return false;
+                };
+
                 self.pointer_scan = ctx
                     .props()
                     .ws
                     .request()
-                    .body(api::PointerScanRequest { id })
+                    .body(api::PointerScanRequest { id, settings })
                     .on_packet(ctx.link().callback(Msg::PointerScanStarted))
                     .send();
             }
@@ -264,7 +283,6 @@ impl Component for ScratchView {
     fn view(&self, ctx: &Context<Self>) -> Html {
         let props = ctx.props();
         let link = ctx.link();
-        let none = self.selected.is_empty();
 
         let rows = self
             .entries
@@ -285,7 +303,9 @@ impl Component for ScratchView {
                     .unwrap_or_else(|| String::from("?"));
 
                 html! {
-                    <tr key={id} {class} {onclick} ondblclick={link.callback(move |_| Msg::Edit(id))}>
+                    <tr key={id} {class} {onclick}
+                        oncontextmenu={link.callback(move |_| Msg::Pick(id))}
+                        ondblclick={link.callback(move |_| Msg::Edit(id))}>
                         <TableCell class={class::MONO} cut=true>{&entry.pointer}</TableCell>
                         <TableCell class={class::MONO}>{&entry.value_type}</TableCell>
                         <TableCell class={classes!(class::MONO, class::MUTED)}>{address}</TableCell>
@@ -327,53 +347,100 @@ impl Component for ScratchView {
             || html! { <EmptyState title="Add scan results to watch them here" compact=true /> },
         );
 
-        let pointer_scan_title = if self.pointer_scan_running {
-            "A pointer scan is running"
-        } else {
-            "Find pointer paths to the selected entry's address"
+        let actions = self.actions(ctx);
+        let meta = match self.entries.len() {
+            0 => None,
+            1 => Some(AttrValue::from("1 entry")),
+            n => Some(AttrValue::from(format!("{n} entries"))),
         };
 
         html! {
-            <Card inset={Inset::Flush} class={class::PANE}>
-                <Toolbar label="Scratch" band=true chrome=true>
-                    <span class={class::TITLE}>{"Scratch"}</span>
-                    <span class={class::MUTED}>{match self.entries.len() {
-                        1 => String::from("1 entry"),
-                        n => format!("{n} entries"),
-                    }}</span>
-                    <ToolbarSpacer />
-                    <Button size={ButtonSize::Small} disabled={self.selected.len() != 1}
-                        onclick={self.selected.first().copied().map(|id| link.callback(move |_| Msg::Edit(id))).unwrap_or_default()}>
-                        {"Edit"}
-                    </Button>
-                    <Button size={ButtonSize::Small} title={pointer_scan_title}
-                        busy={self.pointer_scan.is_pending()}
-                        disabled={self.selected.len() != 1 || !props.open || !props.attached || self.pointer_scan_running}
-                        onclick={self.selected.first().copied().map(|id| link.callback(move |_| Msg::PointerScan(id))).unwrap_or_default()}>
-                        {"Pointer scan"}
-                    </Button>
-                    <Button size={ButtonSize::Small} title="Copy the selected entries as tab-separated text"
-                        disabled={none} onclick={link.callback(|_| Msg::CopyText)}>{"Copy"}</Button>
-                    <Button size={ButtonSize::Small} title="Copy the selected entries as JSON"
-                        disabled={none} onclick={link.callback(|_| Msg::CopyJson)}>{"Copy JSON"}</Button>
-                    <Button size={ButtonSize::Small} variant={ButtonVariant::Danger}
-                        busy={self.remove.is_pending()}
-                        disabled={none || !props.open}
-                        onclick={link.callback(|_| Msg::RemoveSelected)}>
-                        {match self.selected.len() {
-                            0 | 1 => String::from("Remove"),
-                            n => format!("Remove {n}"),
-                        }}
-                    </Button>
-                </Toolbar>
-                <div class={class::SCROLL} tabindex="0" onkeydown={link.batch_callback(|e: KeyboardEvent| {
-                    (e.key() == "Delete").then_some(Msg::RemoveSelected)
-                })}>
-                    <Table {head} columns={4} {empty} label="Scratch entries">{rows}</Table>
-                </div>
+            <Pane label="Scratch">
+                <PaneHead title="Scratch" {meta}>
+                    {for actions.iter().take(2).map(tool)}
+                    {more("More scratch actions", &actions)}
+                </PaneHead>
+                <RowMenu label="Scratch entry actions" actions={actions.clone()}>
+                    <div class={class::SCROLL} tabindex="0" onkeydown={link.batch_callback(|e: KeyboardEvent| {
+                        (e.key() == "Delete").then_some(Msg::RemoveSelected)
+                    })}>
+                        <Table {head} columns={4} {empty} label="Scratch entries">{rows}</Table>
+                    </div>
+                </RowMenu>
                 {dialog}
-            </Card>
+            </Pane>
         }
+    }
+}
+
+impl ScratchView {
+    /// What can be done with the selected entries: the first two in the
+    /// head, every one in its overflow menu and the rows' context menu.
+    fn actions(&self, ctx: &Context<Self>) -> Vec<Action> {
+        let props = ctx.props();
+        let link = ctx.link();
+        let none = self.selected.is_empty();
+        let one = self
+            .selected
+            .first()
+            .copied()
+            .filter(|_| self.selected.len() == 1);
+
+        let pointer_scan = if self.pointer_scan_running {
+            "Pointer scan: one is running"
+        } else if props.pointer_scan.is_none() {
+            "Pointer scan: fix its settings first"
+        } else {
+            "Pointer scan: find pointer paths to the selected entry's address"
+        };
+
+        let remove = match self.selected.len() {
+            0 | 1 => String::from("Remove"),
+            n => format!("Remove {n}"),
+        };
+
+        vec![
+            Action::new(
+                AppIcon::Target,
+                pointer_scan,
+                one.map(|id| link.callback(move |_| Msg::PointerScan(id)))
+                    .unwrap_or_default(),
+            )
+            .disabled(
+                one.is_none()
+                    || !props.open
+                    || !props.attached
+                    || self.pointer_scan_running
+                    || self.pointer_scan.is_pending()
+                    || props.pointer_scan.is_none(),
+            ),
+            Action::new(
+                AppIcon::Edit,
+                "Edit",
+                one.map(|id| link.callback(move |_| Msg::Edit(id)))
+                    .unwrap_or_default(),
+            )
+            .disabled(one.is_none()),
+            Action::new(
+                AppIcon::Copy,
+                "Copy as text",
+                link.callback(|_| Msg::CopyText),
+            )
+            .disabled(none),
+            Action::new(
+                AppIcon::Json,
+                "Copy as JSON",
+                link.callback(|_| Msg::CopyJson),
+            )
+            .disabled(none),
+            Action::new(
+                AppIcon::Remove,
+                remove,
+                link.callback(|_| Msg::RemoveSelected),
+            )
+            .disabled(none || !props.open || self.remove.is_pending())
+            .danger(),
+        ]
     }
 }
 
@@ -547,7 +614,8 @@ impl Component for ScratchDialog {
                 if let Some(status) = &self.status {
                     <span class={class::MUTED}>{status}</span>
                 }
-                <Button submit=true form="scratch-form" variant={ButtonVariant::Primary} {busy}>
+                <Button submit=true form="scratch-form" variant={ButtonVariant::Primary}
+                    icon={icon(AppIcon::Edit)} {busy}>
                     {"Save"}
                 </Button>
             </>
@@ -582,7 +650,8 @@ impl Component for ScratchDialog {
                                     value={self.value.clone()}
                                     on_input={link.callback(DialogMsg::Value)}
                                     on_keydown={on_write_key} />
-                                <Button title="Write the value at the entry's address"
+                                <Button tip="Write the value at the entry's address"
+                                    icon={icon(AppIcon::Write)}
                                     {busy} onclick={link.callback(|_| DialogMsg::Write)}>
                                     {"Write"}
                                 </Button>

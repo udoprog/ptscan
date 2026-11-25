@@ -197,10 +197,6 @@ impl Shared {
         self.session_state.borrow().clone()
     }
 
-    pub(crate) fn pointer_scan_settings(&self) -> api::PointerScanSettings {
-        self.session_state.borrow().pointer_scan.clone()
-    }
-
     fn db_for_sessions(&self) -> Result<&Db> {
         self.db
             .as_ref()

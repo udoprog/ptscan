@@ -409,7 +409,7 @@ impl ProcessHandle {
         initial: &mut Values,
         values: &mut Values,
         cancel: Option<&Token>,
-        progress: (impl ScanProgress + Send),
+        progress: impl ScanProgress + Send,
         filter: &FilterExpr,
     ) -> anyhow::Result<()> {
         if addresses.len() < 100_000 {
@@ -443,7 +443,7 @@ impl ProcessHandle {
         initial: &mut Values,
         values: &mut Values,
         cancel: Option<&Token>,
-        progress: (impl ScanProgress + Send),
+        progress: impl ScanProgress + Send,
         filter: &FilterExpr,
     ) -> anyhow::Result<()> {
         // Check every 100_000 addresses scanned.
@@ -705,7 +705,7 @@ impl ProcessHandle {
         initial: &mut Values,
         values: &mut Values,
         cancel: Option<&Token>,
-        progress: (impl ScanProgress + Send),
+        progress: impl ScanProgress + Send,
         filter: &FilterExpr,
     ) -> anyhow::Result<()> {
         let mut local_cancel = None;
@@ -880,7 +880,7 @@ impl ProcessHandle {
         addresses: &Addresses,
         values: &mut Values,
         cancel: Option<&Token>,
-        progress: (impl ScanProgress + Send),
+        progress: impl ScanProgress + Send,
         expr: &ValueExpr,
     ) -> anyhow::Result<()> {
         let mut local_cancel = None;
@@ -994,7 +994,7 @@ impl ProcessHandle {
         thread_pool: &rayon::ThreadPool,
         values: &mut [V],
         cancel: Option<&Token>,
-        progress: (impl ScanProgress + Send),
+        progress: impl ScanProgress + Send,
         expr: &ValueExpr,
     ) -> anyhow::Result<()>
     where
@@ -1133,7 +1133,7 @@ impl ProcessHandle {
         addresses: &mut Addresses,
         values: &mut Values,
         cancel: Option<&Token>,
-        progress: (impl ScanProgress + Send),
+        progress: impl ScanProgress + Send,
         config: InitialScanConfig,
     ) -> anyhow::Result<()> {
         const DEFAULT_BUFFER_SIZE: usize = 0x100_000;

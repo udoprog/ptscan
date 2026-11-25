@@ -25,7 +25,7 @@ impl<'token, 'err, P> ProgressReporter<'token, 'err, P> {
         Self {
             progress,
             current: 0,
-            last_percentage: std::usize::MAX,
+            last_percentage: usize::MAX,
             total,
             token,
             last_err,

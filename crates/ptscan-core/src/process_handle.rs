@@ -402,6 +402,56 @@ impl ProcessHandle {
         }
     }
 
+    /// The memory to scan, sorted by base and without overlaps: the relevant
+    /// regions minus thread stacks, plus the module images, each byte once.
+    /// With `modules_only`, just the module images.
+    ///
+    /// Callers binary-search the result, so it has to stay sorted.
+    fn scan_ranges(&self, modules_only: bool) -> anyhow::Result<Vec<AddressRange>> {
+        let mut modules = self
+            .modules
+            .modules
+            .iter()
+            .map(|m| m.range)
+            .collect::<Vec<_>>();
+        modules.sort();
+
+        let mut ranges = Vec::new();
+
+        if !modules_only {
+            let thread_stacks = self.threads.iter().map(|t| t.stack).collect::<HashSet<_>>();
+
+            for m in self.process.virtual_memory_regions().only_relevant() {
+                let m = m?;
+
+                if !thread_stacks.contains(&m.range) {
+                    uncovered_ranges(m.range, &modules, &mut ranges);
+                }
+            }
+        }
+
+        // Modules may overlap each other; only keep the part not seen yet.
+        let mut end = 0u64;
+
+        for m in modules {
+            let m_end = m.base.0.saturating_add(m.size.0);
+
+            if m_end <= end {
+                continue;
+            }
+
+            let start = m.base.0.max(end);
+            ranges.push(AddressRange {
+                base: Address(start),
+                size: Size(m_end - start),
+            });
+            end = m_end;
+        }
+
+        ranges.sort();
+        Ok(ranges)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn rescan_values(
         &self,
@@ -478,21 +528,7 @@ impl ProcessHandle {
         let filter = filter.type_check(self, initial.ty(), values.ty(), values.ty())?;
         let filter = &filter;
 
-        let mut ranges = Vec::new();
-
-        {
-            let thread_stacks = self.threads.iter().map(|t| t.stack).collect::<HashSet<_>>();
-
-            for m in self.process.virtual_memory_regions().only_relevant() {
-                let m = m?;
-
-                if !thread_stacks.contains(&m.range) {
-                    ranges.push(m.range);
-                }
-            }
-
-            ranges.extend(self.modules.modules.iter().map(|m| m.range));
-        }
+        let ranges = self.scan_ranges(false)?;
 
         // Divide up into partitions.
         let mut partitions = ranges
@@ -736,22 +772,6 @@ impl ProcessHandle {
 
         let filter = filter.type_check(self, initial.ty(), values.ty(), values.ty())?;
         let filter = &filter;
-
-        let mut ranges = Vec::new();
-
-        {
-            let thread_stacks = self.threads.iter().map(|t| t.stack).collect::<HashSet<_>>();
-
-            for m in self.process.virtual_memory_regions().only_relevant() {
-                let m = m?;
-
-                if !thread_stacks.contains(&m.range) {
-                    ranges.push(m.range);
-                }
-            }
-
-            ranges.extend(self.modules.modules.iter().map(|m| m.range));
-        }
 
         thread_pool.install(|| {
             rayon::scope(|s| {
@@ -1180,31 +1200,7 @@ impl ProcessHandle {
 
         let mut bytes = Size::zero();
 
-        let mut ranges = Vec::new();
-
-        {
-            let thread_stacks = self.threads.iter().map(|t| t.stack).collect::<HashSet<_>>();
-
-            let mut modules = self
-                .modules
-                .modules
-                .iter()
-                .map(|m| m.range)
-                .collect::<Vec<_>>();
-            modules.sort();
-
-            if !config.modules_only {
-                for m in self.process.virtual_memory_regions().only_relevant() {
-                    let m = m?;
-
-                    if !thread_stacks.contains(&m.range) {
-                        uncovered_ranges(m.range, &modules, &mut ranges);
-                    }
-                }
-            }
-
-            ranges.extend(modules);
-        }
+        let ranges = self.scan_ranges(config.modules_only)?;
 
         let mut total = 0;
 

@@ -1037,6 +1037,64 @@ mod tests {
         assert_eq!(unique.len(), found.len(), "{:?}", found);
     }
 
+    /// `rescan_large` keeps results inside module images, as `rescan_small`
+    /// does, rather than depending on the number of results.
+    #[test]
+    fn rescan_large_keeps_module_results() {
+        let holder = Holder::spawn();
+        let mut handle = holder.handle();
+        handle.refresh_modules().unwrap();
+        handle.refresh_threads().unwrap();
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        let filter = FilterExpr::parse(&format!("value == {}u64", HELD), &handle).unwrap();
+        let mut addresses = Addresses::new(handle.process.pointer_width);
+        let mut values = Values::new(Type::U64);
+        handle
+            .initial_scan(
+                &pool,
+                &filter,
+                &mut addresses,
+                &mut values,
+                None,
+                NoProgress,
+                Default::default(),
+            )
+            .unwrap();
+
+        let in_image = |a: u64| {
+            handle
+                .modules
+                .modules
+                .iter()
+                .any(|m| m.range.contains(Address::new(a)))
+        };
+        assert!(in_image(holder.pair), "HELD_PAIR is not in a module image");
+
+        let found = addresses.iter_copied().collect::<Vec<_>>();
+        assert!(found.contains(&Address::new(holder.pair)), "{:?}", found);
+        assert!(found.contains(&Address::new(holder.value)), "{:?}", found);
+
+        let mut initial = values.clone();
+        handle
+            .rescan_large(
+                &pool,
+                &mut addresses,
+                &mut initial,
+                &mut values,
+                None,
+                NoProgress,
+                &filter,
+            )
+            .unwrap();
+
+        let kept = addresses.iter_copied().collect::<HashSet<_>>();
+        assert_eq!(kept, found.into_iter().collect::<HashSet<_>>());
+    }
+
     #[test]
     fn pointer_scan_finds_child_pointer() {
         let holder = Holder::spawn();

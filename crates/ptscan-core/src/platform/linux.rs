@@ -1035,6 +1035,59 @@ mod tests {
         assert_eq!(unique.len(), found.len(), "{:?}", found);
     }
 
+    /// A value straddling the end of a scan buffer is still found: the
+    /// default scanner reads what runs past its chunk from the process.
+    #[test]
+    fn default_scan_finds_value_straddling_chunks() {
+        let holder = Holder::spawn();
+        let handle = holder.handle();
+        let region = handle
+            .process
+            .virtual_query(Address::new(holder.value))
+            .unwrap()
+            .unwrap();
+
+        // End the first chunk of the value's region halfway through the value.
+        let buffer_size = usize::try_from(holder.value + 4 - region.range.base.0).unwrap();
+
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        // A range rather than `==`, which has a specialized scanner.
+        let filter = FilterExpr::parse(
+            &format!("value > {}u64 and value < {}u64", HELD - 1, HELD + 1),
+            &handle,
+        )
+        .unwrap();
+        let mut addresses = Addresses::new(handle.process.pointer_width);
+        let mut values = Values::new(Type::U64);
+        handle
+            .initial_scan(
+                ScanContext::new(&pool, None, NoProgress),
+                &filter,
+                &mut addresses,
+                &mut values,
+                crate::InitialScanConfig {
+                    buffer_size: Some(buffer_size),
+                    aligned: Some(false),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        let found = addresses.iter_copied().collect::<Vec<_>>();
+        let held = Address::new(holder.value);
+        assert_eq!(
+            found.iter().filter(|a| **a == held).count(),
+            1,
+            "{:?}",
+            found
+        );
+        let index = found.iter().position(|a| *a == held).unwrap();
+        assert_eq!(values.get(index), Some(crate::Value::U64(HELD)));
+    }
+
     /// `rescan_large` keeps results inside module images, as `rescan_small`
     /// does, rather than depending on the number of results.
     #[test]

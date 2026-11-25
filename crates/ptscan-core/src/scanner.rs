@@ -1,7 +1,7 @@
 use crate::{
     filter_expr::special::{find_first_nonzero, is_all_zeros},
-    Address, Addresses, Alignment, ProcessHandle, Proxy as _, Special, Test, Token, Type,
-    TypedFilterExpr, ValueRef, Values,
+    Address, Addresses, Alignment, BufferProxy, ProcessHandle, Proxy as _, Special, Test, Token,
+    Type, TypedFilterExpr, ValueRef, Values,
 };
 use anyhow::bail;
 use std::{convert::TryInto as _, marker};
@@ -13,6 +13,9 @@ fn align(to_align: &mut usize, alignment: usize) {
         *to_align += alignment - rem;
     }
 }
+
+/// How many bytes [`DefaultScanner`] scans between checks for cancellation.
+const CANCEL_CHECK_INTERVAL: usize = 0x1000;
 
 /// Trait deciding how the scan is performed.
 pub trait ScannerTrait {
@@ -121,14 +124,29 @@ impl<'a> Scanner for DefaultScanner<'a> {
         }
 
         let mut last_address = None;
+        let mut next_cancel_check = 0usize;
 
-        while offset < data.len() && !cancel.test() {
+        while offset < data.len() {
+            if offset >= next_cancel_check {
+                if cancel.test() {
+                    break;
+                }
+
+                next_cancel_check = offset.saturating_add(CANCEL_CHECK_INTERVAL);
+            }
+
             let address = match base.checked_add(offset.try_into()?) {
                 Some(address) => address,
                 None => bail!("base `{}` + offset `{}` out of range", base, offset),
             };
 
-            let mut proxy = handle.address_proxy(&address);
+            let Some(rest) = data.get(offset..) else {
+                break;
+            };
+
+            // A value running past the end of the chunk is read from the
+            // process.
+            let mut proxy = BufferProxy::with_fallback(address, rest, handle);
 
             // sanity check
             if let Some(last_address) = last_address {
@@ -166,12 +184,12 @@ impl<'a> Scanner for DefaultScanner<'a> {
                 offset += self.step_size;
             }
 
-            if offset >= data.len() {
-                break;
-            }
-
             if let Some(special) = self.special {
-                offset += match special.test(&data[offset..]) {
+                let Some(rest) = data.get(offset..) else {
+                    break;
+                };
+
+                offset += match special.test(rest) {
                     Some(o) => o,
                     None => return Ok(()),
                 };

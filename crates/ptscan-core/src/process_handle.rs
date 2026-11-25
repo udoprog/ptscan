@@ -453,7 +453,7 @@ impl ProcessHandle {
             pointer: Pointer::null_ref(),
             handle: self,
             followed: Cached::None,
-            cache: Default::default(),
+            cache: None,
         }
     }
 
@@ -466,7 +466,7 @@ impl ProcessHandle {
             pointer,
             handle: self,
             followed: Cached::None,
-            cache: Default::default(),
+            cache: None,
         }
     }
 
@@ -1503,8 +1503,8 @@ where
     pub(crate) handle: &'a ProcessHandle,
     /// cached, followed address.
     pub followed: Cached<Option<Address>>,
-    /// Cached value of different types.
-    cache: HashMap<Type, (Value, Option<usize>)>,
+    /// The last decoded value and the type it was decoded as.
+    cache: Option<(Type, (Value, Option<usize>))>,
 }
 
 impl<P> Proxy for AddressProxy<'_, P>
@@ -1523,24 +1523,21 @@ where
     }
 
     fn eval(&mut self, ty: Type) -> anyhow::Result<(Value, Option<usize>)> {
-        if let Some(result) = self.cache.get(&ty).cloned() {
-            return Ok(result);
+        if let Some((cached, result)) = &self.cache {
+            if *cached == ty {
+                return Ok(result.clone());
+            }
         }
 
-        let address = match self.address()? {
-            Some(address) => address,
-            None => {
-                self.cache.insert(ty, (Value::None, None));
-                return Ok((Value::None, None));
-            }
+        let result = match self.address()? {
+            Some(address) => match ty.decode(&self.handle.process, address) {
+                Ok(value) => value,
+                Err(..) => (Value::None, None),
+            },
+            None => (Value::None, None),
         };
 
-        let result = match ty.decode(&self.handle.process, address) {
-            Ok(value) => value,
-            Err(..) => (Value::None, None),
-        };
-
-        self.cache.insert(ty, result.clone());
+        self.cache = Some((ty, result.clone()));
         Ok(result)
     }
 
@@ -1553,19 +1550,94 @@ where
 pub struct BufferProxy<'a> {
     address: Address,
     buffer: &'a [u8],
-    /// Cached value of different types.
-    cache: HashMap<Type, (Value, Option<usize>)>,
+    /// The last decoded value and the type it was decoded as.
+    cache: Option<(Type, (Value, Option<usize>))>,
     handle: &'a ProcessHandle,
+    /// Read from the process instead when a read runs past the buffer.
+    fallback: bool,
 }
 
 impl<'a> BufferProxy<'a> {
-    /// Create a proxy for a backing buffer.
+    /// Create a proxy for a backing buffer. Reads past its end come up short.
     pub fn new(address: Address, buffer: &'a [u8], handle: &'a ProcessHandle) -> BufferProxy<'a> {
         Self {
             address,
             buffer,
-            cache: HashMap::new(),
+            cache: None,
             handle,
+            fallback: false,
+        }
+    }
+
+    /// Create a proxy for a buffer holding a copy of process memory at
+    /// `address`. A read the buffer can't satisfy in full goes to the process,
+    /// so it decodes what an [`AddressProxy`] for `address` would.
+    pub fn with_fallback(
+        address: Address,
+        buffer: &'a [u8],
+        handle: &'a ProcessHandle,
+    ) -> BufferProxy<'a> {
+        Self {
+            fallback: true,
+            ..Self::new(address, buffer, handle)
+        }
+    }
+
+    fn decode(&self, ty: Type) -> (Value, Option<usize>) {
+        // Fast path: a fixed-size value wholly inside the buffer.
+        if let Some(size) = ty.size() {
+            if let Some(data) = self.buffer.get(..size) {
+                return (
+                    ty.decode_fixed::<<Process as MemoryReader>::ByteOrder>(data),
+                    Some(size),
+                );
+            }
+        }
+
+        let buffer_reader = BufferReader {
+            buffer: self.buffer,
+            address: self.address,
+            fallback: self.fallback.then_some(&self.handle.process),
+        };
+
+        return match ty.decode(&buffer_reader, self.address) {
+            Ok(value) => value,
+            Err(..) => (Value::None, None),
+        };
+
+        struct BufferReader<'a> {
+            buffer: &'a [u8],
+            address: Address,
+            fallback: Option<&'a Process>,
+        }
+
+        impl MemoryReader for BufferReader<'_> {
+            type ByteOrder = <Process as MemoryReader>::ByteOrder;
+
+            fn read_memory(&self, address: Address, buf: &mut [u8]) -> anyhow::Result<usize> {
+                let source = usize::try_from(address.offset_of(self.address))
+                    .ok()
+                    .and_then(|s| self.buffer.get(s..));
+
+                if let Some(process) = self.fallback {
+                    if source.is_none_or(|source| source.len() < buf.len()) {
+                        return process.read_memory(address, buf);
+                    }
+                }
+
+                let Some(source) = source else {
+                    return Ok(0);
+                };
+
+                let e = usize::min(buf.len(), source.len());
+
+                match (buf.get_mut(..e), source.get(..e)) {
+                    (Some(buf), Some(source)) => buf.copy_from_slice(source),
+                    _ => return Ok(0),
+                }
+
+                Ok(e)
+            }
         }
     }
 }
@@ -1576,47 +1648,15 @@ impl Proxy for BufferProxy<'_> {
     }
 
     fn eval(&mut self, ty: Type) -> anyhow::Result<(Value, Option<usize>)> {
-        if let Some(result) = self.cache.get(&ty).cloned() {
-            return Ok(result);
-        }
-
-        let buffer_reader = BufferReader {
-            buffer: self.buffer,
-            address: self.address,
-        };
-
-        let result = match ty.decode(&buffer_reader, self.address) {
-            Ok(value) => value,
-            Err(..) => (Value::None, None),
-        };
-
-        self.cache.insert(ty, result.clone());
-        return Ok(result);
-
-        struct BufferReader<'a> {
-            buffer: &'a [u8],
-            address: Address,
-        }
-
-        impl MemoryReader for BufferReader<'_> {
-            type ByteOrder = byteorder::NativeEndian;
-
-            fn read_memory(&self, address: Address, buf: &mut [u8]) -> anyhow::Result<usize> {
-                let s = match usize::try_from(address.offset_of(self.address)) {
-                    Ok(s) => s,
-                    Err(..) => return Ok(0),
-                };
-
-                if s >= self.buffer.len() {
-                    return Ok(0);
-                }
-
-                let source = &self.buffer[s..];
-                let e = usize::min(buf.len(), source.len());
-                buf[..e].copy_from_slice(&source[..e]);
-                Ok(e)
+        if let Some((cached, result)) = &self.cache {
+            if *cached == ty {
+                return Ok(result.clone());
             }
         }
+
+        let result = self.decode(ty);
+        self.cache = Some((ty, result.clone()));
+        Ok(result)
     }
 
     fn handle(&self) -> &ProcessHandle {

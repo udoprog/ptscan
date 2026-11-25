@@ -639,6 +639,7 @@ async fn lists_directories_with_the_servers_places() {
     let places = ptscan::Places {
         home: Some(home.clone()),
         data: None,
+        roots: vec![std::path::PathBuf::from("/")],
     }
     .with_data(&db_path);
     let handle =

@@ -12,10 +12,12 @@ use std::time::UNIX_EPOCH;
 pub struct Places {
     pub home: Option<PathBuf>,
     pub data: Option<PathBuf>,
+    /// Filesystem roots, found once since probing drives can stall.
+    pub roots: Vec<PathBuf>,
 }
 
 impl Places {
-    /// The user's home.
+    /// The user's home and the filesystem roots.
     pub fn from_env() -> Self {
         let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
 
@@ -23,7 +25,11 @@ impl Places {
             .map(PathBuf::from)
             .filter(|path| path.is_absolute());
 
-        Self { home, data: None }
+        Self {
+            home,
+            data: None,
+            roots: roots(),
+        }
     }
 
     /// Also offer the directory holding the database at `db`.
@@ -54,7 +60,7 @@ impl Places {
             }
         }
 
-        for root in roots() {
+        for root in &self.roots {
             places.push(api::Place {
                 kind: api::PlaceKind::Root,
                 name: root.display().to_string(),
@@ -73,7 +79,7 @@ pub fn list_directory(path: Option<&str>, places: &Places) -> api::ListDirectory
         None => places
             .home
             .clone()
-            .or_else(|| roots().into_iter().next())
+            .or_else(|| places.roots.first().cloned())
             .unwrap_or_default(),
     };
 
@@ -220,6 +226,7 @@ mod tests {
         Places {
             home: Some(home.to_owned()),
             data: Some(home.join("data")),
+            roots: vec![PathBuf::from("/")],
         }
     }
 

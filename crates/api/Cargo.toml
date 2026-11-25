@@ -6,3 +6,10 @@ publish = false
 [dependencies]
 musli = "0.2.0"
 musli-web = { version = "0.6.0", features = ["api", "format-descriptive"] }
+sqll = { version = "0.15.1", default-features = false, features = ["alloc", "derive"], optional = true }
+
+[features]
+sqll = ["dep:sqll"]
+
+[dev-dependencies]
+musli = { version = "0.2.0", features = ["json"] }

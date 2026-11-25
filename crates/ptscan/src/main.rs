@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::path::PathBuf;
 use std::process;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,6 +30,10 @@ struct Args {
     /// Do not show an icon in the Windows notification area.
     #[arg(long)]
     no_tray: bool,
+    /// The database to keep settings in, created if missing. Defaults to
+    /// `ptscan.db` in the per-user data directory.
+    #[arg(long, value_name = "PATH")]
+    db: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -64,6 +69,14 @@ fn main() -> Result<()> {
 }
 
 async fn run(args: Args) -> Result<()> {
+    let path = match args.db {
+        Some(path) => path,
+        None => ptscan::db::default_path().context("finding the database; pass --db")?,
+    };
+
+    let db = ptscan::Db::open(&path)?;
+    tracing::info!("Using the database at {}", path.display());
+
     let listener = TcpListener::bind(args.bind)
         .await
         .with_context(|| format!("binding {}", args.bind))?;
@@ -86,7 +99,7 @@ async fn run(args: Args) -> Result<()> {
     let shared = Arc::new(
         args.dev_origin
             .into_iter()
-            .fold(ptscan::Shared::default(), |shared, origin| {
+            .fold(ptscan::Shared::default().with_db(db), |shared, origin| {
                 shared.with_dev_origin(origin)
             }),
     );

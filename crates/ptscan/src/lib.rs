@@ -44,10 +44,15 @@
 //! `127.0.0.1:7431`, and opens the UI in the default browser on launch:
 //!
 //! ```sh
-//! ptscan [--bind ADDR] [--no-browser] [--no-tray]
+//! ptscan [--bind ADDR] [--db PATH] [--no-browser] [--no-tray]
 //! ```
 //!
 //! Run `ptscan update` to replace the binary with the latest GitHub release.
+//!
+//! Settings are kept in an SQLite database, created on first start:
+//! `$XDG_DATA_HOME/ptscan/ptscan.db` (or `~/.local/share/ptscan/ptscan.db`) on
+//! Linux and `%LOCALAPPDATA%\ptscan\ptscan.db` on Windows. `--db` uses another
+//! file. Scan results are never stored; scanning again rebuilds them.
 //!
 //! On Windows it also shows a notification area icon whose menu opens the UI,
 //! shows the attached process and quits the server; `--no-tray` leaves it out.
@@ -252,8 +257,10 @@
 //!
 //! You can find them at <https://www.gnome.org>.
 
+pub mod db;
 mod origin;
 
+pub use self::db::Db;
 pub use self::origin::DevOrigin;
 mod pointer_scan;
 mod process_information;
@@ -290,6 +297,7 @@ pub struct Shared {
     pool: rayon::ThreadPool,
     rescan_copy_limit: usize,
     dev_origins: Vec<DevOrigin>,
+    db: Option<Db>,
 }
 
 impl Default for Shared {
@@ -310,6 +318,7 @@ impl Default for Shared {
                 .expect("building scan thread pool"),
             rescan_copy_limit: 100_000_000,
             dev_origins: Vec::new(),
+            db: None,
         }
     }
 }
@@ -338,6 +347,16 @@ impl Shared {
     pub fn with_dev_origin(mut self, origin: DevOrigin) -> Self {
         self.dev_origins.push(origin);
         self
+    }
+
+    /// Keep settings in `db`.
+    pub fn with_db(mut self, db: Db) -> Self {
+        self.db = Some(db);
+        self
+    }
+
+    pub fn db(&self) -> Option<&Db> {
+        self.db.as_ref()
     }
 
     pub fn attach_state(&self) -> api::AttachState {

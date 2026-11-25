@@ -51,10 +51,15 @@ ptscan update
 `127.0.0.1:7431`, and opens the UI in the default browser on launch:
 
 ```sh
-ptscan [--bind ADDR] [--no-browser] [--no-tray]
+ptscan [--bind ADDR] [--db PATH] [--no-browser] [--no-tray]
 ```
 
 Run `ptscan update` to replace the binary with the latest GitHub release.
+
+Settings are kept in an SQLite database, created on first start:
+`$XDG_DATA_HOME/ptscan/ptscan.db` (or `~/.local/share/ptscan/ptscan.db`) on
+Linux and `%LOCALAPPDATA%\ptscan\ptscan.db` on Windows. `--db` uses another
+file. Scan results are never stored; scanning again rebuilds them.
 
 On Windows it also shows a notification area icon whose menu opens the UI,
 shows the attached process and quits the server; `--no-tray` leaves it out.

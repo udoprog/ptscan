@@ -1,5 +1,13 @@
 //! The websocket API shared by `ptscan` and the web frontend.
 
+mod config_field;
+mod config_key;
+
+pub use self::config_field::{ConfigField, UnknownConfigField};
+pub use self::config_key::{
+    ConfigKey, ConfigKeyErrorKind, ConfigKeyFull, ConfigSegment, MAX_SEGMENTS, ParseConfigKeyError,
+};
+
 use musli::{Decode, Encode};
 use musli_web::api;
 

@@ -28,7 +28,7 @@ jobs:
         - {os: windows-latest, method: zip}
         - {os: ubuntu-latest, method: gzip}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - uses: dtolnay/rust-toolchain@stable
       with:
         targets: wasm32-unknown-unknown
@@ -38,7 +38,7 @@ jobs:
     - run: trug build --release
     - run: cargo build --release -p ptscan
     - run: kick ${{matrix.method}} --name "ptscan-{release}-{arch}-{os}" --output dist
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v7
       with:
         name: dist-${{matrix.os}}
         path: dist
@@ -48,9 +48,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/download-artifact@v7
+    - uses: actions/download-artifact@v8
       with: {name: dist-windows-latest, path: dist}
-    - uses: actions/download-artifact@v7
+    - uses: actions/download-artifact@v8
       with: {name: dist-ubuntu-latest, path: dist}
     - uses: udoprog/actions@kick
     - run: kick gh release --upload "dist/*" --github-action

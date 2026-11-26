@@ -1,7 +1,12 @@
 [package]
 name = "ptscan"
-version = "0.0.0"
+authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition = "2024"
+documentation = "https://docs.rs/ptscan"
+readme = "README.md"
+homepage = "https://udoprog.github.io/ptscan"
+repository = "https://github.com/udoprog/ptscan"
+license = "MIT OR Apache-2.0"
 publish = false
 
 [dependencies]

@@ -6,6 +6,7 @@ edition = "2018"
 description = "A memory and pointer scanner for Windows and Linux."
 documentation = "https://docs.rs/ptscan"
 readme = "README.md"
+homepage = "https://udoprog.github.io/ptscan"
 repository = "https://github.com/udoprog/ptscan"
 license = "MIT OR Apache-2.0"
 keywords = ["memory-scanning"]

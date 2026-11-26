@@ -1,5 +1,6 @@
 [package]
 name = "ptscan"
+version = "0.0.5"
 authors = ["John-John Tedro <udoprog@tedro.se>"]
 edition = "2024"
 description = "A memory and pointer scanner for Windows and Linux."

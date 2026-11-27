@@ -333,7 +333,7 @@ impl Component for ProcessPicker {
                     <div class={class::SCROLL} tabindex="0" onkeydown={link.batch_callback(move |e: KeyboardEvent| {
                         enter.filter(|_| e.key() == "Enter").map(Msg::Attach)
                     })}>
-                        <Table {head} columns={3} {empty} fixed=true label="Processes">{rows}</Table>
+                        <Table {head} columns={3} {empty} fixed=true cards=true label="Processes">{rows}</Table>
                     </div>
                 </RowMenu>
             </Pane>

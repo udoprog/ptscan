@@ -1916,7 +1916,7 @@ dependencies = [
 
 [[package]]
 name = "ptscan"
-version = "0.0.0"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "api",
@@ -1944,7 +1944,7 @@ dependencies = [
 
 [[package]]
 name = "ptscan-core"
-version = "0.0.0"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "bigdecimal",
@@ -2578,9 +2578,9 @@ checksum = "3244542535d5de959d90ec55d1b5ff0fd2bb7b1310223907d5f11932847f7b59"
 
 [[package]]
 name = "sockel"
-version = "0.3.3"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88f36384428349be8a49df36bdd313dd3e88ae2f15c2811c8f20ae685194c343"
+checksum = "07c6098642fe50f17509d003367e5014082fb5dfd4602d8f976c99887fef7c2c"
 dependencies = [
  "js-sys",
  "phrasebook",
@@ -2593,9 +2593,9 @@ dependencies = [
 
 [[package]]
 name = "sockel-build"
-version = "0.3.3"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8afce4173908f75f1ec75f7ef6a390d036d9b87e50c6530c0eae31353599752e"
+checksum = "ba85995ce0144aa54642844a468cfc449338d4d9f5d9f53bb672a830e410c84b"
 dependencies = [
  "sasso",
 ]

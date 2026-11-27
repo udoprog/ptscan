@@ -471,7 +471,7 @@ impl Component for PointerScanView {
                     self.start_file(ctx, api::PointerScanFileKind::Load, path);
                 }
                 Some(FileBrowserMode::Open) => self.loading = Some(path),
-                None => return false,
+                Some(FileBrowserMode::Folder) | None => return false,
             },
             Msg::ConfirmLoad => {
                 let Some(path) = self.loading.take() else {
@@ -916,7 +916,7 @@ impl PointerScanView {
         let browser = self.browser.map(|mode| {
             let title = match mode {
                 FileBrowserMode::Save => "Save pointer paths",
-                FileBrowserMode::Open => "Load pointer paths",
+                FileBrowserMode::Open | FileBrowserMode::Folder => "Load pointer paths",
             };
 
             html! {

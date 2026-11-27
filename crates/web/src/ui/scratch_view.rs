@@ -328,7 +328,7 @@ impl Component for ScratchView {
                     self.load_file(ctx, path, false);
                 }
                 Some(FileBrowserMode::Open) => self.loading = Some(path),
-                None => return false,
+                Some(FileBrowserMode::Folder) | None => return false,
             },
             Msg::LoadFile(replace) => {
                 let Some(path) = self.loading.take() else {
@@ -576,7 +576,7 @@ impl ScratchView {
         let browser = self.browser.map(|mode| {
             let title = match mode {
                 FileBrowserMode::Save => "Save scratch list",
-                FileBrowserMode::Open => "Load scratch list",
+                FileBrowserMode::Open | FileBrowserMode::Folder => "Load scratch list",
             };
 
             html! {

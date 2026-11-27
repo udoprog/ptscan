@@ -121,10 +121,7 @@ fn listing(response: api::ListDirectoryResponse, name: Option<String>) -> Result
                 api::PlaceKind::Data => return None,
             };
 
-            Some(Place {
-                kind,
-                path: place.path,
-            })
+            Some(Place::new(kind, place.path))
         })
         .collect();
 
@@ -135,6 +132,7 @@ fn listing(response: api::ListDirectoryResponse, name: Option<String>) -> Result
         entries,
         file: response.file.or(name),
         places,
+        notice: None,
     })
 }
 
